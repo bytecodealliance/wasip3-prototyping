@@ -22,7 +22,7 @@ mod test {
         wasm_compose::composer::ComponentComposer,
         wasmtime::{
             component::{
-                self, Accessor, Component, FutureReader, Instance, Linker, Promise,
+                self, Accessor, Component, ErrorContext, FutureReader, Instance, Linker, Promise,
                 PromisesUnordered, Resource, ResourceTable, StreamReader, StreamWriter, Val,
             },
             AsContextMut, Config, Engine, Store,
@@ -1464,7 +1464,7 @@ mod test {
             WriteA(StreamWriter<String>),
             WriteB,
             ReadC(Option<(StreamReader<String>, Vec<String>)>),
-            ReadD(Option<String>),
+            ReadD(Option<Result<String, ErrorContext>>),
             ReadNone(Option<(StreamReader<String>, Vec<String>)>),
         }
 
@@ -1568,7 +1568,7 @@ mod test {
                 }
                 Event::ReadD(None) => unreachable!(),
                 Event::ReadD(Some(value)) => {
-                    assert_eq!("d", &value);
+                    assert!(value.is_ok_and(|v| v == "d"));
                     promises.push(
                         callee_stream_rx
                             .take()
@@ -1675,7 +1675,7 @@ mod test {
             RequestTrailersWrite,
             Response(Result<Resource<Response>, ErrorCode>),
             ResponseBodyRead(Option<(StreamReader<u8>, Vec<u8>)>),
-            ResponseTrailersRead(Option<Resource<Fields>>),
+            ResponseTrailersRead(Option<Result<Resource<Fields>, ErrorContext>>),
         }
 
         let mut promises = PromisesUnordered::new();
@@ -1804,8 +1804,9 @@ mod test {
                     );
                 }
                 Event::ResponseTrailersRead(Some(response_trailers)) => {
-                    let response_trailers =
-                        IoView::table(store.data_mut()).delete(response_trailers)?;
+                    let response_trailers = IoView::table(store.data_mut()).delete(
+                        response_trailers.map_err(|_| anyhow!("failed to remove trailers"))?,
+                    )?;
 
                     assert!(trailers.iter().all(|(k0, v0)| response_trailers
                         .0
@@ -1888,6 +1889,29 @@ mod test {
             &fs::read(test_programs_artifacts::ASYNC_ERROR_CONTEXT_STREAM_CALLER_COMPONENT).await?;
         let callee =
             &fs::read(test_programs_artifacts::ASYNC_ERROR_CONTEXT_STREAM_CALLEE_COMPONENT).await?;
+        test_run(&compose(caller, callee).await?).await
+    }
+
+    // No-op function; we only test this by composing it in `async_future_end_err`
+    #[allow(
+        dead_code,
+        reason = "here only to make the `assert_test_exists` macro happy"
+    )]
+    fn async_error_context_future_callee() {}
+
+    // No-op function; we only test this by composing it in `async_future_end_err`
+    #[allow(
+        dead_code,
+        reason = "here only to make the `assert_test_exists` macro happy"
+    )]
+    fn async_error_context_future_caller() {}
+
+    #[tokio::test]
+    async fn async_future_end_err() -> Result<()> {
+        let caller =
+            &fs::read(test_programs_artifacts::ASYNC_ERROR_CONTEXT_FUTURE_CALLER_COMPONENT).await?;
+        let callee =
+            &fs::read(test_programs_artifacts::ASYNC_ERROR_CONTEXT_FUTURE_CALLEE_COMPONENT).await?;
         test_run(&compose(caller, callee).await?).await
     }
 }

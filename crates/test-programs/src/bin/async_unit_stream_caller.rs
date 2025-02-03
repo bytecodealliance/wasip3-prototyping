@@ -29,7 +29,7 @@ impl Guest for Component {
         let mut rx = unit_stream::run(count).await;
 
         let mut received = 0;
-        while let Some(chunk) = rx.next().await {
+        while let Some(Ok(chunk)) = rx.next().await {
             received += chunk.len();
         }
 

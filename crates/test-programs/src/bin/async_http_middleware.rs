@@ -75,7 +75,7 @@ impl Handler for Component {
 
                     let mut decoder = DeflateDecoder::new(Vec::new());
 
-                    while let Some(chunk) = body_rx.next().await {
+                    while let Some(Ok(chunk)) = body_rx.next().await {
                         decoder.write_all(&chunk).unwrap();
                         pipe_tx.send(mem::take(decoder.get_mut())).await.unwrap();
                     }
@@ -86,7 +86,7 @@ impl Handler for Component {
                 }
 
                 if let Some(trailers) = Body::finish(body).await.unwrap() {
-                    trailers_tx.write(trailers).await;
+                    trailers_tx.write(trailers).await
                 }
             });
 
@@ -128,7 +128,7 @@ impl Handler for Component {
 
                     let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
 
-                    while let Some(chunk) = body_rx.next().await {
+                    while let Some(Ok(chunk)) = body_rx.next().await {
                         encoder.write_all(&chunk).unwrap();
                         pipe_tx.send(mem::take(encoder.get_mut())).await.unwrap();
                     }

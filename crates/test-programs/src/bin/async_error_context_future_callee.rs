@@ -1,11 +1,11 @@
 mod bindings {
     wit_bindgen::generate!({
         path: "../misc/component-async-tests/wit",
-        world: "error-context-stream-callee",
+        world: "error-context-future-callee",
         async: {
             exports: [
                 "local:local/run#run",
-                "local:local/run-stream#produce-then-error",
+                "local:local/run-future#produce-then-error",
             ],
         }
     });
@@ -13,19 +13,16 @@ mod bindings {
     use super::Component;
     export!(Component);
 }
-use bindings::wit_stream;
-use wit_bindgen_rt::async_support::futures::SinkExt;
-use wit_bindgen_rt::async_support::{self, error_context_new, StreamReader};
+
+use bindings::wit_future;
+use wit_bindgen_rt::async_support::{self, error_context_new, FutureReader};
 
 struct Component;
 
-impl bindings::exports::local::local::run_stream::Guest for Component {
-    async fn produce_then_error(times: u32) -> StreamReader<()> {
-        let (mut tx, rx) = wit_stream::new();
+impl bindings::exports::local::local::run_future::Guest for Component {
+    async fn produce_then_error() -> FutureReader<()> {
+        let (mut tx, rx) = wit_future::new();
         async_support::spawn(async move {
-            for _ in 0..times {
-                let _ = tx.send(vec![()]).await;
-            }
             tx.close_with_error(error_context_new("error".into()));
         });
         rx

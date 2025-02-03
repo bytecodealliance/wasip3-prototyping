@@ -44,16 +44,16 @@ impl Guest for Component {
             let mut caller_future_rx1 = Some(caller_future_rx1);
             let mut callee_future_tx1 = Some(callee_future_tx1);
 
-            while let Some(messages) = control_rx.next().await {
+            while let Some(Ok(messages)) = control_rx.next().await {
                 for message in messages {
                     match message {
                         Control::ReadStream(value) => {
-                            assert_eq!(caller_stream_rx.next().await, Some(vec![value]));
+                            assert_eq!(caller_stream_rx.next().await, Some(Ok(vec![value])));
                         }
                         Control::ReadFuture(value) => {
                             assert_eq!(
                                 caller_future_rx1.take().unwrap().into_future().await,
-                                Some(value)
+                                Some(Ok(value))
                             );
                         }
                         Control::WriteStream(value) => {

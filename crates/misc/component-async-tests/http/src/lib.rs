@@ -241,11 +241,17 @@ where
                 .transpose()
         })?;
 
-        Ok(Ok(if let Some(trailers) = trailers {
-            trailers.await
+        let maybe_trailers = if let Some(trailers) = trailers {
+            match trailers.await {
+                Some(Ok(trailers)) => Some(trailers),
+                Some(Err(_err_ctx)) => return Ok(Err(ErrorCode::InternalError(None))),
+                None => None,
+            }
         } else {
             None
-        }))
+        };
+
+        Ok(Ok(maybe_trailers))
     }
 
     fn drop(&mut self, this: Resource<Body>) -> wasmtime::Result<()> {

@@ -299,10 +299,10 @@ system-interface = { version = "0.27.1", features = ["cap_std_impls"] }
 io-lifetimes = { version = "2.0.3", default-features = false }
 io-extras = "0.18.1"
 rustix = "0.38.43"
-# wit-bindgen:
-wit-bindgen = { version = "0.39.0", default-features = false }
-wit-bindgen-rt = { version = "0.39.0", default-features = false }
-wit-bindgen-rust-macro = { version = "0.39.0", default-features = false }
+# TODO: switch back to released wit-bindgen
+wit-bindgen = { git = "https://github.com/vados-cosmonic/wit-bindgen", rev = "2eacbfc036beeb151d43acc6d1b241172fa80576", default-features = false}
+wit-bindgen-rt = { git = "https://github.com/vados-cosmonic/wit-bindgen", rev = "2eacbfc036beeb151d43acc6d1b241172fa80576", default-features = false}
+wit-bindgen-rust-macro = { git = "https://github.com/vados-cosmonic/wit-bindgen", rev = "2eacbfc036beeb151d43acc6d1b241172fa80576", default-features = false}
 
 # wasm-tools family:
 wasmparser = { version = "0.225.0", default-features = false, features = ['simd'] }

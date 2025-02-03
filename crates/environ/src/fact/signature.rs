@@ -184,7 +184,7 @@ impl ComponentTypesBuilder {
             match self.flatten_types(
                 &lower.options,
                 MAX_FLAT_RESULTS,
-                self[lower_ty.params].types.iter().copied(),
+                self[lower_ty.results].types.iter().copied(),
             ) {
                 Some(list) => list,
                 None => {

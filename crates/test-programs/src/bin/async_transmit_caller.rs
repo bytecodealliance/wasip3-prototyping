@@ -92,7 +92,7 @@ impl Guest for Component {
             .send(vec![Control::WriteStream("a".into())])
             .await
             .unwrap();
-        assert_eq!(callee_stream_rx.next().await, Some(vec!["a".into()]));
+        assert_eq!(callee_stream_rx.next().await, Some(Ok(vec!["a".into()])));
 
         // Start reading a value from the stream, but cancel the read before telling the peer to write.
         {
@@ -107,7 +107,7 @@ impl Guest for Component {
             .send(vec![Control::WriteStream("b".into())])
             .await
             .unwrap();
-        assert_eq!(callee_stream_rx.next().await, Some(vec!["b".into()]));
+        assert_eq!(callee_stream_rx.next().await, Some(Ok(vec!["b".into()])));
 
         // Start reading a value from the future, but cancel the read before telling the peer to write.
         {
@@ -124,7 +124,7 @@ impl Guest for Component {
             .send(vec![Control::WriteFuture("b".into())])
             .await
             .unwrap();
-        assert_eq!(callee_future_rx1.into_future().await, Some("b".into()));
+        assert_eq!(callee_future_rx1.into_future().await, Some(Ok("b".into())));
 
         // Start writing a value to the stream, but drop the stream without telling the peer to read.
         let send = caller_stream_tx.send(vec!["d".into()]);

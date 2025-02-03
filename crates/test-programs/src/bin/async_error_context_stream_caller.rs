@@ -29,6 +29,13 @@ impl Guest for Component {
         let Some(_) = stream.next().await else {
             panic!("unexpected send #1");
         };
+        let Some(Err(e)) = stream.next().await else {
+            panic!("missing expected error context");
+        };
+        let _ = e.debug_message();
+        let None = stream.next().await else {
+            panic!("unexpected object post error end");
+        };
     }
 }
 

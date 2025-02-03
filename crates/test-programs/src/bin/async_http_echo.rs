@@ -45,7 +45,7 @@ impl Handler for Component {
 
             async_support::spawn(async move {
                 let mut body_rx = body.stream().unwrap();
-                while let Some(chunk) = body_rx.next().await {
+                while let Some(Ok(chunk)) = body_rx.next().await {
                     pipe_tx.send(chunk).await.unwrap();
                 }
 
