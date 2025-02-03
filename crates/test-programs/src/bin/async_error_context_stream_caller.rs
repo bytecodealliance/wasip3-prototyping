@@ -29,6 +29,9 @@ impl Guest for Component {
         let Some(_) = stream.next().await else {
             panic!("unexpected send #1");
         };
+        let None = stream.next().await else {
+            panic!("unexpected extra object");
+        };
     }
 }
 

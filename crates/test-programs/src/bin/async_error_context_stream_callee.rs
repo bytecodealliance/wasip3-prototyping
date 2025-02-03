@@ -15,7 +15,7 @@ mod bindings {
 }
 use bindings::wit_stream;
 use wit_bindgen_rt::async_support::futures::SinkExt;
-use wit_bindgen_rt::async_support::{self, StreamReader};
+use wit_bindgen_rt::async_support::{self, error_context_new, StreamReader};
 
 struct Component;
 

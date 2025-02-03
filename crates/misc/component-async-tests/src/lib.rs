@@ -1945,4 +1945,13 @@ mod test {
             &fs::read(test_programs_artifacts::ASYNC_ERROR_CONTEXT_STREAM_CALLEE_COMPONENT).await?;
         test_run(&compose(caller, callee).await?).await
     }
+
+    // #[tokio::test]
+    // async fn async_future_end_err() -> Result<()> {
+    //     let caller =
+    //         &fs::read(test_programs_artifacts::ASYNC_ERROR_CONTEXT_FUTURE_CALLER_COMPONENT).await?;
+    //     let callee =
+    //         &fs::read(test_programs_artifacts::ASYNC_ERROR_CONTEXT_FUTURE_CALLEE_COMPONENT).await?;
+    //     test_run(&compose(caller, callee).await?).await
+    // }
 }

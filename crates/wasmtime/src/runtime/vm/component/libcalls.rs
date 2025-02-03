@@ -7,7 +7,9 @@ use core::cell::Cell;
 use core::convert::Infallible;
 use core::ptr::NonNull;
 use core::slice;
-use wasmtime_environ::component::TypeResourceTableIndex;
+use wasmtime_environ::component::{
+    TypeComponentLocalErrorContextTableIndex, TypeResourceTableIndex,
+};
 
 const UTF16_TAG: usize = 1 << 31;
 
@@ -858,6 +860,7 @@ unsafe fn future_read(
     realloc: *mut u8,
     string_encoding: u8,
     ty: u32,
+    err_ctx_ty: u32,
     future: u32,
     address: u32,
 ) -> Result<u32> {
@@ -868,6 +871,7 @@ unsafe fn future_read(
             realloc.cast::<crate::vm::VMFuncRef>(),
             string_encoding,
             wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
+            TypeComponentLocalErrorContextTableIndex::from_u32(err_ctx_ty),
             future,
             address,
         )
@@ -916,6 +920,7 @@ unsafe fn future_cancel_read(
 unsafe fn future_close_writable(
     vmctx: NonNull<VMComponentContext>,
     ty: u32,
+    err_ctx_ty: u32,
     writer: u32,
     error: u32,
 ) -> Result<()> {
@@ -925,6 +930,7 @@ unsafe fn future_close_writable(
             .future_close_writable(
                 instance,
                 wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
+                TypeComponentLocalErrorContextTableIndex::from_u32(err_ctx_ty),
                 writer,
                 error,
             )
@@ -990,6 +996,7 @@ unsafe fn stream_read(
     realloc: *mut u8,
     string_encoding: u8,
     ty: u32,
+    err_ctx_ty: u32,
     stream: u32,
     address: u32,
     count: u32,
@@ -1001,6 +1008,7 @@ unsafe fn stream_read(
             realloc.cast::<crate::vm::VMFuncRef>(),
             string_encoding,
             wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
+            TypeComponentLocalErrorContextTableIndex::from_u32(err_ctx_ty),
             stream,
             address,
             count,
@@ -1050,6 +1058,7 @@ unsafe fn stream_cancel_read(
 unsafe fn stream_close_writable(
     vmctx: NonNull<VMComponentContext>,
     ty: u32,
+    err_ctx_ty: u32,
     writer: u32,
     error: u32,
 ) -> Result<()> {
@@ -1059,6 +1068,7 @@ unsafe fn stream_close_writable(
             .stream_close_writable(
                 instance,
                 wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
+                TypeComponentLocalErrorContextTableIndex::from_u32(err_ctx_ty),
                 writer,
                 error,
             )
@@ -1117,6 +1127,7 @@ unsafe fn flat_stream_read(
     memory: *mut u8,
     realloc: *mut u8,
     ty: u32,
+    err_ctx_ty: u32,
     payload_size: u32,
     payload_align: u32,
     stream: u32,
@@ -1131,6 +1142,7 @@ unsafe fn flat_stream_read(
                 memory.cast::<crate::vm::VMMemoryDefinition>(),
                 realloc.cast::<crate::vm::VMFuncRef>(),
                 wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
+                TypeComponentLocalErrorContextTableIndex::from_u32(err_ctx_ty),
                 payload_size,
                 payload_align,
                 stream,

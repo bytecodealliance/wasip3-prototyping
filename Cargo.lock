@@ -5262,8 +5262,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen"
 version = "0.38.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b550e454e4cce8984398539a94a0226511e1f295b14afdc8f08b4e2e2ff9de3a"
+source = "git+https://github.com/vados-cosmonic/wit-bindgen?rev=97b7b12fdc36542aee2350f34c178439bd562bbe#97b7b12fdc36542aee2350f34c178439bd562bbe"
 dependencies = [
  "wit-bindgen-rt 0.38.0",
  "wit-bindgen-rust-macro",
@@ -5272,8 +5271,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-core"
 version = "0.38.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70e2f98d49960a416074c5d72889f810ed3032a32ffef5e4760094426fefbfe8"
+source = "git+https://github.com/vados-cosmonic/wit-bindgen?rev=97b7b12fdc36542aee2350f34c178439bd562bbe#97b7b12fdc36542aee2350f34c178439bd562bbe"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5292,8 +5290,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rt"
 version = "0.38.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed6f8d372a2d4a1227f2556e051cc24b2a5f15768d53451c84ff91e2527139e3"
+source = "git+https://github.com/vados-cosmonic/wit-bindgen?rev=97b7b12fdc36542aee2350f34c178439bd562bbe#97b7b12fdc36542aee2350f34c178439bd562bbe"
 dependencies = [
  "bitflags 2.6.0",
  "futures",
@@ -5303,8 +5300,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rust"
 version = "0.38.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1cc49091f84e4f2ace078bbc86082b57e667b9e789baece4b1184e0963382b6e"
+source = "git+https://github.com/vados-cosmonic/wit-bindgen?rev=97b7b12fdc36542aee2350f34c178439bd562bbe#97b7b12fdc36542aee2350f34c178439bd562bbe"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5319,8 +5315,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rust-macro"
 version = "0.38.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3545a699dc9d72298b2064ce71b771fc10fc6b757d29306b1e54a4283a75abba"
+source = "git+https://github.com/vados-cosmonic/wit-bindgen?rev=97b7b12fdc36542aee2350f34c178439bd562bbe#97b7b12fdc36542aee2350f34c178439bd562bbe"
 dependencies = [
  "anyhow",
  "prettyplease",
