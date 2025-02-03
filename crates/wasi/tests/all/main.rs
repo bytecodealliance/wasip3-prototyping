@@ -89,5 +89,7 @@ macro_rules! assert_test_exists {
 
 mod api;
 mod async_;
+#[cfg(feature = "p3")]
+mod p3;
 mod preview1;
 mod sync;

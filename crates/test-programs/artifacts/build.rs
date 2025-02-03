@@ -69,6 +69,11 @@ fn build_and_generate_tests() {
         // Bucket, based on the name of the test, into a "kind" which generates
         // a `foreach_*` macro below.
         let kind = match target.as_str() {
+            s if s.starts_with("cli_0_3") => "cli_0_3",
+            s if s.starts_with("clocks_0_3") => "clocks_0_3",
+            s if s.starts_with("filesystem_0_3") => "filesystem_0_3",
+            s if s.starts_with("random_0_3") => "random_0_3",
+            s if s.starts_with("sockets_0_3") => "sockets_0_3",
             s if s.starts_with("http_") => "http",
             s if s.starts_with("preview1_") => "preview1",
             s if s.starts_with("preview2_") => "preview2",
@@ -102,6 +107,11 @@ fn build_and_generate_tests() {
         }
         let adapter = match target.as_str() {
             "reactor" => &reactor_adapter,
+            s if s.starts_with("cli_0_3") => &reactor_adapter,
+            s if s.starts_with("clocks_0_3") => &reactor_adapter,
+            s if s.starts_with("filesystem_0_3") => &reactor_adapter,
+            s if s.starts_with("random_0_3") => &reactor_adapter,
+            s if s.starts_with("sockets_0_3") => &reactor_adapter,
             s if s.starts_with("async_") => &reactor_adapter,
             s if s.starts_with("api_proxy") => &proxy_adapter,
             _ => &command_adapter,
