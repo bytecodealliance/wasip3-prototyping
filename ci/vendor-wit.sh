@@ -63,6 +63,14 @@ make_vendor "wasi-config" "config@f4d699b"
 
 make_vendor "wasi-keyvalue" "keyvalue@219ea36"
 
+make_vendor "wasi/src/p3" "
+    cli@e4c71d8@wit-0.3.0-draft
+    clocks@646092f@wit-0.3.0-draft
+    filesystem@dbb779d@wit-0.3.0-draft
+    random@3919978@wit-0.3.0-draft
+    sockets@4728257@wit-0.3.0-draft
+"
+
 rm -rf $cache_dir
 
 # Separately (for now), vendor the `wasi-nn` WIT files since their retrieval is
