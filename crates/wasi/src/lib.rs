@@ -242,6 +242,8 @@ mod filesystem;
 mod host;
 mod ip_name_lookup;
 mod network;
+#[cfg(feature = "p3")]
+pub mod p3;
 pub mod pipe;
 mod poll;
 #[cfg(feature = "preview1")]
