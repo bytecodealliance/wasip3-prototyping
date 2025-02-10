@@ -18,6 +18,13 @@ pub struct StoreContext<'a, T>(pub(crate) &'a StoreInner<T>);
 #[repr(transparent)]
 pub struct StoreContextMut<'a, T>(pub(crate) &'a mut StoreInner<T>);
 
+impl<'a, T> StoreContextMut<'a, T> {
+    #[doc(hidden)]
+    pub fn traitobj(&self) -> std::ptr::NonNull<dyn crate::runtime::vm::VMStore> {
+        self.0.traitobj()
+    }
+}
+
 /// A trait used to get shared access to a [`Store`] in Wasmtime.
 ///
 /// This trait is used as a bound on the first argument of many methods within

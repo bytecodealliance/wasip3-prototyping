@@ -188,11 +188,7 @@ mod one_import {
 }
 
 mod one_import_concurrent {
-    use {
-        super::*,
-        std::future::Future,
-        wasmtime::{component, StoreContextMut},
-    };
+    use {super::*, wasmtime::component::Accessor};
 
     wasmtime::component::bindgen!({
         inline: "
@@ -269,14 +265,8 @@ mod one_import_concurrent {
         impl foo::Host for MyImports {
             type Data = MyImports;
 
-            fn foo(
-                mut store: StoreContextMut<'_, Self::Data>,
-            ) -> impl Future<Output = impl FnOnce(StoreContextMut<'_, Self::Data>) + 'static>
-                   + Send
-                   + Sync
-                   + 'static {
-                store.data_mut().hit = true;
-                async { component::for_any(|_| ()) }
+            async fn foo(accessor: &mut Accessor<Self::Data>) {
+                accessor.with(|mut store| store.data_mut().hit = true);
             }
         }
 

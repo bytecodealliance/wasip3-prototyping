@@ -116,7 +116,7 @@ mod values;
 pub use self::component::{Component, ComponentExportIndex};
 #[cfg(feature = "component-model-async")]
 pub use self::concurrent::{
-    for_any, future, stream, ErrorContext, FutureReader, FutureWriter, Promise, PromisesUnordered,
+    future, stream, Accessor, ErrorContext, FutureReader, FutureWriter, Promise, PromisesUnordered,
     StreamReader, StreamWriter, VMComponentAsyncStore,
 };
 pub use self::func::{

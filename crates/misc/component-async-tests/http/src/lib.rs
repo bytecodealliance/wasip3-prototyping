@@ -29,9 +29,9 @@ use {
     wasi::http::types::{ErrorCode, HeaderError, Method, RequestOptionsError, Scheme},
     wasmtime::{
         component::{
-            self, ErrorContext, FutureReader, Linker, Resource, ResourceTable, StreamReader,
+            Accessor, ErrorContext, FutureReader, Linker, Resource, ResourceTable, StreamReader,
         },
-        AsContextMut, StoreContextMut,
+        AsContextMut,
     },
 };
 
@@ -55,18 +55,9 @@ pub trait WasiHttpView: Send + Sized {
     fn table(&mut self) -> &mut ResourceTable;
 
     fn send_request(
-        store: StoreContextMut<'_, Self::Data>,
+        accessor: &mut Accessor<Self::Data>,
         request: Resource<Request>,
-    ) -> impl Future<
-        Output = impl FnOnce(
-            StoreContextMut<'_, Self::Data>,
-        ) -> wasmtime::Result<Result<Resource<Response>, ErrorCode>>
-                     + Send
-                     + Sync
-                     + 'static,
-    > + Send
-           + Sync
-           + 'static;
+    ) -> impl Future<Output = wasmtime::Result<Result<Resource<Response>, ErrorCode>>> + Send + Sync;
 }
 
 impl<T: WasiHttpView> WasiHttpView for &mut T {
@@ -77,19 +68,11 @@ impl<T: WasiHttpView> WasiHttpView for &mut T {
     }
 
     fn send_request(
-        store: StoreContextMut<'_, Self::Data>,
+        accessor: &mut Accessor<Self::Data>,
         request: Resource<Request>,
-    ) -> impl Future<
-        Output = impl FnOnce(
-            StoreContextMut<'_, Self::Data>,
-        ) -> wasmtime::Result<Result<Resource<Response>, ErrorCode>>
-                     + Send
-                     + Sync
-                     + 'static,
-    > + Send
-           + Sync
-           + 'static {
-        T::send_request(store, request)
+    ) -> impl Future<Output = wasmtime::Result<Result<Resource<Response>, ErrorCode>>> + Send + Sync
+    {
+        T::send_request(accessor, request)
     }
 }
 
@@ -103,19 +86,11 @@ impl<T: WasiHttpView> WasiHttpView for WasiHttpImpl<T> {
     }
 
     fn send_request(
-        store: StoreContextMut<'_, Self::Data>,
+        accessor: &mut Accessor<Self::Data>,
         request: Resource<Request>,
-    ) -> impl Future<
-        Output = impl FnOnce(
-            StoreContextMut<'_, Self::Data>,
-        ) -> wasmtime::Result<Result<Resource<Response>, ErrorCode>>
-                     + Send
-                     + Sync
-                     + 'static,
-    > + Send
-           + Sync
-           + 'static {
-        T::send_request(store, request)
+    ) -> impl Future<Output = wasmtime::Result<Result<Resource<Response>, ErrorCode>>> + Send + Sync
+    {
+        T::send_request(accessor, request)
     }
 }
 
@@ -255,33 +230,22 @@ where
         Ok(Ok(stream))
     }
 
-    fn finish(
-        mut store: StoreContextMut<'_, Self::BodyData>,
+    async fn finish(
+        accessor: &mut Accessor<Self::BodyData>,
         this: Resource<Body>,
-    ) -> impl Future<
-        Output = impl FnOnce(
-            StoreContextMut<'_, Self::BodyData>,
-        )
-            -> wasmtime::Result<Result<Option<Resource<Fields>>, ErrorCode>>
-                     + 'static,
-    > + Send
-           + Sync
-           + 'static {
-        let trailers = (|| {
+    ) -> wasmtime::Result<Result<Option<Resource<Fields>>, ErrorCode>> {
+        let trailers = accessor.with(|mut store| {
             let trailers = store.data_mut().table().delete(this)?.trailers;
             trailers
                 .map(|v| v.read(store.as_context_mut()).map(|v| v.into_future()))
                 .transpose()
-        })();
-        async move {
-            let trailers = match trailers {
-                Ok(Some(trailers)) => Ok(trailers.await),
-                Ok(None) => Ok(None),
-                Err(e) => Err(e),
-            };
+        })?;
 
-            component::for_any(move |_| Ok(Ok(trailers?)))
-        }
+        Ok(Ok(if let Some(trailers) = trailers {
+            trailers.await
+        } else {
+            None
+        }))
     }
 
     fn drop(&mut self, this: Resource<Body>) -> wasmtime::Result<()> {
@@ -530,20 +494,11 @@ where
 impl<T: WasiHttpView> wasi::http::handler::Host for WasiHttpImpl<T> {
     type Data = T::Data;
 
-    fn handle(
-        store: StoreContextMut<'_, Self::Data>,
+    async fn handle(
+        accessor: &mut Accessor<Self::Data>,
         request: Resource<Request>,
-    ) -> impl Future<
-        Output = impl FnOnce(
-            StoreContextMut<'_, Self::Data>,
-        ) -> wasmtime::Result<Result<Resource<Response>, ErrorCode>>
-                     + Send
-                     + Sync
-                     + 'static,
-    > + Send
-           + Sync
-           + 'static {
-        Self::send_request(store, request)
+    ) -> wasmtime::Result<Result<Resource<Response>, ErrorCode>> {
+        Self::send_request(accessor, request).await
     }
 }
 

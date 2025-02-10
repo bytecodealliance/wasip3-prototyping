@@ -7,7 +7,6 @@ mod test {
         futures::future,
         round_trip_many::local::local::many::Stuff,
         std::{
-            future::Future,
             iter,
             ops::DerefMut,
             sync::{Arc, Mutex, Once},
@@ -23,10 +22,10 @@ mod test {
         wasm_compose::composer::ComponentComposer,
         wasmtime::{
             component::{
-                self, Component, FutureReader, Instance, Linker, Promise, PromisesUnordered,
-                Resource, ResourceTable, StreamReader, StreamWriter, Val,
+                self, Accessor, Component, FutureReader, Instance, Linker, Promise,
+                PromisesUnordered, Resource, ResourceTable, StreamReader, StreamWriter, Val,
             },
-            AsContextMut, Config, Engine, Store, StoreContextMut,
+            AsContextMut, Config, Engine, Store,
         },
         wasmtime_wasi::{IoView, WasiCtx, WasiCtxBuilder, WasiView},
     };
@@ -78,20 +77,9 @@ mod test {
     impl round_trip::local::local::baz::Host for Ctx {
         type Data = Ctx;
 
-        #[allow(clippy::manual_async_fn)]
-        fn foo(
-            _: StoreContextMut<'_, Self>,
-            s: String,
-        ) -> impl Future<
-            Output = impl FnOnce(StoreContextMut<'_, Self>) -> wasmtime::Result<String> + 'static,
-        > + Send
-               + 'static {
-            async move {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                component::for_any(move |_: StoreContextMut<'_, Self>| {
-                    Ok(format!("{s} - entered host - exited host"))
-                })
-            }
+        async fn foo(_: &mut Accessor<Self>, s: String) -> wasmtime::Result<String> {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            Ok(format!("{s} - entered host - exited host"))
         }
     }
 
@@ -110,9 +98,8 @@ mod test {
     impl round_trip_many::local::local::many::Host for Ctx {
         type Data = Ctx;
 
-        #[allow(clippy::manual_async_fn)]
-        fn foo(
-            _: StoreContextMut<'_, Self>,
+        async fn foo(
+            _: &mut Accessor<Self>,
             a: String,
             b: u32,
             c: Vec<u8>,
@@ -120,34 +107,25 @@ mod test {
             e: Stuff,
             f: Option<Stuff>,
             g: Result<Stuff, ()>,
-        ) -> impl Future<
-            Output = impl FnOnce(
-                StoreContextMut<'_, Self>,
-            ) -> wasmtime::Result<(
-                String,
-                u32,
-                Vec<u8>,
-                (u64, u64),
-                Stuff,
-                Option<Stuff>,
-                Result<Stuff, ()>,
-            )> + 'static,
-        > + Send
-               + 'static {
-            async move {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                component::for_any(move |_: StoreContextMut<'_, Self>| {
-                    Ok((
-                        format!("{a} - entered host - exited host"),
-                        b,
-                        c,
-                        d,
-                        e,
-                        f,
-                        g,
-                    ))
-                })
-            }
+        ) -> wasmtime::Result<(
+            String,
+            u32,
+            Vec<u8>,
+            (u64, u64),
+            Stuff,
+            Option<Stuff>,
+            Result<Stuff, ()>,
+        )> {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            Ok((
+                format!("{a} - entered host - exited host"),
+                b,
+                c,
+                d,
+                e,
+                f,
+                g,
+            ))
         }
     }
 
@@ -165,20 +143,9 @@ mod test {
     impl round_trip_direct::RoundTripDirectImports for Ctx {
         type Data = Ctx;
 
-        #[allow(clippy::manual_async_fn)]
-        fn foo(
-            _: StoreContextMut<'_, Self>,
-            s: String,
-        ) -> impl Future<
-            Output = impl FnOnce(StoreContextMut<'_, Self>) -> wasmtime::Result<String> + 'static,
-        > + Send
-               + 'static {
-            async move {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                component::for_any(move |_: StoreContextMut<'_, Self>| {
-                    Ok(format!("{s} - entered host - exited host"))
-                })
-            }
+        async fn foo(_: &mut Accessor<Self>, s: String) -> wasmtime::Result<String> {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            Ok(format!("{s} - entered host - exited host"))
         }
     }
 
@@ -307,14 +274,12 @@ mod test {
                 .instance("local:local/baz")?
                 .func_new_concurrent("foo", |_, params| async move {
                     tokio::time::sleep(Duration::from_millis(10)).await;
-                    component::for_any(move |_: StoreContextMut<'_, Ctx>| {
-                        let Some(Val::String(s)) = params.into_iter().next() else {
-                            unreachable!()
-                        };
-                        Ok(vec![Val::String(format!(
-                            "{s} - entered host - exited host"
-                        ))])
-                    })
+                    let Some(Val::String(s)) = params.into_iter().next() else {
+                        unreachable!()
+                    };
+                    Ok(vec![Val::String(format!(
+                        "{s} - entered host - exited host"
+                    ))])
                 })?;
 
             let mut store = make_store();
@@ -638,17 +603,15 @@ mod test {
                 .instance("local:local/many")?
                 .func_new_concurrent("foo", |_, params| async move {
                     tokio::time::sleep(Duration::from_millis(10)).await;
-                    component::for_any(move |_: StoreContextMut<'_, Ctx>| {
-                        let mut params = params.into_iter();
-                        let Some(Val::String(s)) = params.next() else {
-                            unreachable!()
-                        };
-                        Ok(vec![Val::Tuple(
-                            iter::once(Val::String(format!("{s} - entered host - exited host")))
-                                .chain(params)
-                                .collect(),
-                        )])
-                    })
+                    let mut params = params.into_iter();
+                    let Some(Val::String(s)) = params.next() else {
+                        unreachable!()
+                    };
+                    Ok(vec![Val::Tuple(
+                        iter::once(Val::String(format!("{s} - entered host - exited host")))
+                            .chain(params)
+                            .collect(),
+                    )])
                 })?;
 
             let mut store = make_store();
@@ -961,14 +924,12 @@ mod test {
                 .root()
                 .func_new_concurrent("foo", |_, params| async move {
                     tokio::time::sleep(Duration::from_millis(10)).await;
-                    component::for_any(move |_: StoreContextMut<'_, Ctx>| {
-                        let Some(Val::String(s)) = params.into_iter().next() else {
-                            unreachable!()
-                        };
-                        Ok(vec![Val::String(format!(
-                            "{s} - entered host - exited host"
-                        ))])
-                    })
+                    let Some(Val::String(s)) = params.into_iter().next() else {
+                        unreachable!()
+                    };
+                    Ok(vec![Val::String(format!(
+                        "{s} - entered host - exited host"
+                    ))])
                 })?;
 
             let mut store = make_store();
@@ -1058,22 +1019,18 @@ mod test {
             }
         }
 
-        fn when_ready(
-            store: StoreContextMut<Self::Data>,
-        ) -> impl Future<Output = impl FnOnce(StoreContextMut<Self::Data>) + 'static>
-               + Send
-               + Sync
-               + 'static {
-            let wakers = store.data().wakers.clone();
+        async fn when_ready(accessor: &mut Accessor<Self::Data>) {
+            let wakers = accessor.with(|store| store.data().wakers.clone());
             future::poll_fn(move |cx| {
                 let mut wakers = wakers.lock().unwrap();
                 if let Some(wakers) = wakers.deref_mut() {
                     wakers.push(cx.waker().clone());
                     Poll::Pending
                 } else {
-                    Poll::Ready(component::for_any(|_| ()))
+                    Poll::Ready(())
                 }
             })
+            .await
         }
     }
 
@@ -1663,23 +1620,11 @@ mod test {
             &mut self.table
         }
 
-        #[allow(clippy::manual_async_fn)]
-        fn send_request(
-            _store: StoreContextMut<'_, Self::Data>,
+        async fn send_request(
+            _accessor: &mut Accessor<Self::Data>,
             _request: Resource<Request>,
-        ) -> impl Future<
-            Output = impl FnOnce(
-                StoreContextMut<'_, Self::Data>,
-            )
-                -> wasmtime::Result<Result<Resource<Response>, ErrorCode>>
-                         + 'static,
-        > + Send
-               + 'static {
-            async move {
-                move |_: StoreContextMut<'_, Self>| {
-                    Err(anyhow!("no outbound request handler available"))
-                }
-            }
+        ) -> wasmtime::Result<Result<Resource<Response>, ErrorCode>> {
+            Err(anyhow!("no outbound request handler available"))
         }
     }
 

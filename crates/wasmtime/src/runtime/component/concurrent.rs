@@ -148,6 +148,39 @@ impl<T: 'static> PromisesUnordered<T> {
     }
 }
 
+/// Provides restricted mutable access to a `Store` in the context of a
+/// concurrent host import function.
+///
+/// This allows multiple host import futures to execute concurrently and access
+/// the `Store` (and its data payload) between (but not across) `await` points.
+pub struct Accessor<T> {
+    store: *mut dyn VMStore,
+    _phantom: PhantomData<fn(StoreContextMut<'_, T>)>,
+}
+
+unsafe impl<T> Send for Accessor<T> {}
+unsafe impl<T> Sync for Accessor<T> {}
+
+impl<T> Accessor<T> {
+    #[doc(hidden)]
+    pub unsafe fn new(store: *mut dyn VMStore) -> Self {
+        Self {
+            store,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Run the specified closure, passing it a `StoreContextMut`.
+    ///
+    /// Note that the return value of the closure must be `'static`, meaning it
+    /// cannot borrow from the store or its data payload.  If you need to return
+    /// a resource from the store, it must be cloned (using e.g. `Arc::clone` if
+    /// appropriate).
+    pub fn with<R: 'static>(&mut self, fun: impl FnOnce(StoreContextMut<'_, T>) -> R) -> R {
+        fun(unsafe { StoreContextMut(&mut *self.store.cast()) })
+    }
+}
+
 /// Trait representing component model ABI async intrinsics and fused adapter
 /// helper functions.
 pub unsafe trait VMComponentAsyncStore {
@@ -1380,16 +1413,6 @@ fn dummy_waker() -> Waker {
     WAKER.clone().into()
 }
 
-/// Provide a hint to Rust type inferencer that we're returning a compatible
-/// closure from a `LinkerInstance::func_wrap_concurrent` future.
-pub fn for_any<F, R, T>(fun: F) -> F
-where
-    F: FnOnce(StoreContextMut<T>) -> R + 'static,
-    R: 'static,
-{
-    fun
-}
-
 fn for_any_lower<
     F: FnOnce(*mut dyn VMStore, &mut [MaybeUninit<ValRaw>]) -> Result<()> + Send + Sync,
 >(
@@ -1406,13 +1429,10 @@ fn for_any_lift<
     fun
 }
 
-pub(crate) fn first_poll<T, R: Send + 'static>(
+pub(crate) fn first_poll<T, R: Send + Sync + 'static>(
     instance: *mut ComponentInstance,
     mut store: StoreContextMut<T>,
-    future: impl Future<Output = impl FnOnce(StoreContextMut<T>) -> Result<R> + Send + Sync + 'static>
-        + Send
-        + Sync
-        + 'static,
+    future: impl Future<Output = Result<R>> + Send + Sync + 'static,
     caller_instance: RuntimeComponentInstanceIndex,
     lower: impl FnOnce(StoreContextMut<T>, R) -> Result<()> + Send + Sync + 'static,
 ) -> Result<Option<u32>> {
@@ -1422,13 +1442,12 @@ pub(crate) fn first_poll<T, R: Send + 'static>(
         .table
         .push_child(HostTask { caller_instance }, caller)?;
     log::trace!("new child of {}: {}", caller.rep(), task.rep());
-    let mut future = Box::pin(future.map(move |fun| {
+    let mut future = Box::pin(future.map(move |result| {
         (
             task.rep(),
             Box::new(move |store: *mut dyn VMStore| {
-                let mut store = unsafe { StoreContextMut(&mut *store.cast()) };
-                let result = fun(store.as_context_mut())?;
-                lower(store, result)?;
+                let store = unsafe { StoreContextMut(&mut *store.cast()) };
+                lower(store, result?)?;
                 Ok(HostTaskResult {
                     event: Event::Done,
                     param: 0u32,
@@ -1463,18 +1482,12 @@ pub(crate) fn first_poll<T, R: Send + 'static>(
 
 pub(crate) fn poll_and_block<'a, T, R: Send + Sync + 'static>(
     mut store: StoreContextMut<'a, T>,
-    future: impl Future<Output = impl FnOnce(StoreContextMut<T>) -> Result<R> + Send + Sync + 'static>
-        + Send
-        + Sync
-        + 'static,
+    future: impl Future<Output = Result<R>> + Send + Sync + 'static,
     caller_instance: RuntimeComponentInstanceIndex,
 ) -> Result<(R, StoreContextMut<'a, T>)> {
     let Some(caller) = store.concurrent_state().guest_task else {
         return match pin!(future).poll(&mut Context::from_waker(&dummy_waker())) {
-            Poll::Ready(fun) => {
-                let result = fun(store.as_context_mut())?;
-                Ok((result, store))
-            }
+            Poll::Ready(result) => Ok((result?, store)),
             Poll::Pending => {
                 unreachable!()
             }
@@ -1492,14 +1505,13 @@ pub(crate) fn poll_and_block<'a, T, R: Send + Sync + 'static>(
         .table
         .push_child(HostTask { caller_instance }, caller)?;
     log::trace!("new child of {}: {}", caller.rep(), task.rep());
-    let mut future = Box::pin(future.map(move |fun| {
+    let mut future = Box::pin(future.map(move |result| {
         (
             task.rep(),
             Box::new(move |store: *mut dyn VMStore| {
-                let mut store = unsafe { StoreContextMut(&mut *store.cast()) };
-                let result = fun(store.as_context_mut())?;
+                let mut store = unsafe { StoreContextMut::<T>(&mut *store.cast()) };
                 store.concurrent_state().table.get_mut(caller)?.result =
-                    Some(Box::new(result) as _);
+                    Some(Box::new(result?) as _);
                 Ok(HostTaskResult {
                     event: Event::Done,
                     param: 0u32,

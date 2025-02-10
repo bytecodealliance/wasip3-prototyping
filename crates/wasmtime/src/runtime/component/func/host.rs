@@ -48,19 +48,18 @@ impl HostFunc {
     {
         Self::from_concurrent(move |store, params| {
             let result = func(store, params);
-            async move { concurrent::for_any(move |_| result) }
+            async move { result }
         })
     }
 
-    pub(crate) fn from_concurrent<T, F, N, FN, P, R>(func: F) -> Arc<HostFunc>
+    pub(crate) fn from_concurrent<T, F, Fut, P, R>(func: F) -> Arc<HostFunc>
     where
-        N: FnOnce(StoreContextMut<T>) -> Result<R> + Send + Sync + 'static,
-        FN: Future<Output = N> + Send + Sync + 'static,
-        F: Fn(StoreContextMut<T>, P) -> FN + Send + Sync + 'static,
+        Fut: Future<Output = Result<R>> + Send + Sync + 'static,
+        F: Fn(StoreContextMut<T>, P) -> Fut + Send + Sync + 'static,
         P: ComponentNamedList + Lift + 'static,
         R: ComponentNamedList + Lower + Send + Sync + 'static,
     {
-        let entrypoint = Self::entrypoint::<T, F, N, FN, P, R>;
+        let entrypoint = Self::entrypoint::<T, F, Fut, P, R>;
         Arc::new(HostFunc {
             entrypoint,
             typecheck: Box::new(typecheck::<P, R>),
@@ -68,7 +67,7 @@ impl HostFunc {
         })
     }
 
-    extern "C" fn entrypoint<T, F, N, FN, P, R>(
+    extern "C" fn entrypoint<T, F, Fut, P, R>(
         cx: NonNull<VMOpaqueContext>,
         data: NonNull<u8>,
         ty: u32,
@@ -82,9 +81,8 @@ impl HostFunc {
         storage_len: usize,
     ) -> bool
     where
-        N: FnOnce(StoreContextMut<T>) -> Result<R> + Send + Sync + 'static,
-        FN: Future<Output = N> + Send + Sync + 'static,
-        F: Fn(StoreContextMut<T>, P) -> FN + Send + Sync + 'static,
+        Fut: Future<Output = Result<R>> + Send + Sync + 'static,
+        F: Fn(StoreContextMut<T>, P) -> Fut + Send + Sync + 'static,
         P: ComponentNamedList + Lift + 'static,
         R: ComponentNamedList + Lower + Send + Sync + 'static,
     {
@@ -119,18 +117,17 @@ impl HostFunc {
                 .collect::<Vec<_>>();
             let result = func(store, &params, &mut results);
             let result = result.map(move |()| results);
-            async move { concurrent::for_any(move |_| result) }
+            async move { result }
         })
     }
 
-    pub(crate) fn new_dynamic_concurrent<T, F, N, FN>(f: F) -> Arc<HostFunc>
+    pub(crate) fn new_dynamic_concurrent<T, F, Fut>(f: F) -> Arc<HostFunc>
     where
-        N: FnOnce(StoreContextMut<T>) -> Result<Vec<Val>> + Send + Sync + 'static,
-        FN: Future<Output = N> + Send + Sync + 'static,
-        F: Fn(StoreContextMut<T>, Vec<Val>, usize) -> FN + Send + Sync + 'static,
+        Fut: Future<Output = Result<Vec<Val>>> + Send + Sync + 'static,
+        F: Fn(StoreContextMut<T>, Vec<Val>, usize) -> Fut + Send + Sync + 'static,
     {
         Arc::new(HostFunc {
-            entrypoint: dynamic_entrypoint::<T, F, N, FN>,
+            entrypoint: dynamic_entrypoint::<T, F, Fut>,
             // This function performs dynamic type checks and subsequently does
             // not need to perform up-front type checks. Instead everything is
             // dynamically managed at runtime.
@@ -185,7 +182,7 @@ where
 /// This function is in general `unsafe` as the validity of all the parameters
 /// must be upheld. Generally that's done by ensuring this is only called from
 /// the select few places it's intended to be called from.
-unsafe fn call_host<T, Params, Return, F, N, FN>(
+unsafe fn call_host<T, Params, Return, F, Fut>(
     instance: *mut ComponentInstance,
     types: &Arc<ComponentTypes>,
     mut cx: StoreContextMut<'_, T>,
@@ -200,9 +197,8 @@ unsafe fn call_host<T, Params, Return, F, N, FN>(
     closure: F,
 ) -> Result<()>
 where
-    N: FnOnce(StoreContextMut<T>) -> Result<Return> + Send + Sync + 'static,
-    FN: Future<Output = N> + Send + Sync + 'static,
-    F: Fn(StoreContextMut<T>, Params) -> FN + 'static,
+    Fut: Future<Output = Result<Return>> + Send + Sync + 'static,
+    F: Fn(StoreContextMut<T>, Params) -> Fut + 'static,
     Params: Lift,
     Return: Lower + Send + Sync + 'static,
 {
@@ -419,7 +415,7 @@ unsafe fn call_host_and_handle_result<T>(
     })
 }
 
-unsafe fn call_host_dynamic<T, F, N, FN>(
+unsafe fn call_host_dynamic<T, F, Fut>(
     instance: *mut ComponentInstance,
     types: &Arc<ComponentTypes>,
     mut store: StoreContextMut<'_, T>,
@@ -434,9 +430,8 @@ unsafe fn call_host_dynamic<T, F, N, FN>(
     closure: F,
 ) -> Result<()>
 where
-    N: FnOnce(StoreContextMut<T>) -> Result<Vec<Val>> + Send + Sync + 'static,
-    FN: Future<Output = N> + Send + Sync + 'static,
-    F: Fn(StoreContextMut<T>, Vec<Val>, usize) -> FN + 'static,
+    Fut: Future<Output = Result<Vec<Val>>> + Send + Sync + 'static,
+    F: Fn(StoreContextMut<T>, Vec<Val>, usize) -> Fut + 'static,
 {
     let options = Options::new(
         store.0.id(),
@@ -621,7 +616,7 @@ pub(crate) fn validate_inbounds_dynamic(
     Ok(ptr)
 }
 
-extern "C" fn dynamic_entrypoint<T, F, N, FN>(
+extern "C" fn dynamic_entrypoint<T, F, Fut>(
     cx: NonNull<VMOpaqueContext>,
     data: NonNull<u8>,
     ty: u32,
@@ -635,9 +630,8 @@ extern "C" fn dynamic_entrypoint<T, F, N, FN>(
     storage_len: usize,
 ) -> bool
 where
-    N: FnOnce(StoreContextMut<T>) -> Result<Vec<Val>> + Send + Sync + 'static,
-    FN: Future<Output = N> + Send + Sync + 'static,
-    F: Fn(StoreContextMut<T>, Vec<Val>, usize) -> FN + Send + Sync + 'static,
+    Fut: Future<Output = Result<Vec<Val>>> + Send + Sync + 'static,
+    F: Fn(StoreContextMut<T>, Vec<Val>, usize) -> Fut + Send + Sync + 'static,
 {
     let data = Ptr(data.as_ptr() as *const F);
     unsafe {

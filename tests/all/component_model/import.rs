@@ -3,7 +3,6 @@
 use super::REALLOC_AND_FREE;
 use anyhow::Result;
 use std::ops::Deref;
-use wasmtime::component;
 use wasmtime::component::*;
 use wasmtime::{Config, Engine, Store, StoreContextMut, Trap, WasmBacktrace};
 
@@ -737,7 +736,7 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
             .root()
             .func_wrap_concurrent("f1", |_, (x,): (u32,)| {
                 assert_eq!(x, 1);
-                async { component::for_any(|_| Ok((2u32,))) }
+                async { Ok((2u32,)) }
             })?;
         linker.root().func_wrap_concurrent(
             "f2",
@@ -754,14 +753,14 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
                 WasmStr,
             ),)| {
                 assert_eq!(arg.0.to_str(&cx).unwrap(), "abc");
-                async { component::for_any(|_| Ok((3u32,))) }
+                async { Ok((3u32,)) }
             },
         )?;
         linker
             .root()
             .func_wrap_concurrent("f3", |_, (arg,): (u32,)| {
                 assert_eq!(arg, 8);
-                async { component::for_any(|_| Ok(("xyz".to_string(),))) }
+                async { Ok(("xyz".to_string(),)) }
             })?;
         linker.root().func_wrap_concurrent(
             "f4",
@@ -778,7 +777,7 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
                 WasmStr,
             ),)| {
                 assert_eq!(arg.0.to_str(&cx).unwrap(), "abc");
-                async { component::for_any(|_| Ok(("xyz".to_string(),))) }
+                async { Ok(("xyz".to_string(),)) }
             },
         )?;
     } else {
@@ -851,7 +850,7 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
         linker.root().func_new_concurrent("f1", |_, args| {
             if let Val::U32(x) = &args[0] {
                 assert_eq!(*x, 1);
-                async { component::for_any(|_| Ok(vec![Val::U32(2)])) }
+                async { Ok(vec![Val::U32(2)]) }
             } else {
                 panic!()
             }
@@ -860,7 +859,7 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
             if let Val::Tuple(tuple) = &args[0] {
                 if let Val::String(s) = &tuple[0] {
                     assert_eq!(s.deref(), "abc");
-                    async { component::for_any(|_| Ok(vec![Val::U32(3)])) }
+                    async { Ok(vec![Val::U32(3)]) }
                 } else {
                     panic!()
                 }
@@ -871,7 +870,7 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
         linker.root().func_new_concurrent("f3", |_, args| {
             if let Val::U32(x) = &args[0] {
                 assert_eq!(*x, 8);
-                async { component::for_any(|_| Ok(vec![Val::String("xyz".into())])) }
+                async { Ok(vec![Val::String("xyz".into())]) }
             } else {
                 panic!();
             }
@@ -880,7 +879,7 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
             if let Val::Tuple(tuple) = &args[0] {
                 if let Val::String(s) = &tuple[0] {
                     assert_eq!(s.deref(), "abc");
-                    async { component::for_any(|_| Ok(vec![Val::String("xyz".into())])) }
+                    async { Ok(vec![Val::String("xyz".into())]) }
                 } else {
                     panic!()
                 }
