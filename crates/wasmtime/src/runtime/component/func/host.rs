@@ -264,9 +264,13 @@ where
                     let types = types.clone();
                     let instance = SendSyncPtr::new(NonNull::new(instance).unwrap());
                     move |cx, ret: Return| {
+                        flags.set_may_leave(false);
                         let mut lower = LowerContext::new(cx, &options, &types, instance.as_ptr());
                         let ptr = validate_inbounds::<Return>(lower.as_slice_mut(), &retptr)?;
-                        ret.store(&mut lower, result_tys, ptr)
+                        ret.store(&mut lower, result_tys, ptr)?;
+                        flags.set_may_leave(true);
+                        lower.exit_call()?;
+                        Ok(())
                     }
                 })?;
 
@@ -497,6 +501,8 @@ where
                             bail!("result length mismatch");
                         }
 
+                        flags.set_may_leave(false);
+
                         let mut lower =
                             LowerContext::new(store, &options, &types, instance.as_ptr());
                         let mut ptr = validate_inbounds_dynamic(
@@ -508,6 +514,11 @@ where
                             let offset = types.canonical_abi(ty).next_field32_size(&mut ptr);
                             val.store(&mut lower, *ty, offset)?;
                         }
+
+                        flags.set_may_leave(true);
+
+                        lower.exit_call()?;
+
                         Ok(())
                     }
                 },
