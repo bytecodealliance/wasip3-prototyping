@@ -22,8 +22,9 @@ mod test {
         wasm_compose::composer::ComponentComposer,
         wasmtime::{
             component::{
-                self, Accessor, Component, ErrorContext, FutureReader, Instance, Linker, Promise,
-                PromisesUnordered, Resource, ResourceTable, StreamReader, StreamWriter, Val,
+                self, Accessor, BackgroundTask, Component, ErrorContext, FutureReader, Instance,
+                Linker, Promise, PromisesUnordered, Resource, ResourceTable, StreamReader,
+                StreamWriter, Val,
             },
             AsContextMut, Config, Engine, Store,
         },
@@ -1053,6 +1054,7 @@ mod test {
 
         wasmtime_wasi::add_to_linker_async(&mut linker)?;
         yield_host::YieldHost::add_to_linker(&mut linker, |ctx| ctx)?;
+        read_resource_stream::ReadResourceStream::add_to_linker(&mut linker, |ctx| ctx)?;
 
         let mut store = Store::new(
             &engine,
@@ -1890,6 +1892,77 @@ mod test {
         let callee =
             &fs::read(test_programs_artifacts::ASYNC_ERROR_CONTEXT_STREAM_CALLEE_COMPONENT).await?;
         test_run(&compose(caller, callee).await?).await
+    }
+
+    mod read_resource_stream {
+        wasmtime::component::bindgen!({
+            trappable_imports: true,
+            path: "wit",
+            world: "read-resource-stream",
+            concurrent_imports: true,
+            concurrent_exports: true,
+            async: true,
+            with: {
+                "local:local/resource-stream/x": super::ResourceStreamX,
+            }
+        });
+    }
+
+    pub struct ResourceStreamX;
+
+    impl read_resource_stream::local::local::resource_stream::HostX for Ctx {
+        type XData = Ctx;
+
+        async fn foo(accessor: &mut Accessor<Self>, x: Resource<ResourceStreamX>) -> Result<()> {
+            accessor.with(|mut store| {
+                _ = IoView::table(store.data_mut()).get(&x)?;
+                Ok(())
+            })
+        }
+
+        async fn drop(&mut self, x: Resource<ResourceStreamX>) -> Result<()> {
+            IoView::table(self).delete(x)?;
+            Ok(())
+        }
+    }
+
+    impl read_resource_stream::local::local::resource_stream::Host for Ctx {
+        type Data = Ctx;
+
+        async fn foo(
+            accessor: &mut Accessor<Self>,
+            count: u32,
+        ) -> wasmtime::Result<StreamReader<Resource<ResourceStreamX>>> {
+            struct Task {
+                tx: StreamWriter<Resource<ResourceStreamX>>,
+                count: u32,
+            }
+
+            impl<T: wasmtime_wasi::IoView> BackgroundTask<T> for Task {
+                async fn run(self, accessor: &mut Accessor<T>) -> Result<()> {
+                    let mut tx = self.tx;
+                    for _ in 0..self.count {
+                        tx = accessor
+                            .with(|mut store| {
+                                let item = IoView::table(store.data_mut()).push(ResourceStreamX)?;
+                                Ok::<_, anyhow::Error>(tx.write(store, vec![item])?.into_future())
+                            })?
+                            .await;
+                    }
+                    accessor.with(|store| tx.close(store))
+                }
+            }
+
+            let (tx, rx) = accessor.with(|store| component::stream(store))?;
+            accessor.spawn(Task { tx, count });
+            Ok(rx)
+        }
+    }
+
+    #[tokio::test]
+    async fn async_read_resource_stream() -> Result<()> {
+        test_run(&fs::read(test_programs_artifacts::ASYNC_READ_RESOURCE_STREAM_COMPONENT).await?)
+            .await
     }
 
     // No-op function; we only test this by composing it in `async_future_end_err`

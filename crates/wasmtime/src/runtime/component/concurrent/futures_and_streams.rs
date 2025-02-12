@@ -1,5 +1,7 @@
 use {
-    super::{table::TableId, Event, GuestTask, HostTaskFuture, HostTaskResult, Promise},
+    super::{
+        table::TableId, Event, GuestTask, HostTaskFuture, HostTaskOutput, HostTaskResult, Promise,
+    },
     crate::{
         component::{
             func::{self, Lift, LiftContext, LowerContext, Options},
@@ -98,17 +100,16 @@ fn push_event<T>(
         .concurrent_state()
         .futures
         .get_mut()
-        .push(Box::pin(future::ready((
-            rep,
-            Box::new(move |_| {
+        .push(Box::pin(future::ready(HostTaskOutput::Call {
+            waitable: rep,
+            fun: Box::new(move |_| {
                 Ok(HostTaskResult {
                     event,
                     param: u32::try_from(param).unwrap(),
                     caller,
                 })
-            })
-                as Box<dyn FnOnce(*mut dyn VMStore) -> Result<HostTaskResult> + Send + Sync>,
-        ))) as HostTaskFuture);
+            }),
+        })) as HostTaskFuture);
 }
 
 fn get_mut_by_index(

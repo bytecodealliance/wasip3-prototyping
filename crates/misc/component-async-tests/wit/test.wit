@@ -113,6 +113,14 @@ interface unit-stream {
   run: func(count: u32) -> stream;
 }
 
+interface resource-stream {
+  resource x {
+    foo: func();
+  }
+
+  foo: func(count: u32) -> stream<x>;
+}
+
 world yield-caller {
   import continue;
   import ready;
@@ -221,4 +229,9 @@ world unit-stream-caller {
 
 world unit-stream-callee {
   export unit-stream;
+}
+
+world read-resource-stream {
+  import resource-stream;
+  export run;
 }

@@ -179,6 +179,46 @@ impl<T> Accessor<T> {
     pub fn with<R: 'static>(&mut self, fun: impl FnOnce(StoreContextMut<'_, T>) -> R) -> R {
         fun(unsafe { StoreContextMut(&mut *self.store.cast()) })
     }
+
+    /// Spawn a background task which will receive an `&mut Accessor<T>` and run
+    /// concurrently with any other tasks in progress for the current instance.
+    ///
+    /// This is particularly useful for host functions which return a `stream`
+    /// or `future` such that the code to write to the write end of that
+    /// `stream` or `future` must run after the function returns.
+    pub fn spawn(&mut self, task: impl BackgroundTask<T>)
+    where
+        T: 'static,
+    {
+        let mut accessor = Self {
+            store: self.store,
+            _phantom: PhantomData,
+        };
+        let mut store = unsafe { StoreContextMut::<T>(&mut *self.store.cast()) };
+        store
+            .concurrent_state()
+            .futures
+            .get_mut()
+            .push(Box::pin(async move {
+                HostTaskOutput::Background(task.run(&mut accessor).await)
+            }));
+    }
+}
+
+/// Represents a background task which maybe spawned using `Accessor::spawn`.
+// TODO: Replace this with `std::ops::AsyncFnOnce` when that becomes a viable
+// option.
+//
+// `AsyncFnOnce` is still nightly-only in latest stable Rust version as of this
+// writing (1.84.1), and even with 1.85.0-beta it's not possible to specify
+// e.g. `Send` and `Sync` bounds on the `Future` type returned by an
+// `AsyncFnOnce`.  Also, using `F: Future<Output = Result<()>> + Send + Sync,
+// FN: FnOnce(&mut Accessor<T>) -> F + Send + Sync + 'static` fails with a type
+// mismatch error when we try to pass it an async closure (e.g. `async move |_|
+// { ... }`).  So this seems to be the best we can do for the time being.
+pub trait BackgroundTask<T>: Send + Sync + 'static {
+    /// Run the task.
+    fn run(self, accessor: &mut Accessor<T>) -> impl Future<Output = Result<()>> + Send + Sync;
 }
 
 /// Trait representing component model ABI async intrinsics and fused adapter
@@ -1092,18 +1132,15 @@ struct HostTaskResult {
     caller: TableId<GuestTask>,
 }
 
-type HostTaskFuture = Pin<
-    Box<
-        dyn Future<
-                Output = (
-                    u32,
-                    Box<dyn FnOnce(*mut dyn VMStore) -> Result<HostTaskResult> + Send + Sync>,
-                ),
-            > + Send
-            + Sync
-            + 'static,
-    >,
->;
+enum HostTaskOutput {
+    Background(Result<()>),
+    Call {
+        waitable: u32,
+        fun: Box<dyn FnOnce(*mut dyn VMStore) -> Result<HostTaskResult> + Send + Sync>,
+    },
+}
+
+type HostTaskFuture = Pin<Box<dyn Future<Output = HostTaskOutput> + Send + Sync + 'static>>;
 
 struct HostTask {
     caller_instance: RuntimeComponentInstanceIndex,
@@ -1502,20 +1539,17 @@ pub(crate) fn first_poll<T, R: Send + Sync + 'static>(
     });
 
     log::trace!("new child of {}: {}", caller.rep(), task.rep());
-    let mut future = Box::pin(future.map(move |result| {
-        (
-            task.rep(),
-            Box::new(move |store: *mut dyn VMStore| {
-                let store = unsafe { StoreContextMut(&mut *store.cast()) };
-                lower(store, result?)?;
-                Ok(HostTaskResult {
-                    event: Event::Done,
-                    param: 0u32,
-                    caller,
-                })
+    let mut future = Box::pin(future.map(move |result| HostTaskOutput::Call {
+        waitable: task.rep(),
+        fun: Box::new(move |store: *mut dyn VMStore| {
+            let store = unsafe { StoreContextMut(&mut *store.cast()) };
+            lower(store, result?)?;
+            Ok(HostTaskResult {
+                event: Event::Done,
+                param: 0u32,
+                caller,
             })
-                as Box<dyn FnOnce(*mut dyn VMStore) -> Result<HostTaskResult> + Send + Sync>,
-        )
+        }),
     })) as HostTaskFuture;
 
     Ok(
@@ -1523,7 +1557,10 @@ pub(crate) fn first_poll<T, R: Send + Sync + 'static>(
             .as_mut()
             .poll(&mut Context::from_waker(&dummy_waker()))
         {
-            Poll::Ready((_, fun)) => {
+            Poll::Ready(output) => {
+                let HostTaskOutput::Call { fun, .. } = output else {
+                    unreachable!()
+                };
                 log::trace!("delete host task {} (already ready)", task.rep());
                 store.concurrent_state().table.delete(task)?;
                 fun(store.0.traitobj().as_ptr())?;
@@ -1565,26 +1602,25 @@ pub(crate) fn poll_and_block<'a, T, R: Send + Sync + 'static>(
         .table
         .push_child(HostTask { caller_instance }, caller)?;
     log::trace!("new child of {}: {}", caller.rep(), task.rep());
-    let mut future = Box::pin(future.map(move |result| {
-        (
-            task.rep(),
-            Box::new(move |store: *mut dyn VMStore| {
-                let mut store = unsafe { StoreContextMut::<T>(&mut *store.cast()) };
-                store.concurrent_state().table.get_mut(caller)?.result =
-                    Some(Box::new(result?) as _);
-                Ok(HostTaskResult {
-                    event: Event::Done,
-                    param: 0u32,
-                    caller,
-                })
+    let mut future = Box::pin(future.map(move |result| HostTaskOutput::Call {
+        waitable: task.rep(),
+        fun: Box::new(move |store: *mut dyn VMStore| {
+            let mut store = unsafe { StoreContextMut::<T>(&mut *store.cast()) };
+            store.concurrent_state().table.get_mut(caller)?.result = Some(Box::new(result?) as _);
+            Ok(HostTaskResult {
+                event: Event::Done,
+                param: 0u32,
+                caller,
             })
-                as Box<dyn FnOnce(*mut dyn VMStore) -> Result<HostTaskResult> + Send + Sync>,
-        )
+        }),
     })) as HostTaskFuture;
 
     Ok(
         match unsafe { AsyncCx::new(&mut store).poll(future.as_mut()) } {
-            Poll::Ready((_, fun)) => {
+            Poll::Ready(output) => {
+                let HostTaskOutput::Call { fun, .. } = output else {
+                    unreachable!()
+                };
                 log::trace!("delete host task {} (already ready)", task.rep());
                 store.concurrent_state().table.delete(task)?;
                 let store = store.0.traitobj().as_ptr();
@@ -1948,23 +1984,30 @@ fn poll_for_result<'a, T>(mut store: StoreContextMut<'a, T>) -> Result<StoreCont
 
 fn handle_ready<'a, T>(
     mut store: StoreContextMut<'a, T>,
-    ready: Vec<(
-        u32,
-        Box<dyn FnOnce(*mut dyn VMStore) -> Result<HostTaskResult> + Send + Sync>,
-    )>,
+    ready: Vec<HostTaskOutput>,
 ) -> Result<StoreContextMut<'a, T>> {
-    for (task, fun) in ready {
-        let vm_store = store.0.traitobj().as_ptr();
-        let result = fun(vm_store)?;
-        store = unsafe { StoreContextMut::<T>(&mut *vm_store.cast()) };
-        let task = match result.event {
-            Event::Done => AnyTask::Host(TableId::<HostTask>::new(task)),
-            Event::StreamRead | Event::FutureRead | Event::StreamWrite | Event::FutureWrite => {
-                AnyTask::Transmit(TableId::<TransmitState>::new(task))
+    for output in ready {
+        match output {
+            HostTaskOutput::Background(result) => {
+                result?;
             }
-            _ => unreachable!(),
-        };
-        store = maybe_send_event(store, result.caller, result.event, task, result.param)?;
+            HostTaskOutput::Call { waitable, fun } => {
+                let vm_store = store.0.traitobj().as_ptr();
+                let result = fun(vm_store)?;
+                store = unsafe { StoreContextMut::<T>(&mut *vm_store.cast()) };
+                let task = match result.event {
+                    Event::Done => AnyTask::Host(TableId::<HostTask>::new(waitable)),
+                    Event::StreamRead
+                    | Event::FutureRead
+                    | Event::StreamWrite
+                    | Event::FutureWrite => {
+                        AnyTask::Transmit(TableId::<TransmitState>::new(waitable))
+                    }
+                    _ => unreachable!(),
+                };
+                store = maybe_send_event(store, result.caller, result.event, task, result.param)?;
+            }
+        }
     }
     Ok(store)
 }
