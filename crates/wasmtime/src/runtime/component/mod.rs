@@ -116,8 +116,8 @@ mod values;
 pub use self::component::{Component, ComponentExportIndex};
 #[cfg(feature = "component-model-async")]
 pub use self::concurrent::{
-    future, stream, Accessor, ErrorContext, FutureReader, FutureWriter, Promise, PromisesUnordered,
-    StreamReader, StreamWriter, VMComponentAsyncStore,
+    future, stream, Accessor, BackgroundTask, ErrorContext, FutureReader, FutureWriter, Promise,
+    PromisesUnordered, StreamReader, StreamWriter, VMComponentAsyncStore,
 };
 pub use self::func::{
     ComponentNamedList, ComponentType, Func, Lift, Lower, TypedFunc, WasmList, WasmStr,
@@ -684,7 +684,7 @@ pub(crate) mod concurrent {
                 func::{ComponentType, LiftContext, LowerContext},
                 Val,
             },
-            AsContextMut, StoreContextMut,
+            StoreContextMut,
         },
         alloc::{sync::Arc, task::Wake},
         anyhow::Result,
@@ -698,14 +698,6 @@ pub(crate) mod concurrent {
         wasmtime_environ::component::{InterfaceType, RuntimeComponentInstanceIndex},
     };
 
-    pub fn for_any<F, R, T>(fun: F) -> F
-    where
-        F: FnOnce(StoreContextMut<T>) -> R + 'static,
-        R: 'static,
-    {
-        fun
-    }
-
     fn dummy_waker() -> Waker {
         struct DummyWaker;
 
@@ -717,18 +709,12 @@ pub(crate) mod concurrent {
     }
 
     pub(crate) fn poll_and_block<'a, T, R: Send + Sync + 'static>(
-        mut store: StoreContextMut<'a, T>,
-        future: impl Future<Output = impl FnOnce(StoreContextMut<T>) -> Result<R> + 'static>
-            + Send
-            + Sync
-            + 'static,
+        store: StoreContextMut<'a, T>,
+        future: impl Future<Output = Result<R>> + Send + Sync + 'static,
         _caller_instance: RuntimeComponentInstanceIndex,
     ) -> Result<(R, StoreContextMut<'a, T>)> {
         match pin!(future).poll(&mut Context::from_waker(&dummy_waker())) {
-            Poll::Ready(fun) => {
-                let result = fun(store.as_context_mut())?;
-                Ok((result, store))
-            }
+            Poll::Ready(result) => Ok((result?, store)),
             Poll::Pending => {
                 unreachable!()
             }
