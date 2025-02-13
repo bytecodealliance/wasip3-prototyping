@@ -190,8 +190,18 @@ impl<T> Accessor<T> {
     where
         T: 'static,
     {
+        let mut accessor = Self {
+            store: self.store,
+            _phantom: PhantomData,
+        };
         let mut store = unsafe { StoreContextMut::<T>(&mut *self.store.cast()) };
-        store.spawn(task)
+        store
+            .concurrent_state()
+            .futures
+            .get_mut()
+            .push(Box::pin(async move {
+                HostTaskOutput::Background(task.run(&mut accessor).await)
+            }));
     }
 }
 
@@ -1406,15 +1416,6 @@ impl<T> ConcurrentState<T> {
     pub(crate) fn async_guard_range(&self) -> Range<*mut u8> {
         let context = unsafe { *self.async_state.current_poll_cx.get() };
         context.guard_range_start..context.guard_range_end
-    }
-
-    pub(crate) fn push_task(
-        &mut self,
-        task: impl Future<Output = Result<()>> + Send + Sync + 'static,
-    ) {
-        self.futures.get_mut().push(Box::pin(
-            async move { HostTaskOutput::Background(task.await) },
-        ))
     }
 }
 
