@@ -218,101 +218,114 @@ mod test {
         config.wasm_component_model(true);
         config.wasm_component_model_async(true);
         config.async_support(true);
+        config.epoch_interruption(true);
 
         let engine = Engine::new(&config)?;
 
-        let make_store = || {
-            Store::new(
-                &engine,
-                Ctx {
-                    wasi: WasiCtxBuilder::new().inherit_stdio().build(),
-                    table: ResourceTable::default(),
-                    continue_: false,
-                    wakers: Arc::new(Mutex::new(None)),
-                },
-            )
-        };
-
         let component = Component::new(&engine, component)?;
 
-        // First, test the `wasmtime-wit-bindgen` static API:
-        {
-            let mut linker = Linker::new(&engine);
-
-            wasmtime_wasi::add_to_linker_async(&mut linker)?;
-            round_trip::RoundTrip::add_to_linker(&mut linker, |ctx| ctx)?;
-
-            let mut store = make_store();
-
-            let round_trip =
-                round_trip::RoundTrip::instantiate_async(&mut store, &component, &linker).await?;
-
-            // Start concurrent calls and then join them all:
-            let mut promises = PromisesUnordered::new();
-            for (input, output) in inputs_and_outputs {
-                let output = (*output).to_owned();
-                promises.push(
-                    round_trip
-                        .local_local_baz()
-                        .call_foo(&mut store, (*input).to_owned())
-                        .await?
-                        .map(move |v| (v, output)),
+        for stress_epoch_interruption in [false, true] {
+            let make_store = || {
+                let mut store = Store::new(
+                    &engine,
+                    Ctx {
+                        wasi: WasiCtxBuilder::new().inherit_stdio().build(),
+                        table: ResourceTable::default(),
+                        continue_: false,
+                        wakers: Arc::new(Mutex::new(None)),
+                    },
                 );
+                if stress_epoch_interruption {
+                    // Stress test epoch interruption by forcing yields at every
+                    // opportunity:
+                    store.epoch_deadline_async_yield_and_update(0);
+                    store.set_epoch_deadline(0);
+                } else {
+                    store.set_epoch_deadline(u64::MAX);
+                }
+                store
+            };
+
+            // First, test the `wasmtime-wit-bindgen` static API:
+            {
+                let mut linker = Linker::new(&engine);
+
+                wasmtime_wasi::add_to_linker_async(&mut linker)?;
+                round_trip::RoundTrip::add_to_linker(&mut linker, |ctx| ctx)?;
+
+                let mut store = make_store();
+
+                let round_trip =
+                    round_trip::RoundTrip::instantiate_async(&mut store, &component, &linker)
+                        .await?;
+
+                // Start as many concurrent calls as requested and then join them all:
+                let mut promises = PromisesUnordered::new();
+                for (input, output) in inputs_and_outputs {
+                    let output = (*output).to_owned();
+                    promises.push(
+                        round_trip
+                            .local_local_baz()
+                            .call_foo(&mut store, (*input).to_owned())
+                            .await?
+                            .map(move |v| (v, output)),
+                    );
+                }
+
+                while let Some((actual, expected)) = promises.next(&mut store).await? {
+                    assert_eq!(expected, actual);
+                }
             }
 
-            while let Some((actual, expected)) = promises.next(&mut store).await? {
-                assert_eq!(expected, actual);
-            }
-        }
+            // Now do it again using the dynamic API (except for WASI, where we stick with the static API):
+            {
+                let mut linker = Linker::new(&engine);
 
-        // Now do it again using the dynamic API (except for WASI, where we stick with the static API):
-        {
-            let mut linker = Linker::new(&engine);
+                wasmtime_wasi::add_to_linker_async(&mut linker)?;
+                linker
+                    .root()
+                    .instance("local:local/baz")?
+                    .func_new_concurrent("foo", |_, params| async move {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        let Some(Val::String(s)) = params.into_iter().next() else {
+                            unreachable!()
+                        };
+                        Ok(vec![Val::String(format!(
+                            "{s} - entered host - exited host"
+                        ))])
+                    })?;
 
-            wasmtime_wasi::add_to_linker_async(&mut linker)?;
-            linker
-                .root()
-                .instance("local:local/baz")?
-                .func_new_concurrent("foo", |_, params| async move {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                    let Some(Val::String(s)) = params.into_iter().next() else {
+                let mut store = make_store();
+
+                let instance = linker.instantiate_async(&mut store, &component).await?;
+                let baz_instance = instance
+                    .get_export(&mut store, None, "local:local/baz")
+                    .ok_or_else(|| anyhow!("can't find `local:local/baz` in instance"))?;
+                let foo_function = instance
+                    .get_export(&mut store, Some(&baz_instance), "foo")
+                    .ok_or_else(|| anyhow!("can't find `foo` in instance"))?;
+                let foo_function = instance
+                    .get_func(&mut store, foo_function)
+                    .ok_or_else(|| anyhow!("can't find `foo` in instance"))?;
+
+                // Start as many concurrent calls as requested and then join them all:
+                let mut promises = PromisesUnordered::new();
+                for (input, output) in inputs_and_outputs {
+                    let output = (*output).to_owned();
+                    promises.push(
+                        foo_function
+                            .call_concurrent(&mut store, vec![Val::String((*input).to_owned())])
+                            .await?
+                            .map(move |v| (v, output)),
+                    );
+                }
+
+                while let Some((actual, expected)) = promises.next(&mut store).await? {
+                    let Some(Val::String(actual)) = actual.into_iter().next() else {
                         unreachable!()
                     };
-                    Ok(vec![Val::String(format!(
-                        "{s} - entered host - exited host"
-                    ))])
-                })?;
-
-            let mut store = make_store();
-
-            let instance = linker.instantiate_async(&mut store, &component).await?;
-            let baz_instance = instance
-                .get_export(&mut store, None, "local:local/baz")
-                .ok_or_else(|| anyhow!("can't find `local:local/baz` in instance"))?;
-            let foo_function = instance
-                .get_export(&mut store, Some(&baz_instance), "foo")
-                .ok_or_else(|| anyhow!("can't find `foo` in instance"))?;
-            let foo_function = instance
-                .get_func(&mut store, foo_function)
-                .ok_or_else(|| anyhow!("can't find `foo` in instance"))?;
-
-            // Start three concurrent calls and then join them all:
-            let mut promises = PromisesUnordered::new();
-            for (input, output) in inputs_and_outputs {
-                let output = (*output).to_owned();
-                promises.push(
-                    foo_function
-                        .call_concurrent(&mut store, vec![Val::String((*input).to_owned())])
-                        .await?
-                        .map(move |v| (v, output)),
-                );
-            }
-
-            while let Some((actual, expected)) = promises.next(&mut store).await? {
-                let Some(Val::String(actual)) = actual.into_iter().next() else {
-                    unreachable!()
-                };
-                assert_eq!(expected, actual);
+                    assert_eq!(expected, actual);
+                }
             }
         }
 
@@ -1263,7 +1276,7 @@ mod test {
     trait TransmitTest {
         type Instance;
         type Params;
-        type Result;
+        type Result: Send + Sync + 'static;
 
         async fn instantiate(
             store: impl AsContextMut<Data = Ctx>,
