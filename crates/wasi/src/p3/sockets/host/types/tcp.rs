@@ -230,7 +230,7 @@ where
         store: &mut Accessor<Self::TcpSocketData>,
         socket: Resource<TcpSocket>,
     ) -> wasmtime::Result<Result<StreamReader<Resource<TcpSocket>>, ErrorCode>> {
-        store.with(|mut store| {
+        match store.with(|mut store| {
             let data = store.data_mut();
             if !data.sockets().allowed_network_uses.tcp {
                 return Ok(Err(ErrorCode::AccessDenied));
@@ -256,18 +256,20 @@ where
                 Ok(listener) => {
                     let listener = Arc::new(listener);
                     let (abort_tx, abort_rx) = oneshot::channel();
-                    store.spawn(ListenTask {
-                        listener: Arc::clone(&listener),
-                        family,
-                        tx,
-                        abort: abort_rx,
-                    });
                     let socket = get_socket_mut(store.data_mut().table(), &socket)?;
                     socket.tcp_state = TcpState::Listening {
-                        listener,
+                        listener: listener.clone(),
                         abort: abort_tx,
                     };
-                    Ok(Ok(rx))
+                    Ok(Ok((
+                        rx,
+                        ListenTask {
+                            listener,
+                            family,
+                            tx,
+                            abort: abort_rx,
+                        },
+                    )))
                 }
                 Err(err) => {
                     match Errno::from_io_error(&err) {
@@ -287,7 +289,14 @@ where
                     }
                 }
             }
-        })
+        }) {
+            Ok(Ok((rx, task))) => {
+                store.spawn(task);
+                Ok(Ok(rx))
+            }
+            Ok(Err(err)) => Ok(Err(err)),
+            Err(err) => Err(err),
+        }
     }
 
     async fn send(
