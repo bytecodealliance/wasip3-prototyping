@@ -113,7 +113,7 @@ async fn test_tcp_listening_state_invariants(family: IpAddressFamily) {
 
     assert_eq!(sock.bind(bind_address), Err(ErrorCode::InvalidState));
     assert_eq!(
-        sock.connect(bind_address).await, // Actual address shouldn't matter
+        sock.connect(IpSocketAddress::new(IpAddress::new_loopback(family), 1)).await,
         Err(ErrorCode::InvalidState)
     );
     assert!(matches!(sock.listen(), Err(ErrorCode::InvalidState)));

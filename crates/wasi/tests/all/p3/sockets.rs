@@ -8,37 +8,33 @@ async fn sockets_0_3_ip_name_lookup() -> anyhow::Result<()> {
     run(SOCKETS_0_3_IP_NAME_LOOKUP_COMPONENT).await
 }
 
-#[ignore = "needs `listen`"]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn sockets_0_3_tcp_bind() -> anyhow::Result<()> {
     run(SOCKETS_0_3_TCP_BIND_COMPONENT).await
 }
 
-#[ignore = "needs `listen`"]
+#[ignore = "fails with `failed to get promise` due to `cannot remove owned resource while borrowed`"]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn sockets_0_3_tcp_connect() -> anyhow::Result<()> {
     run(SOCKETS_0_3_TCP_CONNECT_COMPONENT).await
 }
 
-#[ignore = "needs `listen`"]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn sockets_0_3_tcp_sample_application() -> anyhow::Result<()> {
     run(SOCKETS_0_3_TCP_SAMPLE_APPLICATION_COMPONENT).await
 }
 
-#[ignore = "needs `listen`"]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn sockets_0_3_tcp_sockopts() -> anyhow::Result<()> {
     run(SOCKETS_0_3_TCP_SOCKOPTS_COMPONENT).await
 }
 
-#[ignore = "needs `listen`"]
+#[ignore = "fails with `failed to get promise` due to `cannot remove owned resource while borrowed`"]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn sockets_0_3_tcp_states() -> anyhow::Result<()> {
     run(SOCKETS_0_3_TCP_STATES_COMPONENT).await
 }
 
-#[ignore = "needs `listen`"]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn sockets_0_3_tcp_streams() -> anyhow::Result<()> {
     run(SOCKETS_0_3_TCP_STREAMS_COMPONENT).await

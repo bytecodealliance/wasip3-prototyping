@@ -12,19 +12,62 @@ use std::sync::Arc;
 use anyhow::{ensure, Context as _};
 use io_lifetimes::AsSocketlike as _;
 use rustix::io::Errno;
-use tokio::io::AsyncWriteExt as _;
-use tokio::spawn;
+use tokio::sync::oneshot;
 use wasmtime::component::{
-    stream, Accessor, FutureReader, Lift, Resource, ResourceTable, StreamReader,
+    stream, Accessor, BackgroundTask, FutureReader, Lift, Resource, ResourceTable, StreamReader,
+    StreamWriter,
 };
 
-use crate::p3::bindings::sockets::types::{
-    Duration, ErrorCode, HostTcpSocket, IpAddressFamily, IpSocketAddress, TcpSocket,
-};
 use crate::p3::sockets::tcp::{bind, TcpState};
 use crate::p3::sockets::util::is_valid_unicast_address;
 use crate::p3::sockets::{SocketAddrUse, WasiSocketsImpl, WasiSocketsView};
-use crate::runtime::AbortOnDropJoinHandle;
+use crate::p3::{
+    bindings::sockets::types::{
+        Duration, ErrorCode, HostTcpSocket, IpAddressFamily, IpSocketAddress, TcpSocket,
+    },
+    sockets::SocketAddressFamily,
+};
+
+struct ListenTask {
+    listener: Arc<tokio::net::TcpListener>,
+    family: SocketAddressFamily,
+    tx: StreamWriter<Resource<TcpSocket>>,
+    abort: oneshot::Receiver<()>,
+}
+
+impl<T: WasiSocketsView> BackgroundTask<T> for ListenTask {
+    async fn run(self, store: &mut Accessor<T>) -> wasmtime::Result<()> {
+        let mut abort = pin!(self.abort);
+        let mut tx = self.tx;
+        loop {
+            let accept = self.listener.accept();
+            let mut accept = pin!(accept);
+            let Some(res) = poll_fn(|cx| match abort.as_mut().poll(cx) {
+                Poll::Ready(..) => Poll::Ready(None),
+                Poll::Pending => accept.as_mut().poll(cx).map(Some),
+            })
+            .await
+            else {
+                return Ok(());
+            };
+            let state = match res {
+                Ok((stream, _addr)) => TcpState::Connected(Arc::new(stream)),
+                Err(err) => TcpState::Error(err.into()),
+            };
+            let fut = store.with(|mut store| {
+                let socket = store
+                    .data_mut()
+                    .table()
+                    .push(TcpSocket::from_state(state, self.family))
+                    .context("failed to push socket to table")?;
+                // TODO: Consider buffering accepted sockets
+                tx.write(store, vec![socket])
+                    .context("failed to send socket")
+            })?;
+            tx = fut.into_future().await;
+        }
+    }
+}
 
 fn is_tcp_allowed<T>(store: &mut Accessor<T>) -> bool
 where
@@ -82,7 +125,7 @@ where
 
 impl<T> HostTcpSocket for WasiSocketsImpl<&mut T>
 where
-    T: WasiSocketsView,
+    T: WasiSocketsView + 'static,
 {
     type TcpSocketData = T;
 
@@ -203,40 +246,27 @@ where
                 }
             };
             let (tx, rx) = stream(&mut store).context("failed to create stream")?;
-            let socket = get_socket_mut(store.data_mut().table(), &socket)?;
-            match sock.listen(socket.listen_backlog_size) {
+            let &TcpSocket {
+                listen_backlog_size,
+                family,
+                ..
+            } = get_socket(store.data_mut().table(), &socket)?;
+
+            match sock.listen(listen_backlog_size) {
                 Ok(listener) => {
                     let listener = Arc::new(listener);
+                    let (abort_tx, abort_rx) = oneshot::channel();
+                    store.spawn(ListenTask {
+                        listener: Arc::clone(&listener),
+                        family,
+                        tx,
+                        abort: abort_rx,
+                    });
+                    let socket = get_socket_mut(store.data_mut().table(), &socket)?;
                     socket.tcp_state = TcpState::Listening {
-                        task: AbortOnDropJoinHandle::from(spawn({
-                            let listener = Arc::clone(&listener);
-                            async move {
-                                _ = tx;
-                                loop {
-                                    match listener.accept().await {
-                                        Ok((mut stream, addr)) => {
-                                            // TODO: find a way to create a socket resource
-                                            eprintln!("accepted TCP connection from {addr}");
-                                            if let Err(err) = stream.shutdown().await {
-                                                eprintln!(
-                                                    "failed to shutdown accepted stream: {err:?}"
-                                                )
-                                            }
-                                        }
-                                        Err(err) => {
-                                            // TODO: refactor WIT interface to allow sending a
-                                            // result
-                                            eprintln!("failed to accept TCP connection: {err:?}");
-                                        }
-                                    }
-                                }
-                            }
-                        })),
                         listener,
+                        abort: abort_tx,
                     };
-                    if true {
-                        todo!("`listen`");
-                    }
                     Ok(Ok(rx))
                 }
                 Err(err) => {

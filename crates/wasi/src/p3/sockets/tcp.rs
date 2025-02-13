@@ -7,10 +7,11 @@ use std::sync::Arc;
 use cap_net_ext::AddressFamily;
 use rustix::io::Errno;
 use rustix::net::sockopt;
+use tokio::sync::oneshot;
 
 use crate::p3::bindings::sockets::types::{Duration, ErrorCode, IpAddressFamily, IpSocketAddress};
 use crate::p3::sockets::SocketAddressFamily;
-use crate::runtime::{with_ambient_tokio_runtime, AbortOnDropJoinHandle};
+use crate::runtime::with_ambient_tokio_runtime;
 
 use super::util::{normalize_get_buffer_size, normalize_set_buffer_size};
 
@@ -31,7 +32,7 @@ pub enum TcpState {
     /// The socket is now listening and waiting for an incoming connection.
     Listening {
         listener: Arc<tokio::net::TcpListener>,
-        task: AbortOnDropJoinHandle<()>,
+        abort: oneshot::Sender<()>,
     },
 
     /// An outgoing connection is started.
@@ -39,6 +40,8 @@ pub enum TcpState {
 
     /// A connection has been established.
     Connected(Arc<tokio::net::TcpStream>),
+
+    Error(ErrorCode),
 
     Closed,
 }
@@ -51,6 +54,7 @@ impl Debug for TcpState {
             Self::Listening { .. } => f.debug_tuple("Listening").finish(),
             Self::Connecting => f.debug_tuple("Connecting").finish(),
             Self::Connected { .. } => f.debug_tuple("Connected").finish(),
+            Self::Error(..) => f.debug_tuple("Error").finish(),
             Self::Closed => write!(f, "Closed"),
         }
     }
@@ -100,7 +104,7 @@ impl TcpSocket {
     }
 
     /// Create a `TcpSocket` from an existing socket.
-    fn from_state(state: TcpState, family: SocketAddressFamily) -> Self {
+    pub fn from_state(state: TcpState, family: SocketAddressFamily) -> Self {
         Self {
             tcp_state: state,
             listen_backlog_size: DEFAULT_BACKLOG,
@@ -122,6 +126,7 @@ impl TcpSocket {
             TcpState::Connected(stream) => Ok(stream.as_fd()),
             TcpState::Listening { listener, .. } => Ok(listener.as_fd()),
             TcpState::Connecting | TcpState::Closed => Err(ErrorCode::InvalidState),
+            TcpState::Error(err) => Err(*err),
         }
     }
 
@@ -139,6 +144,7 @@ impl TcpSocket {
                 let addr = listener.local_addr()?;
                 Ok(addr.into())
             }
+            TcpState::Error(err) => Err(*err),
             _ => Err(ErrorCode::InvalidState),
         }
     }
@@ -149,6 +155,7 @@ impl TcpSocket {
                 let addr = stream.peer_addr()?;
                 Ok(addr.into())
             }
+            TcpState::Error(err) => Err(*err),
             _ => Err(ErrorCode::InvalidState),
         }
     }
@@ -191,6 +198,7 @@ impl TcpSocket {
                 self.listen_backlog_size = value;
                 Ok(())
             }
+            TcpState::Error(err) => Err(*err),
             _ => Err(ErrorCode::InvalidState),
         }
     }
