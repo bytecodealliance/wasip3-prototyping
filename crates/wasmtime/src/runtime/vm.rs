@@ -238,7 +238,7 @@ impl DerefMut for dyn VMStore + '_ {
 /// usage of `Instance` and `ComponentInstance` for example.
 #[derive(Copy, Clone)]
 #[repr(transparent)]
-struct VMStoreRawPtr(NonNull<dyn VMStore>);
+pub(crate) struct VMStoreRawPtr(pub(crate) NonNull<dyn VMStore>);
 
 // SAFETY: this is the purpose of `VMStoreRawPtr`, see docs above about safe
 // usage.

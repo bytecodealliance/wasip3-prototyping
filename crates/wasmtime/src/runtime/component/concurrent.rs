@@ -8,7 +8,7 @@ use {
             },
             mpk::{self, ProtectionMask},
             AsyncWasmCallState, PreviousAsyncWasmCallState, SendSyncPtr, VMFuncRef,
-            VMMemoryDefinition, VMStore,
+            VMMemoryDefinition, VMStore, VMStoreRawPtr,
         },
         AsContextMut, Engine, StoreContextMut, ValRaw,
     },
@@ -1456,6 +1456,51 @@ pub(crate) fn first_poll<T, R: Send + Sync + 'static>(
         .concurrent_state()
         .table
         .push_child(HostTask { caller_instance }, caller)?;
+
+    // Here we wrap the future in a `future::poll_fn` to ensure that we restore
+    // and save the `CallContext` for this task before and after polling it,
+    // respectively.  This involves unsafe shenanigans in order to smuggle the
+    // store pointer into the wrapping future, alas.
+
+    fn maybe_push<T>(
+        store: VMStoreRawPtr,
+        call_context: &mut Option<CallContext>,
+        task: TableId<HostTask>,
+    ) {
+        let store = unsafe { StoreContextMut::<T>(&mut *store.0.as_ptr().cast()) };
+        if let Some(call_context) = call_context.take() {
+            log::trace!("push call context for {}", task.rep());
+            store.0.component_resource_state().0.push(call_context);
+        }
+    }
+
+    fn pop<T>(
+        store: VMStoreRawPtr,
+        call_context: &mut Option<CallContext>,
+        task: TableId<HostTask>,
+    ) {
+        log::trace!("pop call context for {}", task.rep());
+        let store = unsafe { StoreContextMut::<T>(&mut *store.0.as_ptr().cast()) };
+        *call_context = Some(store.0.component_resource_state().0.pop().unwrap());
+    }
+
+    let future = future::poll_fn({
+        let mut future = Box::pin(future);
+        let store = VMStoreRawPtr(store.0.traitobj());
+        let mut call_context = None;
+        move |cx| {
+            maybe_push::<T>(store, &mut call_context, task);
+
+            match future.as_mut().poll(cx) {
+                Poll::Ready(output) => Poll::Ready(output),
+                Poll::Pending => {
+                    pop::<T>(store, &mut call_context, task);
+                    Poll::Pending
+                }
+            }
+        }
+    });
+
     log::trace!("new child of {}: {}", caller.rep(), task.rep());
     let mut future = Box::pin(future.map(move |result| {
         (
