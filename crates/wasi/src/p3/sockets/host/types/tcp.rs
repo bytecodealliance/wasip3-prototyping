@@ -12,6 +12,7 @@ use std::sync::Arc;
 use anyhow::{ensure, Context as _};
 use io_lifetimes::AsSocketlike as _;
 use rustix::io::Errno;
+use rustix::net::sockopt;
 use tokio::sync::oneshot;
 use wasmtime::component::{
     stream, Accessor, BackgroundTask, FutureReader, Lift, Resource, ResourceTable, StreamReader,
@@ -33,6 +34,18 @@ struct ListenTask {
     family: SocketAddressFamily,
     tx: StreamWriter<Resource<TcpSocket>>,
     abort: oneshot::Receiver<()>,
+
+    // The socket options below are not automatically inherited from the listener
+    // on all platforms. So we keep track of which options have been explicitly
+    // set and manually apply those values to newly accepted clients.
+    #[cfg(target_os = "macos")]
+    receive_buffer_size: Option<usize>,
+    #[cfg(target_os = "macos")]
+    send_buffer_size: Option<usize>,
+    #[cfg(target_os = "macos")]
+    hop_limit: Option<u8>,
+    #[cfg(target_os = "macos")]
+    keep_alive_idle_time: Option<core::time::Duration>,
 }
 
 impl<T: WasiSocketsView> BackgroundTask<T> for ListenTask {
@@ -51,8 +64,72 @@ impl<T: WasiSocketsView> BackgroundTask<T> for ListenTask {
                 return Ok(());
             };
             let state = match res {
-                Ok((stream, _addr)) => TcpState::Connected(Arc::new(stream)),
-                Err(err) => TcpState::Error(err.into()),
+                Ok((stream, _addr)) => {
+                    #[cfg(target_os = "macos")]
+                    {
+                        // Manually inherit socket options from listener. We only have to
+                        // do this on platforms that don't already do this automatically
+                        // and only if a specific value was explicitly set on the listener.
+
+                        if let Some(size) = self.receive_buffer_size {
+                            // Ignore potential error.
+                            _ = sockopt::set_socket_recv_buffer_size(&stream, size);
+                        }
+
+                        if let Some(size) = self.send_buffer_size {
+                            // Ignore potential error.
+                            _ = sockopt::set_socket_send_buffer_size(&stream, size);
+                        }
+
+                        // For some reason, IP_TTL is inherited, but IPV6_UNICAST_HOPS isn't.
+                        if let (SocketAddressFamily::Ipv6, Some(ttl)) =
+                            (self.family, self.hop_limit)
+                        {
+                            // Ignore potential error.
+                            _ = sockopt::set_ipv6_unicast_hops(&stream, ttl.into());
+                        }
+
+                        if let Some(value) = self.keep_alive_idle_time {
+                            // Ignore potential error.
+                            _ = sockopt::set_tcp_keepidle(&stream, value);
+                        }
+                    }
+                    TcpState::Connected(Arc::new(stream))
+                }
+                Err(err) => {
+                    match Errno::from_io_error(&err) {
+                        // From: https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-accept#:~:text=WSAEINPROGRESS
+                        // > WSAEINPROGRESS: A blocking Windows Sockets 1.1 call is in progress,
+                        // > or the service provider is still processing a callback function.
+                        //
+                        // wasi-sockets doesn't have an equivalent to the EINPROGRESS error,
+                        // because in POSIX this error is only returned by a non-blocking
+                        // `connect` and wasi-sockets has a different solution for that.
+                        #[cfg(windows)]
+                        Some(Errno::INPROGRESS) => TcpState::Error(ErrorCode::Unknown),
+
+                        // Normalize Linux' non-standard behavior.
+                        //
+                        // From https://man7.org/linux/man-pages/man2/accept.2.html:
+                        // > Linux accept() passes already-pending network errors on the
+                        // > new socket as an error code from accept(). This behavior
+                        // > differs from other BSD socket implementations. (...)
+                        #[cfg(target_os = "linux")]
+                        Some(
+                            Errno::CONNRESET
+                            | Errno::NETRESET
+                            | Errno::HOSTUNREACH
+                            | Errno::HOSTDOWN
+                            | Errno::NETDOWN
+                            | Errno::NETUNREACH
+                            | Errno::PROTO
+                            | Errno::NOPROTOOPT
+                            | Errno::NONET
+                            | Errno::OPNOTSUPP,
+                        ) => TcpState::Error(ErrorCode::ConnectionAborted),
+                        _ => TcpState::Error(err.into()),
+                    }
+                }
             };
             let fut = store.with(|mut store| {
                 let socket = store
@@ -249,6 +326,14 @@ where
             let &TcpSocket {
                 listen_backlog_size,
                 family,
+                #[cfg(target_os = "macos")]
+                receive_buffer_size,
+                #[cfg(target_os = "macos")]
+                send_buffer_size,
+                #[cfg(target_os = "macos")]
+                hop_limit,
+                #[cfg(target_os = "macos")]
+                keep_alive_idle_time,
                 ..
             } = get_socket(store.data_mut().table(), &socket)?;
 
@@ -268,6 +353,14 @@ where
                             family,
                             tx,
                             abort: abort_rx,
+                            #[cfg(target_os = "macos")]
+                            receive_buffer_size,
+                            #[cfg(target_os = "macos")]
+                            send_buffer_size,
+                            #[cfg(target_os = "macos")]
+                            hop_limit,
+                            #[cfg(target_os = "macos")]
+                            keep_alive_idle_time,
                         },
                     )))
                 }
