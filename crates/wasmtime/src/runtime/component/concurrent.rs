@@ -2223,6 +2223,7 @@ unsafe fn suspend_fiber<'a, T>(
 ) -> Result<Option<StoreContextMut<'a, T>>> {
     let _reset_suspend = Reset(suspend, *suspend);
     let _reset_stack_limit = Reset(stack_limit, *stack_limit);
+    assert!(!(*suspend).is_null());
     let (store, result) = (**suspend).suspend(store.map(|s| s.0.traitobj().as_ptr()));
     result?;
     Ok(store.map(|v| StoreContextMut(&mut *v.cast())))
