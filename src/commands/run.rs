@@ -1,12 +1,5 @@
 //! The module that implements the `wasmtime run` command.
 
-#![cfg_attr(
-    not(feature = "component-model"),
-    allow(irrefutable_let_patterns, unreachable_patterns)
-)]
-
-use crate::common::{Profile, RunCommon, RunTarget};
-
 use anyhow::{anyhow, bail, Context as _, Error, Result};
 use clap::Parser;
 use std::ffi::OsString;
@@ -16,6 +9,12 @@ use std::thread;
 use wasi_common::sync::{ambient_authority, Dir, TcpListener, WasiCtxBuilder};
 use wasmtime::{Engine, Func, Module, Store, StoreLimits, Val, ValType};
 use wasmtime_wasi::{IoView, WasiView};
+
+#![cfg_attr(
+    not(feature = "component-model"),
+    allow(irrefutable_let_patterns, unreachable_patterns)
+)]
+use super::common::{Profile, RunCommon, RunTarget};
 
 #[cfg(feature = "wasi-nn")]
 use wasmtime_wasi_nn::wit::WasiNnView;

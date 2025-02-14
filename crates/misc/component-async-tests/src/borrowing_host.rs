@@ -1,0 +1,39 @@
+use anyhow::Result;
+use wasmtime::component::Resource;
+use wasmtime_wasi::IoView;
+
+use super::{Ctx, MyX};
+
+pub mod bindings {
+    wasmtime::component::bindgen!({
+        path: "wit",
+        world: "borrowing-host",
+        trappable_imports: true,
+        concurrent_imports: true,
+        concurrent_exports: true,
+        async: {
+            only_imports: []
+        },
+        with: {
+            "local:local/borrowing-types/x": super::super::MyX,
+        }
+    });
+}
+
+impl bindings::local::local::borrowing_types::HostX for &mut Ctx {
+    fn new(&mut self) -> Result<Resource<MyX>> {
+        Ok(IoView::table(self).push(MyX)?)
+    }
+
+    fn foo(&mut self, x: Resource<MyX>) -> Result<()> {
+        _ = IoView::table(self).get(&x)?;
+        Ok(())
+    }
+
+    fn drop(&mut self, x: Resource<MyX>) -> Result<()> {
+        IoView::table(self).delete(x)?;
+        Ok(())
+    }
+}
+
+impl bindings::local::local::borrowing_types::Host for &mut Ctx {}
