@@ -1,12 +1,3 @@
-// macro_rules! assert_test_exists {
-//     ($name:ident) => {
-//         #[expect(unused_imports, reason = "just here to ensure a name exists")]
-//         use self::$name as _;
-//     };
-// }
-
-// test_programs_artifacts::foreach_async!(assert_test_exists);
-
 use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
 
@@ -22,6 +13,17 @@ use wasmtime_wasi::WasiCtxBuilder;
 
 use component_async_tests::transmit::bindings::exports::local::local::transmit::Control;
 use component_async_tests::Ctx;
+
+// TODO: re-enable this check
+//
+// macro_rules! assert_test_exists {
+//     ($name:ident) => {
+//         #[expect(unused_imports, reason = "just here to ensure a name exists")]
+//         use self::$name as _;
+//     };
+// }
+
+// test_programs_artifacts::foreach_async!(assert_test_exists);
 
 pub fn init_logger() {
     static ONCE: Once = Once::new();
