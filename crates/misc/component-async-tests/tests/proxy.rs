@@ -6,8 +6,8 @@ use tokio::fs;
 use wasi_http_draft::wasi::http::types::{ErrorCode, Method, Scheme};
 use wasi_http_draft::{Body, Fields, Request, Response};
 use wasmtime::component::{
-    self, Component, ErrorContext, Linker, PromisesUnordered,
-    Resource, ResourceTable, StreamReader, StreamWriter,
+    self, Component, ErrorContext, Linker, PromisesUnordered, Resource, ResourceTable,
+    StreamReader, StreamWriter,
 };
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{IoView, WasiCtxBuilder};

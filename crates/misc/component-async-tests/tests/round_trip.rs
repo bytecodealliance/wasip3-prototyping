@@ -4,10 +4,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use tokio::fs;
-use wasmtime::component::{
-    Component, Linker, PromisesUnordered,
-    ResourceTable, Val,
-};
+use wasmtime::component::{Component, Linker, PromisesUnordered, ResourceTable, Val};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;
 

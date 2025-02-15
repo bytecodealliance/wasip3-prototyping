@@ -1,8 +1,5 @@
-
 use anyhow::Result;
-use wasmtime::component::{
-    Resource,
-};
+use wasmtime::component::Resource;
 use wasmtime_wasi::IoView;
 
 use super::{Ctx, MyX};

@@ -14,8 +14,8 @@ use anyhow::{anyhow, Result};
 use tokio::fs;
 use wasm_compose::composer::ComponentComposer;
 use wasmtime::component::{
-    Component, ErrorContext, FutureReader, Instance, Linker, Promise,
-    PromisesUnordered, ResourceTable, StreamReader, StreamWriter, Val,
+    Component, ErrorContext, FutureReader, Instance, Linker, Promise, PromisesUnordered,
+    ResourceTable, StreamReader, StreamWriter, Val,
 };
 use wasmtime::{AsContextMut, Config, Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;

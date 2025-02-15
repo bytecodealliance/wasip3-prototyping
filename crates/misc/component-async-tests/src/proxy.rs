@@ -1,12 +1,8 @@
-
 use anyhow::{anyhow, Result};
 use wasi_http_draft::wasi::http::types::{ErrorCode, Request, Response};
 use wasi_http_draft::WasiHttpView;
-use wasmtime::component::{
-    Accessor, Resource, ResourceTable,
-};
+use wasmtime::component::{Accessor, Resource, ResourceTable};
 use wasmtime_wasi::IoView;
-
 
 pub mod bindings {
     wasmtime::component::bindgen!({
