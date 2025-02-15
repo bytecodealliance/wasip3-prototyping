@@ -48,7 +48,7 @@ impl<_T> TheWorldPre<_T> {
         mut store: impl wasmtime::AsContextMut<Data = _T>,
     ) -> wasmtime::Result<TheWorld>
     where
-        _T: Send + 'static,
+        _T: Send,
     {
         let mut store = store.as_context_mut();
         let instance = self.instance_pre.instantiate_async(&mut store).await?;
@@ -157,7 +157,7 @@ const _: () = {
             linker: &wasmtime::component::Linker<_T>,
         ) -> wasmtime::Result<TheWorld>
         where
-            _T: Send + 'static,
+            _T: Send,
         {
             let pre = linker.instantiate_pre(component)?;
             TheWorldPre::new(pre)?.instantiate_async(store).await
@@ -238,18 +238,17 @@ pub mod foo {
                 assert!(1 == < Error as wasmtime::component::ComponentType >::SIZE32);
                 assert!(1 == < Error as wasmtime::component::ComponentType >::ALIGN32);
             };
-            pub trait Host {
+            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
+            pub trait Host: Send {
                 type Data;
                 fn option_test(
-                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    accessor: &mut wasmtime::component::Accessor<Self::Data>,
                 ) -> impl ::core::future::Future<
-                    Output = impl FnOnce(
-                        wasmtime::StoreContextMut<'_, Self::Data>,
-                    ) -> Result<
-                            Option<wasmtime::component::__internal::String>,
-                            Error,
-                        > + Send + Sync + 'static,
-                > + Send + Sync + 'static
+                    Output = Result<
+                        Option<wasmtime::component::__internal::String>,
+                        Error,
+                    >,
+                > + Send + Sync
                 where
                     Self: Sized;
             }
@@ -280,45 +279,15 @@ pub mod foo {
                 inst.func_wrap_concurrent(
                     "option-test",
                     move |mut caller: wasmtime::StoreContextMut<'_, T>, (): ()| {
-                        let host = caller;
-                        let r = <G::Host as Host>::option_test(host);
-                        Box::pin(async move {
-                            let fun = r.await;
-                            Box::new(move |mut caller: wasmtime::StoreContextMut<'_, T>| {
-                                let r = fun(caller);
-                                Ok((r,))
-                            })
-                                as Box<
-                                    dyn FnOnce(
-                                        wasmtime::StoreContextMut<'_, T>,
-                                    ) -> wasmtime::Result<
-                                            (
-                                                Result<
-                                                    Option<wasmtime::component::__internal::String>,
-                                                    Error,
-                                                >,
-                                            ),
-                                        > + Send + Sync,
-                                >
+                        let mut accessor = unsafe {
+                            wasmtime::component::Accessor::new(
+                                caller.traitobj().as_ptr(),
+                            )
+                        };
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let r = <G::Host as Host>::option_test(&mut accessor).await;
+                            Ok((r,))
                         })
-                            as ::core::pin::Pin<
-                                Box<
-                                    dyn ::core::future::Future<
-                                        Output = Box<
-                                            dyn FnOnce(
-                                                wasmtime::StoreContextMut<'_, T>,
-                                            ) -> wasmtime::Result<
-                                                    (
-                                                        Result<
-                                                            Option<wasmtime::component::__internal::String>,
-                                                            Error,
-                                                        >,
-                                                    ),
-                                                > + Send + Sync,
-                                        >,
-                                    > + Send + Sync + 'static,
-                                >,
-                            >
                     },
                 )?;
                 Ok(())
@@ -333,22 +302,12 @@ pub mod foo {
             {
                 add_to_linker_get_host(linker, get)
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + Send> Host for &mut _T {
                 type Data = _T::Data;
-                fn option_test(
-                    store: wasmtime::StoreContextMut<'_, Self::Data>,
-                ) -> impl ::core::future::Future<
-                    Output = impl FnOnce(
-                        wasmtime::StoreContextMut<'_, Self::Data>,
-                    ) -> Result<
-                            Option<wasmtime::component::__internal::String>,
-                            Error,
-                        > + Send + Sync + 'static,
-                > + Send + Sync + 'static
-                where
-                    Self: Sized,
-                {
-                    <_T as Host>::option_test(store)
+                async fn option_test(
+                    accessor: &mut wasmtime::component::Accessor<Self::Data>,
+                ) -> Result<Option<wasmtime::component::__internal::String>, Error> {
+                    <_T as Host>::option_test(accessor).await
                 }
             }
         }
@@ -510,7 +469,7 @@ pub mod exports {
                         >,
                     >
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<

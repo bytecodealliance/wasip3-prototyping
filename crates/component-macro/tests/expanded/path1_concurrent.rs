@@ -48,7 +48,7 @@ impl<_T> Path1Pre<_T> {
         mut store: impl wasmtime::AsContextMut<Data = _T>,
     ) -> wasmtime::Result<Path1>
     where
-        _T: Send + 'static,
+        _T: Send,
     {
         let mut store = store.as_context_mut();
         let instance = self.instance_pre.instantiate_async(&mut store).await?;
@@ -147,7 +147,7 @@ const _: () = {
             linker: &wasmtime::component::Linker<_T>,
         ) -> wasmtime::Result<Path1>
         where
-            _T: Send + 'static,
+            _T: Send,
         {
             let pre = linker.instantiate_pre(component)?;
             Path1Pre::new(pre)?.instantiate_async(store).await
@@ -180,7 +180,8 @@ pub mod paths {
         pub mod test {
             #[allow(unused_imports)]
             use wasmtime::component::__internal::{anyhow, Box};
-            pub trait Host {}
+            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
+            pub trait Host: Send {}
             pub trait GetHost<
                 T,
                 D,
@@ -217,7 +218,7 @@ pub mod paths {
             {
                 add_to_linker_get_host(linker, get)
             }
-            impl<_T: Host + ?Sized> Host for &mut _T {}
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
         }
     }
 }

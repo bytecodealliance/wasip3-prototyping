@@ -73,7 +73,7 @@ impl<_T> FooPre<_T> {
         mut store: impl wasmtime::AsContextMut<Data = _T>,
     ) -> wasmtime::Result<Foo>
     where
-        _T: Send + 'static,
+        _T: Send,
     {
         let mut store = store.as_context_mut();
         let instance = self.instance_pre.instantiate_async(&mut store).await?;
@@ -186,7 +186,7 @@ const _: () = {
             linker: &wasmtime::component::Linker<_T>,
         ) -> wasmtime::Result<Foo>
         where
-            _T: Send + 'static,
+            _T: Send,
         {
             let pre = linker.instantiate_pre(component)?;
             FooPre::new(pre)?.instantiate_async(store).await
@@ -216,7 +216,7 @@ const _: () = {
             mut store: S,
         ) -> wasmtime::Result<wasmtime::component::Promise<(T, U, R)>>
         where
-            <S as wasmtime::AsContext>::Data: Send + 'static,
+            <S as wasmtime::AsContext>::Data: Send,
         {
             let callee = unsafe {
                 wasmtime::component::TypedFunc::<(), ((T, U, R),)>::new_unchecked(self.f)
@@ -237,7 +237,8 @@ pub mod foo {
                 assert!(2 == < T as wasmtime::component::ComponentType >::SIZE32);
                 assert!(2 == < T as wasmtime::component::ComponentType >::ALIGN32);
             };
-            pub trait Host {}
+            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
+            pub trait Host: Send {}
             pub trait GetHost<
                 T,
                 D,
@@ -274,7 +275,7 @@ pub mod foo {
             {
                 add_to_linker_get_host(linker, get)
             }
-            impl<_T: Host + ?Sized> Host for &mut _T {}
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
         }
     }
 }
