@@ -362,6 +362,22 @@ jobs:
     - uses: ./.github/actions/cancel-on-failure
       if: failure()
 
+  p3_tests:
+    name: p3 tests
+    runs-on: ubuntu-latest
+    env:
+      CARGO_NDK_VERSION: 2.12.2
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+    - run: cargo test -p component-async-tests
+
+    # common logic to cancel the entire run if this job fails
+    - uses: ./.github/actions/cancel-on-failure
+      if: failure()
+
   # Various checks that Wasmtime builds for a variety of platforms. Each
   # platform may not include the entire dependency tree and maybe just a few
   # features here and there, see the `include` matrix for more details.
@@ -686,6 +702,7 @@ jobs:
       - doc
       - micro_checks
       - fiber_tests
+      - p3_tests
       - clippy
       - platform_checks
       - determine
