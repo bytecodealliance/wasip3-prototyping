@@ -48,7 +48,7 @@ impl<_T> MyWorldPre<_T> {
         mut store: impl wasmtime::AsContextMut<Data = _T>,
     ) -> wasmtime::Result<MyWorld>
     where
-        _T: Send + 'static,
+        _T: Send,
     {
         let mut store = store.as_context_mut();
         let instance = self.instance_pre.instantiate_async(&mut store).await?;
@@ -159,7 +159,7 @@ const _: () = {
             linker: &wasmtime::component::Linker<_T>,
         ) -> wasmtime::Result<MyWorld>
         where
-            _T: Send + 'static,
+            _T: Send,
         {
             let pre = linker.instantiate_pre(component)?;
             MyWorldPre::new(pre)?.instantiate_async(store).await
@@ -195,55 +195,44 @@ pub mod foo {
         pub mod simple_lists {
             #[allow(unused_imports)]
             use wasmtime::component::__internal::{anyhow, Box};
-            pub trait Host {
+            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
+            pub trait Host: Send {
                 type Data;
                 fn simple_list1(
-                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    accessor: &mut wasmtime::component::Accessor<Self::Data>,
                     l: wasmtime::component::__internal::Vec<u32>,
-                ) -> impl ::core::future::Future<
-                    Output = impl FnOnce(
-                        wasmtime::StoreContextMut<'_, Self::Data>,
-                    ) -> () + Send + Sync + 'static,
-                > + Send + Sync + 'static
+                ) -> impl ::core::future::Future<Output = ()> + Send + Sync
                 where
                     Self: Sized;
                 fn simple_list2(
-                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    accessor: &mut wasmtime::component::Accessor<Self::Data>,
                 ) -> impl ::core::future::Future<
-                    Output = impl FnOnce(
-                        wasmtime::StoreContextMut<'_, Self::Data>,
-                    ) -> wasmtime::component::__internal::Vec<
-                            u32,
-                        > + Send + Sync + 'static,
-                > + Send + Sync + 'static
+                    Output = wasmtime::component::__internal::Vec<u32>,
+                > + Send + Sync
                 where
                     Self: Sized;
                 fn simple_list3(
-                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    accessor: &mut wasmtime::component::Accessor<Self::Data>,
                     a: wasmtime::component::__internal::Vec<u32>,
                     b: wasmtime::component::__internal::Vec<u32>,
                 ) -> impl ::core::future::Future<
-                    Output = impl FnOnce(
-                        wasmtime::StoreContextMut<'_, Self::Data>,
-                    ) -> (
-                            wasmtime::component::__internal::Vec<u32>,
-                            wasmtime::component::__internal::Vec<u32>,
-                        ) + Send + Sync + 'static,
-                > + Send + Sync + 'static
+                    Output = (
+                        wasmtime::component::__internal::Vec<u32>,
+                        wasmtime::component::__internal::Vec<u32>,
+                    ),
+                > + Send + Sync
                 where
                     Self: Sized;
                 fn simple_list4(
-                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    accessor: &mut wasmtime::component::Accessor<Self::Data>,
                     l: wasmtime::component::__internal::Vec<
                         wasmtime::component::__internal::Vec<u32>,
                     >,
                 ) -> impl ::core::future::Future<
-                    Output = impl FnOnce(
-                        wasmtime::StoreContextMut<'_, Self::Data>,
-                    ) -> wasmtime::component::__internal::Vec<
-                            wasmtime::component::__internal::Vec<u32>,
-                        > + Send + Sync + 'static,
-                > + Send + Sync + 'static
+                    Output = wasmtime::component::__internal::Vec<
+                        wasmtime::component::__internal::Vec<u32>,
+                    >,
+                > + Send + Sync
                 where
                     Self: Sized;
             }
@@ -277,65 +266,30 @@ pub mod foo {
                         mut caller: wasmtime::StoreContextMut<'_, T>,
                         (arg0,): (wasmtime::component::__internal::Vec<u32>,)|
                     {
-                        let host = caller;
-                        let r = <G::Host as Host>::simple_list1(host, arg0);
-                        Box::pin(async move {
-                            let fun = r.await;
-                            Box::new(move |mut caller: wasmtime::StoreContextMut<'_, T>| {
-                                let r = fun(caller);
-                                Ok(r)
-                            })
-                                as Box<
-                                    dyn FnOnce(
-                                        wasmtime::StoreContextMut<'_, T>,
-                                    ) -> wasmtime::Result<()> + Send + Sync,
-                                >
+                        let mut accessor = unsafe {
+                            wasmtime::component::Accessor::new(
+                                caller.traitobj().as_ptr(),
+                            )
+                        };
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let r = <G::Host as Host>::simple_list1(&mut accessor, arg0)
+                                .await;
+                            Ok(r)
                         })
-                            as ::core::pin::Pin<
-                                Box<
-                                    dyn ::core::future::Future<
-                                        Output = Box<
-                                            dyn FnOnce(
-                                                wasmtime::StoreContextMut<'_, T>,
-                                            ) -> wasmtime::Result<()> + Send + Sync,
-                                        >,
-                                    > + Send + Sync + 'static,
-                                >,
-                            >
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "simple-list2",
                     move |mut caller: wasmtime::StoreContextMut<'_, T>, (): ()| {
-                        let host = caller;
-                        let r = <G::Host as Host>::simple_list2(host);
-                        Box::pin(async move {
-                            let fun = r.await;
-                            Box::new(move |mut caller: wasmtime::StoreContextMut<'_, T>| {
-                                let r = fun(caller);
-                                Ok((r,))
-                            })
-                                as Box<
-                                    dyn FnOnce(
-                                        wasmtime::StoreContextMut<'_, T>,
-                                    ) -> wasmtime::Result<
-                                            (wasmtime::component::__internal::Vec<u32>,),
-                                        > + Send + Sync,
-                                >
+                        let mut accessor = unsafe {
+                            wasmtime::component::Accessor::new(
+                                caller.traitobj().as_ptr(),
+                            )
+                        };
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let r = <G::Host as Host>::simple_list2(&mut accessor).await;
+                            Ok((r,))
                         })
-                            as ::core::pin::Pin<
-                                Box<
-                                    dyn ::core::future::Future<
-                                        Output = Box<
-                                            dyn FnOnce(
-                                                wasmtime::StoreContextMut<'_, T>,
-                                            ) -> wasmtime::Result<
-                                                    (wasmtime::component::__internal::Vec<u32>,),
-                                                > + Send + Sync,
-                                        >,
-                                    > + Send + Sync + 'static,
-                                >,
-                            >
                     },
                 )?;
                 inst.func_wrap_concurrent(
@@ -350,45 +304,20 @@ pub mod foo {
                             wasmtime::component::__internal::Vec<u32>,
                         )|
                     {
-                        let host = caller;
-                        let r = <G::Host as Host>::simple_list3(host, arg0, arg1);
-                        Box::pin(async move {
-                            let fun = r.await;
-                            Box::new(move |mut caller: wasmtime::StoreContextMut<'_, T>| {
-                                let r = fun(caller);
-                                Ok((r,))
-                            })
-                                as Box<
-                                    dyn FnOnce(
-                                        wasmtime::StoreContextMut<'_, T>,
-                                    ) -> wasmtime::Result<
-                                            (
-                                                (
-                                                    wasmtime::component::__internal::Vec<u32>,
-                                                    wasmtime::component::__internal::Vec<u32>,
-                                                ),
-                                            ),
-                                        > + Send + Sync,
-                                >
+                        let mut accessor = unsafe {
+                            wasmtime::component::Accessor::new(
+                                caller.traitobj().as_ptr(),
+                            )
+                        };
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let r = <G::Host as Host>::simple_list3(
+                                    &mut accessor,
+                                    arg0,
+                                    arg1,
+                                )
+                                .await;
+                            Ok((r,))
                         })
-                            as ::core::pin::Pin<
-                                Box<
-                                    dyn ::core::future::Future<
-                                        Output = Box<
-                                            dyn FnOnce(
-                                                wasmtime::StoreContextMut<'_, T>,
-                                            ) -> wasmtime::Result<
-                                                    (
-                                                        (
-                                                            wasmtime::component::__internal::Vec<u32>,
-                                                            wasmtime::component::__internal::Vec<u32>,
-                                                        ),
-                                                    ),
-                                                > + Send + Sync,
-                                        >,
-                                    > + Send + Sync + 'static,
-                                >,
-                            >
                     },
                 )?;
                 inst.func_wrap_concurrent(
@@ -403,43 +332,16 @@ pub mod foo {
                             >,
                         )|
                     {
-                        let host = caller;
-                        let r = <G::Host as Host>::simple_list4(host, arg0);
-                        Box::pin(async move {
-                            let fun = r.await;
-                            Box::new(move |mut caller: wasmtime::StoreContextMut<'_, T>| {
-                                let r = fun(caller);
-                                Ok((r,))
-                            })
-                                as Box<
-                                    dyn FnOnce(
-                                        wasmtime::StoreContextMut<'_, T>,
-                                    ) -> wasmtime::Result<
-                                            (
-                                                wasmtime::component::__internal::Vec<
-                                                    wasmtime::component::__internal::Vec<u32>,
-                                                >,
-                                            ),
-                                        > + Send + Sync,
-                                >
+                        let mut accessor = unsafe {
+                            wasmtime::component::Accessor::new(
+                                caller.traitobj().as_ptr(),
+                            )
+                        };
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let r = <G::Host as Host>::simple_list4(&mut accessor, arg0)
+                                .await;
+                            Ok((r,))
                         })
-                            as ::core::pin::Pin<
-                                Box<
-                                    dyn ::core::future::Future<
-                                        Output = Box<
-                                            dyn FnOnce(
-                                                wasmtime::StoreContextMut<'_, T>,
-                                            ) -> wasmtime::Result<
-                                                    (
-                                                        wasmtime::component::__internal::Vec<
-                                                            wasmtime::component::__internal::Vec<u32>,
-                                                        >,
-                                                    ),
-                                                > + Send + Sync,
-                                        >,
-                                    > + Send + Sync + 'static,
-                                >,
-                            >
                     },
                 )?;
                 Ok(())
@@ -454,68 +356,38 @@ pub mod foo {
             {
                 add_to_linker_get_host(linker, get)
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + Send> Host for &mut _T {
                 type Data = _T::Data;
-                fn simple_list1(
-                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                async fn simple_list1(
+                    accessor: &mut wasmtime::component::Accessor<Self::Data>,
                     l: wasmtime::component::__internal::Vec<u32>,
-                ) -> impl ::core::future::Future<
-                    Output = impl FnOnce(
-                        wasmtime::StoreContextMut<'_, Self::Data>,
-                    ) -> () + Send + Sync + 'static,
-                > + Send + Sync + 'static
-                where
-                    Self: Sized,
-                {
-                    <_T as Host>::simple_list1(store, l)
+                ) -> () {
+                    <_T as Host>::simple_list1(accessor, l).await
                 }
-                fn simple_list2(
-                    store: wasmtime::StoreContextMut<'_, Self::Data>,
-                ) -> impl ::core::future::Future<
-                    Output = impl FnOnce(
-                        wasmtime::StoreContextMut<'_, Self::Data>,
-                    ) -> wasmtime::component::__internal::Vec<
-                            u32,
-                        > + Send + Sync + 'static,
-                > + Send + Sync + 'static
-                where
-                    Self: Sized,
-                {
-                    <_T as Host>::simple_list2(store)
+                async fn simple_list2(
+                    accessor: &mut wasmtime::component::Accessor<Self::Data>,
+                ) -> wasmtime::component::__internal::Vec<u32> {
+                    <_T as Host>::simple_list2(accessor).await
                 }
-                fn simple_list3(
-                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                async fn simple_list3(
+                    accessor: &mut wasmtime::component::Accessor<Self::Data>,
                     a: wasmtime::component::__internal::Vec<u32>,
                     b: wasmtime::component::__internal::Vec<u32>,
-                ) -> impl ::core::future::Future<
-                    Output = impl FnOnce(
-                        wasmtime::StoreContextMut<'_, Self::Data>,
-                    ) -> (
-                            wasmtime::component::__internal::Vec<u32>,
-                            wasmtime::component::__internal::Vec<u32>,
-                        ) + Send + Sync + 'static,
-                > + Send + Sync + 'static
-                where
-                    Self: Sized,
-                {
-                    <_T as Host>::simple_list3(store, a, b)
+                ) -> (
+                    wasmtime::component::__internal::Vec<u32>,
+                    wasmtime::component::__internal::Vec<u32>,
+                ) {
+                    <_T as Host>::simple_list3(accessor, a, b).await
                 }
-                fn simple_list4(
-                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                async fn simple_list4(
+                    accessor: &mut wasmtime::component::Accessor<Self::Data>,
                     l: wasmtime::component::__internal::Vec<
                         wasmtime::component::__internal::Vec<u32>,
                     >,
-                ) -> impl ::core::future::Future<
-                    Output = impl FnOnce(
-                        wasmtime::StoreContextMut<'_, Self::Data>,
-                    ) -> wasmtime::component::__internal::Vec<
-                            wasmtime::component::__internal::Vec<u32>,
-                        > + Send + Sync + 'static,
-                > + Send + Sync + 'static
-                where
-                    Self: Sized,
-                {
-                    <_T as Host>::simple_list4(store, l)
+                ) -> wasmtime::component::__internal::Vec<
+                    wasmtime::component::__internal::Vec<u32>,
+                > {
+                    <_T as Host>::simple_list4(accessor, l).await
                 }
             }
         }
@@ -661,7 +533,7 @@ pub mod exports {
                         arg0: wasmtime::component::__internal::Vec<u32>,
                     ) -> wasmtime::Result<wasmtime::component::Promise<()>>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -683,7 +555,7 @@ pub mod exports {
                         >,
                     >
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -710,7 +582,7 @@ pub mod exports {
                         >,
                     >
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -745,7 +617,7 @@ pub mod exports {
                         >,
                     >
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<

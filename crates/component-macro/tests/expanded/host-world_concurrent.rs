@@ -48,7 +48,7 @@ impl<_T> Host_Pre<_T> {
         mut store: impl wasmtime::AsContextMut<Data = _T>,
     ) -> wasmtime::Result<Host_>
     where
-        _T: Send + 'static,
+        _T: Send,
     {
         let mut store = store.as_context_mut();
         let instance = self.instance_pre.instantiate_async(&mut store).await?;
@@ -95,15 +95,12 @@ pub struct Host_Indices {}
 /// [`Component`]: wasmtime::component::Component
 /// [`Linker`]: wasmtime::component::Linker
 pub struct Host_ {}
-pub trait Host_Imports {
+#[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
+pub trait Host_Imports: Send {
     type Data;
     fn foo(
-        store: wasmtime::StoreContextMut<'_, Self::Data>,
-    ) -> impl ::core::future::Future<
-        Output = impl FnOnce(
-            wasmtime::StoreContextMut<'_, Self::Data>,
-        ) -> () + Send + Sync + 'static,
-    > + Send + Sync + 'static
+        accessor: &mut wasmtime::component::Accessor<Self::Data>,
+    ) -> impl ::core::future::Future<Output = ()> + Send + Sync
     where
         Self: Sized;
 }
@@ -120,19 +117,10 @@ where
 {
     type Host = O;
 }
-impl<_T: Host_Imports> Host_Imports for &mut _T {
+impl<_T: Host_Imports + Send> Host_Imports for &mut _T {
     type Data = _T::Data;
-    fn foo(
-        store: wasmtime::StoreContextMut<'_, Self::Data>,
-    ) -> impl ::core::future::Future<
-        Output = impl FnOnce(
-            wasmtime::StoreContextMut<'_, Self::Data>,
-        ) -> () + Send + Sync + 'static,
-    > + Send + Sync + 'static
-    where
-        Self: Sized,
-    {
-        <_T as Host_Imports>::foo(store)
+    async fn foo(accessor: &mut wasmtime::component::Accessor<Self::Data>) -> () {
+        <_T as Host_Imports>::foo(accessor).await
     }
 }
 const _: () = {
@@ -187,7 +175,7 @@ const _: () = {
             linker: &wasmtime::component::Linker<_T>,
         ) -> wasmtime::Result<Host_>
         where
-            _T: Send + 'static,
+            _T: Send,
         {
             let pre = linker.instantiate_pre(component)?;
             Host_Pre::new(pre)?.instantiate_async(store).await
@@ -216,31 +204,15 @@ const _: () = {
                 .func_wrap_concurrent(
                     "foo",
                     move |mut caller: wasmtime::StoreContextMut<'_, T>, (): ()| {
-                        let host = caller;
-                        let r = <G::Host as Host_Imports>::foo(host);
-                        Box::pin(async move {
-                            let fun = r.await;
-                            Box::new(move |mut caller: wasmtime::StoreContextMut<'_, T>| {
-                                let r = fun(caller);
-                                Ok(r)
-                            })
-                                as Box<
-                                    dyn FnOnce(
-                                        wasmtime::StoreContextMut<'_, T>,
-                                    ) -> wasmtime::Result<()> + Send + Sync,
-                                >
+                        let mut accessor = unsafe {
+                            wasmtime::component::Accessor::new(
+                                caller.traitobj().as_ptr(),
+                            )
+                        };
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let r = <G::Host as Host_Imports>::foo(&mut accessor).await;
+                            Ok(r)
                         })
-                            as ::core::pin::Pin<
-                                Box<
-                                    dyn ::core::future::Future<
-                                        Output = Box<
-                                            dyn FnOnce(
-                                                wasmtime::StoreContextMut<'_, T>,
-                                            ) -> wasmtime::Result<()> + Send + Sync,
-                                        >,
-                                    > + Send + Sync + 'static,
-                                >,
-                            >
                     },
                 )?;
             Ok(())

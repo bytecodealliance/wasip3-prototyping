@@ -48,7 +48,7 @@ impl<_T> HttpInterfacePre<_T> {
         mut store: impl wasmtime::AsContextMut<Data = _T>,
     ) -> wasmtime::Result<HttpInterface>
     where
-        _T: Send + 'static,
+        _T: Send,
     {
         let mut store = store.as_context_mut();
         let instance = self.instance_pre.instantiate_async(&mut store).await?;
@@ -157,7 +157,7 @@ const _: () = {
             linker: &wasmtime::component::Linker<_T>,
         ) -> wasmtime::Result<HttpInterface>
         where
-            _T: Send + 'static,
+            _T: Send,
         {
             let pre = linker.instantiate_pre(component)?;
             HttpInterfacePre::new(pre)?.instantiate_async(store).await
@@ -232,7 +232,8 @@ pub mod foo {
                     4 == < Response as wasmtime::component::ComponentType >::ALIGN32
                 );
             };
-            pub trait Host {}
+            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
+            pub trait Host: Send {}
             pub trait GetHost<
                 T,
                 D,
@@ -269,7 +270,7 @@ pub mod foo {
             {
                 add_to_linker_get_host(linker, get)
             }
-            impl<_T: Host + ?Sized> Host for &mut _T {}
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
         }
     }
 }
@@ -287,16 +288,13 @@ pub mod http_fetch {
         assert!(8 == < Response as wasmtime::component::ComponentType >::SIZE32);
         assert!(4 == < Response as wasmtime::component::ComponentType >::ALIGN32);
     };
-    pub trait Host {
+    #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
+    pub trait Host: Send {
         type Data;
         fn fetch_request(
-            store: wasmtime::StoreContextMut<'_, Self::Data>,
+            accessor: &mut wasmtime::component::Accessor<Self::Data>,
             request: Request,
-        ) -> impl ::core::future::Future<
-            Output = impl FnOnce(
-                wasmtime::StoreContextMut<'_, Self::Data>,
-            ) -> Response + Send + Sync + 'static,
-        > + Send + Sync + 'static
+        ) -> impl ::core::future::Future<Output = Response> + Send + Sync
         where
             Self: Sized;
     }
@@ -327,31 +325,13 @@ pub mod http_fetch {
         inst.func_wrap_concurrent(
             "fetch-request",
             move |mut caller: wasmtime::StoreContextMut<'_, T>, (arg0,): (Request,)| {
-                let host = caller;
-                let r = <G::Host as Host>::fetch_request(host, arg0);
-                Box::pin(async move {
-                    let fun = r.await;
-                    Box::new(move |mut caller: wasmtime::StoreContextMut<'_, T>| {
-                        let r = fun(caller);
-                        Ok((r,))
-                    })
-                        as Box<
-                            dyn FnOnce(
-                                wasmtime::StoreContextMut<'_, T>,
-                            ) -> wasmtime::Result<(Response,)> + Send + Sync,
-                        >
+                let mut accessor = unsafe {
+                    wasmtime::component::Accessor::new(caller.traitobj().as_ptr())
+                };
+                wasmtime::component::__internal::Box::pin(async move {
+                    let r = <G::Host as Host>::fetch_request(&mut accessor, arg0).await;
+                    Ok((r,))
                 })
-                    as ::core::pin::Pin<
-                        Box<
-                            dyn ::core::future::Future<
-                                Output = Box<
-                                    dyn FnOnce(
-                                        wasmtime::StoreContextMut<'_, T>,
-                                    ) -> wasmtime::Result<(Response,)> + Send + Sync,
-                                >,
-                            > + Send + Sync + 'static,
-                        >,
-                    >
             },
         )?;
         Ok(())
@@ -366,20 +346,13 @@ pub mod http_fetch {
     {
         add_to_linker_get_host(linker, get)
     }
-    impl<_T: Host> Host for &mut _T {
+    impl<_T: Host + Send> Host for &mut _T {
         type Data = _T::Data;
-        fn fetch_request(
-            store: wasmtime::StoreContextMut<'_, Self::Data>,
+        async fn fetch_request(
+            accessor: &mut wasmtime::component::Accessor<Self::Data>,
             request: Request,
-        ) -> impl ::core::future::Future<
-            Output = impl FnOnce(
-                wasmtime::StoreContextMut<'_, Self::Data>,
-            ) -> Response + Send + Sync + 'static,
-        > + Send + Sync + 'static
-        where
-            Self: Sized,
-        {
-            <_T as Host>::fetch_request(store, request)
+        ) -> Response {
+            <_T as Host>::fetch_request(accessor, request).await
         }
     }
 }
@@ -481,7 +454,7 @@ pub mod exports {
                 arg0: Request,
             ) -> wasmtime::Result<wasmtime::component::Promise<Response>>
             where
-                <S as wasmtime::AsContext>::Data: Send + 'static,
+                <S as wasmtime::AsContext>::Data: Send,
             {
                 let callee = unsafe {
                     wasmtime::component::TypedFunc::<
