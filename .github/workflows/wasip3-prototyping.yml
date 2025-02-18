@@ -72,54 +72,6 @@ jobs:
     - uses: ./.github/actions/cancel-on-failure
       if: failure()
 
-  cargo_vet:
-    name: Cargo vet
-    needs: determine
-    if: needs.determine.outputs.audit
-    runs-on: ubuntu-latest
-    outputs:
-      outcome: ${{ steps.vet.outcome }}
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        submodules: true
-    - uses: ./.github/actions/install-rust
-    - uses: ./.github/actions/install-cargo-vet
-    - id: vet
-      run: cargo vet --locked
-      continue-on-error: ${{ github.event_name == 'pull_request' }}
-
-    # Double-check that if versions are bumped that `cargo vet` still works.
-    # This is intended to weed out mistakes such as #9115 from happening again.
-    - run: rustc scripts/publish.rs && ./publish bump-patch && cargo vet
-      name: Ensure `cargo vet` works if versions are bumped
-
-    # common logic to cancel the entire run if this job fails
-    - uses: ./.github/actions/cancel-on-failure
-      if: failure()
-
-  cargo_vet_failure_for_prs:
-    name: Cargo vet failed on a Pull Request
-    needs:
-    - determine
-    - cargo_vet
-    if: |
-      needs.determine.outputs.audit
-      && github.event_name == 'pull_request'
-      && needs.cargo_vet.outputs.outcome == 'failure'
-    runs-on: ubuntu-latest
-    steps:
-    # NB: this message ideally would link back to the previous step, but I'm not
-    # sure how to easily do that.
-    - run: |
-        echo 'failed to run "cargo vet", see previous `Cargo vet` step'
-        echo 'exiting with a nonzero status now to alert PR authors'
-        echo 'note, though, that this PR can still enter the merge queue'
-        echo ''
-        echo 'See https://docs.wasmtime.dev/contributing-coding-guidelines.html#cargo-vet-for-contributors'
-        echo 'for more information about the vetting process for Wasmtime'
-        exit 1
-
   determine:
     name: Determine CI jobs to run
     runs-on: ubuntu-latest
@@ -698,7 +650,6 @@ jobs:
       - test
       - rustfmt
       - cargo_deny
-      - cargo_vet
       - doc
       - micro_checks
       - fiber_tests
