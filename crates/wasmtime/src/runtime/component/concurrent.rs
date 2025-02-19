@@ -10,7 +10,7 @@ use {
             AsyncWasmCallState, PreviousAsyncWasmCallState, SendSyncPtr, VMFuncRef,
             VMMemoryDefinition, VMStore, VMStoreRawPtr,
         },
-        AsContextMut, Engine, StoreContextMut, ValRaw,
+        AsContext, AsContextMut, Engine, StoreContext, StoreContextMut, ValRaw,
     },
     anyhow::{anyhow, bail, Context as _, Result},
     futures::{
@@ -29,7 +29,7 @@ use {
         future::Future,
         marker::PhantomData,
         mem::{self, MaybeUninit},
-        ops::Range,
+        ops::{Deref, DerefMut, Range},
         pin::{pin, Pin},
         ptr::{self, NonNull},
         sync::{Arc, Mutex},
@@ -150,50 +150,171 @@ impl<T: Send + Sync + 'static> PromisesUnordered<T> {
     }
 }
 
-/// Provides restricted mutable access to a `Store` in the context of a
-/// concurrent host import function.
+/// Provides access to either store data (via the `get` method) or the store
+/// itself (via [`AsContext`]/[`AsContextMut`]).
 ///
-/// This allows multiple host import futures to execute concurrently and access
-/// the `Store` (and its data payload) between (but not across) `await` points.
-pub struct Accessor<T> {
-    store: *mut dyn VMStore,
-    _phantom: PhantomData<fn(StoreContextMut<'_, T>)>,
+/// See [`Accessor::with`] for details.
+pub struct Access<'a, T, U>(&'a mut Accessor<T, U>);
+
+impl<'a, T, U> Access<'a, T, U> {
+    /// Get mutable access to the store data.
+    pub fn get(&mut self) -> &mut U {
+        unsafe { &mut *(self.0.get)() }
+    }
+
+    /// Spawn a background task.
+    ///
+    /// See [`Accessor::spawn`] for details.
+    pub fn spawn(&mut self, task: impl BackgroundTask<T, U>) -> SpawnHandle
+    where
+        T: 'static,
+    {
+        self.0.spawn(task)
+    }
 }
 
-unsafe impl<T> Send for Accessor<T> {}
-unsafe impl<T> Sync for Accessor<T> {}
+impl<'a, T, U> Deref for Access<'a, T, U> {
+    type Target = U;
 
-impl<T> Accessor<T> {
+    fn deref(&self) -> &U {
+        unsafe { &*(self.0.get)() }
+    }
+}
+
+impl<'a, T, U> DerefMut for Access<'a, T, U> {
+    fn deref_mut(&mut self) -> &mut U {
+        self.get()
+    }
+}
+
+impl<'a, T, U> AsContext for Access<'a, T, U> {
+    type Data = T;
+
+    fn as_context(&self) -> StoreContext<T> {
+        unsafe { StoreContext(&*self.0.store) }
+    }
+}
+
+impl<'a, T, U> AsContextMut for Access<'a, T, U> {
+    fn as_context_mut(&mut self) -> StoreContextMut<T> {
+        unsafe { StoreContextMut(&mut *self.0.store) }
+    }
+}
+
+/// Provides scoped mutable access to store data in the context of a concurrent
+/// host import function.
+///
+/// This allows multiple host import futures to execute concurrently and access
+/// the store data between (but not across) `await` points.
+pub struct Accessor<T, U> {
+    store: *mut StoreInner<T>,
+    get: fn() -> *mut U,
+    spawn: fn(Spawned),
+}
+
+unsafe impl<T, U> Send for Accessor<T, U> {}
+unsafe impl<T, U> Sync for Accessor<T, U> {}
+
+impl<T, U> Accessor<T, U> {
     #[doc(hidden)]
-    pub unsafe fn new(store: *mut dyn VMStore) -> Self {
-        Self {
-            store,
-            _phantom: PhantomData,
-        }
+    pub unsafe fn new(store: *mut StoreInner<T>, get: fn() -> *mut U, spawn: fn(Spawned)) -> Self {
+        Self { store, get, spawn }
     }
 
-    /// Run the specified closure, passing it a `StoreContextMut`.
+    /// Run the specified closure, passing it mutable access to the store data.
     ///
     /// Note that the return value of the closure must be `'static`, meaning it
-    /// cannot borrow from the store or its data payload.  If you need to return
-    /// a resource from the store, it must be cloned (using e.g. `Arc::clone` if
-    /// appropriate).
-    pub fn with<R: 'static>(&mut self, fun: impl FnOnce(StoreContextMut<'_, T>) -> R) -> R {
-        fun(unsafe { StoreContextMut(&mut *self.store.cast()) })
+    /// cannot borrow from the store data.  If you need shared access to
+    /// something in the store data, it must be cloned (using e.g. `Arc::clone`
+    /// if appropriate).
+    pub fn with<R: 'static>(&mut self, fun: impl FnOnce(Access<'_, T, U>) -> R) -> R {
+        fun(Access(self))
     }
 
-    /// Spawn a background task which will receive an `&mut Accessor<T>` and run
-    /// concurrently with any other tasks in progress for the current instance.
+    /// Spawn a background task which will receive an `&mut Accessor<T, U>` and
+    /// run concurrently with any other tasks in progress for the current
+    /// instance.
     ///
     /// This is particularly useful for host functions which return a `stream`
     /// or `future` such that the code to write to the write end of that
     /// `stream` or `future` must run after the function returns.
-    pub fn spawn(&mut self, task: impl BackgroundTask<T>)
+    pub fn spawn(&mut self, task: impl BackgroundTask<T, U>) -> SpawnHandle
     where
         T: 'static,
     {
-        let mut store = unsafe { StoreContextMut::<T>(&mut *self.store.cast()) };
-        store.spawn(task)
+        let mut accessor = Self {
+            store: self.store,
+            get: self.get,
+            spawn: self.spawn,
+        };
+        let future = Arc::new(Mutex::new(SpawnedInner::Unpolled(unsafe {
+            // This is to avoid a `U: 'static` bound.  Rationale: We don't
+            // actually store a value of type `U` in the `Accessor` we're
+            // `move`ing into the `async` block, and access to a `U` is brokered
+            // via `Accessor::with` by way of a thread-local variable in
+            // `wasmtime-wit-bindgen`-generated code.  Furthermore,
+            // `BackgroundTask` implementations are required to be `'static`, so
+            // no lifetime issues there.  We have no way to explain any of that
+            // to the compiler, though, so we resort to a transmute here.
+            mem::transmute::<
+                Pin<Box<dyn Future<Output = Result<()>> + Send + Sync>>,
+                Pin<Box<dyn Future<Output = Result<()>> + Send + Sync + 'static>>,
+            >(Box::pin(async move { task.run(&mut accessor).await }))
+        })));
+        let handle = SpawnHandle(future.clone());
+        (self.spawn)(future);
+        handle
+    }
+}
+
+type SpawnedFuture = Pin<Box<dyn Future<Output = Result<()>> + Send + Sync + 'static>>;
+
+#[doc(hidden)]
+pub enum SpawnedInner {
+    Unpolled(SpawnedFuture),
+    Polled { future: SpawnedFuture, waker: Waker },
+    Aborted,
+}
+
+impl SpawnedInner {
+    fn abort(&mut self) {
+        match mem::replace(self, Self::Aborted) {
+            Self::Unpolled(_) | Self::Aborted => {}
+            Self::Polled { waker, .. } => waker.wake(),
+        }
+    }
+}
+
+#[doc(hidden)]
+pub type Spawned = Arc<Mutex<SpawnedInner>>;
+
+/// Handle to a spawned task which may be used to abort it.
+pub struct SpawnHandle(Spawned);
+
+impl SpawnHandle {
+    /// Abort the task.
+    ///
+    /// This will panic if called from within the spawned task itself.
+    pub fn abort(&self) {
+        self.0.try_lock().unwrap().abort()
+    }
+
+    /// Return an [`AbortOnDropHandle`] which, when dropped, will abort the
+    /// task.
+    ///
+    /// The returned instance will panic if dropped from within the spawned task
+    /// itself.
+    pub fn abort_handle(&self) -> AbortOnDropHandle {
+        AbortOnDropHandle(self.0.clone())
+    }
+}
+
+/// Handle to a spawned task which will abort the task when dropped.
+pub struct AbortOnDropHandle(Spawned);
+
+impl Drop for AbortOnDropHandle {
+    fn drop(&mut self) {
+        self.0.try_lock().unwrap().abort()
     }
 }
 
@@ -208,9 +329,9 @@ impl<T> Accessor<T> {
 // FN: FnOnce(&mut Accessor<T>) -> F + Send + Sync + 'static` fails with a type
 // mismatch error when we try to pass it an async closure (e.g. `async move |_|
 // { ... }`).  So this seems to be the best we can do for the time being.
-pub trait BackgroundTask<T>: Send + Sync + 'static {
+pub trait BackgroundTask<T, U>: Send + Sync + 'static {
     /// Run the task.
-    fn run(self, accessor: &mut Accessor<T>) -> impl Future<Output = Result<()>> + Send + Sync;
+    fn run(self, accessor: &mut Accessor<T, U>) -> impl Future<Output = Result<()>> + Send + Sync;
 }
 
 /// Trait representing component model ABI async intrinsics and fused adapter
@@ -573,9 +694,12 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
 
         log::trace!("task.return for {}", guest_task.rep());
 
-        let cx = cx.0.traitobj().as_ptr();
-        let result = lift(cx, storage)?;
-        let mut cx = unsafe { StoreContextMut::<T>(&mut *cx.cast()) };
+        let (result, mut cx) = {
+            let cx = cx.0.traitobj().as_ptr();
+            let result = lift(cx, storage)?;
+            let cx = unsafe { StoreContextMut::<T>(&mut *cx.cast()) };
+            (result, cx)
+        };
 
         let (calls, host_table, _) = cx.0.component_resource_state();
         ResourceTables {
@@ -1427,10 +1551,7 @@ impl<T> ConcurrentState<T> {
         context.guard_range_start..context.guard_range_end
     }
 
-    pub(crate) fn push_task(
-        &mut self,
-        task: impl Future<Output = Result<()>> + Send + Sync + 'static,
-    ) {
+    pub(crate) fn spawn(&mut self, task: impl Future<Output = Result<()>> + Send + Sync + 'static) {
         self.futures.get_mut().push(Box::pin(
             async move { HostTaskOutput::Background(task.await) },
         ))

@@ -1001,13 +1001,13 @@ impl<'a, T> StoreContextMut<'a, T> {
         self.0.pkey.is_some()
     }
 
-    /// Spawn a background task, see [Accessor::spawn](concurrent::Accessor::spawn) for more info.
     #[cfg(feature = "component-model-async")]
-    pub fn spawn(&mut self, task: impl concurrent::BackgroundTask<T>)
-    where
-        T: 'static,
-    {
-        self.0.spawn(task)
+    #[doc(hidden)]
+    pub fn spawn(
+        &mut self,
+        future: impl std::future::Future<Output = Result<()>> + Send + Sync + 'static,
+    ) {
+        self.0.concurrent_state().spawn(future)
     }
 
     /// Returns the underlying [`Engine`] this store is connected to.
@@ -1077,17 +1077,6 @@ impl<T> StoreInner<T> {
     #[cfg(feature = "component-model-async")]
     fn concurrent_state(&mut self) -> &mut concurrent::ConcurrentState<T> {
         &mut self.concurrent_state
-    }
-
-    #[cfg(feature = "component-model-async")]
-    fn spawn(&mut self, task: impl concurrent::BackgroundTask<T>)
-    where
-        T: 'static,
-    {
-        let store = self.traitobj().as_ptr();
-        let mut accessor = unsafe { concurrent::Accessor::new(store) };
-        self.concurrent_state
-            .push_task(async move { task.run(&mut accessor).await });
     }
 
     #[inline]

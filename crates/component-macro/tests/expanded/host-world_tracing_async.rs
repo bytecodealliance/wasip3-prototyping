@@ -101,11 +101,10 @@ pub trait Host_Imports: Send {
 }
 pub trait Host_ImportsGetHost<
     T,
-    D,
->: Fn(T) -> <Self as Host_ImportsGetHost<T, D>>::Host + Send + Sync + Copy + 'static {
+>: Fn(T) -> <Self as Host_ImportsGetHost<T>>::Host + Send + Sync + Copy + 'static {
     type Host: Host_Imports;
 }
-impl<F, T, D, O> Host_ImportsGetHost<T, D> for F
+impl<F, T, O> Host_ImportsGetHost<T> for F
 where
     F: Fn(T) -> O + Send + Sync + Copy + 'static,
     O: Host_Imports,
@@ -185,7 +184,7 @@ const _: () = {
         }
         pub fn add_to_linker_imports_get_host<
             T,
-            G: for<'a> Host_ImportsGetHost<&'a mut T, T, Host: Host_Imports>,
+            G: for<'a> Host_ImportsGetHost<&'a mut T, Host: Host_Imports>,
         >(
             linker: &mut wasmtime::component::Linker<T>,
             host_getter: G,

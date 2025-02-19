@@ -45,6 +45,13 @@ mod test {
         ONCE.call_once(pretty_env_logger::init);
     }
 
+    fn annotate<T, F>(val: F) -> F
+    where
+        F: Fn(&mut T) -> &mut T,
+    {
+        val
+    }
+
     struct Ctx {
         wasi: WasiCtx,
         table: ResourceTable,
@@ -75,10 +82,8 @@ mod test {
         });
     }
 
-    impl round_trip::local::local::baz::Host for Ctx {
-        type Data = Ctx;
-
-        async fn foo(_: &mut Accessor<Self>, s: String) -> wasmtime::Result<String> {
+    impl round_trip::local::local::baz::Host for &mut Ctx {
+        async fn foo<T>(_: &mut Accessor<T, Self>, s: String) -> wasmtime::Result<String> {
             tokio::time::sleep(Duration::from_millis(10)).await;
             Ok(format!("{s} - entered host - exited host"))
         }
@@ -96,11 +101,9 @@ mod test {
         });
     }
 
-    impl round_trip_many::local::local::many::Host for Ctx {
-        type Data = Ctx;
-
-        async fn foo(
-            _: &mut Accessor<Self>,
+    impl round_trip_many::local::local::many::Host for &mut Ctx {
+        async fn foo<T>(
+            _: &mut Accessor<T, Self>,
             a: String,
             b: u32,
             c: Vec<u8>,
@@ -141,10 +144,8 @@ mod test {
         });
     }
 
-    impl round_trip_direct::RoundTripDirectImports for Ctx {
-        type Data = Ctx;
-
-        async fn foo(_: &mut Accessor<Self>, s: String) -> wasmtime::Result<String> {
+    impl round_trip_direct::RoundTripDirectImports for &mut Ctx {
+        async fn foo<T>(_: &mut Accessor<T, Self>, s: String) -> wasmtime::Result<String> {
             tokio::time::sleep(Duration::from_millis(10)).await;
             Ok(format!("{s} - entered host - exited host"))
         }
@@ -168,7 +169,7 @@ mod test {
 
     pub struct MyX;
 
-    impl borrowing_host::local::local::borrowing_types::HostX for Ctx {
+    impl borrowing_host::local::local::borrowing_types::HostX for &mut Ctx {
         fn new(&mut self) -> Result<Resource<MyX>> {
             Ok(IoView::table(self).push(MyX)?)
         }
@@ -184,7 +185,7 @@ mod test {
         }
     }
 
-    impl borrowing_host::local::local::borrowing_types::Host for Ctx {}
+    impl borrowing_host::local::local::borrowing_types::Host for &mut Ctx {}
 
     /// Compose two components
     ///
@@ -251,7 +252,10 @@ mod test {
                 let mut linker = Linker::new(&engine);
 
                 wasmtime_wasi::add_to_linker_async(&mut linker)?;
-                round_trip::RoundTrip::add_to_linker(&mut linker, |ctx| ctx)?;
+                round_trip::local::local::baz::add_to_linker_get_host(
+                    &mut linker,
+                    annotate(|ctx| ctx),
+                )?;
 
                 let mut store = make_store();
 
@@ -569,7 +573,10 @@ mod test {
             let mut linker = Linker::new(&engine);
 
             wasmtime_wasi::add_to_linker_async(&mut linker)?;
-            round_trip_many::RoundTripMany::add_to_linker(&mut linker, |ctx| ctx)?;
+            round_trip_many::local::local::many::add_to_linker_get_host(
+                &mut linker,
+                annotate(|ctx| ctx),
+            )?;
 
             let mut store = make_store();
 
@@ -909,7 +916,10 @@ mod test {
             let mut linker = Linker::new(&engine);
 
             wasmtime_wasi::add_to_linker_async(&mut linker)?;
-            round_trip_direct::RoundTripDirect::add_to_linker(&mut linker, |ctx| ctx)?;
+            round_trip_direct::RoundTripDirect::add_to_linker_imports_get_host(
+                &mut linker,
+                annotate(|ctx| ctx),
+            )?;
 
             let mut store = make_store();
 
@@ -1007,7 +1017,7 @@ mod test {
         });
     }
 
-    impl yield_host::local::local::continue_::Host for Ctx {
+    impl yield_host::local::local::continue_::Host for &mut Ctx {
         fn set_continue(&mut self, v: bool) {
             self.continue_ = v;
         }
@@ -1017,9 +1027,7 @@ mod test {
         }
     }
 
-    impl yield_host::local::local::ready::Host for Ctx {
-        type Data = Ctx;
-
+    impl yield_host::local::local::ready::Host for &mut Ctx {
         fn set_ready(&mut self, ready: bool) {
             let mut wakers = self.wakers.lock().unwrap();
             if ready {
@@ -1033,8 +1041,8 @@ mod test {
             }
         }
 
-        async fn when_ready(accessor: &mut Accessor<Self::Data>) {
-            let wakers = accessor.with(|store| store.data().wakers.clone());
+        async fn when_ready<T>(accessor: &mut Accessor<T, Self>) {
+            let wakers = accessor.with(|view| view.wakers.clone());
             future::poll_fn(move |cx| {
                 let mut wakers = wakers.lock().unwrap();
                 if let Some(wakers) = wakers.deref_mut() {
@@ -1066,8 +1074,15 @@ mod test {
         let mut linker = Linker::new(&engine);
 
         wasmtime_wasi::add_to_linker_async(&mut linker)?;
-        yield_host::YieldHost::add_to_linker(&mut linker, |ctx| ctx)?;
-        read_resource_stream::ReadResourceStream::add_to_linker(&mut linker, |ctx| ctx)?;
+        yield_host::local::local::continue_::add_to_linker_get_host(
+            &mut linker,
+            annotate(|ctx| ctx),
+        )?;
+        yield_host::local::local::ready::add_to_linker_get_host(&mut linker, annotate(|ctx| ctx))?;
+        read_resource_stream::local::local::resource_stream::add_to_linker_get_host(
+            &mut linker,
+            annotate(|ctx| ctx),
+        )?;
 
         let mut store = Store::new(
             &engine,
@@ -1189,7 +1204,10 @@ mod test {
         let mut linker = Linker::new(&engine);
 
         wasmtime_wasi::add_to_linker_async(&mut linker)?;
-        borrowing_host::BorrowingHost::add_to_linker(&mut linker, |ctx| ctx)?;
+        borrowing_host::local::local::borrowing_types::add_to_linker_get_host(
+            &mut linker,
+            annotate(|ctx| ctx),
+        )?;
 
         let mut store = Store::new(
             &engine,
@@ -1628,15 +1646,13 @@ mod test {
         });
     }
 
-    impl WasiHttpView for Ctx {
-        type Data = Ctx;
-
+    impl WasiHttpView for &mut Ctx {
         fn table(&mut self) -> &mut ResourceTable {
             &mut self.table
         }
 
-        async fn send_request(
-            _accessor: &mut Accessor<Self::Data>,
+        async fn send_request<T>(
+            _accessor: &mut Accessor<T, Self>,
             _request: Resource<Request>,
         ) -> wasmtime::Result<Result<Resource<Response>, ErrorCode>> {
             Err(anyhow!("no outbound request handler available"))
@@ -1667,7 +1683,14 @@ mod test {
         let mut linker = Linker::new(&engine);
 
         wasmtime_wasi::add_to_linker_async(&mut linker)?;
-        wasi_http_draft::add_to_linker(&mut linker)?;
+        wasi_http_draft::wasi::http::types::add_to_linker_get_host(
+            &mut linker,
+            annotate(|ctx| ctx),
+        )?;
+        wasi_http_draft::wasi::http::handler::add_to_linker_get_host(
+            &mut linker,
+            annotate(|ctx| ctx),
+        )?;
 
         let mut store = Store::new(
             &engine,
@@ -1923,12 +1946,13 @@ mod test {
 
     pub struct ResourceStreamX;
 
-    impl read_resource_stream::local::local::resource_stream::HostX for Ctx {
-        type XData = Ctx;
-
-        async fn foo(accessor: &mut Accessor<Self>, x: Resource<ResourceStreamX>) -> Result<()> {
-            accessor.with(|mut store| {
-                _ = IoView::table(store.data_mut()).get(&x)?;
+    impl read_resource_stream::local::local::resource_stream::HostX for &mut Ctx {
+        async fn foo<T>(
+            accessor: &mut Accessor<T, Self>,
+            x: Resource<ResourceStreamX>,
+        ) -> Result<()> {
+            accessor.with(|mut view| {
+                _ = IoView::table(&mut *view).get(&x)?;
                 Ok(())
             })
         }
@@ -1939,11 +1963,9 @@ mod test {
         }
     }
 
-    impl read_resource_stream::local::local::resource_stream::Host for Ctx {
-        type Data = Ctx;
-
-        async fn foo(
-            accessor: &mut Accessor<Self>,
+    impl read_resource_stream::local::local::resource_stream::Host for &mut Ctx {
+        async fn foo<T: 'static>(
+            accessor: &mut Accessor<T, Self>,
             count: u32,
         ) -> wasmtime::Result<StreamReader<Resource<ResourceStreamX>>> {
             struct Task {
@@ -1951,22 +1973,24 @@ mod test {
                 count: u32,
             }
 
-            impl<T: wasmtime_wasi::IoView> BackgroundTask<T> for Task {
-                async fn run(self, accessor: &mut Accessor<T>) -> Result<()> {
+            impl<T, U: wasmtime_wasi::IoView> BackgroundTask<T, U> for Task {
+                async fn run(self, accessor: &mut Accessor<T, U>) -> Result<()> {
                     let mut tx = self.tx;
                     for _ in 0..self.count {
                         tx = accessor
-                            .with(|mut store| {
-                                let item = IoView::table(store.data_mut()).push(ResourceStreamX)?;
-                                Ok::<_, anyhow::Error>(tx.write(store, vec![item])?.into_future())
+                            .with(|mut view| {
+                                let item = IoView::table(&mut *view).push(ResourceStreamX)?;
+                                Ok::<_, anyhow::Error>(
+                                    tx.write(view.as_context_mut(), vec![item])?.into_future(),
+                                )
                             })?
                             .await;
                     }
-                    accessor.with(|store| tx.close(store))
+                    accessor.with(|mut view| tx.close(view.as_context_mut()))
                 }
             }
 
-            let (tx, rx) = accessor.with(|store| component::stream(store))?;
+            let (tx, rx) = accessor.with(|mut view| component::stream(view.as_context_mut()))?;
             accessor.spawn(Task { tx, count });
             Ok(rx)
         }

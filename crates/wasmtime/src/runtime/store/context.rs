@@ -23,6 +23,16 @@ impl<'a, T> StoreContextMut<'a, T> {
     pub fn traitobj(&self) -> std::ptr::NonNull<dyn crate::runtime::vm::VMStore> {
         self.0.traitobj()
     }
+
+    #[doc(hidden)]
+    pub fn inner(&mut self) -> &mut StoreInner<T> {
+        self.0
+    }
+
+    #[doc(hidden)]
+    pub fn new(inner: &'a mut StoreInner<T>) -> Self {
+        Self(inner)
+    }
 }
 
 /// A trait used to get shared access to a [`Store`] in Wasmtime.
