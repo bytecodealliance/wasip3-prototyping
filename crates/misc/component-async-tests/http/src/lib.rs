@@ -93,7 +93,7 @@ impl<T: WasiHttpView> WasiHttpView for WasiHttpImpl<T> {
 
 pub struct Body {
     pub stream: Option<StreamReader<u8>>,
-    pub trailers: Option<FutureReader<Resource<Fields>>>,
+    pub trailers: FutureReader<Option<Resource<Fields>>>,
 }
 
 #[derive(Clone)]
@@ -210,7 +210,7 @@ where
     fn new(
         &mut self,
         stream: StreamReader<u8>,
-        trailers: Option<FutureReader<Resource<Fields>>>,
+        trailers: FutureReader<Option<Resource<Fields>>>,
     ) -> wasmtime::Result<Resource<Body>> {
         Ok(self.table().push(Body {
             stream: Some(stream),
@@ -230,7 +230,7 @@ where
     async fn finish(
         accessor: &mut Accessor<Self::BodyData>,
         this: Resource<Body>,
-    ) -> wasmtime::Result<Option<FutureReader<Resource<Fields>>>> {
+    ) -> wasmtime::Result<FutureReader<Option<Resource<Fields>>>> {
         let trailers = accessor.with(|mut store| {
             let trailers = store.data_mut().table().delete(this)?.trailers;
             Ok(trailers) as wasmtime::Result<_>

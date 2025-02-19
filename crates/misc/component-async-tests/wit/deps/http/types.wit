@@ -238,7 +238,7 @@ interface types {
     /// Construct a new `body` with the specified stream and trailers.
     constructor(
       %stream: stream<u8>,
-      trailers: option<future<trailers>>
+      trailers: future<option<trailers>>
     );
 
     /// Returns the contents of the body, as a stream of bytes.
@@ -249,7 +249,7 @@ interface types {
 
     /// Takes ownership of `body`, and returns a `trailers`.  This function will
     /// trap if a `stream` child is still alive.
-    finish: static func(this: body) -> option<future<trailers>>;
+    finish: static func(this: body) -> future<option<trailers>>;
   }
 
   /// Represents an HTTP Request.

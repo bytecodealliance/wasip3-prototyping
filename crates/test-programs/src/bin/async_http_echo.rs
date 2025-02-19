@@ -24,6 +24,7 @@ use {
         wit_future, wit_stream,
     },
     futures::{SinkExt, StreamExt},
+    std::future::IntoFuture,
     wit_bindgen_rt::async_support,
 };
 
@@ -51,22 +52,14 @@ impl Handler for Component {
 
                 drop(pipe_tx);
 
-                if let Some(maybe_trailers) = Body::finish(body).await {
-                    if let Some(trailers) = maybe_trailers.await {
-                        trailers_tx
-                            .write(
-                                trailers
-                                    .expect("trailer does not resolve to an error when present"),
-                            )
-                            .await;
-                    }
+                if let Some(trailers) = Body::finish(body).await.into_future().await {
+                    trailers_tx
+                        .write(trailers.expect("trailer does not resolve to an error when present"))
+                        .await;
                 }
             });
 
-            Ok(Response::new(
-                headers,
-                Body::new(pipe_rx, Some(trailers_rx)),
-            ))
+            Ok(Response::new(headers, Body::new(pipe_rx, trailers_rx)))
         }
     }
 }
