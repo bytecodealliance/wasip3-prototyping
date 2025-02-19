@@ -1,4 +1,4 @@
-use futures::{SinkExt as _, StreamExt as _};
+use futures::{join, SinkExt as _, StreamExt as _};
 use test_programs::p3::wasi::sockets::types::{
     IpAddressFamily, IpSocketAddress, Ipv4SocketAddress, Ipv6SocketAddress, TcpSocket,
 };
@@ -48,9 +48,17 @@ async fn test_tcp_sample_application(family: IpAddressFamily, bind_address: IpSo
         let client = TcpSocket::new(family);
         client.connect(addr).await.unwrap();
         let (mut data_tx, data_rx) = wit_stream::new();
-        client.send(data_rx).unwrap();
-        data_tx.send(vec![]).await.unwrap();
-        data_tx.send(first_message.into()).await.unwrap();
+
+        join!(
+            async {
+                client.send(data_rx).await.unwrap();
+            },
+            async {
+                data_tx.send(vec![]).await.unwrap();
+                data_tx.send(first_message.into()).await.unwrap();
+                drop(data_tx);
+            }
+        );
     }
 
     {
@@ -71,8 +79,15 @@ async fn test_tcp_sample_application(family: IpAddressFamily, bind_address: IpSo
         let client = TcpSocket::new(family);
         client.connect(addr).await.unwrap();
         let (mut data_tx, data_rx) = wit_stream::new();
-        client.send(data_rx).unwrap();
-        data_tx.send(second_message.into()).await.unwrap();
+        join!(
+            async {
+                client.send(data_rx).await.unwrap();
+            },
+            async {
+                data_tx.send(second_message.into()).await.unwrap();
+                drop(data_tx);
+            }
+        );
     }
 
     {

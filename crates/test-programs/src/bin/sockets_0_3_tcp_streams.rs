@@ -1,6 +1,6 @@
 use core::future::Future;
 
-use futures::{SinkExt as _, StreamExt as _, TryStreamExt as _};
+use futures::{join, SinkExt as _, StreamExt as _, TryStreamExt as _};
 use test_programs::p3::wasi::sockets::types::{
     ErrorCode, IpAddress, IpAddressFamily, IpSocketAddress, TcpSocket,
 };
@@ -31,11 +31,16 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
 async fn test_tcp_input_stream_should_be_closed_by_remote_shutdown(family: IpAddressFamily) {
     setup(family, |server, client| async move {
         let (mut server_tx, server_rx) = wit_stream::new();
-        server.send(server_rx).unwrap();
-
-        // Shut down the connection from the server side:
-        server_tx.close().await.unwrap();
-        drop(server_tx);
+        join!(
+            async {
+                server.send(server_rx).await.unwrap();
+            },
+            async {
+                // Shut down the connection from the server side:
+                server_tx.close().await.unwrap();
+                drop(server_tx);
+            },
+        );
         drop(server);
 
         let (mut client_rx, client_fut) = client.receive();
@@ -57,12 +62,18 @@ async fn test_tcp_input_stream_should_be_closed_by_remote_shutdown(family: IpAdd
 async fn test_tcp_input_stream_should_be_closed_by_local_shutdown(family: IpAddressFamily) {
     setup(family, |server, client| async move {
         let (mut server_tx, server_rx) = wit_stream::new();
-        server.send(server_rx).unwrap();
-
-        // On Linux, `recv` continues to work even after `shutdown(sock, SHUT_RD)`
-        // has been called. To properly test that this behavior doesn't happen in
-        // WASI, we make sure there's some data to read by the client:
-        server_tx.send(b"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.".into()).await.unwrap();
+        join!(
+            async {
+                server.send(server_rx).await.unwrap();
+            },
+            async {
+                // On Linux, `recv` continues to work even after `shutdown(sock, SHUT_RD)`
+                // has been called. To properly test that this behavior doesn't happen in
+                // WASI, we make sure there's some data to read by the client:
+                server_tx.send(b"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.".into()).await.unwrap();
+                drop(server_tx);
+            },
+    );
 
         let (client_rx, client_fut) = client.receive();
 
@@ -79,18 +90,26 @@ async fn test_tcp_input_stream_should_be_closed_by_local_shutdown(family: IpAddr
 async fn test_tcp_output_stream_should_be_closed_by_local_shutdown(family: IpAddressFamily) {
     setup(family, |server, client| async move {
         let (server_tx, server_rx) = wit_stream::new();
-        server.send(server_rx).unwrap();
         drop(server_tx);
+        server.send(server_rx).await.unwrap();
 
-        let (_server_tx, server_rx) = wit_stream::new();
-        assert_eq!(server.send(server_rx), Err(ErrorCode::ConnectionReset));
+        let (server_tx, server_rx) = wit_stream::new();
+        drop(server_tx);
+        assert_eq!(
+            server.send(server_rx).await,
+            Err(ErrorCode::ConnectionReset)
+        );
 
         let (client_tx, client_rx) = wit_stream::new();
-        client.send(client_rx).unwrap();
         drop(client_tx);
+        client.send(client_rx).await.unwrap();
 
-        let (_client_tx, client_rx) = wit_stream::new();
-        assert_eq!(client.send(client_rx), Err(ErrorCode::ConnectionReset));
+        let (client_tx, client_rx) = wit_stream::new();
+        drop(client_tx);
+        assert_eq!(
+            client.send(client_rx).await,
+            Err(ErrorCode::ConnectionReset)
+        );
     })
     .await;
 }
@@ -109,10 +128,16 @@ async fn test_tcp_shutdown_should_not_lose_data(family: IpAddressFamily) {
 
         // Submit the oversized buffer and immediately initiate the shutdown:
         let (mut client_tx, client_rx) = wit_stream::new();
-        client.send(client_rx).unwrap();
-        client_tx.send(outgoing_data.clone()).await.unwrap();
-        client_tx.close().await.unwrap();
-        drop(client_tx);
+        join!(
+            async {
+                client.send(client_rx).await.unwrap();
+            },
+            async {
+                client_tx.send(outgoing_data.clone()).await.unwrap();
+                client_tx.close().await.unwrap();
+                drop(client_tx);
+            },
+        );
 
         // The peer should receive _all_ data:
         let (server_rx, server_fut) = server.receive();
