@@ -262,16 +262,21 @@ mod one_import_concurrent {
             hit: bool,
         }
 
-        impl foo::Host for MyImports {
-            type Data = MyImports;
-
-            async fn foo(accessor: &mut Accessor<Self::Data>) {
-                accessor.with(|mut store| store.data_mut().hit = true);
+        impl foo::Host for &mut MyImports {
+            async fn foo<T>(accessor: &mut Accessor<T, Self>) {
+                accessor.with(|mut view| view.hit = true);
             }
         }
 
+        fn annotate<T, F>(val: F) -> F
+        where
+            F: Fn(&mut T) -> &mut T,
+        {
+            val
+        }
+
         let mut linker = Linker::new(&engine);
-        foo::add_to_linker(&mut linker, |f: &mut MyImports| f)?;
+        foo::add_to_linker_get_host(&mut linker, annotate(|f: &mut MyImports| f))?;
         let mut store = Store::new(&engine, MyImports::default());
         let no_imports = NoImports::instantiate_async(&mut store, &component, &linker).await?;
         let promise = no_imports.call_bar(&mut store).await?;

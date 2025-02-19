@@ -28,9 +28,7 @@ use {
     std::{fmt, future::Future, mem},
     wasi::http::types::{ErrorCode, HeaderError, Method, RequestOptionsError, Scheme},
     wasmtime::{
-        component::{
-            Accessor, ErrorContext, FutureReader, Linker, Resource, ResourceTable, StreamReader,
-        },
+        component::{Accessor, ErrorContext, FutureReader, Resource, ResourceTable, StreamReader},
         AsContextMut,
     },
 };
@@ -50,48 +48,12 @@ impl fmt::Display for Scheme {
 }
 
 pub trait WasiHttpView: Send + Sized {
-    type Data;
-
     fn table(&mut self) -> &mut ResourceTable;
 
-    fn send_request(
-        accessor: &mut Accessor<Self::Data>,
+    fn send_request<T>(
+        accessor: &mut Accessor<T, Self>,
         request: Resource<Request>,
     ) -> impl Future<Output = wasmtime::Result<Result<Resource<Response>, ErrorCode>>> + Send + Sync;
-}
-
-impl<T: WasiHttpView> WasiHttpView for &mut T {
-    type Data = T::Data;
-
-    fn table(&mut self) -> &mut ResourceTable {
-        (*self).table()
-    }
-
-    fn send_request(
-        accessor: &mut Accessor<Self::Data>,
-        request: Resource<Request>,
-    ) -> impl Future<Output = wasmtime::Result<Result<Resource<Response>, ErrorCode>>> + Send + Sync
-    {
-        T::send_request(accessor, request)
-    }
-}
-
-pub struct WasiHttpImpl<T>(pub T);
-
-impl<T: WasiHttpView> WasiHttpView for WasiHttpImpl<T> {
-    type Data = T::Data;
-
-    fn table(&mut self) -> &mut ResourceTable {
-        self.0.table()
-    }
-
-    fn send_request(
-        accessor: &mut Accessor<Self::Data>,
-        request: Resource<Request>,
-    ) -> impl Future<Output = wasmtime::Result<Result<Resource<Response>, ErrorCode>>> + Send + Sync
-    {
-        T::send_request(accessor, request)
-    }
 }
 
 pub struct Body {
@@ -125,7 +87,7 @@ pub struct Response {
     pub body: Body,
 }
 
-impl<T: WasiHttpView> wasi::http::types::HostFields for WasiHttpImpl<T> {
+impl<T: WasiHttpView> wasi::http::types::HostFields for T {
     fn new(&mut self) -> wasmtime::Result<Resource<Fields>> {
         Ok(self.table().push(Fields(Vec::new()))?)
     }
@@ -204,12 +166,7 @@ impl<T: WasiHttpView> wasi::http::types::HostFields for WasiHttpImpl<T> {
     }
 }
 
-impl<T: WasiHttpView> wasi::http::types::HostBody for WasiHttpImpl<T>
-where
-    T::Data: WasiHttpView,
-{
-    type BodyData = T::Data;
-
+impl<T: WasiHttpView> wasi::http::types::HostBody for T {
     fn new(
         &mut self,
         stream: StreamReader<u8>,
@@ -230,14 +187,14 @@ where
         Ok(Ok(stream))
     }
 
-    async fn finish(
-        accessor: &mut Accessor<Self::BodyData>,
+    async fn finish<U>(
+        accessor: &mut Accessor<U, Self>,
         this: Resource<Body>,
     ) -> wasmtime::Result<Result<Option<Resource<Fields>>, ErrorCode>> {
-        let trailers = accessor.with(|mut store| {
-            let trailers = store.data_mut().table().delete(this)?.trailers;
+        let trailers = accessor.with(|mut access| {
+            let trailers = access.table().delete(this)?.trailers;
             trailers
-                .map(|v| v.read(store.as_context_mut()).map(|v| v.into_future()))
+                .map(|v| v.read(access.as_context_mut()).map(|v| v.into_future()))
                 .transpose()
         })?;
 
@@ -260,7 +217,7 @@ where
     }
 }
 
-impl<T: WasiHttpView> wasi::http::types::HostRequest for WasiHttpImpl<T> {
+impl<T: WasiHttpView> wasi::http::types::HostRequest for T {
     fn new(
         &mut self,
         headers: Resource<Fields>,
@@ -377,7 +334,7 @@ impl<T: WasiHttpView> wasi::http::types::HostRequest for WasiHttpImpl<T> {
     }
 }
 
-impl<T: WasiHttpView> wasi::http::types::HostResponse for WasiHttpImpl<T> {
+impl<T: WasiHttpView> wasi::http::types::HostResponse for T {
     fn new(
         &mut self,
         headers: Resource<Fields>,
@@ -432,7 +389,7 @@ impl<T: WasiHttpView> wasi::http::types::HostResponse for WasiHttpImpl<T> {
     }
 }
 
-impl<T: WasiHttpView> wasi::http::types::HostRequestOptions for WasiHttpImpl<T> {
+impl<T: WasiHttpView> wasi::http::types::HostRequestOptions for T {
     fn new(&mut self) -> wasmtime::Result<Resource<RequestOptions>> {
         Ok(self.table().push(RequestOptions::default())?)
     }
@@ -488,39 +445,17 @@ impl<T: WasiHttpView> wasi::http::types::HostRequestOptions for WasiHttpImpl<T> 
     }
 }
 
-impl<T: WasiHttpView> wasi::http::types::Host for WasiHttpImpl<T>
-where
-    T::Data: WasiHttpView,
-{
+impl<T: WasiHttpView> wasi::http::types::Host for T {
     fn http_error_code(&mut self, _error: ErrorContext) -> wasmtime::Result<Option<ErrorCode>> {
         Err(anyhow!("todo: implement wasi:http/types#http-error-code"))
     }
 }
 
-impl<T: WasiHttpView> wasi::http::handler::Host for WasiHttpImpl<T> {
-    type Data = T::Data;
-
-    async fn handle(
-        accessor: &mut Accessor<Self::Data>,
+impl<T: WasiHttpView> wasi::http::handler::Host for T {
+    async fn handle<U>(
+        accessor: &mut Accessor<U, Self>,
         request: Resource<Request>,
     ) -> wasmtime::Result<Result<Resource<Response>, ErrorCode>> {
-        Self::send_request(accessor, request).await
+        T::send_request(accessor, request).await
     }
-}
-
-pub fn add_to_linker<T: WasiHttpView<Data = T> + 'static>(
-    linker: &mut Linker<T>,
-) -> wasmtime::Result<()>
-where
-    <T as WasiHttpView>::Data: WasiHttpView,
-{
-    wasi::http::types::add_to_linker_get_host(linker, annotate_http(|ctx| WasiHttpImpl(ctx)))?;
-    wasi::http::handler::add_to_linker_get_host(linker, annotate_http(|ctx| WasiHttpImpl(ctx)))
-}
-
-fn annotate_http<T, F>(val: F) -> F
-where
-    F: Fn(&mut T) -> WasiHttpImpl<&mut T>,
-{
-    val
 }
