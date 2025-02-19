@@ -27,11 +27,8 @@ use {
     anyhow::anyhow,
     std::{fmt, future::Future, mem},
     wasi::http::types::{ErrorCode, HeaderError, Method, RequestOptionsError, Scheme},
-    wasmtime::{
-        component::{
-            Accessor, ErrorContext, FutureReader, Linker, Resource, ResourceTable, StreamReader,
-        },
-        AsContextMut,
+    wasmtime::component::{
+        Accessor, ErrorContext, FutureReader, Linker, Resource, ResourceTable, StreamReader,
     },
 };
 
@@ -233,25 +230,13 @@ where
     async fn finish(
         accessor: &mut Accessor<Self::BodyData>,
         this: Resource<Body>,
-    ) -> wasmtime::Result<Result<Option<Resource<Fields>>, ErrorCode>> {
+    ) -> wasmtime::Result<Option<FutureReader<Resource<Fields>>>> {
         let trailers = accessor.with(|mut store| {
             let trailers = store.data_mut().table().delete(this)?.trailers;
-            trailers
-                .map(|v| v.read(store.as_context_mut()).map(|v| v.into_future()))
-                .transpose()
+            Ok(trailers) as wasmtime::Result<_>
         })?;
 
-        let maybe_trailers = if let Some(trailers) = trailers {
-            match trailers.await {
-                Some(Ok(trailers)) => Some(trailers),
-                Some(Err(_err_ctx)) => return Ok(Err(ErrorCode::InternalError(None))),
-                None => None,
-            }
-        } else {
-            None
-        };
-
-        Ok(Ok(maybe_trailers))
+        Ok(trailers)
     }
 
     fn drop(&mut self, this: Resource<Body>) -> wasmtime::Result<()> {

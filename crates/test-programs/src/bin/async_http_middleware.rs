@@ -85,8 +85,15 @@ impl Handler for Component {
                     drop(pipe_tx);
                 }
 
-                if let Some(trailers) = Body::finish(body).await.unwrap() {
-                    trailers_tx.write(trailers).await
+                if let Some(maybe_trailers) = Body::finish(body).await {
+                    if let Some(trailers) = maybe_trailers.await {
+                        trailers_tx
+                            .write(
+                                trailers
+                                    .expect("trailer does not resolve to an error when present"),
+                            )
+                            .await;
+                    }
                 }
             });
 
@@ -138,8 +145,15 @@ impl Handler for Component {
                     drop(pipe_tx);
                 }
 
-                if let Some(trailers) = Body::finish(body).await.unwrap() {
-                    trailers_tx.write(trailers).await;
+                if let Some(maybe_trailers) = Body::finish(body).await {
+                    if let Some(trailers) = maybe_trailers.await {
+                        trailers_tx
+                            .write(
+                                trailers
+                                    .expect("trailer does not resolve to an error when present"),
+                            )
+                            .await;
+                    }
                 }
             });
 
