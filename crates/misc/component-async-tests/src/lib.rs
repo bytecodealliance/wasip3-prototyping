@@ -1720,7 +1720,7 @@ mod test {
 
         promises.push(
             request_trailers_tx
-                .write(&mut store, request_trailers)?
+                .write(&mut store, Some(request_trailers))?
                 .map(|()| Event::RequestTrailersWrite),
         );
 
@@ -1745,7 +1745,7 @@ mod test {
             ),
             body: Body {
                 stream: Some(request_body_rx),
-                trailers: Some(request_trailers_rx),
+                trailers: request_trailers_rx,
             },
             options: None,
         })?;
@@ -1783,7 +1783,7 @@ mod test {
                         )));
                     }
 
-                    response_trailers = response.body.trailers.take();
+                    response_trailers = Some(response.body.trailers);
 
                     promises.push(
                         response
@@ -1815,7 +1815,7 @@ mod test {
                             .take()
                             .unwrap()
                             .read(&mut store)?
-                            .map(Event::ResponseTrailersRead),
+                            .map(|v| Event::ResponseTrailersRead(v.unwrap().transpose())),
                     );
                 }
                 Event::ResponseTrailersRead(Some(response_trailers)) => {
