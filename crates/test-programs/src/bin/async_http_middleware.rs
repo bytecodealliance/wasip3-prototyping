@@ -31,7 +31,7 @@ use {
         Compression,
     },
     futures::{SinkExt, StreamExt},
-    std::{io::Write, mem},
+    std::{future::IntoFuture, io::Write, mem},
     wit_bindgen_rt::async_support,
 };
 
@@ -85,12 +85,14 @@ impl Handler for Component {
                     drop(pipe_tx);
                 }
 
-                if let Some(trailers) = Body::finish(body).await.unwrap() {
-                    trailers_tx.write(trailers).await
+                if let Some(trailers) = Body::finish(body).await.into_future().await {
+                    trailers_tx
+                        .write(trailers.expect("trailer does not resolve to an error when present"))
+                        .await;
                 }
             });
 
-            Body::new(pipe_rx, Some(trailers_rx))
+            Body::new_with_trailers(pipe_rx, trailers_rx)
         } else {
             body
         };
@@ -138,12 +140,14 @@ impl Handler for Component {
                     drop(pipe_tx);
                 }
 
-                if let Some(trailers) = Body::finish(body).await.unwrap() {
-                    trailers_tx.write(trailers).await;
+                if let Some(trailers) = Body::finish(body).await.into_future().await {
+                    trailers_tx
+                        .write(trailers.expect("trailer does not resolve to an error when present"))
+                        .await;
                 }
             });
 
-            Body::new(pipe_rx, Some(trailers_rx))
+            Body::new_with_trailers(pipe_rx, trailers_rx)
         } else {
             body
         };
