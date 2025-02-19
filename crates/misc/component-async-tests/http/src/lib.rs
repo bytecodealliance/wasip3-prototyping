@@ -25,14 +25,11 @@ wasmtime::component::bindgen!({
 
 use {
     anyhow::anyhow,
-    std::{fmt, future::Future, mem},
+    std::{borrow::BorrowMut, fmt, future::Future, mem},
     wasi::http::types::{ErrorCode, HeaderError, Method, RequestOptionsError, Scheme},
-    wasmtime::{
-        component::{
-            Accessor, AccessorTask, ErrorContext, FutureReader, Linker, Resource, ResourceTable,
-            StreamReader,
-        },
-        AsContextMut,
+    wasmtime::component::{
+        future, Accessor, AccessorTask, ErrorContext, FutureReader, Linker, Resource,
+        ResourceTable, StreamReader,
     },
 };
 
@@ -217,14 +214,21 @@ impl<T: WasiHttpView> wasi::http::types::HostFields for WasiHttpImpl<T> {
 }
 
 impl<T: WasiHttpView> wasi::http::types::HostBody for WasiHttpImpl<T> {
-    fn new(
+    fn new(&mut self, stream: StreamReader<u8>) -> wasmtime::Result<Resource<Body>> {
+        Ok(self.table().push(Body {
+            stream: Some(stream),
+            trailers: None,
+        })?)
+    }
+
+    fn new_with_trailers(
         &mut self,
         stream: StreamReader<u8>,
-        trailers: Option<FutureReader<Resource<Fields>>>,
+        trailers: FutureReader<Resource<Fields>>,
     ) -> wasmtime::Result<Resource<Body>> {
         Ok(self.table().push(Body {
             stream: Some(stream),
-            trailers,
+            trailers: Some(trailers),
         })?)
     }
 
@@ -240,25 +244,20 @@ impl<T: WasiHttpView> wasi::http::types::HostBody for WasiHttpImpl<T> {
     async fn finish<U>(
         accessor: &mut Accessor<U, Self>,
         this: Resource<Body>,
-    ) -> wasmtime::Result<Result<Option<Resource<Fields>>, ErrorCode>> {
-        let trailers = accessor.with(|mut access| {
-            let trailers = access.table().delete(this)?.trailers;
-            trailers
-                .map(|v| v.read(access.as_context_mut()).map(|v| v.into_future()))
-                .transpose()
+    ) -> wasmtime::Result<FutureReader<Resource<Fields>>> {
+        let trailers = accessor.with(|mut store| {
+            let trailers = store.borrow_mut().table().delete(this)?.trailers;
+            Ok::<FutureReader<_>, anyhow::Error>(match trailers {
+                Some(t) => t,
+                None => {
+                    let (future_tx, future_rx) = future(&mut store)?;
+                    future_tx.close(store)?;
+                    future_rx
+                }
+            })
         })?;
 
-        let maybe_trailers = if let Some(trailers) = trailers {
-            match trailers.await {
-                Some(Ok(trailers)) => Some(trailers),
-                Some(Err(_err_ctx)) => return Ok(Err(ErrorCode::InternalError(None))),
-                None => None,
-            }
-        } else {
-            None
-        };
-
-        Ok(Ok(maybe_trailers))
+        Ok(trailers)
     }
 
     fn drop(&mut self, this: Resource<Body>) -> wasmtime::Result<()> {
