@@ -8,27 +8,6 @@ test_programs::p3::export!(Component);
 
 const SOME_PORT: u16 = 47; // If the tests pass, this will never actually be connected to.
 
-impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
-    async fn run() -> Result<(), ()> {
-        test_tcp_connect_unspec(IpAddressFamily::Ipv4).await;
-        test_tcp_connect_unspec(IpAddressFamily::Ipv6).await;
-
-        test_tcp_connect_port_0(IpAddressFamily::Ipv4).await;
-        test_tcp_connect_port_0(IpAddressFamily::Ipv6).await;
-
-        test_tcp_connect_wrong_family(IpAddressFamily::Ipv4).await;
-        test_tcp_connect_wrong_family(IpAddressFamily::Ipv6).await;
-
-        test_tcp_connect_non_unicast().await;
-
-        test_tcp_connect_dual_stack().await;
-
-        test_tcp_connect_explicit_bind(IpAddressFamily::Ipv4).await;
-        test_tcp_connect_explicit_bind(IpAddressFamily::Ipv6).await;
-        Ok(())
-    }
-}
-
 /// `0.0.0.0` / `::` is not a valid remote address in WASI.
 async fn test_tcp_connect_unspec(family: IpAddressFamily) {
     let addr = IpSocketAddress::new(IpAddress::new_unspecified(family), SOME_PORT);
@@ -133,6 +112,27 @@ async fn test_tcp_connect_explicit_bind(family: IpAddressFamily) {
 
     // Connect should work:
     client.connect(listener_address).await.unwrap();
+}
+
+impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
+    async fn run() -> Result<(), ()> {
+        test_tcp_connect_unspec(IpAddressFamily::Ipv4).await;
+        test_tcp_connect_unspec(IpAddressFamily::Ipv6).await;
+
+        test_tcp_connect_port_0(IpAddressFamily::Ipv4).await;
+        test_tcp_connect_port_0(IpAddressFamily::Ipv6).await;
+
+        test_tcp_connect_wrong_family(IpAddressFamily::Ipv4).await;
+        test_tcp_connect_wrong_family(IpAddressFamily::Ipv6).await;
+
+        test_tcp_connect_non_unicast().await;
+
+        test_tcp_connect_dual_stack().await;
+
+        test_tcp_connect_explicit_bind(IpAddressFamily::Ipv4).await;
+        test_tcp_connect_explicit_bind(IpAddressFamily::Ipv6).await;
+        Ok(())
+    }
 }
 
 fn main() {}

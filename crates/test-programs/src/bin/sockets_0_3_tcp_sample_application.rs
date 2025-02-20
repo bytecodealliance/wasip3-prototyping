@@ -8,30 +8,6 @@ struct Component;
 
 test_programs::p3::export!(Component);
 
-impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
-    async fn run() -> Result<(), ()> {
-        test_tcp_sample_application(
-            IpAddressFamily::Ipv4,
-            IpSocketAddress::Ipv4(Ipv4SocketAddress {
-                port: 0,                 // use any free port
-                address: (127, 0, 0, 1), // localhost
-            }),
-        )
-        .await;
-        test_tcp_sample_application(
-            IpAddressFamily::Ipv6,
-            IpSocketAddress::Ipv6(Ipv6SocketAddress {
-                port: 0,                           // use any free port
-                address: (0, 0, 0, 0, 0, 0, 0, 1), // localhost
-                flow_info: 0,
-                scope_id: 0,
-            }),
-        )
-        .await;
-        Ok(())
-    }
-}
-
 async fn test_tcp_sample_application(family: IpAddressFamily, bind_address: IpSocketAddress) {
     let first_message = b"Hello, world!";
     let second_message = b"Greetings, planet!";
@@ -100,6 +76,30 @@ async fn test_tcp_sample_application(family: IpAddressFamily, bind_address: IpSo
         // Check that we sent and received our message!
         assert_eq!(data, second_message); // Not guaranteed to work but should work in practice.
         fut.await.unwrap().unwrap().unwrap()
+    }
+}
+
+impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
+    async fn run() -> Result<(), ()> {
+        test_tcp_sample_application(
+            IpAddressFamily::Ipv4,
+            IpSocketAddress::Ipv4(Ipv4SocketAddress {
+                port: 0,                 // use any free port
+                address: (127, 0, 0, 1), // localhost
+            }),
+        )
+        .await;
+        test_tcp_sample_application(
+            IpAddressFamily::Ipv6,
+            IpSocketAddress::Ipv6(Ipv6SocketAddress {
+                port: 0,                           // use any free port
+                address: (0, 0, 0, 0, 0, 0, 0, 1), // localhost
+                flow_info: 0,
+                scope_id: 0,
+            }),
+        )
+        .await;
+        Ok(())
     }
 }
 

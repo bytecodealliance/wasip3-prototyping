@@ -10,23 +10,6 @@ struct Component;
 
 test_programs::p3::export!(Component);
 
-impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
-    async fn run() -> Result<(), ()> {
-        test_tcp_input_stream_should_be_closed_by_remote_shutdown(IpAddressFamily::Ipv4).await;
-        test_tcp_input_stream_should_be_closed_by_remote_shutdown(IpAddressFamily::Ipv6).await;
-
-        test_tcp_input_stream_should_be_closed_by_local_shutdown(IpAddressFamily::Ipv4).await;
-        test_tcp_input_stream_should_be_closed_by_local_shutdown(IpAddressFamily::Ipv6).await;
-
-        test_tcp_output_stream_should_be_closed_by_local_shutdown(IpAddressFamily::Ipv4).await;
-        test_tcp_output_stream_should_be_closed_by_local_shutdown(IpAddressFamily::Ipv6).await;
-
-        test_tcp_shutdown_should_not_lose_data(IpAddressFamily::Ipv4).await;
-        test_tcp_shutdown_should_not_lose_data(IpAddressFamily::Ipv6).await;
-        Ok(())
-    }
-}
-
 /// InputStream::read should return `StreamError::Closed` after the connection has been shut down by the server.
 async fn test_tcp_input_stream_should_be_closed_by_remote_shutdown(family: IpAddressFamily) {
     setup(family, |server, client| async move {
@@ -150,6 +133,23 @@ async fn test_tcp_shutdown_should_not_lose_data(family: IpAddressFamily) {
         server_fut.await.unwrap().unwrap().unwrap()
     })
     .await;
+}
+
+impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
+    async fn run() -> Result<(), ()> {
+        test_tcp_input_stream_should_be_closed_by_remote_shutdown(IpAddressFamily::Ipv4).await;
+        test_tcp_input_stream_should_be_closed_by_remote_shutdown(IpAddressFamily::Ipv6).await;
+
+        test_tcp_input_stream_should_be_closed_by_local_shutdown(IpAddressFamily::Ipv4).await;
+        test_tcp_input_stream_should_be_closed_by_local_shutdown(IpAddressFamily::Ipv6).await;
+
+        test_tcp_output_stream_should_be_closed_by_local_shutdown(IpAddressFamily::Ipv4).await;
+        test_tcp_output_stream_should_be_closed_by_local_shutdown(IpAddressFamily::Ipv6).await;
+
+        test_tcp_shutdown_should_not_lose_data(IpAddressFamily::Ipv4).await;
+        test_tcp_shutdown_should_not_lose_data(IpAddressFamily::Ipv6).await;
+        Ok(())
+    }
 }
 
 fn main() {}

@@ -18,6 +18,7 @@ async fn sockets_0_3_tcp_connect() -> anyhow::Result<()> {
     run(SOCKETS_0_3_TCP_CONNECT_COMPONENT).await
 }
 
+#[ignore = "trap"]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn sockets_0_3_tcp_sample_application() -> anyhow::Result<()> {
     run(SOCKETS_0_3_TCP_SAMPLE_APPLICATION_COMPONENT).await

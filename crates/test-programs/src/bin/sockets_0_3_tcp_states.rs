@@ -6,23 +6,6 @@ struct Component;
 
 test_programs::p3::export!(Component);
 
-impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
-    async fn run() -> Result<(), ()> {
-        test_tcp_unbound_state_invariants(IpAddressFamily::Ipv4);
-        test_tcp_unbound_state_invariants(IpAddressFamily::Ipv6);
-
-        test_tcp_bound_state_invariants(IpAddressFamily::Ipv4);
-        test_tcp_bound_state_invariants(IpAddressFamily::Ipv6);
-
-        test_tcp_listening_state_invariants(IpAddressFamily::Ipv4).await;
-        test_tcp_listening_state_invariants(IpAddressFamily::Ipv6).await;
-
-        test_tcp_connected_state_invariants(IpAddressFamily::Ipv4).await;
-        test_tcp_connected_state_invariants(IpAddressFamily::Ipv6).await;
-        Ok(())
-    }
-}
-
 fn test_tcp_unbound_state_invariants(family: IpAddressFamily) {
     let sock = TcpSocket::new(family);
 
@@ -203,6 +186,23 @@ async fn test_tcp_connected_state_invariants(family: IpAddressFamily) {
 
     assert!(sock.send_buffer_size().is_ok());
     assert_eq!(sock.set_send_buffer_size(16000), Ok(()));
+}
+
+impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
+    async fn run() -> Result<(), ()> {
+        test_tcp_unbound_state_invariants(IpAddressFamily::Ipv4);
+        test_tcp_unbound_state_invariants(IpAddressFamily::Ipv6);
+
+        test_tcp_bound_state_invariants(IpAddressFamily::Ipv4);
+        test_tcp_bound_state_invariants(IpAddressFamily::Ipv6);
+
+        test_tcp_listening_state_invariants(IpAddressFamily::Ipv4).await;
+        test_tcp_listening_state_invariants(IpAddressFamily::Ipv6).await;
+
+        test_tcp_connected_state_invariants(IpAddressFamily::Ipv4).await;
+        test_tcp_connected_state_invariants(IpAddressFamily::Ipv6).await;
+        Ok(())
+    }
 }
 
 fn main() {}

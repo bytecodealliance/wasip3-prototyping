@@ -113,7 +113,7 @@ async fn run(path: &str) -> anyhow::Result<()> {
     promises
         .next(&mut store)
         .await
-        .context("failed to get promise")?
+        .context("guest trapped")?
         .context("promise missing")?
         .map_err(|()| anyhow!("`wasi:cli/run#run` failed"))
 }

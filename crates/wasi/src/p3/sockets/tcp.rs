@@ -11,7 +11,7 @@ use tokio::sync::oneshot;
 
 use crate::p3::bindings::sockets::types::{Duration, ErrorCode, IpAddressFamily, IpSocketAddress};
 use crate::p3::sockets::SocketAddressFamily;
-use crate::runtime::with_ambient_tokio_runtime;
+use crate::runtime::{with_ambient_tokio_runtime, AbortOnDropJoinHandle};
 
 use super::util::{normalize_get_buffer_size, normalize_set_buffer_size};
 
@@ -32,6 +32,8 @@ pub enum TcpState {
     /// The socket is now listening and waiting for an incoming connection.
     Listening {
         listener: Arc<tokio::net::TcpListener>,
+        task: AbortOnDropJoinHandle<()>,
+        finished: std::sync::mpsc::Receiver<()>,
         abort: oneshot::Sender<()>,
     },
 
@@ -397,7 +399,7 @@ pub fn bind(socket: &tokio::net::TcpSocket, local_address: SocketAddr) -> Result
     // This ensures we're not accidentally affected by any socket option
     // state left behind by a previous failed call to this method.
     #[cfg(not(windows))]
-    if let Err(err) = socket.set_reuseaddr(local_address.port() > 0) {
+    if let Err(err) = sockopt::set_socket_reuseaddr(&socket, local_address.port() > 0) {
         return Err(err.into());
     }
 

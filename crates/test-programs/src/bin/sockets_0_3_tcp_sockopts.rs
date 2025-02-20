@@ -9,26 +9,6 @@ test_programs::p3::export!(Component);
 
 const SECOND: u64 = 1_000_000_000;
 
-impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
-    async fn run() -> Result<(), ()> {
-        test_tcp_sockopt_defaults(IpAddressFamily::Ipv4);
-        test_tcp_sockopt_defaults(IpAddressFamily::Ipv6);
-
-        test_tcp_sockopt_input_ranges(IpAddressFamily::Ipv4);
-        test_tcp_sockopt_input_ranges(IpAddressFamily::Ipv6);
-
-        test_tcp_sockopt_readback(IpAddressFamily::Ipv4);
-        test_tcp_sockopt_readback(IpAddressFamily::Ipv6);
-
-        test_tcp_sockopt_inheritance(IpAddressFamily::Ipv4).await;
-        test_tcp_sockopt_inheritance(IpAddressFamily::Ipv6).await;
-
-        test_tcp_sockopt_after_listen(IpAddressFamily::Ipv4).await;
-        test_tcp_sockopt_after_listen(IpAddressFamily::Ipv6).await;
-        Ok(())
-    }
-}
-
 fn test_tcp_sockopt_defaults(family: IpAddressFamily) {
     let sock = TcpSocket::new(family);
 
@@ -228,6 +208,26 @@ async fn test_tcp_sockopt_after_listen(family: IpAddressFamily) {
         assert_eq!(sock.hop_limit().unwrap(), 42);
         assert_eq!(sock.receive_buffer_size().unwrap(), 0x10000);
         assert_eq!(sock.send_buffer_size().unwrap(), 0x10000);
+    }
+}
+
+impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
+    async fn run() -> Result<(), ()> {
+        test_tcp_sockopt_defaults(IpAddressFamily::Ipv4);
+        test_tcp_sockopt_defaults(IpAddressFamily::Ipv6);
+
+        test_tcp_sockopt_input_ranges(IpAddressFamily::Ipv4);
+        test_tcp_sockopt_input_ranges(IpAddressFamily::Ipv6);
+
+        test_tcp_sockopt_readback(IpAddressFamily::Ipv4);
+        test_tcp_sockopt_readback(IpAddressFamily::Ipv6);
+
+        test_tcp_sockopt_inheritance(IpAddressFamily::Ipv4).await;
+        test_tcp_sockopt_inheritance(IpAddressFamily::Ipv6).await;
+
+        test_tcp_sockopt_after_listen(IpAddressFamily::Ipv4).await;
+        test_tcp_sockopt_after_listen(IpAddressFamily::Ipv6).await;
+        Ok(())
     }
 }
 

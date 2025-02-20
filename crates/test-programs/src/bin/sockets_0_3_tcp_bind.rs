@@ -88,8 +88,6 @@ async fn test_tcp_bind_reuseaddr(ip: IpAddress) {
         listener2.bind(bind_addr).unwrap();
         listener2.listen().unwrap();
     }
-
-    drop(client);
 }
 
 // Try binding to an address that is not configured on the system.

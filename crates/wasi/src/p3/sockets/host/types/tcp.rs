@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::{ensure, Context as _};
 use io_lifetimes::AsSocketlike as _;
 use rustix::io::Errno;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use wasmtime::component::{
     future, stream, Accessor, BackgroundTask, FutureReader, FutureWriter, Lift, Resource,
     ResourceTable, StreamReader, StreamWriter,
@@ -22,6 +22,7 @@ use crate::p3::bindings::sockets::types::{
 use crate::p3::sockets::tcp::{bind, TcpState};
 use crate::p3::sockets::util::is_valid_unicast_address;
 use crate::p3::sockets::{SocketAddrUse, SocketAddressFamily, WasiSocketsImpl, WasiSocketsView};
+use crate::runtime::spawn;
 
 fn is_tcp_allowed<T>(store: &mut Accessor<T>) -> bool
 where
@@ -93,10 +94,9 @@ where
 }
 
 struct ListenTask {
-    listener: Arc<tokio::net::TcpListener>,
     family: SocketAddressFamily,
     tx: StreamWriter<Resource<TcpSocket>>,
-    abort: oneshot::Receiver<()>,
+    rx: mpsc::Receiver<std::io::Result<(tokio::net::TcpStream, SocketAddr)>>,
 
     // The socket options below are not automatically inherited from the listener
     // on all platforms. So we keep track of which options have been explicitly
@@ -112,20 +112,9 @@ struct ListenTask {
 }
 
 impl<T: WasiSocketsView> BackgroundTask<T> for ListenTask {
-    async fn run(self, store: &mut Accessor<T>) -> wasmtime::Result<()> {
-        let mut abort = pin!(self.abort);
+    async fn run(mut self, store: &mut Accessor<T>) -> wasmtime::Result<()> {
         let mut tx = self.tx;
-        loop {
-            let accept = self.listener.accept();
-            let mut accept = pin!(accept);
-            let Some(res) = poll_fn(|cx| match abort.as_mut().poll(cx) {
-                Poll::Ready(..) => Poll::Ready(None),
-                Poll::Pending => accept.as_mut().poll(cx).map(Some),
-            })
-            .await
-            else {
-                return Ok(());
-            };
+        while let Some(res) = self.rx.recv().await {
             let state = match res {
                 Ok((stream, _addr)) => {
                     #[cfg(target_os = "macos")]
@@ -226,12 +215,12 @@ impl<T: WasiSocketsView> BackgroundTask<T> for ListenTask {
                     .table()
                     .push(TcpSocket::from_state(state, self.family))
                     .context("failed to push socket to table")?;
-                // TODO: Consider buffering accepted sockets
                 tx.write(store, vec![socket])
                     .context("failed to send socket")
             })?;
             tx = fut.into_future().await;
         }
+        Ok(())
     }
 }
 
@@ -444,7 +433,6 @@ where
             match sock.listen(listen_backlog_size) {
                 Ok(listener) => {
                     let listener = Arc::new(listener);
-                    let (abort_tx, abort_rx) = oneshot::channel();
                     let TcpSocket {
                         tcp_state,
                         family,
@@ -458,17 +446,48 @@ where
                         keep_alive_idle_time,
                         ..
                     } = get_socket_mut(store.data_mut().table(), &socket)?;
+                    let (task_tx, task_rx) = mpsc::channel(1);
+                    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+                    let (abort_tx, abort_rx) = oneshot::channel();
                     *tcp_state = TcpState::Listening {
-                        listener: listener.clone(),
+                        listener: Arc::clone(&listener),
+                        finished: finished_rx,
                         abort: abort_tx,
+                        task: spawn(async move {
+                            let mut abort = pin!(abort_rx);
+                            loop {
+                                let accept = listener.accept();
+                                let mut accept = pin!(accept);
+                                let Some(res) = poll_fn(|cx| match abort.as_mut().poll(cx) {
+                                    Poll::Ready(..) => Poll::Ready(None),
+                                    Poll::Pending => accept.as_mut().poll(cx).map(Some),
+                                })
+                                .await
+                                else {
+                                    break;
+                                };
+                                let send = task_tx.send(res);
+                                let mut send = pin!(send);
+                                match poll_fn(|cx| match abort.as_mut().poll(cx) {
+                                    Poll::Ready(..) => Poll::Ready(None),
+                                    Poll::Pending => send.as_mut().poll(cx).map(Some),
+                                })
+                                .await
+                                {
+                                    None | Some(Err(..)) => break,
+                                    Some(Ok(())) => {}
+                                }
+                            }
+                            drop(listener);
+                            _ = finished_tx.send(());
+                        }),
                     };
                     Ok(Ok((
                         rx,
                         ListenTask {
-                            listener,
                             family: *family,
                             tx,
-                            abort: abort_rx,
+                            rx: task_rx,
                             #[cfg(target_os = "macos")]
                             receive_buffer_size: Arc::clone(&receive_buffer_size),
                             #[cfg(target_os = "macos")]
@@ -755,9 +774,29 @@ where
     }
 
     fn drop(&mut self, rep: Resource<TcpSocket>) -> wasmtime::Result<()> {
-        self.table()
+        let sock = self
+            .table()
             .delete(rep)
             .context("failed to delete socket resource from table")?;
-        Ok(())
+        match sock.tcp_state {
+            TcpState::Listening {
+                abort,
+                finished,
+                listener,
+                ..
+            } => {
+                if let Ok(()) = abort.send(()) {
+                    // this will unblock only once the task finishes
+                    _ = finished.recv();
+                }
+                // this must be the only reference to the listener left
+                ensure!(
+                    Arc::into_inner(listener).is_some(),
+                    "corrupted listener state"
+                );
+                Ok(())
+            }
+            _ => Ok(()),
+        }
     }
 }
