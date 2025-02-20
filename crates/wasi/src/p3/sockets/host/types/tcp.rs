@@ -118,14 +118,24 @@ impl<T: WasiSocketsView> BackgroundTask<T> for ListenTask {
         loop {
             let accept = self.listener.accept();
             let mut accept = pin!(accept);
-            let Some(res) = poll_fn(|cx| match abort.as_mut().poll(cx) {
-                Poll::Ready(..) => Poll::Ready(None),
-                Poll::Pending => accept.as_mut().poll(cx).map(Some),
+            let Some(res) = poll_fn(|cx| {
+                eprintln!("POLL LOOP");
+                match abort.as_mut().poll(cx) {
+                    Poll::Ready(..) => Poll::Ready(None),
+                    Poll::Pending => {
+                        eprintln!("poll accept");
+                        let res = accept.as_mut().poll(cx).map(Some);
+                        eprintln!("done loop {res:?}");
+                        res
+                    }
+                }
             })
             .await
             else {
+                eprintln!("DONE");
                 return Ok(());
             };
+            eprintln!("GOT ACCEPT");
             let state = match res {
                 Ok((stream, _addr)) => {
                     #[cfg(target_os = "macos")]
@@ -226,7 +236,6 @@ impl<T: WasiSocketsView> BackgroundTask<T> for ListenTask {
                     .table()
                     .push(TcpSocket::from_state(state, self.family))
                     .context("failed to push socket to table")?;
-                // TODO: Consider buffering accepted sockets
                 tx.write(store, vec![socket])
                     .context("failed to send socket")
             })?;
@@ -755,9 +764,17 @@ where
     }
 
     fn drop(&mut self, rep: Resource<TcpSocket>) -> wasmtime::Result<()> {
-        self.table()
+        let sock = self
+            .table()
             .delete(rep)
             .context("failed to delete socket resource from table")?;
-        Ok(())
+        match sock.tcp_state {
+            TcpState::Listening { abort, .. } => {
+                eprintln!("DROP LISTENER");
+                _ = abort.send(());
+                Ok(())
+            }
+            _ => Ok(()),
+        }
     }
 }

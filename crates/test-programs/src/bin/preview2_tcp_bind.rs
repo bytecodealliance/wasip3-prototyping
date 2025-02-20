@@ -77,6 +77,7 @@ fn test_tcp_bind_reuseaddr(net: &Network, ip: IpAddress) {
     {
         let listener2 = TcpSocket::new(ip.family()).unwrap();
 
+        eprintln!("call bind");
         // If SO_REUSEADDR was configured correctly, the following lines shouldn't be
         // affected by the TIME_WAIT state of the just closed `listener1` socket:
         listener2.blocking_bind(net, bind_addr).unwrap();

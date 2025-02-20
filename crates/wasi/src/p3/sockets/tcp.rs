@@ -397,7 +397,7 @@ pub fn bind(socket: &tokio::net::TcpSocket, local_address: SocketAddr) -> Result
     // This ensures we're not accidentally affected by any socket option
     // state left behind by a previous failed call to this method.
     #[cfg(not(windows))]
-    if let Err(err) = socket.set_reuseaddr(local_address.port() > 0) {
+    if let Err(err) = sockopt::set_socket_reuseaddr(&socket, true) {
         return Err(err.into());
     }
 
