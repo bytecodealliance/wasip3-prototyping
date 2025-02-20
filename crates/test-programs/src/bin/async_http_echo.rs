@@ -59,7 +59,10 @@ impl Handler for Component {
                 }
             });
 
-            Ok(Response::new(headers, Body::new(pipe_rx, trailers_rx)))
+            Ok(Response::new(
+                headers,
+                Body::new_with_trailers(pipe_rx, trailers_rx),
+            ))
         }
     }
 }

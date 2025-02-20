@@ -28,7 +28,7 @@ use {
     std::{fmt, future::Future, mem},
     wasi::http::types::{ErrorCode, HeaderError, Method, RequestOptionsError, Scheme},
     wasmtime::component::{
-        Accessor, ErrorContext, FutureReader, Linker, Resource, ResourceTable, StreamReader,
+        future, Accessor, ErrorContext, FutureReader, Linker, Resource, ResourceTable, StreamReader,
     },
 };
 
@@ -93,7 +93,7 @@ impl<T: WasiHttpView> WasiHttpView for WasiHttpImpl<T> {
 
 pub struct Body {
     pub stream: Option<StreamReader<u8>>,
-    pub trailers: FutureReader<Option<Resource<Fields>>>,
+    pub trailers: Option<FutureReader<Resource<Fields>>>,
 }
 
 #[derive(Clone)]
@@ -207,14 +207,21 @@ where
 {
     type BodyData = T::Data;
 
-    fn new(
+    fn new(&mut self, stream: StreamReader<u8>) -> wasmtime::Result<Resource<Body>> {
+        Ok(self.table().push(Body {
+            stream: Some(stream),
+            trailers: None,
+        })?)
+    }
+
+    fn new_with_trailers(
         &mut self,
         stream: StreamReader<u8>,
-        trailers: FutureReader<Option<Resource<Fields>>>,
+        trailers: FutureReader<Resource<Fields>>,
     ) -> wasmtime::Result<Resource<Body>> {
         Ok(self.table().push(Body {
             stream: Some(stream),
-            trailers,
+            trailers: Some(trailers),
         })?)
     }
 
@@ -230,10 +237,17 @@ where
     async fn finish(
         accessor: &mut Accessor<Self::BodyData>,
         this: Resource<Body>,
-    ) -> wasmtime::Result<FutureReader<Option<Resource<Fields>>>> {
+    ) -> wasmtime::Result<FutureReader<Resource<Fields>>> {
         let trailers = accessor.with(|mut store| {
             let trailers = store.data_mut().table().delete(this)?.trailers;
-            Ok(trailers) as wasmtime::Result<_>
+            Ok::<FutureReader<_>, anyhow::Error>(match trailers {
+                Some(t) => t,
+                None => {
+                    let (future_tx, future_rx) = future(&mut store)?;
+                    let _ = future_tx.close(store)?;
+                    future_rx
+                }
+            })
         })?;
 
         Ok(trailers)

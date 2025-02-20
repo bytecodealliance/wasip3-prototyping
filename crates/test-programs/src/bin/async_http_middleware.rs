@@ -92,7 +92,7 @@ impl Handler for Component {
                 }
             });
 
-            Body::new(pipe_rx, trailers_rx)
+            Body::new_with_trailers(pipe_rx, trailers_rx)
         } else {
             body
         };
@@ -147,7 +147,7 @@ impl Handler for Component {
                 }
             });
 
-            Body::new(pipe_rx, trailers_rx)
+            Body::new_with_trailers(pipe_rx, trailers_rx)
         } else {
             body
         };
