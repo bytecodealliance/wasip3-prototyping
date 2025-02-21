@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::{ensure, Context as _};
 use io_lifetimes::AsSocketlike as _;
 use rustix::io::Errno;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Notify};
 use wasmtime::component::{
     future, stream, Accessor, BackgroundTask, FutureReader, FutureWriter, Lift, Resource,
     ResourceTable, StreamReader, StreamWriter,
@@ -19,7 +19,7 @@ use wasmtime::component::{
 use crate::p3::bindings::sockets::types::{
     Duration, ErrorCode, HostTcpSocket, IpAddressFamily, IpSocketAddress, TcpSocket,
 };
-use crate::p3::sockets::tcp::{bind, TcpState};
+use crate::p3::sockets::tcp::{bind, handle_listener, TcpState};
 use crate::p3::sockets::util::is_valid_unicast_address;
 use crate::p3::sockets::{SocketAddrUse, SocketAddressFamily, WasiSocketsImpl, WasiSocketsView};
 use crate::runtime::spawn;
@@ -169,10 +169,7 @@ impl<T: WasiSocketsView> BackgroundTask<T> for ListenTask {
                             );
                         }
                     }
-                    TcpState::Connected {
-                        stream: Arc::new(stream),
-                        abort_receive: None,
-                    }
+                    TcpState::connected(stream)
                 }
                 Err(err) => {
                     match Errno::from_io_error(&err) {
@@ -220,33 +217,29 @@ impl<T: WasiSocketsView> BackgroundTask<T> for ListenTask {
             })?;
             tx = fut.into_future().await;
         }
+        store.with(|store| tx.close(store).context("failed to close stream"))?;
         Ok(())
     }
 }
 
 struct ReceiveTask {
-    stream: Arc<tokio::net::TcpStream>,
     data: StreamWriter<u8>,
     result: FutureWriter<Result<(), ErrorCode>>,
-    abort: oneshot::Receiver<()>,
+    abort: Arc<Notify>,
+    rx: mpsc::Receiver<Result<Vec<u8>, ErrorCode>>,
 }
 
 impl<T: WasiSocketsView> BackgroundTask<T> for ReceiveTask {
-    async fn run(self, store: &mut Accessor<T>) -> wasmtime::Result<()> {
-        let mut abort = pin!(self.abort);
+    async fn run(mut self, store: &mut Accessor<T>) -> wasmtime::Result<()> {
         let mut tx = self.data;
+        let mut abort = pin!(self.abort.notified());
         let res = loop {
-            let mut buf = vec![0; 8096];
-            match self.stream.try_read(&mut buf) {
-                Ok(0) => {
-                    _ = self
-                        .stream
-                        .as_socketlike_view::<std::net::TcpStream>()
-                        .shutdown(Shutdown::Read);
+            match self.rx.recv().await {
+                None => {
+                    store.with(|store| tx.close(store).context("failed to close stream"))?;
                     break Ok(());
                 }
-                Ok(n) => {
-                    buf.truncate(n);
+                Some(Ok(buf)) => {
                     let fut =
                         store.with(|store| tx.write(store, buf).context("failed to send chunk"))?;
                     let mut fut = fut.into_future();
@@ -263,23 +256,10 @@ impl<T: WasiSocketsView> BackgroundTask<T> for ReceiveTask {
                         }
                     };
                 }
-                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                    let mut writable = pin!(self.stream.writable());
-                    match poll_fn(|cx| match abort.as_mut().poll(cx) {
-                        Poll::Ready(..) => Poll::Ready(None),
-                        Poll::Pending => writable.as_mut().poll(cx).map(Some),
-                    })
-                    .await
-                    {
-                        Some(Ok(())) => {}
-                        Some(Err(err)) => break Err(err.into()),
-                        None => {
-                            // socket dropped, abort
-                            break Ok(());
-                        }
-                    }
+                Some(Err(err)) => {
+                    store.with(|store| tx.close(store).context("failed to close stream"))?;
+                    break Err(err.into());
                 }
-                Err(err) => break Err(err.into()),
             }
         };
         let fut = store.with(|store| {
@@ -305,11 +285,9 @@ where
 
     fn new(&mut self, address_family: IpAddressFamily) -> wasmtime::Result<Resource<TcpSocket>> {
         let socket = TcpSocket::new(address_family.into()).context("failed to create socket")?;
-        let socket = self
-            .table()
+        self.table()
             .push(socket)
-            .context("failed to push socket resource to table")?;
-        Ok(socket)
+            .context("failed to push socket resource to table")
     }
 
     async fn bind(
@@ -385,10 +363,7 @@ where
                     );
                     match res {
                         Ok(stream) => {
-                            socket.tcp_state = TcpState::Connected {
-                                stream: Arc::new(stream),
-                                abort_receive: None,
-                            };
+                            socket.tcp_state = TcpState::connected(stream);
                             Ok(Ok(()))
                         }
                         Err(err) => {
@@ -451,35 +426,7 @@ where
                         listener: Arc::clone(&listener),
                         finished: finished_rx,
                         abort: abort_tx,
-                        task: spawn(async move {
-                            let mut abort = pin!(abort_rx);
-                            loop {
-                                let task_tx = task_tx.reserve();
-                                let mut task_tx = pin!(task_tx);
-                                let Some(Ok(task_tx)) =
-                                    poll_fn(|cx| match abort.as_mut().poll(cx) {
-                                        Poll::Ready(..) => Poll::Ready(None),
-                                        Poll::Pending => task_tx.as_mut().poll(cx).map(Some),
-                                    })
-                                    .await
-                                else {
-                                    break;
-                                };
-                                let accept = listener.accept();
-                                let mut accept = pin!(accept);
-                                let Some(res) = poll_fn(|cx| match abort.as_mut().poll(cx) {
-                                    Poll::Ready(..) => Poll::Ready(None),
-                                    Poll::Pending => accept.as_mut().poll(cx).map(Some),
-                                })
-                                .await
-                                else {
-                                    break;
-                                };
-                                task_tx.send(res);
-                            }
-                            drop(listener);
-                            _ = finished_tx.send(());
-                        }),
+                        task: spawn(handle_listener(listener, abort_rx, finished_tx, task_tx)),
                     };
                     Ok(Ok((
                         rx,
@@ -565,10 +512,18 @@ where
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                         if let Err(err) = stream.writable().await {
+                            _ = stream
+                                .as_socketlike_view::<std::net::TcpStream>()
+                                .shutdown(Shutdown::Write);
                             return Ok(Err(err.into()));
                         }
                     }
-                    Err(err) => return Ok(Err(err.into())),
+                    Err(err) => {
+                        _ = stream
+                            .as_socketlike_view::<std::net::TcpStream>()
+                            .shutdown(Shutdown::Write);
+                        return Ok(Err(err.into()));
+                    }
                 }
             }
         }
@@ -582,24 +537,19 @@ where
             let (data_tx, data_rx) = stream(&mut store).context("failed to create stream")?;
             let (res_tx, res_rx) = future(&mut store).context("failed to create future")?;
             let sock = get_socket_mut(store.data_mut().table(), &socket)?;
-            let (abort_tx, abort_rx) = oneshot::channel();
-            if let TcpState::Connected {
-                stream,
-                abort_receive,
-            } = &mut sock.tcp_state
-            {
-                ensure!(
-                    abort_receive.replace(abort_tx).is_none(),
-                    "`receive` can called at most once"
-                );
-                let stream = Arc::clone(&stream);
+            if let TcpState::Connected { rx, abort, .. } = &mut sock.tcp_state {
+                let rx = rx.take().context("`receive` can be called at most once")?;
+                let abort = Arc::clone(&abort);
                 store.spawn(ReceiveTask {
-                    stream,
                     data: data_tx,
                     result: res_tx,
-                    abort: abort_rx,
+                    abort,
+                    rx,
                 });
             } else {
+                data_tx
+                    .close(&mut store)
+                    .context("failed to close stream")?;
                 let fut = res_tx
                     .write(&mut store, Err(ErrorCode::InvalidState))
                     .context("failed to write result to future")?;
@@ -790,6 +740,19 @@ where
                     Arc::into_inner(listener).is_some(),
                     "corrupted listener state"
                 );
+                Ok(())
+            }
+            TcpState::Connected {
+                abort,
+                finished,
+                stream,
+                ..
+            } => {
+                abort.notify_waiters();
+                // this will unblock only once the task finishes
+                _ = finished.recv();
+                // this must be the only reference to the stream left
+                ensure!(Arc::into_inner(stream).is_some(), "corrupted stream state");
                 Ok(())
             }
             _ => Ok(()),

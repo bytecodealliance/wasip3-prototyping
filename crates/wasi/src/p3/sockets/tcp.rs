@@ -1,22 +1,109 @@
 use core::fmt::Debug;
+use core::future::{poll_fn, Future as _};
 use core::net::SocketAddr;
+use core::pin::pin;
+use core::task::Poll;
 
+use std::net::Shutdown;
 use std::os::fd::{AsFd as _, BorrowedFd};
 use std::sync::Arc;
 
 use cap_net_ext::AddressFamily;
+use io_lifetimes::AsSocketlike as _;
 use rustix::io::Errno;
 use rustix::net::sockopt;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::p3::bindings::sockets::types::{Duration, ErrorCode, IpAddressFamily, IpSocketAddress};
 use crate::p3::sockets::SocketAddressFamily;
-use crate::runtime::{with_ambient_tokio_runtime, AbortOnDropJoinHandle};
+use crate::runtime::{spawn, with_ambient_tokio_runtime, AbortOnDropJoinHandle};
 
 use super::util::{normalize_get_buffer_size, normalize_set_buffer_size};
 
 /// Value taken from rust std library.
 const DEFAULT_BACKLOG: u32 = 128;
+
+pub async fn handle_stream(
+    stream: Arc<tokio::net::TcpStream>,
+    abort: Arc<Notify>,
+    finished: std::sync::mpsc::Sender<()>,
+    tx: mpsc::Sender<Result<Vec<u8>, ErrorCode>>,
+) {
+    let mut abort = pin!(abort.notified());
+    loop {
+        let tx = tx.reserve();
+        let mut tx = pin!(tx);
+        let Some(Ok(tx)) = poll_fn(|cx| match abort.as_mut().poll(cx) {
+            Poll::Ready(..) => Poll::Ready(None),
+            Poll::Pending => tx.as_mut().poll(cx).map(Some),
+        })
+        .await
+        else {
+            break;
+        };
+        let mut buf = vec![0; 8096];
+        match stream.try_read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                buf.truncate(n);
+                tx.send(Ok(buf));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                let mut readable = pin!(stream.readable());
+                match poll_fn(|cx| match abort.as_mut().poll(cx) {
+                    Poll::Ready(..) => Poll::Ready(None),
+                    Poll::Pending => readable.as_mut().poll(cx).map(Some),
+                })
+                .await
+                {
+                    Some(Ok(())) => {}
+                    Some(Err(err)) => tx.send(Err(err.into())),
+                    None => break,
+                }
+            }
+            Err(err) => tx.send(Err(err.into())),
+        }
+    }
+    _ = stream
+        .as_socketlike_view::<std::net::TcpStream>()
+        .shutdown(Shutdown::Read);
+    drop(stream);
+    _ = finished.send(());
+}
+
+pub async fn handle_listener(
+    listener: Arc<tokio::net::TcpListener>,
+    abort: oneshot::Receiver<()>,
+    finished: std::sync::mpsc::Sender<()>,
+    tx: mpsc::Sender<std::io::Result<(tokio::net::TcpStream, SocketAddr)>>,
+) {
+    let mut abort = pin!(abort);
+    loop {
+        let tx = tx.reserve();
+        let mut tx = pin!(tx);
+        let Some(Ok(tx)) = poll_fn(|cx| match abort.as_mut().poll(cx) {
+            Poll::Ready(..) => Poll::Ready(None),
+            Poll::Pending => tx.as_mut().poll(cx).map(Some),
+        })
+        .await
+        else {
+            break;
+        };
+        let accept = listener.accept();
+        let mut accept = pin!(accept);
+        let Some(res) = poll_fn(|cx| match abort.as_mut().poll(cx) {
+            Poll::Ready(..) => Poll::Ready(None),
+            Poll::Pending => accept.as_mut().poll(cx).map(Some),
+        })
+        .await
+        else {
+            break;
+        };
+        tx.send(res);
+    }
+    drop(listener);
+    _ = finished.send(());
+}
 
 /// The state of a TCP socket.
 ///
@@ -32,9 +119,9 @@ pub enum TcpState {
     /// The socket is now listening and waiting for an incoming connection.
     Listening {
         listener: Arc<tokio::net::TcpListener>,
-        task: AbortOnDropJoinHandle<()>,
         finished: std::sync::mpsc::Receiver<()>,
         abort: oneshot::Sender<()>,
+        task: AbortOnDropJoinHandle<()>,
     },
 
     /// An outgoing connection is started.
@@ -43,7 +130,10 @@ pub enum TcpState {
     /// A connection has been established.
     Connected {
         stream: Arc<tokio::net::TcpStream>,
-        abort_receive: Option<oneshot::Sender<()>>,
+        finished: std::sync::mpsc::Receiver<()>,
+        abort: Arc<Notify>,
+        rx: Option<mpsc::Receiver<Result<Vec<u8>, ErrorCode>>>,
+        task: AbortOnDropJoinHandle<()>,
     },
 
     Error(ErrorCode),
@@ -61,6 +151,22 @@ impl Debug for TcpState {
             Self::Connected { .. } => f.debug_tuple("Connected").finish(),
             Self::Error(..) => f.debug_tuple("Error").finish(),
             Self::Closed => write!(f, "Closed"),
+        }
+    }
+}
+
+impl TcpState {
+    pub fn connected(stream: tokio::net::TcpStream) -> Self {
+        let stream = Arc::new(stream);
+        let (task_tx, task_rx) = mpsc::channel(1);
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let abort = Arc::default();
+        Self::Connected {
+            stream: Arc::clone(&stream),
+            finished: finished_rx,
+            abort: Arc::clone(&abort),
+            rx: Some(task_rx),
+            task: spawn(handle_stream(stream, abort, finished_tx, task_tx)),
         }
     }
 }

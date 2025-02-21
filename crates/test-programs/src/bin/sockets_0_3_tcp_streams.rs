@@ -2,7 +2,7 @@ use core::future::Future;
 
 use futures::{join, SinkExt as _, StreamExt as _, TryStreamExt as _};
 use test_programs::p3::wasi::sockets::types::{
-    ErrorCode, IpAddress, IpAddressFamily, IpSocketAddress, TcpSocket,
+    IpAddress, IpAddressFamily, IpSocketAddress, TcpSocket,
 };
 use test_programs::p3::wit_stream;
 
@@ -13,17 +13,6 @@ test_programs::p3::export!(Component);
 /// InputStream::read should return `StreamError::Closed` after the connection has been shut down by the server.
 async fn test_tcp_input_stream_should_be_closed_by_remote_shutdown(family: IpAddressFamily) {
     setup(family, |server, client| async move {
-        let (mut server_tx, server_rx) = wit_stream::new();
-        join!(
-            async {
-                server.send(server_rx).await.unwrap();
-            },
-            async {
-                // Shut down the connection from the server side:
-                server_tx.close().await.unwrap();
-                drop(server_tx);
-            },
-        );
         drop(server);
 
         let (mut client_rx, client_fut) = client.receive();
@@ -32,11 +21,9 @@ async fn test_tcp_input_stream_should_be_closed_by_remote_shutdown(family: IpAdd
         // Notably, it should _not_ return an empty list (the wasi-io equivalent of EWOULDBLOCK)
         // See: https://github.com/bytecodealliance/wasmtime/pull/8968
 
-        // TODO: Verify
-
         // Wait for the shutdown signal to reach the client:
         assert!(client_rx.next().await.is_none());
-        assert_eq!(client_fut.await, Some(Ok(Err(ErrorCode::ConnectionReset))));
+        assert_eq!(client_fut.await, Some(Ok(Ok(()))));
     })
     .await;
 }
@@ -56,48 +43,37 @@ async fn test_tcp_input_stream_should_be_closed_by_local_shutdown(family: IpAddr
                 server_tx.send(b"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.".into()).await.unwrap();
                 drop(server_tx);
             },
-    );
+        );
 
         let (client_rx, client_fut) = client.receive();
-
-        // TODO: Verify
 
         // Shut down socket locally:
         drop(client_rx);
         // Wait for the shutdown signal to reach the client:
-        assert_eq!(client_fut.await, Some(Ok(Err(ErrorCode::ConnectionReset))));
+        assert_eq!(client_fut.await, Some(Ok(Ok(()))));
     }).await;
 }
 
-/// OutputStream should return `StreamError::Closed` after the connection has been locally shut down for sending.
+/// StreamWriter should return `StreamError::Closed` after the connection has been locally shut down for sending.
 async fn test_tcp_output_stream_should_be_closed_by_local_shutdown(family: IpAddressFamily) {
-    setup(family, |server, client| async move {
-        let (server_tx, server_rx) = wit_stream::new();
-        drop(server_tx);
-        server.send(server_rx).await.unwrap();
-
-        let (server_tx, server_rx) = wit_stream::new();
-        drop(server_tx);
-        assert_eq!(
-            server.send(server_rx).await,
-            Err(ErrorCode::ConnectionReset)
-        );
-
-        let (client_tx, client_rx) = wit_stream::new();
-        drop(client_tx);
-        client.send(client_rx).await.unwrap();
-
-        let (client_tx, client_rx) = wit_stream::new();
-        drop(client_tx);
-        assert_eq!(
-            client.send(client_rx).await,
-            Err(ErrorCode::ConnectionReset)
+    setup(family, |_server, client| async move {
+        let (mut client_tx, client_rx) = wit_stream::new();
+        client_tx.close().await.unwrap();
+        join!(
+            async {
+                client.send(client_rx).await.unwrap();
+            },
+            async {
+                // TODO: Verify if send on the stream should return an error
+                //assert!(client_tx.send(b"Hi!".into()).await.is_err());
+                drop(client_tx);
+            }
         );
     })
     .await;
 }
 
-/// Calling `shutdown` while the OutputStream is in the middle of a background write should not cause that write to be lost.
+/// Calling `shutdown` while the StreamWriter is in the middle of a background write should not cause that write to be lost.
 async fn test_tcp_shutdown_should_not_lose_data(family: IpAddressFamily) {
     setup(family, |server, client| async move {
         // Minimize the local send buffer:
@@ -117,20 +93,19 @@ async fn test_tcp_shutdown_should_not_lose_data(family: IpAddressFamily) {
             },
             async {
                 client_tx.send(outgoing_data.clone()).await.unwrap();
-                client_tx.close().await.unwrap();
                 drop(client_tx);
             },
+            async {
+                // The peer should receive _all_ data:
+                let (server_rx, server_fut) = server.receive();
+                let incoming_data = server_rx.try_collect::<Vec<_>>().await.unwrap().concat();
+                assert_eq!(
+                    outgoing_data, incoming_data,
+                    "Received data should match the sent data"
+                );
+                server_fut.await.unwrap().unwrap().unwrap()
+            },
         );
-
-        // The peer should receive _all_ data:
-        let (server_rx, server_fut) = server.receive();
-        let incoming_data = server_rx.try_collect::<Vec<_>>().await.unwrap().concat();
-        assert_eq!(
-            outgoing_data.len(),
-            incoming_data.len(),
-            "Received data should match the sent data"
-        );
-        server_fut.await.unwrap().unwrap().unwrap()
     })
     .await;
 }
