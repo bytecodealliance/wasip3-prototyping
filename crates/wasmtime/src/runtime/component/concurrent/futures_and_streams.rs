@@ -837,9 +837,8 @@ impl<T> FutureReader<T> {
         let recv = host_read::<T, _, _>(store, self.rep)?;
         let result = recv.map(|v| match v {
             Ok(HostReadResult::Values(v)) => v.into_iter().next().map(Result::Ok),
-            Ok(HostReadResult::EndOfStream(None)) => None,
+            Ok(HostReadResult::EndOfStream(None)) | Err(_) => None,
             Ok(HostReadResult::EndOfStream(s)) => s.map(Result::Err),
-            Err(_) => unreachable!(),
         });
         Ok(Promise(Box::pin(result)))
     }
