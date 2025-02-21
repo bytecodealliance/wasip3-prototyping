@@ -119,7 +119,7 @@ interface types {
     /// permitted because the fields are immutable.
     immutable,
   }
-  
+
   /// This type enumerates the different kinds of errors that may occur when
   /// setting fields of a `request-options` resource.
   variant request-options-error {
@@ -234,13 +234,30 @@ interface types {
   /// interface may only be consuming either the body contents or waiting on
   /// trailers at any given time.
   resource body {
-  
+
     /// Construct a new `body` with the specified stream and trailers.
+    ///
+    /// This function returns a future, which will resolve
+    /// to an error code if transmitting stream data fails.
+    ///
+    /// The returned future resolves to success once body stream
+    /// is fully transmitted.
     constructor(
       %stream: stream<u8>,
-      trailers: option<future<trailers>>
     );
-  
+
+    /// Construct a new `body` with the specified stream and trailers.
+    ///
+    /// This function returns a future, which will resolve
+    /// to an error code if transmitting stream data or trailers fails.
+    ///
+    /// The returned future resolves to success once body stream and trailers
+    /// are fully transmitted.
+    new-with-trailers: static func(
+      %stream: stream<u8>,
+      trailers: future<trailers>
+    ) -> body;
+
     /// Returns the contents of the body, as a stream of bytes.
     ///
     /// This function may be called multiple times as long as any `stream`s
@@ -249,9 +266,9 @@ interface types {
 
     /// Takes ownership of `body`, and returns a `trailers`.  This function will
     /// trap if a `stream` child is still alive.
-    finish: static func(this: body) -> result<option<trailers>, error-code>;
+    finish: static func(this: body) -> future<trailers>;
   }
-  
+
   /// Represents an HTTP Request.
   resource request {
 

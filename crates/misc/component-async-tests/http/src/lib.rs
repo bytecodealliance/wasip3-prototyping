@@ -27,11 +27,8 @@ use {
     anyhow::anyhow,
     std::{fmt, future::Future, mem},
     wasi::http::types::{ErrorCode, HeaderError, Method, RequestOptionsError, Scheme},
-    wasmtime::{
-        component::{
-            Accessor, ErrorContext, FutureReader, Linker, Resource, ResourceTable, StreamReader,
-        },
-        AsContextMut,
+    wasmtime::component::{
+        future, Accessor, ErrorContext, FutureReader, Linker, Resource, ResourceTable, StreamReader,
     },
 };
 
@@ -210,14 +207,21 @@ where
 {
     type BodyData = T::Data;
 
-    fn new(
+    fn new(&mut self, stream: StreamReader<u8>) -> wasmtime::Result<Resource<Body>> {
+        Ok(self.table().push(Body {
+            stream: Some(stream),
+            trailers: None,
+        })?)
+    }
+
+    fn new_with_trailers(
         &mut self,
         stream: StreamReader<u8>,
-        trailers: Option<FutureReader<Resource<Fields>>>,
+        trailers: FutureReader<Resource<Fields>>,
     ) -> wasmtime::Result<Resource<Body>> {
         Ok(self.table().push(Body {
             stream: Some(stream),
-            trailers,
+            trailers: Some(trailers),
         })?)
     }
 
@@ -233,25 +237,20 @@ where
     async fn finish(
         accessor: &mut Accessor<Self::BodyData>,
         this: Resource<Body>,
-    ) -> wasmtime::Result<Result<Option<Resource<Fields>>, ErrorCode>> {
+    ) -> wasmtime::Result<FutureReader<Resource<Fields>>> {
         let trailers = accessor.with(|mut store| {
             let trailers = store.data_mut().table().delete(this)?.trailers;
-            trailers
-                .map(|v| v.read(store.as_context_mut()).map(|v| v.into_future()))
-                .transpose()
+            Ok::<FutureReader<_>, anyhow::Error>(match trailers {
+                Some(t) => t,
+                None => {
+                    let (future_tx, future_rx) = future(&mut store)?;
+                    future_tx.close(store)?;
+                    future_rx
+                }
+            })
         })?;
 
-        let maybe_trailers = if let Some(trailers) = trailers {
-            match trailers.await {
-                Some(Ok(trailers)) => Some(trailers),
-                Some(Err(_err_ctx)) => return Ok(Err(ErrorCode::InternalError(None))),
-                None => None,
-            }
-        } else {
-            None
-        };
-
-        Ok(Ok(maybe_trailers))
+        Ok(trailers)
     }
 
     fn drop(&mut self, this: Resource<Body>) -> wasmtime::Result<()> {

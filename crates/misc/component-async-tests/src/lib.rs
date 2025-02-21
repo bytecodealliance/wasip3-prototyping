@@ -1783,7 +1783,7 @@ mod test {
                         )));
                     }
 
-                    response_trailers = response.body.trailers.take();
+                    response_trailers = Some(response.body.trailers);
 
                     promises.push(
                         response
@@ -1813,6 +1813,7 @@ mod test {
                     promises.push(
                         response_trailers
                             .take()
+                            .unwrap()
                             .unwrap()
                             .read(&mut store)?
                             .map(Event::ResponseTrailersRead),
