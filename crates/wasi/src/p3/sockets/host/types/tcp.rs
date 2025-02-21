@@ -239,13 +239,11 @@ impl<T: WasiSocketsView> BackgroundTask<T> for ReceiveTask {
             let mut buf = vec![0; 8096];
             match self.stream.try_read(&mut buf) {
                 Ok(0) => {
-                    if let Err(err) = self
+                    _ = self
                         .stream
                         .as_socketlike_view::<std::net::TcpStream>()
-                        .shutdown(Shutdown::Read)
-                    {
-                        break Err(err.into());
-                    }
+                        .shutdown(Shutdown::Read);
+                    break Ok(());
                 }
                 Ok(n) => {
                     buf.truncate(n);
@@ -549,13 +547,10 @@ where
         let mut fut = fut.into_future();
         'outer: loop {
             let Some((tail, mut buf)) = fut.await else {
-                match stream
+                _ = stream
                     .as_socketlike_view::<std::net::TcpStream>()
-                    .shutdown(Shutdown::Write)
-                {
-                    Ok(()) => return Ok(Ok(())),
-                    Err(err) => return Ok(Err(err.into())),
-                }
+                    .shutdown(Shutdown::Write);
+                return Ok(Ok(()));
             };
             let mut buf = buf.as_mut_slice();
             loop {
