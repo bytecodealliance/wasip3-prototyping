@@ -116,8 +116,8 @@ mod values;
 pub use self::component::{Component, ComponentExportIndex};
 #[cfg(feature = "component-model-async")]
 pub use self::concurrent::{
-    future, stream, Accessor, BackgroundTask, ErrorContext, FutureReader, FutureWriter, Promise,
-    PromisesUnordered, StreamReader, StreamWriter, VMComponentAsyncStore,
+    future, stream, AbortOnDropHandle, Accessor, BackgroundTask, ErrorContext, FutureReader,
+    FutureWriter, Promise, PromisesUnordered, StreamReader, StreamWriter, VMComponentAsyncStore,
 };
 pub use self::func::{
     ComponentNamedList, ComponentType, Func, Lift, Lower, TypedFunc, WasmList, WasmStr,
@@ -140,6 +140,8 @@ pub use wasm_wave;
 // Wasmtime's API stability guarantees
 #[doc(hidden)]
 pub mod __internal {
+    #[cfg(feature = "component-model-async")]
+    pub use super::concurrent::{SpawnHandle, Spawned, SpawnedInner};
     pub use super::func::{
         bad_type_info, format_flags, lower_payload, typecheck_enum, typecheck_flags,
         typecheck_record, typecheck_variant, ComponentVariant, LiftContext, LowerContext, Options,
@@ -153,6 +155,8 @@ pub mod __internal {
     pub use alloc::vec::Vec;
     pub use anyhow;
     pub use core::mem::transmute;
+    #[cfg(feature = "component-model-async")]
+    pub use futures::future::poll_fn;
     #[cfg(feature = "async")]
     pub use trait_variant::make as trait_variant_make;
     pub use wasmtime_environ;

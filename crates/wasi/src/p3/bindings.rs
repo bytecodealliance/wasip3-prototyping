@@ -68,9 +68,7 @@
 //! }
 //!
 //! impl example::wasi::custom_host::Host for MyState {
-//!     type Data = Self;
-//!
-//!     async fn my_custom_function(_store: &mut Accessor<Self::Data>) {
+//!     async fn my_custom_function<T>(_store: &mut Accessor<T, Self>) {
 //!         // ..
 //!     }
 //! }

@@ -47,8 +47,6 @@ impl<T> monotonic_clock::Host for WasiClocksImpl<&mut T>
 where
     T: WasiClocksView,
 {
-    type Data = T;
-
     fn now(&mut self) -> wasmtime::Result<monotonic_clock::Instant> {
         Ok(self.clocks().monotonic_clock.now())
     }
@@ -57,11 +55,11 @@ where
         Ok(self.clocks().monotonic_clock.resolution())
     }
 
-    fn wait_until(
-        store: &mut Accessor<Self::Data>,
+    fn wait_until<U>(
+        store: &mut Accessor<U, Self>,
         when: monotonic_clock::Instant,
     ) -> impl Future<Output = wasmtime::Result<()>> {
-        let clock_now = store.with(|store| store.data().clocks().monotonic_clock.now());
+        let clock_now = store.with(|view| view.clocks().monotonic_clock.now());
         async move {
             if when > clock_now {
                 sleep(Duration::from_nanos(when - clock_now)).await;
@@ -70,8 +68,8 @@ where
         }
     }
 
-    fn wait_for(
-        _store: &mut Accessor<Self::Data>,
+    fn wait_for<U>(
+        _store: &mut Accessor<U, Self>,
         duration: monotonic_clock::Duration,
     ) -> impl Future<Output = wasmtime::Result<()>> {
         async move {

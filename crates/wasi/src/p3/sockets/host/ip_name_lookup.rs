@@ -13,10 +13,8 @@ impl<T> Host for WasiSocketsImpl<&mut T>
 where
     T: WasiSocketsView,
 {
-    type Data = T;
-
-    async fn resolve_addresses(
-        store: &mut Accessor<Self::Data>,
+    async fn resolve_addresses<U>(
+        store: &mut Accessor<U, Self>,
         name: String,
     ) -> wasmtime::Result<Result<Vec<types::IpAddress>, ErrorCode>> {
         // `url::Host::parse` serves us two functions:
@@ -30,7 +28,7 @@ where
         } else {
             return Ok(Err(ErrorCode::InvalidArgument));
         };
-        if !store.with(|store| store.data().sockets().allowed_network_uses.ip_name_lookup) {
+        if !store.with(|view| view.sockets().allowed_network_uses.ip_name_lookup) {
             return Ok(Err(ErrorCode::PermanentResolverFailure));
         }
         match host {
