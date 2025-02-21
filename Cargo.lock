@@ -4720,6 +4720,7 @@ dependencies = [
  "futures",
  "io-extras",
  "io-lifetimes",
+ "pretty_env_logger",
  "rustix",
  "system-interface",
  "tempfile",
@@ -5271,7 +5272,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen"
 version = "0.39.0"
-source = "git+https://github.com/bytecodealliance/wit-bindgen?rev=30be75ef7febe14b36dc52d8b7f361e81fa80863#30be75ef7febe14b36dc52d8b7f361e81fa80863"
+source = "git+https://github.com/rvolosatovs/wit-bindgen?branch=dbg#c6e0e648c31e18e08aadd974cf46bceb7e905181"
 dependencies = [
  "wit-bindgen-rt 0.39.0",
  "wit-bindgen-rust-macro",
@@ -5280,7 +5281,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-core"
 version = "0.39.0"
-source = "git+https://github.com/bytecodealliance/wit-bindgen?rev=30be75ef7febe14b36dc52d8b7f361e81fa80863#30be75ef7febe14b36dc52d8b7f361e81fa80863"
+source = "git+https://github.com/rvolosatovs/wit-bindgen?branch=dbg#c6e0e648c31e18e08aadd974cf46bceb7e905181"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5299,7 +5300,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rt"
 version = "0.39.0"
-source = "git+https://github.com/bytecodealliance/wit-bindgen?rev=30be75ef7febe14b36dc52d8b7f361e81fa80863#30be75ef7febe14b36dc52d8b7f361e81fa80863"
+source = "git+https://github.com/rvolosatovs/wit-bindgen?branch=dbg#c6e0e648c31e18e08aadd974cf46bceb7e905181"
 dependencies = [
  "bitflags 2.6.0",
  "futures",
@@ -5309,7 +5310,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rust"
 version = "0.39.0"
-source = "git+https://github.com/bytecodealliance/wit-bindgen?rev=30be75ef7febe14b36dc52d8b7f361e81fa80863#30be75ef7febe14b36dc52d8b7f361e81fa80863"
+source = "git+https://github.com/rvolosatovs/wit-bindgen?branch=dbg#c6e0e648c31e18e08aadd974cf46bceb7e905181"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5324,7 +5325,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rust-macro"
 version = "0.39.0"
-source = "git+https://github.com/bytecodealliance/wit-bindgen?rev=30be75ef7febe14b36dc52d8b7f361e81fa80863#30be75ef7febe14b36dc52d8b7f361e81fa80863"
+source = "git+https://github.com/rvolosatovs/wit-bindgen?branch=dbg#c6e0e648c31e18e08aadd974cf46bceb7e905181"
 dependencies = [
  "anyhow",
  "prettyplease",

@@ -34,10 +34,8 @@ fn main() {
                 .unwrap()
                 .block_on(async {
                     'task: loop {
-                        println!("child: creating stdin");
                         let mut stdin = wasmtime_wasi::stdin();
 
-                        println!("child: checking that stdin is not ready");
                         assert!(
                             tokio::time::timeout(
                                 std::time::Duration::from_millis(100),
@@ -50,18 +48,13 @@ fn main() {
 
                         writeln!(&mut result_write, "start").unwrap();
 
-                        println!("child: started");
-
                         let mut buffer = String::new();
                         loop {
-                            println!("child: waiting for stdin to be ready");
                             stdin.ready().await;
 
-                            println!("child: reading input");
                             // We can't effectively test for the case where stdin was closed, so panic if it is...
                             let bytes = stdin.read(1024).unwrap();
 
-                            println!("child got: {bytes:?}");
 
                             buffer.push_str(std::str::from_utf8(bytes.as_ref()).unwrap());
                             if let Some((line, rest)) = buffer.split_once('\n') {

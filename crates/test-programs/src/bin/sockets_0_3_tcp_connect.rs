@@ -100,10 +100,13 @@ async fn test_tcp_connect_explicit_bind(family: IpAddressFamily) {
     let (listener, mut accept) = {
         let bind_address = IpSocketAddress::new(ip, 0);
         let listener = TcpSocket::new(family);
+        eprintln!("bind...");
         listener.bind(bind_address).unwrap();
+        eprintln!("listen...");
         let accept = listener.listen().unwrap();
         (listener, accept)
     };
+    eprintln!("done listen");
 
     let listener_address = listener.local_address().unwrap();
     let client = TcpSocket::new(family);
@@ -114,30 +117,44 @@ async fn test_tcp_connect_explicit_bind(family: IpAddressFamily) {
     // Connect should work:
     join!(
         async {
+            eprintln!("wait for connect...");
             client.connect(listener_address).await.unwrap();
+            eprintln!("connected");
         },
         async {
+            eprintln!("wait for accept...");
             accept.next().await.unwrap().unwrap();
+            eprintln!("accepted");
         }
     );
 }
 
 impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
     async fn run() -> Result<(), ()> {
+        eprintln!("unspec 4");
         test_tcp_connect_unspec(IpAddressFamily::Ipv4).await;
+        eprintln!("unspec 6");
         test_tcp_connect_unspec(IpAddressFamily::Ipv6).await;
 
+        eprintln!("port0 4");
         test_tcp_connect_port_0(IpAddressFamily::Ipv4).await;
+        eprintln!("port0 6");
         test_tcp_connect_port_0(IpAddressFamily::Ipv6).await;
 
+        eprintln!("wrong 4");
         test_tcp_connect_wrong_family(IpAddressFamily::Ipv4).await;
+        eprintln!("wrong 6");
         test_tcp_connect_wrong_family(IpAddressFamily::Ipv6).await;
 
+        eprintln!("unicast");
         test_tcp_connect_non_unicast().await;
 
+        eprintln!("dualcast");
         test_tcp_connect_dual_stack().await;
 
+        eprintln!("explicit 4");
         test_tcp_connect_explicit_bind(IpAddressFamily::Ipv4).await;
+        eprintln!("explicit 6");
         test_tcp_connect_explicit_bind(IpAddressFamily::Ipv6).await;
         Ok(())
     }

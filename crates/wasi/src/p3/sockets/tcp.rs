@@ -81,26 +81,32 @@ pub async fn handle_listener(
     loop {
         let tx = tx.reserve();
         let mut tx = pin!(tx);
+        eprintln!("[host] reserve...");
         let Some(Ok(tx)) = poll_fn(|cx| match abort.as_mut().poll(cx) {
             Poll::Ready(..) => Poll::Ready(None),
             Poll::Pending => tx.as_mut().poll(cx).map(Some),
         })
         .await
         else {
+            eprintln!("aborted");
             break;
         };
         let accept = listener.accept();
         let mut accept = pin!(accept);
+        eprintln!("[host] accept...");
         let Some(res) = poll_fn(|cx| match abort.as_mut().poll(cx) {
             Poll::Ready(..) => Poll::Ready(None),
             Poll::Pending => accept.as_mut().poll(cx).map(Some),
         })
         .await
         else {
+            eprintln!("aborted");
             break;
         };
+        eprintln!("send res");
         tx.send(res);
     }
+    eprintln!("done");
     drop(listener);
     _ = finished.send(());
 }

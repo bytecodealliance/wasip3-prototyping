@@ -119,7 +119,9 @@ struct ListenTask {
 impl<T, U: WasiSocketsView> BackgroundTask<T, U> for ListenTask {
     async fn run(mut self, store: &mut Accessor<T, U>) -> wasmtime::Result<()> {
         let mut tx = self.tx;
+        eprintln!("recv...");
         while let Some(res) = self.rx.recv().await {
+            eprintln!("recved");
             let state = match res {
                 Ok((stream, _addr)) => {
                     #[cfg(target_os = "macos")]
@@ -219,8 +221,11 @@ impl<T, U: WasiSocketsView> BackgroundTask<T, U> for ListenTask {
                 tx.write(view.as_context_mut(), vec![socket])
                     .context("failed to send socket")
             })?;
+            eprintln!("send socket...");
             tx = fut.into_future().await;
+            eprintln!("done sending socket");
         }
+        eprintln!("close stream");
         store.with(|store| tx.close(store).context("failed to close stream"))?;
         Ok(())
     }

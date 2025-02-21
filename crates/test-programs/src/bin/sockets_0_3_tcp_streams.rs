@@ -112,16 +112,24 @@ async fn test_tcp_shutdown_should_not_lose_data(family: IpAddressFamily) {
 
 impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
     async fn run() -> Result<(), ()> {
+        eprintln!("remote/v4");
         test_tcp_input_stream_should_be_closed_by_remote_shutdown(IpAddressFamily::Ipv4).await;
+        eprintln!("remote/v6");
         test_tcp_input_stream_should_be_closed_by_remote_shutdown(IpAddressFamily::Ipv6).await;
 
+        eprintln!("local/v4");
         test_tcp_input_stream_should_be_closed_by_local_shutdown(IpAddressFamily::Ipv4).await;
+        eprintln!("local/v6");
         test_tcp_input_stream_should_be_closed_by_local_shutdown(IpAddressFamily::Ipv6).await;
 
+        eprintln!("output/v4");
         test_tcp_output_stream_should_be_closed_by_local_shutdown(IpAddressFamily::Ipv4).await;
+        eprintln!("output/v6");
         test_tcp_output_stream_should_be_closed_by_local_shutdown(IpAddressFamily::Ipv6).await;
 
+        eprintln!("not lose/v4");
         test_tcp_shutdown_should_not_lose_data(IpAddressFamily::Ipv4).await;
+        eprintln!("not lose/v6");
         test_tcp_shutdown_should_not_lose_data(IpAddressFamily::Ipv6).await;
         Ok(())
     }

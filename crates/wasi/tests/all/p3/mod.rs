@@ -88,7 +88,15 @@ impl WasiSocketsView for Ctx {
     }
 }
 
+fn init_logger() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(pretty_env_logger::init);
+}
+
 async fn run(path: &str) -> anyhow::Result<()> {
+    init_logger();
+
     let engine = test_programs_artifacts::engine(|config| {
         config.async_support(true);
         config.wasm_component_model_async(true);
