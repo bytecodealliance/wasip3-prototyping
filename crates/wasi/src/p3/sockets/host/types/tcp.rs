@@ -456,6 +456,17 @@ where
                         task: spawn(async move {
                             let mut abort = pin!(abort_rx);
                             loop {
+                                let task_tx = task_tx.reserve();
+                                let mut task_tx = pin!(task_tx);
+                                let Some(Ok(task_tx)) =
+                                    poll_fn(|cx| match abort.as_mut().poll(cx) {
+                                        Poll::Ready(..) => Poll::Ready(None),
+                                        Poll::Pending => task_tx.as_mut().poll(cx).map(Some),
+                                    })
+                                    .await
+                                else {
+                                    break;
+                                };
                                 let accept = listener.accept();
                                 let mut accept = pin!(accept);
                                 let Some(res) = poll_fn(|cx| match abort.as_mut().poll(cx) {
@@ -466,17 +477,7 @@ where
                                 else {
                                     break;
                                 };
-                                let send = task_tx.send(res);
-                                let mut send = pin!(send);
-                                match poll_fn(|cx| match abort.as_mut().poll(cx) {
-                                    Poll::Ready(..) => Poll::Ready(None),
-                                    Poll::Pending => send.as_mut().poll(cx).map(Some),
-                                })
-                                .await
-                                {
-                                    None | Some(Err(..)) => break,
-                                    Some(Ok(())) => {}
-                                }
+                                task_tx.send(res);
                             }
                             drop(listener);
                             _ = finished_tx.send(());
