@@ -244,7 +244,7 @@ where
                 Some(t) => t,
                 None => {
                     let (future_tx, future_rx) = future(&mut store)?;
-                    let _ = future_tx.close(store)?;
+                    future_tx.close(store)?;
                     future_rx
                 }
             })
