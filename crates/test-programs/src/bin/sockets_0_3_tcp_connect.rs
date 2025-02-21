@@ -1,3 +1,4 @@
+use futures::{join, StreamExt as _};
 use test_programs::p3::wasi::sockets::types::{
     ErrorCode, IpAddress, IpAddressFamily, IpSocketAddress, TcpSocket,
 };
@@ -96,12 +97,12 @@ async fn test_tcp_connect_dual_stack() {
 async fn test_tcp_connect_explicit_bind(family: IpAddressFamily) {
     let ip = IpAddress::new_loopback(family);
 
-    let listener = {
+    let (listener, mut accept) = {
         let bind_address = IpSocketAddress::new(ip, 0);
         let listener = TcpSocket::new(family);
         listener.bind(bind_address).unwrap();
-        listener.listen().unwrap();
-        listener
+        let accept = listener.listen().unwrap();
+        (listener, accept)
     };
 
     let listener_address = listener.local_address().unwrap();
@@ -111,7 +112,14 @@ async fn test_tcp_connect_explicit_bind(family: IpAddressFamily) {
     client.bind(IpSocketAddress::new(ip, 0)).unwrap();
 
     // Connect should work:
-    client.connect(listener_address).await.unwrap();
+    join!(
+        async {
+            client.connect(listener_address).await.unwrap();
+        },
+        async {
+            accept.next().await.unwrap().unwrap();
+        }
+    );
 }
 
 impl test_programs::p3::exports::wasi::cli::run::Guest for Component {

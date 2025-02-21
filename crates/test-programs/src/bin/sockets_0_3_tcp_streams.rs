@@ -140,10 +140,15 @@ async fn setup<Fut: Future<Output = ()>>(
     let mut accept = listener.listen().unwrap();
     let bound_address = listener.local_address().unwrap();
     let client_socket = TcpSocket::new(family);
-    client_socket.connect(bound_address).await.unwrap();
-    let mut accepted_socket = accept.next().await.unwrap().unwrap();
-    assert_eq!(accepted_socket.len(), 1);
-    let accepted_socket = accepted_socket.pop().unwrap();
-
+    let ((), accepted_socket) = join!(
+        async {
+            client_socket.connect(bound_address).await.unwrap();
+        },
+        async {
+            let mut accepted_socket = accept.next().await.unwrap().unwrap();
+            assert_eq!(accepted_socket.len(), 1);
+            accepted_socket.pop().unwrap()
+        },
+    );
     body(accepted_socket, client_socket).await;
 }

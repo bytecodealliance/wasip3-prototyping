@@ -61,20 +61,25 @@ async fn test_tcp_bind_reuseaddr(ip: IpAddress) {
 
         let connect_addr =
             IpSocketAddress::new(IpAddress::new_loopback(ip.family()), bind_addr.port());
-        client.connect(connect_addr).await.unwrap();
-
-        let mut sock = accept.next().await.unwrap().unwrap();
-        assert_eq!(sock.len(), 1);
-        let sock = sock.pop().unwrap();
-        let (mut data_tx, data_rx) = wit_stream::new();
         join!(
             async {
-                sock.send(data_rx).await.unwrap();
+                client.connect(connect_addr).await.unwrap();
             },
             async {
-                data_tx.send(vec![0; 10]).await.unwrap();
-                drop(data_tx);
-            }
+                let mut sock = accept.next().await.unwrap().unwrap();
+                assert_eq!(sock.len(), 1);
+                let sock = sock.pop().unwrap();
+                let (mut data_tx, data_rx) = wit_stream::new();
+                join!(
+                    async {
+                        sock.send(data_rx).await.unwrap();
+                    },
+                    async {
+                        data_tx.send(vec![0; 10]).await.unwrap();
+                        drop(data_tx);
+                    }
+                );
+            },
         );
 
         bind_addr

@@ -20,63 +20,64 @@ async fn test_tcp_sample_application(family: IpAddressFamily, bind_address: IpSo
 
     let addr = listener.local_address().unwrap();
 
-    {
-        let client = TcpSocket::new(family);
-        client.connect(addr).await.unwrap();
-        let (mut data_tx, data_rx) = wit_stream::new();
+    join!(
+        async {
+            let client = TcpSocket::new(family);
+            client.connect(addr).await.unwrap();
+            let (mut data_tx, data_rx) = wit_stream::new();
+            join!(
+                async {
+                    client.send(data_rx).await.unwrap();
+                },
+                async {
+                    data_tx.send(vec![]).await.unwrap();
+                    data_tx.send(first_message.into()).await.unwrap();
+                    drop(data_tx);
+                }
+            );
+        },
+        async {
+            let mut sock = accept.next().await.unwrap().unwrap();
+            assert_eq!(sock.len(), 1);
+            let sock = sock.pop().unwrap();
 
-        join!(
-            async {
-                client.send(data_rx).await.unwrap();
-            },
-            async {
-                data_tx.send(vec![]).await.unwrap();
-                data_tx.send(first_message.into()).await.unwrap();
-                drop(data_tx);
-            }
-        );
-    }
+            let (mut data_rx, fut) = sock.receive();
+            let data = data_rx.next().await.unwrap().unwrap();
 
-    {
-        let mut sock = accept.next().await.unwrap().unwrap();
-        assert_eq!(sock.len(), 1);
-        let sock = sock.pop().unwrap();
-
-        let (mut data_rx, fut) = sock.receive();
-        let data = data_rx.next().await.unwrap().unwrap();
-
-        // Check that we sent and received our message!
-        assert_eq!(data, first_message); // Not guaranteed to work but should work in practice.
-        fut.await.unwrap().unwrap().unwrap()
-    }
+            // Check that we sent and received our message!
+            assert_eq!(data, first_message); // Not guaranteed to work but should work in practice.
+            fut.await.unwrap().unwrap().unwrap()
+        },
+    );
 
     // Another client
-    {
-        let client = TcpSocket::new(family);
-        client.connect(addr).await.unwrap();
-        let (mut data_tx, data_rx) = wit_stream::new();
-        join!(
-            async {
-                client.send(data_rx).await.unwrap();
-            },
-            async {
-                data_tx.send(second_message.into()).await.unwrap();
-                drop(data_tx);
-            }
-        );
-    }
+    join!(
+        async {
+            let client = TcpSocket::new(family);
+            client.connect(addr).await.unwrap();
+            let (mut data_tx, data_rx) = wit_stream::new();
+            join!(
+                async {
+                    client.send(data_rx).await.unwrap();
+                },
+                async {
+                    data_tx.send(second_message.into()).await.unwrap();
+                    drop(data_tx);
+                }
+            );
+        },
+        async {
+            let mut sock = accept.next().await.unwrap().unwrap();
+            assert_eq!(sock.len(), 1);
+            let sock = sock.pop().unwrap();
+            let (mut data_rx, fut) = sock.receive();
+            let data = data_rx.next().await.unwrap().unwrap();
 
-    {
-        let mut sock = accept.next().await.unwrap().unwrap();
-        assert_eq!(sock.len(), 1);
-        let sock = sock.pop().unwrap();
-        let (mut data_rx, fut) = sock.receive();
-        let data = data_rx.next().await.unwrap().unwrap();
-
-        // Check that we sent and received our message!
-        assert_eq!(data, second_message); // Not guaranteed to work but should work in practice.
-        fut.await.unwrap().unwrap().unwrap()
-    }
+            // Check that we sent and received our message!
+            assert_eq!(data, second_message); // Not guaranteed to work but should work in practice.
+            fut.await.unwrap().unwrap().unwrap()
+        }
+    );
 }
 
 impl test_programs::p3::exports::wasi::cli::run::Guest for Component {

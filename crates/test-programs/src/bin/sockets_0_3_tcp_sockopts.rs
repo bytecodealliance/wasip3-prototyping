@@ -1,4 +1,4 @@
-use futures::StreamExt as _;
+use futures::{join, StreamExt as _};
 use test_programs::p3::wasi::sockets::types::{
     ErrorCode, IpAddress, IpAddressFamily, IpSocketAddress, TcpSocket,
 };
@@ -132,10 +132,16 @@ async fn test_tcp_sockopt_inheritance(family: IpAddressFamily) {
     let mut accept = listener.listen().unwrap();
     let bound_addr = listener.local_address().unwrap();
     let client = TcpSocket::new(family);
-    client.connect(bound_addr).await.unwrap();
-    let mut sock = accept.next().await.unwrap().unwrap();
-    assert_eq!(sock.len(), 1);
-    let sock = sock.pop().unwrap();
+    let ((), sock) = join!(
+        async {
+            client.connect(bound_addr).await.unwrap();
+        },
+        async {
+            let mut sock = accept.next().await.unwrap().unwrap();
+            assert_eq!(sock.len(), 1);
+            sock.pop().unwrap()
+        }
+    );
 
     // Verify options on accepted socket:
     {
@@ -194,10 +200,16 @@ async fn test_tcp_sockopt_after_listen(family: IpAddressFamily) {
     }
 
     let client = TcpSocket::new(family);
-    client.connect(bound_addr).await.unwrap();
-    let mut sock = accept.next().await.unwrap().unwrap();
-    assert_eq!(sock.len(), 1);
-    let sock = sock.pop().unwrap();
+    let ((), sock) = join!(
+        async {
+            client.connect(bound_addr).await.unwrap();
+        },
+        async {
+            let mut sock = accept.next().await.unwrap().unwrap();
+            assert_eq!(sock.len(), 1);
+            sock.pop().unwrap()
+        }
+    );
 
     // Verify options on accepted socket:
     {
