@@ -196,7 +196,6 @@ impl<'data> Translator<'_, 'data> {
                 names.push(name);
             }
             let wasm = module.encode();
-            std::fs::write("/tmp/adapter.wasm", &wasm).unwrap();
             wasmparser::Validator::new().validate_all(&wasm).unwrap();
             let imports = module.imports().to_vec();
 
