@@ -12,7 +12,7 @@ use cap_net_ext::AddressFamily;
 use io_lifetimes::AsSocketlike as _;
 use rustix::io::Errno;
 use rustix::net::sockopt;
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::p3::bindings::sockets::types::{Duration, ErrorCode, IpAddressFamily, IpSocketAddress};
 use crate::p3::sockets::SocketAddressFamily;
@@ -25,11 +25,11 @@ const DEFAULT_BACKLOG: u32 = 128;
 
 pub async fn handle_stream(
     stream: Arc<tokio::net::TcpStream>,
-    abort: Arc<Notify>,
+    abort: oneshot::Receiver<()>,
     finished: std::sync::mpsc::Sender<()>,
     tx: mpsc::Sender<Result<Vec<u8>, ErrorCode>>,
 ) {
-    let mut abort = pin!(abort.notified());
+    let mut abort = pin!(abort);
     loop {
         let tx = tx.reserve();
         let mut tx = pin!(tx);
@@ -131,7 +131,7 @@ pub enum TcpState {
     Connected {
         stream: Arc<tokio::net::TcpStream>,
         finished: std::sync::mpsc::Receiver<()>,
-        abort: Arc<Notify>,
+        abort: oneshot::Sender<()>,
         rx: Option<mpsc::Receiver<Result<Vec<u8>, ErrorCode>>>,
         task: AbortOnDropJoinHandle<()>,
     },
@@ -160,13 +160,13 @@ impl TcpState {
         let stream = Arc::new(stream);
         let (task_tx, task_rx) = mpsc::channel(1);
         let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-        let abort = Arc::default();
+        let (abort_tx, abort_rx) = oneshot::channel();
         Self::Connected {
             stream: Arc::clone(&stream),
             finished: finished_rx,
-            abort: Arc::clone(&abort),
+            abort: abort_tx,
             rx: Some(task_rx),
-            task: spawn(handle_stream(stream, abort, finished_tx, task_tx)),
+            task: spawn(handle_stream(stream, abort_rx, finished_tx, task_tx)),
         }
     }
 }
