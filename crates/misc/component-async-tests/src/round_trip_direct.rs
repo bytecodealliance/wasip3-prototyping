@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_names)]
 use std::time::Duration;
 
 use wasmtime::component::Accessor;
@@ -16,7 +17,6 @@ pub mod bindings {
 }
 
 impl bindings::RoundTripDirectImports for &mut Ctx {
-    #[allow(clippy::disallowed_names)]
     async fn foo<T>(_: &mut Accessor<T, Self>, s: String) -> wasmtime::Result<String> {
         tokio::time::sleep(Duration::from_millis(10)).await;
         Ok(format!("{s} - entered host - exited host"))
