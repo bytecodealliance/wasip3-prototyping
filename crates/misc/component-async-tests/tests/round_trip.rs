@@ -9,11 +9,10 @@ use wasmtime_wasi::WasiCtxBuilder;
 
 use component_async_tests::Ctx;
 
-mod common;
-pub use common::{annotate, compose, init_logger};
+pub use component_async_tests::util::{annotate, compose, init_logger};
 
 #[tokio::test]
-async fn async_round_trip_stackful() -> Result<()> {
+pub async fn async_round_trip_stackful() -> Result<()> {
     test_round_trip_uncomposed(
         &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKFUL_COMPONENT).await?,
     )
@@ -21,7 +20,7 @@ async fn async_round_trip_stackful() -> Result<()> {
 }
 
 #[tokio::test]
-async fn async_round_trip_synchronous() -> Result<()> {
+pub async fn async_round_trip_synchronous() -> Result<()> {
     test_round_trip_uncomposed(
         &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_SYNCHRONOUS_COMPONENT).await?,
     )
@@ -29,7 +28,7 @@ async fn async_round_trip_synchronous() -> Result<()> {
 }
 
 #[tokio::test]
-async fn async_round_trip_wait() -> Result<()> {
+pub async fn async_round_trip_wait() -> Result<()> {
     test_round_trip_uncomposed(
         &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_WAIT_COMPONENT).await?,
     )
@@ -37,7 +36,7 @@ async fn async_round_trip_wait() -> Result<()> {
 }
 
 #[tokio::test]
-async fn async_round_trip_stackless_plus_stackless() -> Result<()> {
+pub async fn async_round_trip_stackless_plus_stackless() -> Result<()> {
     let stackless =
         &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT).await?;
     test_round_trip_composed(stackless, stackless).await
@@ -145,7 +144,7 @@ async fn async_round_trip_stackful_plus_synchronous() -> Result<()> {
 }
 
 #[tokio::test]
-async fn async_round_trip_stackless() -> Result<()> {
+pub async fn async_round_trip_stackless() -> Result<()> {
     test_round_trip_uncomposed(
         &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT).await?,
     )

@@ -12,11 +12,10 @@ use wasmtime::component::{
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{IoView, WasiCtxBuilder};
 
-mod common;
-use common::{annotate, compose, init_logger};
+use component_async_tests::util::{annotate, compose, init_logger};
 
 #[tokio::test]
-async fn async_http_echo() -> Result<()> {
+pub async fn async_http_echo() -> Result<()> {
     test_http_echo(
         &fs::read(test_programs_artifacts::ASYNC_HTTP_ECHO_COMPONENT).await?,
         false,
@@ -25,7 +24,7 @@ async fn async_http_echo() -> Result<()> {
 }
 
 #[tokio::test]
-async fn async_http_middleware() -> Result<()> {
+pub async fn async_http_middleware() -> Result<()> {
     let echo = &fs::read(test_programs_artifacts::ASYNC_HTTP_ECHO_COMPONENT).await?;
     let middleware = &fs::read(test_programs_artifacts::ASYNC_HTTP_MIDDLEWARE_COMPONENT).await?;
     test_http_echo(&compose(middleware, echo).await?, true).await

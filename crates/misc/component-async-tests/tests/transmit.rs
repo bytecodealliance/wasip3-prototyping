@@ -11,25 +11,23 @@ use wasmtime::{AsContextMut, Config, Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;
 
 use component_async_tests::transmit::bindings::exports::local::local::transmit::Control;
+use component_async_tests::util::{compose, init_logger, test_run};
 use component_async_tests::{transmit, Ctx};
 
-mod common;
-use common::{compose, init_logger, test_run};
-
 #[tokio::test]
-async fn async_poll() -> Result<()> {
+pub async fn async_poll() -> Result<()> {
     test_run(&fs::read(test_programs_artifacts::ASYNC_POLL_COMPONENT).await?).await
 }
 
 #[tokio::test]
-async fn async_transmit_caller() -> Result<()> {
+pub async fn async_transmit_caller() -> Result<()> {
     let caller = &fs::read(test_programs_artifacts::ASYNC_TRANSMIT_CALLER_COMPONENT).await?;
     let callee = &fs::read(test_programs_artifacts::ASYNC_TRANSMIT_CALLEE_COMPONENT).await?;
     test_run(&compose(caller, callee).await?).await
 }
 
 #[tokio::test]
-async fn async_transmit_callee() -> Result<()> {
+pub async fn async_transmit_callee() -> Result<()> {
     test_transmit(&fs::read(test_programs_artifacts::ASYNC_TRANSMIT_CALLEE_COMPONENT).await?).await
 }
 

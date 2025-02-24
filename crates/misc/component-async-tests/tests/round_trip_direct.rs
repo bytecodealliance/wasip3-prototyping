@@ -7,19 +7,18 @@ use wasmtime::component::{Component, Linker, PromisesUnordered, ResourceTable, V
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;
 
-mod common;
-use common::{annotate, init_logger};
+use component_async_tests::util::{annotate, init_logger};
 use component_async_tests::Ctx;
 
 #[tokio::test]
-async fn direct_stackless() -> Result<()> {
+pub async fn async_direct_stackless() -> Result<()> {
     let stackless =
         &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_DIRECT_STACKLESS_COMPONENT).await?;
     test_round_trip_direct_uncomposed(stackless).await
 }
 
 #[tokio::test]
-async fn async_round_trip_direct_stackless() -> Result<()> {
+pub async fn async_round_trip_direct_stackless() -> Result<()> {
     let stackless =
         &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_DIRECT_STACKLESS_COMPONENT).await?;
     test_round_trip_direct_uncomposed(stackless).await

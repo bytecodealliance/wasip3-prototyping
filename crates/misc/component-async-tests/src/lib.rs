@@ -11,6 +11,7 @@ pub mod round_trip;
 pub mod round_trip_direct;
 pub mod round_trip_many;
 pub mod transmit;
+pub mod util;
 pub mod yield_host;
 
 /// Host implementation, usable primarily by tests
@@ -32,6 +33,3 @@ impl WasiView for Ctx {
         &mut self.wasi
     }
 }
-
-/// Used as the borrowing type (`local:local/borrowing-types/x`)
-pub struct MyX;

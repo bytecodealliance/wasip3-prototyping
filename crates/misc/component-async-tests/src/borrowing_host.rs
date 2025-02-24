@@ -2,7 +2,7 @@ use anyhow::Result;
 use wasmtime::component::Resource;
 use wasmtime_wasi::IoView;
 
-use super::{Ctx, MyX};
+use super::Ctx;
 
 pub mod bindings {
     wasmtime::component::bindgen!({
@@ -15,10 +15,13 @@ pub mod bindings {
             only_imports: []
         },
         with: {
-            "local:local/borrowing-types/x": super::super::MyX,
+            "local:local/borrowing-types/x": super::MyX,
         }
     });
 }
+
+/// Used as the borrowing type (`local:local/borrowing-types/x`)
+pub struct MyX;
 
 impl bindings::local::local::borrowing_types::HostX for &mut Ctx {
     fn new(&mut self) -> Result<Resource<MyX>> {
