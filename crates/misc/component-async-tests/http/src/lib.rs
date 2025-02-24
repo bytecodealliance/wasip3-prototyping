@@ -241,6 +241,8 @@ impl<T: WasiHttpView> wasi::http::types::HostBody for WasiHttpImpl<T> {
         Ok(Ok(stream))
     }
 
+    // TODO: once access to the store is possible in a non-async context (similar to Accessor pattern)
+    // we should convert this to a sync function that works w/ &mut self.
     async fn finish<U>(
         accessor: &mut Accessor<U, Self>,
         this: Resource<Body>,
