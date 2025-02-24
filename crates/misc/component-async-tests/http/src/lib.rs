@@ -25,7 +25,7 @@ wasmtime::component::bindgen!({
 
 use {
     anyhow::anyhow,
-    std::{borrow::BorrowMut, fmt, future::Future, mem},
+    std::{fmt, future::Future, mem},
     wasi::http::types::{ErrorCode, HeaderError, Method, RequestOptionsError, Scheme},
     wasmtime::component::{
         future, Accessor, AccessorTask, ErrorContext, FutureReader, Linker, Resource,
@@ -246,7 +246,7 @@ impl<T: WasiHttpView> wasi::http::types::HostBody for WasiHttpImpl<T> {
         this: Resource<Body>,
     ) -> wasmtime::Result<FutureReader<Resource<Fields>>> {
         let trailers = accessor.with(|mut store| {
-            let trailers = store.borrow_mut().table().delete(this)?.trailers;
+            let trailers = store.table().delete(this)?.trailers;
             Ok::<FutureReader<_>, anyhow::Error>(match trailers {
                 Some(t) => t,
                 None => {
