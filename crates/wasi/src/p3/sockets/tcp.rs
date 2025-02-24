@@ -5,10 +5,10 @@ use core::pin::pin;
 use core::task::Poll;
 
 use std::net::Shutdown;
-use std::os::fd::{AsFd as _, BorrowedFd};
 use std::sync::Arc;
 
 use cap_net_ext::AddressFamily;
+use io_lifetimes::views::SocketlikeView;
 use io_lifetimes::AsSocketlike as _;
 use rustix::io::Errno;
 use rustix::net::sockopt;
@@ -231,11 +231,11 @@ impl TcpSocket {
         }
     }
 
-    pub fn as_fd(&self) -> Result<BorrowedFd<'_>, ErrorCode> {
+    pub fn as_std_view(&self) -> Result<SocketlikeView<'_, std::net::TcpStream>, ErrorCode> {
         match &self.tcp_state {
-            TcpState::Default(socket) | TcpState::Bound(socket) => Ok(socket.as_fd()),
-            TcpState::Connected { stream, .. } => Ok(stream.as_fd()),
-            TcpState::Listening { listener, .. } => Ok(listener.as_fd()),
+            TcpState::Default(socket) | TcpState::Bound(socket) => Ok(socket.as_socketlike_view()),
+            TcpState::Connected { stream, .. } => Ok(stream.as_socketlike_view()),
+            TcpState::Listening { listener, .. } => Ok(listener.as_socketlike_view()),
             TcpState::Connecting | TcpState::Closed => Err(ErrorCode::InvalidState),
             TcpState::Error(err) => Err(*err),
         }
@@ -315,19 +315,19 @@ impl TcpSocket {
     }
 
     pub fn keep_alive_enabled(&self) -> Result<bool, ErrorCode> {
-        let fd = self.as_fd()?;
+        let fd = &*self.as_std_view()?;
         let v = sockopt::get_socket_keepalive(fd)?;
         Ok(v)
     }
 
     pub fn set_keep_alive_enabled(&self, value: bool) -> Result<(), ErrorCode> {
-        let fd = self.as_fd()?;
+        let fd = &*self.as_std_view()?;
         sockopt::set_socket_keepalive(fd, value)?;
         Ok(())
     }
 
     pub fn keep_alive_idle_time(&self) -> Result<Duration, ErrorCode> {
-        let fd = self.as_fd()?;
+        let fd = &*self.as_std_view()?;
         let v = sockopt::get_tcp_keepidle(fd)?;
         Ok(v.as_nanos().try_into().unwrap_or(u64::MAX))
     }
@@ -341,7 +341,7 @@ impl TcpSocket {
         // Cap it at Linux' maximum, which appears to have the lowest limit across our supported platforms.
         const MAX: u64 = (i16::MAX as u64) * NANOS_PER_SEC;
 
-        let fd = self.as_fd()?;
+        let fd = &*self.as_std_view()?;
         if value == 0 {
             // WIT: "If the provided value is 0, an `invalid-argument` error is returned."
             return Err(ErrorCode::InvalidArgument);
@@ -357,7 +357,7 @@ impl TcpSocket {
     }
 
     pub fn keep_alive_interval(&self) -> Result<Duration, ErrorCode> {
-        let fd = self.as_fd()?;
+        let fd = &*self.as_std_view()?;
         let v = sockopt::get_tcp_keepintvl(fd)?;
         Ok(v.as_nanos().try_into().unwrap_or(u64::MAX))
     }
@@ -369,7 +369,7 @@ impl TcpSocket {
         // Cap it at Linux' maximum, which appears to have the lowest limit across our supported platforms.
         const MAX_SECS: core::time::Duration = core::time::Duration::from_secs(i16::MAX as u64);
 
-        let fd = self.as_fd()?;
+        let fd = &*self.as_std_view()?;
         if value == 0 {
             // WIT: "If the provided value is 0, an `invalid-argument` error is returned."
             return Err(ErrorCode::InvalidArgument);
@@ -382,7 +382,7 @@ impl TcpSocket {
     }
 
     pub fn keep_alive_count(&self) -> Result<u32, ErrorCode> {
-        let fd = self.as_fd()?;
+        let fd = &*self.as_std_view()?;
         let v = sockopt::get_tcp_keepcnt(fd)?;
         Ok(v)
     }
@@ -392,7 +392,7 @@ impl TcpSocket {
         // Cap it at Linux' maximum, which appears to have the lowest limit across our supported platforms.
         const MAX_CNT: u32 = i8::MAX as u32;
 
-        let fd = self.as_fd()?;
+        let fd = &*self.as_std_view()?;
         if value == 0 {
             // WIT: "If the provided value is 0, an `invalid-argument` error is returned."
             return Err(ErrorCode::InvalidArgument);
@@ -402,7 +402,7 @@ impl TcpSocket {
     }
 
     pub fn hop_limit(&self) -> Result<u8, ErrorCode> {
-        let fd = self.as_fd()?;
+        let fd = &*self.as_std_view()?;
         match self.family {
             SocketAddressFamily::Ipv4 => {
                 let v = sockopt::get_ip_ttl(fd)?;
@@ -419,7 +419,7 @@ impl TcpSocket {
     }
 
     pub fn set_hop_limit(&self, value: u8) -> Result<(), ErrorCode> {
-        let fd = self.as_fd()?;
+        let fd = &*self.as_std_view()?;
         if value == 0 {
             // WIT: "If the provided value is 0, an `invalid-argument` error is returned."
             //
@@ -445,13 +445,13 @@ impl TcpSocket {
     }
 
     pub fn receive_buffer_size(&self) -> Result<u64, ErrorCode> {
-        let fd = self.as_fd()?;
+        let fd = &*self.as_std_view()?;
         let v = sockopt::get_socket_recv_buffer_size(fd)?;
         Ok(normalize_get_buffer_size(v).try_into().unwrap_or(u64::MAX))
     }
 
     pub fn set_receive_buffer_size(&mut self, value: u64) -> Result<(), ErrorCode> {
-        let fd = self.as_fd()?;
+        let fd = &*self.as_std_view()?;
         if value == 0 {
             // WIT: "If the provided value is 0, an `invalid-argument` error is returned."
             return Err(ErrorCode::InvalidArgument);
@@ -472,13 +472,13 @@ impl TcpSocket {
     }
 
     pub fn send_buffer_size(&self) -> Result<u64, ErrorCode> {
-        let fd = self.as_fd()?;
+        let fd = &*self.as_std_view()?;
         let v = sockopt::get_socket_send_buffer_size(fd)?;
         Ok(normalize_get_buffer_size(v).try_into().unwrap_or(u64::MAX))
     }
 
     pub fn set_send_buffer_size(&mut self, value: u64) -> Result<(), ErrorCode> {
-        let fd = self.as_fd()?;
+        let fd = &*self.as_std_view()?;
         if value == 0 {
             // WIT: "If the provided value is 0, an `invalid-argument` error is returned."
             return Err(ErrorCode::InvalidArgument);
