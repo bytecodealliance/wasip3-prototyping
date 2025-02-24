@@ -1,21 +1,20 @@
 use anyhow::Result;
 use tokio::fs;
 
-mod common;
-use common::{compose, test_run};
+use component_async_tests::util::{compose, test_run};
 
 #[tokio::test]
-async fn async_error_context() -> Result<()> {
+pub async fn async_error_context() -> Result<()> {
     test_run(&fs::read(test_programs_artifacts::ASYNC_ERROR_CONTEXT_COMPONENT).await?).await
 }
 
 #[tokio::test]
-async fn async_error_context_callee() -> Result<()> {
+pub async fn async_error_context_callee() -> Result<()> {
     test_run(&fs::read(test_programs_artifacts::ASYNC_ERROR_CONTEXT_COMPONENT).await?).await
 }
 
 #[tokio::test]
-async fn async_error_context_caller() -> Result<()> {
+pub async fn async_error_context_caller() -> Result<()> {
     let caller = &fs::read(test_programs_artifacts::ASYNC_ERROR_CONTEXT_CALLER_COMPONENT).await?;
     let callee = &fs::read(test_programs_artifacts::ASYNC_ERROR_CONTEXT_CALLEE_COMPONENT).await?;
     test_run(&compose(caller, callee).await?).await
@@ -33,14 +32,14 @@ async fn async_error_context_roundtrip() -> Result<()> {
     dead_code,
     reason = "here only to make the `assert_test_exists` macro happy"
 )]
-fn async_error_context_stream_callee() {}
+pub fn async_error_context_stream_callee() {}
 
 // No-op function; we only test this by composing it in `async_error_context_stream_caller`
 #[allow(
     dead_code,
     reason = "here only to make the `assert_test_exists` macro happy"
 )]
-fn async_error_context_stream_caller() {}
+pub fn async_error_context_stream_caller() {}
 
 #[tokio::test]
 async fn async_stream_end_err() -> Result<()> {
@@ -56,14 +55,14 @@ async fn async_stream_end_err() -> Result<()> {
     dead_code,
     reason = "here only to make the `assert_test_exists` macro happy"
 )]
-fn async_error_context_future_callee() {}
+pub fn async_error_context_future_callee() {}
 
 // No-op function; we only test this by composing it in `async_future_end_err`
 #[allow(
     dead_code,
     reason = "here only to make the `assert_test_exists` macro happy"
 )]
-fn async_error_context_future_caller() {}
+pub fn async_error_context_future_caller() {}
 
 #[tokio::test]
 async fn async_future_end_err() -> Result<()> {

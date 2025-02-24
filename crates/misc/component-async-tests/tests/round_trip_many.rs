@@ -8,13 +8,11 @@ use wasmtime::component::{Component, Linker, PromisesUnordered, ResourceTable, V
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;
 
+use component_async_tests::util::{annotate, compose, init_logger};
 use component_async_tests::Ctx;
-mod common;
-
-use common::{annotate, compose, init_logger};
 
 #[tokio::test]
-async fn async_round_trip_many_stackless() -> Result<()> {
+pub async fn async_round_trip_many_stackless() -> Result<()> {
     test_round_trip_many_uncomposed(
         &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_MANY_STACKLESS_COMPONENT).await?,
     )
@@ -22,7 +20,7 @@ async fn async_round_trip_many_stackless() -> Result<()> {
 }
 
 #[tokio::test]
-async fn async_round_trip_many_stackful() -> Result<()> {
+pub async fn async_round_trip_many_stackful() -> Result<()> {
     test_round_trip_many_uncomposed(
         &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_MANY_STACKFUL_COMPONENT).await?,
     )
@@ -30,7 +28,7 @@ async fn async_round_trip_many_stackful() -> Result<()> {
 }
 
 #[tokio::test]
-async fn async_round_trip_many_synchronous() -> Result<()> {
+pub async fn async_round_trip_many_synchronous() -> Result<()> {
     test_round_trip_many_uncomposed(
         &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_MANY_SYNCHRONOUS_COMPONENT).await?,
     )
@@ -38,7 +36,7 @@ async fn async_round_trip_many_synchronous() -> Result<()> {
 }
 
 #[tokio::test]
-async fn async_round_trip_many_wait() -> Result<()> {
+pub async fn async_round_trip_many_wait() -> Result<()> {
     test_round_trip_many_uncomposed(
         &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_MANY_WAIT_COMPONENT).await?,
     )
