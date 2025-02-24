@@ -10,6 +10,7 @@ use wasmtime::component::ResourceTable;
 
 mod host;
 pub mod tcp;
+pub mod udp;
 pub mod util;
 
 #[repr(transparent)]

@@ -2,10 +2,12 @@ use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddr
 
 use std::net::ToSocketAddrs;
 
+use rustix::fd::AsFd;
 use rustix::io::Errno;
+use rustix::net::sockopt;
 use tracing::debug;
 
-use crate::p3::bindings::sockets::types;
+use crate::p3::bindings::sockets::types::{self, ErrorCode};
 use crate::p3::sockets::SocketAddressFamily;
 
 fn is_deprecated_ipv4_compatible(addr: Ipv6Addr) -> bool {
@@ -14,17 +16,24 @@ fn is_deprecated_ipv4_compatible(addr: Ipv6Addr) -> bool {
         && addr != Ipv6Addr::LOCALHOST
 }
 
-pub fn is_valid_unicast_address(addr: IpAddr, socket_family: SocketAddressFamily) -> bool {
-    match (socket_family, addr.to_canonical()) {
-        (SocketAddressFamily::Ipv4, IpAddr::V4(ipv4)) => {
-            !ipv4.is_multicast() && !ipv4.is_broadcast()
-        }
+pub fn is_valid_address_family(addr: IpAddr, socket_family: SocketAddressFamily) -> bool {
+    match (socket_family, addr) {
+        (SocketAddressFamily::Ipv4, IpAddr::V4(..)) => true,
         (SocketAddressFamily::Ipv6, IpAddr::V6(ipv6)) => {
-            !ipv6.is_multicast()
-                && !is_deprecated_ipv4_compatible(ipv6)
-                && ipv6.to_ipv4_mapped().is_none()
+            !is_deprecated_ipv4_compatible(ipv6) && ipv6.to_ipv4_mapped().is_none()
         }
         _ => false,
+    }
+}
+
+pub fn is_valid_remote_address(addr: SocketAddr) -> bool {
+    !addr.ip().to_canonical().is_unspecified() && addr.port() != 0
+}
+
+pub fn is_valid_unicast_address(addr: IpAddr) -> bool {
+    match addr.to_canonical() {
+        IpAddr::V4(ipv4) => !ipv4.is_multicast() && !ipv4.is_broadcast(),
+        IpAddr::V6(ipv6) => !ipv6.is_multicast(),
     }
 }
 
@@ -260,4 +269,88 @@ impl From<&Errno> for types::ErrorCode {
             }
         }
     }
+}
+
+pub fn get_ip_ttl(fd: impl AsFd) -> Result<u8, ErrorCode> {
+    let v = sockopt::get_ip_ttl(fd)?;
+    let Ok(v) = v.try_into() else {
+        return Err(ErrorCode::NotSupported);
+    };
+    Ok(v)
+}
+
+pub fn get_ipv6_unicast_hops(fd: impl AsFd) -> Result<u8, ErrorCode> {
+    let v = sockopt::get_ipv6_unicast_hops(fd)?;
+    Ok(v)
+}
+
+pub fn get_unicast_hop_limit(fd: impl AsFd, family: SocketAddressFamily) -> Result<u8, ErrorCode> {
+    match family {
+        SocketAddressFamily::Ipv4 => get_ip_ttl(fd),
+        SocketAddressFamily::Ipv6 => get_ipv6_unicast_hops(fd),
+    }
+}
+
+pub fn set_unicast_hop_limit(
+    fd: impl AsFd,
+    family: SocketAddressFamily,
+    value: u8,
+) -> Result<(), ErrorCode> {
+    if value == 0 {
+        // WIT: "If the provided value is 0, an `invalid-argument` error is returned."
+        //
+        // A well-behaved IP application should never send out new packets with TTL 0.
+        // We validate the value ourselves because OS'es are not consistent in this.
+        // On Linux the validation is even inconsistent between their IPv4 and IPv6 implementation.
+        return Err(ErrorCode::InvalidArgument);
+    }
+    match family {
+        SocketAddressFamily::Ipv4 => {
+            sockopt::set_ip_ttl(fd, value.into())?;
+        }
+        SocketAddressFamily::Ipv6 => {
+            sockopt::set_ipv6_unicast_hops(fd, Some(value))?;
+        }
+    }
+    Ok(())
+}
+
+pub fn receive_buffer_size(fd: impl AsFd) -> Result<u64, ErrorCode> {
+    let v = sockopt::get_socket_recv_buffer_size(fd)?;
+    Ok(normalize_get_buffer_size(v).try_into().unwrap_or(u64::MAX))
+}
+
+pub fn set_receive_buffer_size(fd: impl AsFd, value: u64) -> Result<usize, ErrorCode> {
+    if value == 0 {
+        // WIT: "If the provided value is 0, an `invalid-argument` error is returned."
+        return Err(ErrorCode::InvalidArgument);
+    }
+    let value = value.try_into().unwrap_or(usize::MAX);
+    let value = normalize_set_buffer_size(value);
+    match sockopt::set_socket_recv_buffer_size(fd, value) {
+        Err(Errno::NOBUFS) => {}
+        Err(err) => return Err(err.into()),
+        _ => {}
+    };
+    Ok(value)
+}
+
+pub fn send_buffer_size(fd: impl AsFd) -> Result<u64, ErrorCode> {
+    let v = sockopt::get_socket_send_buffer_size(fd)?;
+    Ok(normalize_get_buffer_size(v).try_into().unwrap_or(u64::MAX))
+}
+
+pub fn set_send_buffer_size(fd: impl AsFd, value: u64) -> Result<usize, ErrorCode> {
+    if value == 0 {
+        // WIT: "If the provided value is 0, an `invalid-argument` error is returned."
+        return Err(ErrorCode::InvalidArgument);
+    }
+    let value = value.try_into().unwrap_or(usize::MAX);
+    let value = normalize_set_buffer_size(value);
+    match sockopt::set_socket_send_buffer_size(fd, value) {
+        Err(Errno::NOBUFS) => {}
+        Err(err) => return Err(err.into()),
+        _ => {}
+    };
+    Ok(value)
 }

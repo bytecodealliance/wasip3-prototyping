@@ -1,8 +1,8 @@
-use core::fmt::Debug;
 use core::future::{poll_fn, Future as _};
 use core::net::SocketAddr;
 use core::pin::pin;
 use core::task::Poll;
+use core::{fmt::Debug, mem};
 
 use std::net::Shutdown;
 use std::sync::Arc;
@@ -15,10 +15,16 @@ use rustix::net::sockopt;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::p3::bindings::sockets::types::{Duration, ErrorCode, IpAddressFamily, IpSocketAddress};
+use crate::p3::sockets::util::{
+    get_unicast_hop_limit, set_send_buffer_size, set_unicast_hop_limit,
+};
 use crate::p3::sockets::SocketAddressFamily;
 use crate::runtime::{spawn, with_ambient_tokio_runtime, AbortOnDropJoinHandle};
 
-use super::util::{normalize_get_buffer_size, normalize_set_buffer_size};
+use super::util::{
+    is_valid_address_family, is_valid_unicast_address, receive_buffer_size, send_buffer_size,
+    set_receive_buffer_size,
+};
 
 /// Value taken from rust std library.
 const DEFAULT_BACKLOG: u32 = 128;
@@ -241,6 +247,28 @@ impl TcpSocket {
         }
     }
 
+    pub fn bind(&mut self, addr: SocketAddr) -> Result<(), ErrorCode> {
+        let ip = addr.ip();
+        if !is_valid_unicast_address(ip) || !is_valid_address_family(ip, self.family) {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        match mem::replace(&mut self.tcp_state, TcpState::Closed) {
+            TcpState::Default(sock) => {
+                if let Err(err) = bind(&sock, addr) {
+                    self.tcp_state = TcpState::Default(sock);
+                    Err(err)
+                } else {
+                    self.tcp_state = TcpState::Bound(sock);
+                    Ok(())
+                }
+            }
+            tcp_state => {
+                self.tcp_state = tcp_state;
+                Err(ErrorCode::InvalidState)
+            }
+        }
+    }
+
     pub fn local_address(&self) -> Result<IpSocketAddress, ErrorCode> {
         match &self.tcp_state {
             TcpState::Bound(socket) => {
@@ -403,39 +431,12 @@ impl TcpSocket {
 
     pub fn hop_limit(&self) -> Result<u8, ErrorCode> {
         let fd = &*self.as_std_view()?;
-        match self.family {
-            SocketAddressFamily::Ipv4 => {
-                let v = sockopt::get_ip_ttl(fd)?;
-                let Ok(v) = v.try_into() else {
-                    return Err(ErrorCode::NotSupported);
-                };
-                Ok(v)
-            }
-            SocketAddressFamily::Ipv6 => {
-                let v = sockopt::get_ipv6_unicast_hops(fd)?;
-                Ok(v)
-            }
-        }
+        get_unicast_hop_limit(fd, self.family)
     }
 
     pub fn set_hop_limit(&self, value: u8) -> Result<(), ErrorCode> {
         let fd = &*self.as_std_view()?;
-        if value == 0 {
-            // WIT: "If the provided value is 0, an `invalid-argument` error is returned."
-            //
-            // A well-behaved IP application should never send out new packets with TTL 0.
-            // We validate the value ourselves because OS'es are not consistent in this.
-            // On Linux the validation is even inconsistent between their IPv4 and IPv6 implementation.
-            return Err(ErrorCode::InvalidArgument);
-        }
-        match self.family {
-            SocketAddressFamily::Ipv4 => {
-                sockopt::set_ip_ttl(fd, value.into())?;
-            }
-            SocketAddressFamily::Ipv6 => {
-                sockopt::set_ipv6_unicast_hops(fd, Some(value))?;
-            }
-        }
+        set_unicast_hop_limit(fd, self.family, value)?;
         #[cfg(target_os = "macos")]
         {
             self.hop_limit
@@ -446,60 +447,48 @@ impl TcpSocket {
 
     pub fn receive_buffer_size(&self) -> Result<u64, ErrorCode> {
         let fd = &*self.as_std_view()?;
-        let v = sockopt::get_socket_recv_buffer_size(fd)?;
-        Ok(normalize_get_buffer_size(v).try_into().unwrap_or(u64::MAX))
+        receive_buffer_size(fd)
     }
 
     pub fn set_receive_buffer_size(&mut self, value: u64) -> Result<(), ErrorCode> {
         let fd = &*self.as_std_view()?;
-        if value == 0 {
-            // WIT: "If the provided value is 0, an `invalid-argument` error is returned."
-            return Err(ErrorCode::InvalidArgument);
-        }
-        let value = value.try_into().unwrap_or(usize::MAX);
-        let value = normalize_set_buffer_size(value);
-        match sockopt::set_socket_recv_buffer_size(fd, value) {
-            Err(Errno::NOBUFS) => {}
-            Err(err) => return Err(err.into()),
-            _ => {}
-        };
+        let res = set_receive_buffer_size(fd, value);
         #[cfg(target_os = "macos")]
         {
+            let value = res?;
             self.receive_buffer_size
                 .store(value, core::sync::atomic::Ordering::Relaxed);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            res?;
         }
         Ok(())
     }
 
     pub fn send_buffer_size(&self) -> Result<u64, ErrorCode> {
         let fd = &*self.as_std_view()?;
-        let v = sockopt::get_socket_send_buffer_size(fd)?;
-        Ok(normalize_get_buffer_size(v).try_into().unwrap_or(u64::MAX))
+        send_buffer_size(fd)
     }
 
     pub fn set_send_buffer_size(&mut self, value: u64) -> Result<(), ErrorCode> {
         let fd = &*self.as_std_view()?;
-        if value == 0 {
-            // WIT: "If the provided value is 0, an `invalid-argument` error is returned."
-            return Err(ErrorCode::InvalidArgument);
-        }
-        let value = value.try_into().unwrap_or(usize::MAX);
-        let value = normalize_set_buffer_size(value);
-        match sockopt::set_socket_send_buffer_size(fd, value) {
-            Err(Errno::NOBUFS) => {}
-            Err(err) => return Err(err.into()),
-            _ => {}
-        };
+        let res = set_send_buffer_size(fd, value);
         #[cfg(target_os = "macos")]
         {
+            let value = res?;
             self.send_buffer_size
                 .store(value, core::sync::atomic::Ordering::Relaxed);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            res?;
         }
         Ok(())
     }
 }
 
-pub fn bind(socket: &tokio::net::TcpSocket, local_address: SocketAddr) -> Result<(), ErrorCode> {
+fn bind(socket: &tokio::net::TcpSocket, local_address: SocketAddr) -> Result<(), ErrorCode> {
     // Automatically bypass the TIME_WAIT state when binding to a specific port
     // Unconditionally (re)set SO_REUSEADDR, even when the value is false.
     // This ensures we're not accidentally affected by any socket option

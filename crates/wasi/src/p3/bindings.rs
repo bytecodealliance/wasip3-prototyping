@@ -123,10 +123,12 @@ mod generated {
                 "wasi:sockets/types@0.3.0#[method]tcp-socket.listen",
                 "wasi:sockets/types@0.3.0#[method]tcp-socket.receive",
                 "wasi:sockets/types@0.3.0#[method]tcp-socket.send",
+                "wasi:sockets/types@0.3.0#[method]udp-socket.bind",
             ],
         },
         with: {
             "wasi:sockets/types/tcp-socket": crate::p3::sockets::tcp::TcpSocket,
+            "wasi:sockets/types/udp-socket": crate::p3::sockets::udp::UdpSocket,
         }
     });
 }
