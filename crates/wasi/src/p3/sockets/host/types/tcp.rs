@@ -18,32 +18,20 @@ use wasmtime::component::{
 use crate::p3::bindings::sockets::types::{
     Duration, ErrorCode, HostTcpSocket, IpAddressFamily, IpSocketAddress, TcpSocket,
 };
-use crate::p3::sockets::tcp::{bind, handle_listener, TcpState};
-use crate::p3::sockets::util::is_valid_unicast_address;
+use crate::p3::sockets::tcp::{handle_listener, TcpState};
+use crate::p3::sockets::util::{
+    is_valid_address_family, is_valid_remote_address, is_valid_unicast_address,
+};
 use crate::p3::sockets::{SocketAddrUse, SocketAddressFamily, WasiSocketsImpl, WasiSocketsView};
 use crate::runtime::spawn;
+
+use super::is_addr_allowed;
 
 fn is_tcp_allowed<T, U>(store: &mut Accessor<T, U>) -> bool
 where
     U: WasiSocketsView,
 {
     store.with(|view| view.sockets().allowed_network_uses.tcp)
-}
-
-async fn is_addr_allowed<T, U>(
-    store: &mut Accessor<T, U>,
-    addr: SocketAddr,
-    reason: SocketAddrUse,
-) -> bool
-where
-    U: WasiSocketsView,
-{
-    store
-        .with(|view| {
-            let socket_addr_check = view.sockets().socket_addr_check.clone();
-            async move { socket_addr_check(addr, reason).await }
-        })
-        .await
 }
 
 fn get_socket<'a>(
@@ -275,24 +263,7 @@ where
         }
         store.with(|mut view| {
             let socket = get_socket_mut(view.table(), &socket)?;
-            if !is_valid_unicast_address(local_address.ip(), socket.family) {
-                return Ok(Err(ErrorCode::InvalidArgument));
-            }
-            match mem::replace(&mut socket.tcp_state, TcpState::Closed) {
-                TcpState::Default(sock) => {
-                    if let Err(err) = bind(&sock, local_address) {
-                        socket.tcp_state = TcpState::Default(sock);
-                        Ok(Err(err))
-                    } else {
-                        socket.tcp_state = TcpState::Bound(sock);
-                        Ok(Ok(()))
-                    }
-                }
-                tcp_state => {
-                    socket.tcp_state = tcp_state;
-                    Ok(Err(ErrorCode::InvalidState))
-                }
-            }
+            Ok(socket.bind(local_address))
         })
     }
 
@@ -307,14 +278,13 @@ where
         {
             return Ok(Err(ErrorCode::AccessDenied));
         }
-        let ip = remote_address.ip().to_canonical();
-        if ip.is_unspecified() || remote_address.port() == 0 {
-            return Ok(Err(ErrorCode::InvalidArgument));
-        }
-
         match store.with(|mut view| {
+            let ip = remote_address.ip();
             let socket = get_socket_mut(view.table(), &socket)?;
-            if !is_valid_unicast_address(ip, socket.family) {
+            if !is_valid_unicast_address(ip)
+                || !is_valid_remote_address(remote_address)
+                || !is_valid_address_family(ip, socket.family)
+            {
                 return Ok(Err(ErrorCode::InvalidArgument));
             }
             match mem::replace(&mut socket.tcp_state, TcpState::Connecting) {
