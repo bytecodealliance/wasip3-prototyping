@@ -218,6 +218,17 @@ const _: () = {
             let indices = WIndices::new_instance(&mut store, instance)?;
             indices.load(store, instance)
         }
+        pub fn add_to_linker<T, U>(
+            linker: &mut wasmtime::component::Linker<T>,
+            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+        ) -> wasmtime::Result<()>
+        where
+            T: Send + 'static,
+            U: foo::foo::transitive_import::Host + Send,
+        {
+            foo::foo::transitive_import::add_to_linker(linker, get)?;
+            Ok(())
+        }
         pub fn foo_foo_simple_export(&self) -> &exports::foo::foo::simple_export::Guest {
             &self.interface0
         }
@@ -251,6 +262,14 @@ pub mod foo {
                     &mut self,
                     rep: wasmtime::component::Resource<Y>,
                 ) -> wasmtime::Result<()>;
+            }
+            impl<_T: HostY> HostY for &mut _T {
+                async fn drop(
+                    &mut self,
+                    rep: wasmtime::component::Resource<Y>,
+                ) -> wasmtime::Result<()> {
+                    HostY::drop(*self, rep).await
+                }
             }
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send + HostY + Sized {}
@@ -292,6 +311,17 @@ pub mod foo {
                 )?;
                 Ok(())
             }
+            pub fn add_to_linker<T, U>(
+                linker: &mut wasmtime::component::Linker<T>,
+                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            ) -> wasmtime::Result<()>
+            where
+                U: Host + Send,
+                T: Send + 'static,
+            {
+                add_to_linker_get_host(linker, get)
+            }
+            impl<_T: Host + Send> Host for &mut _T {}
         }
     }
 }

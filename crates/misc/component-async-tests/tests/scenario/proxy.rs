@@ -12,7 +12,7 @@ use wasmtime::component::{
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{IoView, WasiCtxBuilder};
 
-use component_async_tests::util::{annotate, compose, init_logger};
+use component_async_tests::util::{compose, init_logger};
 
 #[tokio::test]
 pub async fn async_http_echo() -> Result<()> {
@@ -54,8 +54,7 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
     let mut linker = Linker::new(&engine);
 
     wasmtime_wasi::add_to_linker_async(&mut linker)?;
-    wasi_http_draft::wasi::http::types::add_to_linker_get_host(&mut linker, annotate(|ctx| ctx))?;
-    wasi_http_draft::wasi::http::handler::add_to_linker_get_host(&mut linker, annotate(|ctx| ctx))?;
+    wasi_http_draft::add_to_linker(&mut linker)?;
 
     let mut store = Store::new(
         &engine,

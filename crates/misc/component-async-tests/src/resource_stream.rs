@@ -1,5 +1,5 @@
 use anyhow::Result;
-use wasmtime::component::{Accessor, BackgroundTask, Resource, StreamReader, StreamWriter};
+use wasmtime::component::{Accessor, AccessorTask, Resource, StreamReader, StreamWriter};
 use wasmtime::AsContextMut;
 use wasmtime_wasi::IoView;
 
@@ -45,7 +45,7 @@ impl bindings::local::local::resource_stream::Host for &mut Ctx {
             count: u32,
         }
 
-        impl<T, U: wasmtime_wasi::IoView> BackgroundTask<T, U> for Task {
+        impl<T, U: wasmtime_wasi::IoView> AccessorTask<T, U, Result<()>> for Task {
             async fn run(self, accessor: &mut Accessor<T, U>) -> Result<()> {
                 let mut tx = self.tx;
                 for _ in 0..self.count {

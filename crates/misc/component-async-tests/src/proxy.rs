@@ -21,7 +21,7 @@ pub mod bindings {
     });
 }
 
-impl WasiHttpView for &mut super::Ctx {
+impl WasiHttpView for super::Ctx {
     fn table(&mut self) -> &mut ResourceTable {
         &mut self.table
     }
