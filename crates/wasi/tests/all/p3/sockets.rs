@@ -37,3 +37,28 @@ async fn sockets_0_3_tcp_states() -> anyhow::Result<()> {
 async fn sockets_0_3_tcp_streams() -> anyhow::Result<()> {
     run(SOCKETS_0_3_TCP_STREAMS_COMPONENT).await
 }
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn sockets_0_3_udp_bind() -> anyhow::Result<()> {
+    run(SOCKETS_0_3_UDP_BIND_COMPONENT).await
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn sockets_0_3_udp_connect() -> anyhow::Result<()> {
+    run(SOCKETS_0_3_UDP_CONNECT_COMPONENT).await
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn sockets_0_3_udp_sample_application() -> anyhow::Result<()> {
+    run(SOCKETS_0_3_UDP_SAMPLE_APPLICATION_COMPONENT).await
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn sockets_0_3_udp_sockopts() -> anyhow::Result<()> {
+    run(SOCKETS_0_3_UDP_SOCKOPTS_COMPONENT).await
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn sockets_0_3_udp_states() -> anyhow::Result<()> {
+    run(SOCKETS_0_3_UDP_STATES_COMPONENT).await
+}

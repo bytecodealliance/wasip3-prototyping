@@ -12,6 +12,8 @@ wit_bindgen::generate!({
              "wasi:sockets/ip-name-lookup@0.3.0#resolve-addresses",
              "wasi:sockets/types@0.3.0#[method]tcp-socket.connect",
              "wasi:sockets/types@0.3.0#[method]tcp-socket.send",
+             "wasi:sockets/types@0.3.0#[method]udp-socket.receive",
+             "wasi:sockets/types@0.3.0#[method]udp-socket.send",
          ],
          exports: [
              "wasi:cli/run@0.3.0#run",

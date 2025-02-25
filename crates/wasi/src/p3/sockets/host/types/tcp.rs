@@ -445,13 +445,13 @@ where
         };
         let mut fut = fut.into_future();
         'outer: loop {
-            let Some((tail, mut buf)) = fut.await else {
+            let Some((tail, buf)) = fut.await else {
                 _ = stream
                     .as_socketlike_view::<std::net::TcpStream>()
                     .shutdown(Shutdown::Write);
                 return Ok(Ok(()));
             };
-            let mut buf = buf.as_mut_slice();
+            let mut buf = buf.as_slice();
             loop {
                 match stream.try_write(&buf) {
                     Ok(n) => {
@@ -459,7 +459,7 @@ where
                             fut = next_item(store, tail)?;
                             continue 'outer;
                         } else {
-                            buf = &mut buf[n..];
+                            buf = &buf[n..];
                         }
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
