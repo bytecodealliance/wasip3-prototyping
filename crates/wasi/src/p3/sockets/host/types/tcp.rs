@@ -6,10 +6,10 @@ use core::pin::Pin;
 use std::net::Shutdown;
 use std::sync::Arc;
 
-use anyhow::{ensure, Context as _};
+use anyhow::{bail, ensure, Context as _};
 use io_lifetimes::AsSocketlike as _;
 use rustix::io::Errno;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use wasmtime::component::{
     future, stream, Accessor, BackgroundTask, FutureReader, FutureWriter, Lift, Resource,
     ResourceTable, StreamReader, StreamWriter,
@@ -18,12 +18,11 @@ use wasmtime::component::{
 use crate::p3::bindings::sockets::types::{
     Duration, ErrorCode, HostTcpSocket, IpAddressFamily, IpSocketAddress, TcpSocket,
 };
-use crate::p3::sockets::tcp::{handle_listener, TcpState};
+use crate::p3::sockets::tcp::TcpState;
 use crate::p3::sockets::util::{
     is_valid_address_family, is_valid_remote_address, is_valid_unicast_address,
 };
 use crate::p3::sockets::{SocketAddrUse, SocketAddressFamily, WasiSocketsImpl, WasiSocketsView};
-use crate::runtime::spawn;
 
 use super::is_addr_allowed;
 
@@ -61,7 +60,8 @@ fn next_item<T, U, V>(
 where
     V: Send + Sync + Lift + 'static,
 {
-    let fut = store.with(|mut view| stream.read(&mut view).context("failed to read stream"))?;
+    let fut =
+        store.with(|mut view| stream.read(&mut view).context("failed to read from stream"))?;
     Ok(fut.into_future())
 }
 
@@ -156,7 +156,10 @@ impl<T, U: WasiSocketsView> BackgroundTask<T, U> for ListenTask {
                             );
                         }
                     }
-                    TcpState::connected(stream)
+                    TcpState::Connected {
+                        stream: Arc::new(stream),
+                        rx_task: None,
+                    }
                 }
                 Err(err) => {
                     match Errno::from_io_error(&err) {
@@ -305,7 +308,10 @@ where
                     );
                     match res {
                         Ok(stream) => {
-                            socket.tcp_state = TcpState::connected(stream);
+                            socket.tcp_state = TcpState::Connected {
+                                stream: Arc::new(stream),
+                                rx_task: None,
+                            };
                             Ok(Ok(()))
                         }
                         Err(err) => {
@@ -347,6 +353,16 @@ where
             match sock.listen(listen_backlog_size) {
                 Ok(listener) => {
                     let listener = Arc::new(listener);
+                    let (task_tx, task_rx) = mpsc::channel(1);
+                    let task = view.spawn(BackgroundTaskFn({
+                        let listener = Arc::clone(&listener);
+                        |_: &mut Accessor<U, Self>| async move {
+                            while let Ok(tx) = task_tx.reserve().await {
+                                tx.send(listener.accept().await)
+                            }
+                            Ok(())
+                        }
+                    }));
                     let TcpSocket {
                         tcp_state,
                         family,
@@ -360,14 +376,9 @@ where
                         keep_alive_idle_time,
                         ..
                     } = get_socket_mut(view.table(), &socket)?;
-                    let (task_tx, task_rx) = mpsc::channel(1);
-                    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-                    let (abort_tx, abort_rx) = oneshot::channel();
                     *tcp_state = TcpState::Listening {
-                        listener: Arc::clone(&listener),
-                        finished: finished_rx,
-                        abort: abort_tx,
-                        task: spawn(handle_listener(listener, abort_rx, finished_tx, task_tx)),
+                        listener,
+                        task: task.abort_handle(),
                     };
                     Ok(Ok((
                         rx,
@@ -420,7 +431,7 @@ where
         data: StreamReader<u8>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let (stream, fut) = match store.with(|mut view| {
-            let fut = data.read(&mut view).context("failed to get data stream")?;
+            let fut = data.read(&mut view).context("failed to read from stream")?;
             let sock = get_socket(view.table(), &socket)?;
             if let TcpState::Connected { stream, .. } = &sock.tcp_state {
                 Ok(Ok((Arc::clone(&stream), fut)))
@@ -477,24 +488,67 @@ where
         store.with(|mut view| {
             let (data_tx, data_rx) = stream(&mut view).context("failed to create stream")?;
             let (res_tx, res_rx) = future(&mut view).context("failed to create future")?;
-            let sock = get_socket_mut(view.table(), &socket)?;
-            if let TcpState::Connected { rx, .. } = &mut sock.tcp_state {
-                let rx = rx.take().context("`receive` can be called at most once")?;
-                view.spawn(ReceiveTask {
-                    data: data_tx,
-                    result: res_tx,
-                    rx,
-                });
-            } else {
-                data_tx.close(&mut view).context("failed to close stream")?;
-                let fut = res_tx
-                    .write(&mut view, Err(ErrorCode::InvalidState))
-                    .context("failed to write result to future")?;
-                let fut = fut.into_future();
-                view.spawn(BackgroundTaskFn(|_: &mut Accessor<U, Self>| async {
-                    fut.await;
-                    Ok(())
-                }));
+            let sock = get_socket(view.table(), &socket)?;
+            match &sock.tcp_state {
+                TcpState::Connected {
+                    stream,
+                    rx_task: None,
+                } => {
+                    let (task_tx, task_rx) = mpsc::channel(1);
+                    let stream = Arc::clone(&stream);
+                    let task = view.spawn(BackgroundTaskFn({
+                        |_: &mut Accessor<U, Self>| async move {
+                            while let Ok(tx) = task_tx.reserve().await {
+                                let mut buf = vec![0; 8096];
+                                match stream.try_read(&mut buf) {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        buf.truncate(n);
+                                        tx.send(Ok(buf));
+                                    }
+                                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                                        if let Err(err) = stream.readable().await {
+                                            tx.send(Err(err.into()));
+                                            break;
+                                        }
+                                    }
+                                    Err(err) => {
+                                        tx.send(Err(err.into()));
+                                        break;
+                                    }
+                                }
+                            }
+                            _ = stream
+                                .as_socketlike_view::<std::net::TcpStream>()
+                                .shutdown(Shutdown::Read);
+                            Ok(())
+                        }
+                    }));
+                    view.spawn(ReceiveTask {
+                        data: data_tx,
+                        result: res_tx,
+                        rx: task_rx,
+                    });
+                    let TcpSocket {
+                        tcp_state: TcpState::Connected { rx_task, .. },
+                        ..
+                    } = get_socket_mut(view.table(), &socket)?
+                    else {
+                        bail!("corrupted socket state");
+                    };
+                    *rx_task = Some(task.abort_handle());
+                }
+                _ => {
+                    data_tx.close(&mut view).context("failed to close stream")?;
+                    let fut = res_tx
+                        .write(&mut view, Err(ErrorCode::InvalidState))
+                        .context("failed to write result to future")?;
+                    let fut = fut.into_future();
+                    view.spawn(BackgroundTaskFn(|_: &mut Accessor<U, Self>| async {
+                        fut.await;
+                        Ok(())
+                    }));
+                }
             }
             Ok((data_rx, res_rx))
         })
@@ -655,43 +709,9 @@ where
     }
 
     fn drop(&mut self, rep: Resource<TcpSocket>) -> wasmtime::Result<()> {
-        let sock = self
-            .table()
+        self.table()
             .delete(rep)
             .context("failed to delete socket resource from table")?;
-        match sock.tcp_state {
-            TcpState::Listening {
-                listener,
-                finished,
-                abort,
-                ..
-            } => {
-                if let Ok(()) = abort.send(()) {
-                    // this will unblock only once the task finishes
-                    _ = finished.recv();
-                }
-                // this must be the only reference to the listener left
-                ensure!(
-                    Arc::into_inner(listener).is_some(),
-                    "corrupted listener state"
-                );
-                Ok(())
-            }
-            TcpState::Connected {
-                stream,
-                finished,
-                abort,
-                ..
-            } => {
-                if let Ok(()) = abort.send(()) {
-                    // this will unblock only once the task finishes
-                    _ = finished.recv();
-                }
-                // this must be the only reference to the stream left
-                ensure!(Arc::into_inner(stream).is_some(), "corrupted stream state");
-                Ok(())
-            }
-            _ => Ok(()),
-        }
+        Ok(())
     }
 }
