@@ -200,6 +200,17 @@ const _: () = {
             let indices = FooIndices::new_instance(&mut store, instance)?;
             indices.load(store, instance)
         }
+        pub fn add_to_linker<T, U>(
+            linker: &mut wasmtime::component::Linker<T>,
+            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+        ) -> wasmtime::Result<()>
+        where
+            T: Send + 'static,
+            U: foo::foo::i::Host + Send,
+        {
+            foo::foo::i::add_to_linker(linker, get)?;
+            Ok(())
+        }
         pub async fn call_f<S: wasmtime::AsContextMut>(
             &self,
             mut store: S,
@@ -253,6 +264,17 @@ pub mod foo {
                 let mut inst = linker.instance("foo:foo/i")?;
                 Ok(())
             }
+            pub fn add_to_linker<T, U>(
+                linker: &mut wasmtime::component::Linker<T>,
+                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            ) -> wasmtime::Result<()>
+            where
+                U: Host + Send,
+                T: Send + 'static,
+            {
+                add_to_linker_get_host(linker, get)
+            }
+            impl<_T: Host + Send> Host for &mut _T {}
         }
     }
 }

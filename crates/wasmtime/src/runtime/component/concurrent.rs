@@ -159,13 +159,13 @@ pub struct Access<'a, T, U>(&'a mut Accessor<T, U>);
 impl<'a, T, U> Access<'a, T, U> {
     /// Get mutable access to the store data.
     pub fn get(&mut self) -> &mut U {
-        unsafe { &mut *(self.0.get)() }
+        unsafe { &mut *(self.0.get)().0.cast() }
     }
 
     /// Spawn a background task.
     ///
     /// See [`Accessor::spawn`] for details.
-    pub fn spawn(&mut self, task: impl BackgroundTask<T, U>) -> SpawnHandle
+    pub fn spawn(&mut self, task: impl AccessorTask<T, U, Result<()>>) -> SpawnHandle
     where
         T: 'static,
     {
@@ -177,7 +177,7 @@ impl<'a, T, U> Deref for Access<'a, T, U> {
     type Target = U;
 
     fn deref(&self) -> &U {
-        unsafe { &*(self.0.get)() }
+        unsafe { &mut *(self.0.get)().0.cast() }
     }
 }
 
@@ -191,13 +191,13 @@ impl<'a, T, U> AsContext for Access<'a, T, U> {
     type Data = T;
 
     fn as_context(&self) -> StoreContext<T> {
-        unsafe { StoreContext(&*self.0.store) }
+        unsafe { StoreContext(&*(self.0.get)().1.cast()) }
     }
 }
 
 impl<'a, T, U> AsContextMut for Access<'a, T, U> {
     fn as_context_mut(&mut self) -> StoreContextMut<T> {
-        unsafe { StoreContextMut(&mut *self.0.store) }
+        unsafe { StoreContextMut(&mut *(self.0.get)().1.cast()) }
     }
 }
 
@@ -207,9 +207,9 @@ impl<'a, T, U> AsContextMut for Access<'a, T, U> {
 /// This allows multiple host import futures to execute concurrently and access
 /// the store data between (but not across) `await` points.
 pub struct Accessor<T, U> {
-    store: *mut StoreInner<T>,
-    get: fn() -> *mut U,
+    get: Arc<dyn Fn() -> (*mut u8, *mut u8)>,
     spawn: fn(Spawned),
+    _phantom: PhantomData<fn() -> (*mut U, *mut StoreInner<T>)>,
 }
 
 unsafe impl<T, U> Send for Accessor<T, U> {}
@@ -217,8 +217,12 @@ unsafe impl<T, U> Sync for Accessor<T, U> {}
 
 impl<T, U> Accessor<T, U> {
     #[doc(hidden)]
-    pub unsafe fn new(store: *mut StoreInner<T>, get: fn() -> *mut U, spawn: fn(Spawned)) -> Self {
-        Self { store, get, spawn }
+    pub unsafe fn new(get: fn() -> (*mut u8, *mut u8), spawn: fn(Spawned)) -> Self {
+        Self {
+            get: Arc::new(get),
+            spawn,
+            _phantom: PhantomData,
+        }
     }
 
     /// Run the specified closure, passing it mutable access to the store data.
@@ -231,6 +235,29 @@ impl<T, U> Accessor<T, U> {
         fun(Access(self))
     }
 
+    /// Run the specified task using a `Accessor` of a different type via the
+    /// provided mapping function.
+    ///
+    /// This can be useful for projecting an `Accessor<T, U>` to an `Accessor<T,
+    /// V>`, where `V` is the type of e.g. a field that can be mutably borrowed
+    /// from a `&mut U`.
+    pub async fn forward<R, V>(
+        &mut self,
+        fun: impl Fn(&mut U) -> &mut V + Send + Sync + 'static,
+        task: impl AccessorTask<T, V, R>,
+    ) -> R {
+        let get = self.get.clone();
+        let mut accessor = Accessor {
+            get: Arc::new(move || {
+                let (host, store) = get();
+                unsafe { ((fun(&mut *host.cast()) as *mut V).cast(), store) }
+            }),
+            spawn: self.spawn,
+            _phantom: PhantomData,
+        };
+        task.run(&mut accessor).await
+    }
+
     /// Spawn a background task which will receive an `&mut Accessor<T, U>` and
     /// run concurrently with any other tasks in progress for the current
     /// instance.
@@ -238,14 +265,14 @@ impl<T, U> Accessor<T, U> {
     /// This is particularly useful for host functions which return a `stream`
     /// or `future` such that the code to write to the write end of that
     /// `stream` or `future` must run after the function returns.
-    pub fn spawn(&mut self, task: impl BackgroundTask<T, U>) -> SpawnHandle
+    pub fn spawn(&mut self, task: impl AccessorTask<T, U, Result<()>>) -> SpawnHandle
     where
         T: 'static,
     {
         let mut accessor = Self {
-            store: self.store,
-            get: self.get,
+            get: self.get.clone(),
             spawn: self.spawn,
+            _phantom: PhantomData,
         };
         let future = Arc::new(Mutex::new(SpawnedInner::Unpolled(unsafe {
             // This is to avoid a `U: 'static` bound.  Rationale: We don't
@@ -253,7 +280,7 @@ impl<T, U> Accessor<T, U> {
             // `move`ing into the `async` block, and access to a `U` is brokered
             // via `Accessor::with` by way of a thread-local variable in
             // `wasmtime-wit-bindgen`-generated code.  Furthermore,
-            // `BackgroundTask` implementations are required to be `'static`, so
+            // `AccessorTask` implementations are required to be `'static`, so
             // no lifetime issues there.  We have no way to explain any of that
             // to the compiler, though, so we resort to a transmute here.
             mem::transmute::<
@@ -318,7 +345,8 @@ impl Drop for AbortOnDropHandle {
     }
 }
 
-/// Represents a background task which maybe spawned using `Accessor::spawn`.
+/// Represents a task which may be provided to `Accessor::spawn` or
+/// `Accessor::forward`.
 // TODO: Replace this with `std::ops::AsyncFnOnce` when that becomes a viable
 // option.
 //
@@ -329,9 +357,9 @@ impl Drop for AbortOnDropHandle {
 // FN: FnOnce(&mut Accessor<T>) -> F + Send + Sync + 'static` fails with a type
 // mismatch error when we try to pass it an async closure (e.g. `async move |_|
 // { ... }`).  So this seems to be the best we can do for the time being.
-pub trait BackgroundTask<T, U>: Send + Sync + 'static {
+pub trait AccessorTask<T, U, R>: Send + Sync + 'static {
     /// Run the task.
-    fn run(self, accessor: &mut Accessor<T, U>) -> impl Future<Output = Result<()>> + Send + Sync;
+    fn run(self, accessor: &mut Accessor<T, U>) -> impl Future<Output = R> + Send + Sync;
 }
 
 /// Trait representing component model ABI async intrinsics and fused adapter

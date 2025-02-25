@@ -161,6 +161,17 @@ const _: () = {
             let indices = Path2Indices::new_instance(&mut store, instance)?;
             indices.load(store, instance)
         }
+        pub fn add_to_linker<T, U>(
+            linker: &mut wasmtime::component::Linker<T>,
+            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+        ) -> wasmtime::Result<()>
+        where
+            T: Send + 'static,
+            U: paths::path2::test::Host + Send,
+        {
+            paths::path2::test::add_to_linker(linker, get)?;
+            Ok(())
+        }
     }
 };
 pub mod paths {
@@ -196,6 +207,17 @@ pub mod paths {
                 let mut inst = linker.instance("paths:path2/test")?;
                 Ok(())
             }
+            pub fn add_to_linker<T, U>(
+                linker: &mut wasmtime::component::Linker<T>,
+                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            ) -> wasmtime::Result<()>
+            where
+                U: Host + Send,
+                T: Send + 'static,
+            {
+                add_to_linker_get_host(linker, get)
+            }
+            impl<_T: Host + Send> Host for &mut _T {}
         }
     }
 }

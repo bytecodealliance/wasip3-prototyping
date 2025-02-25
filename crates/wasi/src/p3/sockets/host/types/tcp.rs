@@ -11,7 +11,7 @@ use io_lifetimes::AsSocketlike as _;
 use rustix::io::Errno;
 use tokio::sync::mpsc;
 use wasmtime::component::{
-    future, stream, Accessor, BackgroundTask, FutureReader, FutureWriter, Lift, Resource,
+    future, stream, Accessor, AccessorTask, FutureReader, FutureWriter, Lift, Resource,
     ResourceTable, StreamReader, StreamWriter,
 };
 
@@ -66,17 +66,14 @@ where
     Ok(fut.into_future())
 }
 
-struct BackgroundTaskFn<T>(T);
+struct AccessorTaskFn<F>(pub F);
 
-impl<T, U, F, Fut> BackgroundTask<T, U> for BackgroundTaskFn<F>
+impl<T, U, R, F, Fut> AccessorTask<T, U, R> for AccessorTaskFn<F>
 where
     F: FnOnce(&mut Accessor<T, U>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = wasmtime::Result<()>> + Send + Sync,
+    Fut: Future<Output = R> + Send + Sync,
 {
-    fn run(
-        self,
-        accessor: &mut Accessor<T, U>,
-    ) -> impl Future<Output = wasmtime::Result<()>> + Send + Sync {
+    fn run(self, accessor: &mut Accessor<T, U>) -> impl Future<Output = R> + Send + Sync {
         self.0(accessor)
     }
 }
@@ -99,7 +96,7 @@ struct ListenTask {
     keep_alive_idle_time: Arc<core::sync::atomic::AtomicU64>, // nanoseconds
 }
 
-impl<T, U: WasiSocketsView> BackgroundTask<T, U> for ListenTask {
+impl<T, U: WasiSocketsView> AccessorTask<T, U, wasmtime::Result<()>> for ListenTask {
     async fn run(mut self, store: &mut Accessor<T, U>) -> wasmtime::Result<()> {
         let mut tx = self.tx;
         while let Some(res) = self.rx.recv().await {
@@ -218,7 +215,7 @@ struct ReceiveTask {
     rx: mpsc::Receiver<Result<Vec<u8>, ErrorCode>>,
 }
 
-impl<T, U: WasiSocketsView> BackgroundTask<T, U> for ReceiveTask {
+impl<T, U: WasiSocketsView> AccessorTask<T, U, wasmtime::Result<()>> for ReceiveTask {
     async fn run(mut self, store: &mut Accessor<T, U>) -> wasmtime::Result<()> {
         let mut tx = self.data;
         let res = loop {
@@ -355,7 +352,7 @@ where
                 Ok(listener) => {
                     let listener = Arc::new(listener);
                     let (task_tx, task_rx) = mpsc::channel(1);
-                    let task = view.spawn(BackgroundTaskFn({
+                    let task = view.spawn(AccessorTaskFn({
                         let listener = Arc::clone(&listener);
                         |_: &mut Accessor<U, Self>| async move {
                             while let Ok(tx) = task_tx.reserve().await {
@@ -497,7 +494,7 @@ where
                 } => {
                     let (task_tx, task_rx) = mpsc::channel(1);
                     let stream = Arc::clone(&stream);
-                    let task = view.spawn(BackgroundTaskFn({
+                    let task = view.spawn(AccessorTaskFn({
                         |_: &mut Accessor<U, Self>| async move {
                             while let Ok(tx) = task_tx.reserve().await {
                                 let mut buf = vec![0; 8096];
@@ -545,7 +542,7 @@ where
                         .write(&mut view, Err(ErrorCode::InvalidState))
                         .context("failed to write result to future")?;
                     let fut = fut.into_future();
-                    view.spawn(BackgroundTaskFn(|_: &mut Accessor<U, Self>| async {
+                    view.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                         fut.await;
                         Ok(())
                     }));

@@ -116,7 +116,7 @@ mod values;
 pub use self::component::{Component, ComponentExportIndex};
 #[cfg(feature = "component-model-async")]
 pub use self::concurrent::{
-    future, stream, AbortOnDropHandle, Accessor, BackgroundTask, ErrorContext, FutureReader,
+    future, stream, AbortOnDropHandle, Accessor, AccessorTask, ErrorContext, FutureReader,
     FutureWriter, Promise, PromisesUnordered, StreamReader, StreamWriter, VMComponentAsyncStore,
 };
 pub use self::func::{
@@ -154,9 +154,22 @@ pub mod __internal {
     pub use alloc::string::String;
     pub use alloc::vec::Vec;
     pub use anyhow;
+    pub use core::cell::RefCell;
+    #[cfg(feature = "component-model-async")]
+    pub use core::future::Future;
+    #[cfg(feature = "component-model-async")]
+    pub use core::mem;
     pub use core::mem::transmute;
     #[cfg(feature = "component-model-async")]
+    pub use core::ops::DerefMut;
+    #[cfg(feature = "component-model-async")]
+    pub use core::pin::{pin, Pin};
+    #[cfg(feature = "component-model-async")]
+    pub use core::task::{Context, Poll};
+    #[cfg(feature = "component-model-async")]
     pub use futures::future::poll_fn;
+    #[cfg(feature = "component-model-async")]
+    pub use std::sync::{Arc, Mutex};
     #[cfg(feature = "async")]
     pub use trait_variant::make as trait_variant_make;
     pub use wasmtime_environ;
