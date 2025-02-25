@@ -3,6 +3,7 @@ use core::ops::Range;
 use crate::p3::wasi::random;
 use crate::p3::wasi::sockets::types::{
     ErrorCode, IpAddress, IpAddressFamily, IpSocketAddress, Ipv4SocketAddress, Ipv6SocketAddress,
+    UdpSocket,
 };
 
 impl IpAddress {
@@ -143,5 +144,14 @@ where
             Err(ErrorCode::AddressInUse | ErrorCode::AccessDenied) => {}
             Err(e) => return Err(e),
         }
+    }
+}
+
+impl UdpSocket {
+    pub fn bind_unspecified(&self) -> Result<(), ErrorCode> {
+        let ip = IpAddress::new_unspecified(self.address_family());
+        let port = 0;
+
+        self.bind(IpSocketAddress::new(ip, port))
     }
 }

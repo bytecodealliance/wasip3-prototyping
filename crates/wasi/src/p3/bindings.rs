@@ -55,6 +55,10 @@
 //!             "wasi:sockets/types@0.3.0#[method]tcp-socket.listen",
 //!             "wasi:sockets/types@0.3.0#[method]tcp-socket.receive",
 //!             "wasi:sockets/types@0.3.0#[method]tcp-socket.send",
+//!             "wasi:sockets/types@0.3.0#[method]udp-socket.bind",
+//!             "wasi:sockets/types@0.3.0#[method]udp-socket.connect",
+//!             "wasi:sockets/types@0.3.0#[method]udp-socket.receive",
+//!             "wasi:sockets/types@0.3.0#[method]udp-socket.send",
 //!         ],
 //!     },
 //! });
@@ -124,6 +128,9 @@ mod generated {
                 "wasi:sockets/types@0.3.0#[method]tcp-socket.receive",
                 "wasi:sockets/types@0.3.0#[method]tcp-socket.send",
                 "wasi:sockets/types@0.3.0#[method]udp-socket.bind",
+                "wasi:sockets/types@0.3.0#[method]udp-socket.connect",
+                "wasi:sockets/types@0.3.0#[method]udp-socket.receive",
+                "wasi:sockets/types@0.3.0#[method]udp-socket.send",
             ],
         },
         with: {

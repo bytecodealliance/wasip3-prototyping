@@ -6,9 +6,10 @@ use wasmtime::component::{Accessor, Resource, ResourceTable};
 use crate::p3::bindings::sockets::types::{
     ErrorCode, HostUdpSocket, IpAddressFamily, IpSocketAddress,
 };
-use crate::p3::sockets::host::types::get_socket_addr_check;
-use crate::p3::sockets::udp::UdpSocket;
+use crate::p3::sockets::udp::{UdpSocket, MAX_UDP_DATAGRAM_SIZE};
 use crate::p3::sockets::{SocketAddrUse, WasiSocketsImpl, WasiSocketsView};
+
+use super::is_addr_allowed;
 
 fn is_udp_allowed<T, U>(store: &mut Accessor<T, U>) -> bool
 where
@@ -52,8 +53,9 @@ where
         local_address: IpSocketAddress,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let local_address = SocketAddr::from(local_address);
-        let check = get_socket_addr_check(store);
-        if !is_udp_allowed(store) || !check(local_address, SocketAddrUse::UdpBind).await {
+        if !is_udp_allowed(store)
+            || !is_addr_allowed(store, local_address, SocketAddrUse::UdpBind).await
+        {
             return Ok(Err(ErrorCode::AccessDenied));
         }
         store.with(|mut view| {
@@ -62,39 +64,69 @@ where
         })
     }
 
-    #[allow(unused)] // TODO: remove
-    fn connect(
-        &mut self,
+    async fn connect<U>(
+        store: &mut Accessor<U, Self>,
         socket: Resource<UdpSocket>,
         remote_address: IpSocketAddress,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
-        todo!()
+        let remote_address = SocketAddr::from(remote_address);
+        if !is_udp_allowed(store)
+            || !is_addr_allowed(store, remote_address, SocketAddrUse::UdpConnect).await
+        {
+            return Ok(Err(ErrorCode::AccessDenied));
+        }
+        store.with(|mut view| {
+            let socket = get_socket_mut(view.table(), &socket)?;
+            Ok(socket.connect(remote_address))
+        })
     }
 
-    #[allow(unused)] // TODO: remove
     fn disconnect(
         &mut self,
         socket: Resource<UdpSocket>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
-        todo!()
+        let socket = get_socket_mut(self.table(), &socket)?;
+        Ok(socket.disconnect())
     }
 
-    #[allow(unused)] // TODO: remove
-    fn send(
-        &mut self,
+    async fn send<U>(
+        store: &mut Accessor<U, Self>,
         socket: Resource<UdpSocket>,
         data: Vec<u8>,
         remote_address: Option<IpSocketAddress>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
-        todo!()
+        if data.len() > MAX_UDP_DATAGRAM_SIZE {
+            return Ok(Err(ErrorCode::DatagramTooLarge));
+        }
+        if !is_udp_allowed(store) {
+            return Ok(Err(ErrorCode::AccessDenied));
+        }
+        if let Some(addr) = remote_address {
+            let addr = SocketAddr::from(addr);
+            if !is_addr_allowed(store, addr, SocketAddrUse::UdpOutgoingDatagram).await {
+                return Ok(Err(ErrorCode::AccessDenied));
+            }
+            let fut = store.with(|mut view| {
+                get_socket(view.table(), &socket).map(|sock| sock.send_to(data, addr))
+            })?;
+            Ok(fut.await)
+        } else {
+            let fut = store
+                .with(|mut view| get_socket(view.table(), &socket).map(|sock| sock.send(data)))?;
+            Ok(fut.await)
+        }
     }
 
-    #[allow(unused)] // TODO: remove
-    fn receive(
-        &mut self,
+    async fn receive<U>(
+        store: &mut Accessor<U, Self>,
         socket: Resource<UdpSocket>,
     ) -> wasmtime::Result<Result<(Vec<u8>, IpSocketAddress), ErrorCode>> {
-        todo!()
+        if !is_udp_allowed(store) {
+            return Ok(Err(ErrorCode::AccessDenied));
+        }
+        let fut =
+            store.with(|mut view| get_socket(view.table(), &socket).map(|sock| sock.receive()))?;
+        Ok(fut.await)
     }
 
     fn local_address(
