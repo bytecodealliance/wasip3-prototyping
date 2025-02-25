@@ -8,13 +8,11 @@ use rustix::net::bind;
 
 use crate::p3::bindings::sockets::types::{ErrorCode, IpAddressFamily, IpSocketAddress};
 use crate::p3::sockets::util::{
-    get_unicast_hop_limit, receive_buffer_size, send_buffer_size, set_receive_buffer_size,
-    set_send_buffer_size, set_unicast_hop_limit,
+    get_unicast_hop_limit, is_valid_address_family, receive_buffer_size, send_buffer_size,
+    set_receive_buffer_size, set_send_buffer_size, set_unicast_hop_limit,
 };
 use crate::p3::sockets::SocketAddressFamily;
 use crate::runtime::with_ambient_tokio_runtime;
-
-use super::util::is_valid_address_family;
 
 /// The state of a UDP socket.
 ///
