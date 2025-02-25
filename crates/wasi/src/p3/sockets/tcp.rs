@@ -40,7 +40,7 @@ pub enum TcpState {
     },
 
     /// An outgoing connection is started.
-    Connecting,
+    Connecting(AbortOnDropHandle),
 
     /// A connection has been established.
     Connected {
@@ -59,7 +59,7 @@ impl Debug for TcpState {
             Self::Default(_) => f.debug_tuple("Default").finish(),
             Self::Bound(_) => f.debug_tuple("Bound").finish(),
             Self::Listening { .. } => f.debug_tuple("Listening").finish(),
-            Self::Connecting => f.debug_tuple("Connecting").finish(),
+            Self::Connecting(..) => f.debug_tuple("Connecting").finish(),
             Self::Connected { .. } => f.debug_tuple("Connected").finish(),
             Self::Error(..) => f.debug_tuple("Error").finish(),
             Self::Closed => write!(f, "Closed"),
@@ -132,7 +132,7 @@ impl TcpSocket {
             TcpState::Default(socket) | TcpState::Bound(socket) => Ok(socket.as_socketlike_view()),
             TcpState::Connected { stream, .. } => Ok(stream.as_socketlike_view()),
             TcpState::Listening { listener, .. } => Ok(listener.as_socketlike_view()),
-            TcpState::Connecting | TcpState::Closed => Err(ErrorCode::InvalidState),
+            TcpState::Connecting(..) | TcpState::Closed => Err(ErrorCode::InvalidState),
             TcpState::Error(err) => Err(*err),
         }
     }

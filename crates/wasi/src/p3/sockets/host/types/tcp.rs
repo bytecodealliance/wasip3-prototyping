@@ -9,7 +9,7 @@ use std::sync::Arc;
 use anyhow::{bail, ensure, Context as _};
 use io_lifetimes::AsSocketlike as _;
 use rustix::io::Errno;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use wasmtime::component::{
     future, stream, Accessor, BackgroundTask, FutureReader, FutureWriter, Lift, Resource,
     ResourceTable, StreamReader, StreamWriter,
@@ -270,7 +270,7 @@ where
         })
     }
 
-    async fn connect<U>(
+    async fn connect<U: 'static>(
         store: &mut Accessor<U, Self>,
         socket: Resource<TcpSocket>,
         remote_address: IpSocketAddress,
@@ -290,7 +290,7 @@ where
             {
                 return Ok(Err(ErrorCode::InvalidArgument));
             }
-            match mem::replace(&mut socket.tcp_state, TcpState::Connecting) {
+            match mem::replace(&mut socket.tcp_state, TcpState::Closed) {
                 TcpState::Default(sock) | TcpState::Bound(sock) => Ok(Ok(sock)),
                 tcp_state => {
                     socket.tcp_state = tcp_state;
@@ -299,24 +299,44 @@ where
             }
         }) {
             Ok(Ok(sock)) => {
-                let res = sock.connect(remote_address).await;
+                let (tx, rx) = oneshot::channel();
+                let task = store.spawn(BackgroundTaskFn({
+                    move |_: &mut Accessor<U, Self>| async move {
+                        _ = tx.send(sock.connect(remote_address).await);
+                        Ok(())
+                    }
+                }));
                 store.with(|mut view| {
                     let socket = get_socket_mut(view.table(), &socket)?;
                     ensure!(
-                        matches!(socket.tcp_state, TcpState::Connecting),
+                        matches!(socket.tcp_state, TcpState::Closed),
+                        "corrupted socket state"
+                    );
+                    socket.tcp_state = TcpState::Connecting(task.abort_handle());
+                    Ok(())
+                })?;
+                let res = rx.await;
+                store.with(|mut view| {
+                    let socket = get_socket_mut(view.table(), &socket)?;
+                    ensure!(
+                        matches!(socket.tcp_state, TcpState::Connecting(..)),
                         "corrupted socket state"
                     );
                     match res {
-                        Ok(stream) => {
+                        Ok(Ok(stream)) => {
                             socket.tcp_state = TcpState::Connected {
                                 stream: Arc::new(stream),
                                 rx_task: None,
                             };
                             Ok(Ok(()))
                         }
-                        Err(err) => {
+                        Ok(Err(err)) => {
                             socket.tcp_state = TcpState::Closed;
                             Ok(Err(err.into()))
+                        }
+                        Err(..) => {
+                            socket.tcp_state = TcpState::Closed;
+                            Ok(Err(ErrorCode::ConnectionAborted))
                         }
                     }
                 })
