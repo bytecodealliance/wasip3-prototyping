@@ -1,7 +1,5 @@
-use core::future::Future;
 use core::mem;
 use core::net::SocketAddr;
-use core::pin::Pin;
 
 use std::net::Shutdown;
 use std::sync::Arc;
@@ -11,8 +9,8 @@ use io_lifetimes::AsSocketlike as _;
 use rustix::io::Errno;
 use tokio::sync::mpsc;
 use wasmtime::component::{
-    future, stream, Accessor, AccessorTask, FutureReader, FutureWriter, Lift, Resource,
-    ResourceTable, StreamReader, StreamWriter,
+    future, stream, Accessor, AccessorTask, FutureReader, Resource, ResourceTable, StreamReader,
+    StreamWriter,
 };
 
 use crate::p3::bindings::sockets::types::{
@@ -23,7 +21,7 @@ use crate::p3::sockets::util::{
     is_valid_address_family, is_valid_remote_address, is_valid_unicast_address,
 };
 use crate::p3::sockets::{SocketAddrUse, SocketAddressFamily, WasiSocketsImpl, WasiSocketsView};
-use crate::p3::ResourceView as _;
+use crate::p3::{next_item, AccessorTaskFn, IoTask, ResourceView as _};
 
 use super::is_addr_allowed;
 
@@ -52,32 +50,6 @@ fn get_socket_mut<'a>(
         .context("failed to get socket resource from table")
 }
 
-fn next_item<T, U, V>(
-    store: &mut Accessor<T, U>,
-    stream: StreamReader<V>,
-) -> wasmtime::Result<
-    Pin<Box<dyn Future<Output = Option<(StreamReader<V>, Vec<V>)>> + Send + Sync + 'static>>,
->
-where
-    V: Send + Sync + Lift + 'static,
-{
-    let fut =
-        store.with(|mut view| stream.read(&mut view).context("failed to read from stream"))?;
-    Ok(fut.into_future())
-}
-
-struct AccessorTaskFn<F>(pub F);
-
-impl<T, U, R, F, Fut> AccessorTask<T, U, R> for AccessorTaskFn<F>
-where
-    F: FnOnce(&mut Accessor<T, U>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = R> + Send + Sync,
-{
-    fn run(self, accessor: &mut Accessor<T, U>) -> impl Future<Output = R> + Send + Sync {
-        self.0(accessor)
-    }
-}
-
 struct ListenTask {
     family: SocketAddressFamily,
     tx: StreamWriter<Resource<TcpSocket>>,
@@ -98,8 +70,8 @@ struct ListenTask {
 
 impl<T, U: WasiSocketsView> AccessorTask<T, U, wasmtime::Result<()>> for ListenTask {
     async fn run(mut self, store: &mut Accessor<T, U>) -> wasmtime::Result<()> {
-        let mut tx = Some(self.tx);
-        while let (Some(res), Some(my_tx)) = (self.rx.recv().await, tx.take()) {
+        let mut tx = self.tx;
+        while let Some(res) = self.rx.recv().await {
             let state = match res {
                 Ok((stream, _addr)) => {
                     #[cfg(target_os = "macos")]
@@ -199,52 +171,15 @@ impl<T, U: WasiSocketsView> AccessorTask<T, U, wasmtime::Result<()>> for ListenT
                     .table()
                     .push(TcpSocket::from_state(state, self.family))
                     .context("failed to push socket to table")?;
-                my_tx
-                    .write(&mut view, vec![socket])
+                tx.write(&mut view, vec![socket])
                     .context("failed to send socket")
             })?;
-            tx = fut.into_future().await;
+            let Some(tail) = fut.into_future().await else {
+                return Ok(());
+            };
+            tx = tail;
         }
-        if let Some(tx) = tx {
-            store.with(|view| tx.close(view).context("failed to close stream"))?;
-        }
-        Ok(())
-    }
-}
-
-struct ReceiveTask {
-    data: StreamWriter<u8>,
-    result: FutureWriter<Result<(), ErrorCode>>,
-    rx: mpsc::Receiver<Result<Vec<u8>, ErrorCode>>,
-}
-
-impl<T, U: WasiSocketsView> AccessorTask<T, U, wasmtime::Result<()>> for ReceiveTask {
-    async fn run(mut self, store: &mut Accessor<T, U>) -> wasmtime::Result<()> {
-        let mut tx = Some(self.data);
-        let res = loop {
-            match self.rx.recv().await {
-                None => break Ok(()),
-                Some(Ok(buf)) => {
-                    if let Some(my_tx) = tx.take() {
-                        let fut = store
-                            .with(|view| my_tx.write(view, buf).context("failed to send chunk"))?;
-                        tx = fut.into_future().await;
-                    } else {
-                        break Ok(());
-                    }
-                }
-                Some(Err(err)) => break Err(err.into()),
-            }
-        };
-        let fut = store.with(|mut view| {
-            if let Some(tx) = tx {
-                tx.close(&mut view).context("failed to close stream")?;
-            }
-            self.result
-                .write(&mut view, res)
-                .context("failed to write result")
-        })?;
-        fut.into_future().await;
+        store.with(|view| tx.close(view).context("failed to close stream"))?;
         Ok(())
     }
 }
@@ -531,7 +466,7 @@ where
                             Ok(())
                         }
                     }));
-                    view.spawn(ReceiveTask {
+                    view.spawn(IoTask {
                         data: data_tx,
                         result: res_tx,
                         rx: task_rx,

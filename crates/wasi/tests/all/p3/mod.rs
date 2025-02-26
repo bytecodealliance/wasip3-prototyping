@@ -1,12 +1,14 @@
 #![cfg(feature = "p3")]
 
+use std::path::Path;
+
 use anyhow::{anyhow, Context as _};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::Store;
 use wasmtime_wasi::p3::bindings::Command;
 use wasmtime_wasi::p3::cli::{WasiCliCtx, WasiCliView};
 use wasmtime_wasi::p3::clocks::{WasiClocksCtx, WasiClocksView};
-use wasmtime_wasi::p3::filesystem::{WasiFilesystemCtx, WasiFilesystemView};
+use wasmtime_wasi::p3::filesystem::{DirPerms, FilePerms, WasiFilesystemCtx, WasiFilesystemView};
 use wasmtime_wasi::p3::random::{WasiRandomCtx, WasiRandomView};
 use wasmtime_wasi::p3::sockets::{
     AllowedNetworkUses, SocketAddrCheck, WasiSocketsCtx, WasiSocketsView,
@@ -101,6 +103,7 @@ impl WasiSocketsView for Ctx {
 }
 
 async fn run(path: &str) -> anyhow::Result<()> {
+    let path = Path::new(path);
     let engine = test_programs_artifacts::engine(|config| {
         config.async_support(true);
         config.wasm_component_model_async(true);
@@ -111,7 +114,22 @@ async fn run(path: &str) -> anyhow::Result<()> {
     wasmtime_wasi::add_to_linker_async(&mut linker).context("failed to link `wasi:cli@0.2.x`")?;
     wasmtime_wasi::p3::add_to_linker(&mut linker).context("failed to link `wasi:cli@0.3.x`")?;
 
-    let mut store = Store::new(&engine, Ctx::default());
+    let mut filesystem = WasiFilesystemCtx::default();
+    let tempdir = tempfile::Builder::new()
+        .prefix(&format!(
+            "wasi_components_{}_",
+            path.file_stem().unwrap().to_str().unwrap()
+        ))
+        .tempdir()?;
+    println!("preopen: {tempdir:?}");
+    filesystem.preopened_dir(tempdir.path(), ".", DirPerms::all(), FilePerms::all())?;
+    let mut store = Store::new(
+        &engine,
+        Ctx {
+            filesystem,
+            ..Ctx::default()
+        },
+    );
     let command = Command::instantiate_async(&mut store, &component, &linker)
         .await
         .context("failed to instantiate `wasi:cli/command`")?;
@@ -131,7 +149,7 @@ async fn run(path: &str) -> anyhow::Result<()> {
 }
 
 mod clocks;
+mod filesystem;
 mod random;
 mod sockets;
-//mod filesystem;
 //mod cli;
