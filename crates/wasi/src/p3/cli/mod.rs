@@ -1,15 +1,11 @@
 mod host;
 
-use wasmtime::component::Linker;
+use wasmtime::component::{Linker, ResourceTable};
+
+use crate::p3::ResourceView;
 
 #[repr(transparent)]
 pub struct WasiCliImpl<T>(pub T);
-
-impl<T: WasiCliView + Sync> WasiCliView for &T {
-    fn cli(&self) -> &WasiCliCtx {
-        (**self).cli()
-    }
-}
 
 impl<T: WasiCliView> WasiCliView for &mut T {
     fn cli(&self) -> &WasiCliCtx {
@@ -23,7 +19,13 @@ impl<T: WasiCliView> WasiCliView for WasiCliImpl<T> {
     }
 }
 
-pub trait WasiCliView: Send {
+impl<T: ResourceView> ResourceView for WasiCliImpl<T> {
+    fn table(&mut self) -> &mut ResourceTable {
+        self.0.table()
+    }
+}
+
+pub trait WasiCliView: ResourceView + Send {
     fn cli(&self) -> &WasiCliCtx;
 }
 
@@ -62,6 +64,7 @@ impl Default for WasiCliCtx {
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{ResourceTable, Linker};
 /// use wasmtime_wasi::p3::cli::{WasiCliView, WasiCliCtx};
+/// use wasmtime_wasi::p3::ResourceView;
 ///
 /// fn main() -> Result<()> {
 ///     let mut config = Config::new();
@@ -76,6 +79,7 @@ impl Default for WasiCliCtx {
 ///         &engine,
 ///         MyState {
 ///             cli: WasiCliCtx::default(),
+///             table: ResourceTable::default(),
 ///         },
 ///     );
 ///
@@ -86,9 +90,14 @@ impl Default for WasiCliCtx {
 ///
 /// struct MyState {
 ///     cli: WasiCliCtx,
+///     table: ResourceTable,
 /// }
 ///
-/// impl wasmtime_wasi::p3::cli::WasiCliView for MyState {
+/// impl ResourceView for MyState {
+///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
+/// }
+///
+/// impl WasiCliView for MyState {
 ///     fn cli(&self) -> &WasiCliCtx { &self.cli }
 /// }
 /// ```
@@ -96,8 +105,29 @@ pub fn add_to_linker<T>(linker: &mut Linker<T>) -> wasmtime::Result<()>
 where
     T: WasiCliView + 'static,
 {
+    let exit_options = crate::p3::bindings::cli::exit::LinkOptions::default();
+    add_to_linker_with_options(linker, &exit_options)
+}
+
+/// Similar to [`add_to_linker`], but with the ability to enable unstable features.
+pub fn add_to_linker_with_options<T>(
+    linker: &mut Linker<T>,
+    exit_options: &crate::p3::bindings::cli::exit::LinkOptions,
+) -> anyhow::Result<()>
+where
+    T: WasiCliView + 'static,
+{
     let closure = annotate_cli(|cx| WasiCliImpl(cx));
     crate::p3::bindings::cli::environment::add_to_linker_get_host(linker, closure)?;
+    crate::p3::bindings::cli::exit::add_to_linker_get_host(linker, exit_options, closure)?;
+    crate::p3::bindings::cli::stdin::add_to_linker_get_host(linker, closure)?;
+    crate::p3::bindings::cli::stdout::add_to_linker_get_host(linker, closure)?;
+    crate::p3::bindings::cli::stderr::add_to_linker_get_host(linker, closure)?;
+    crate::p3::bindings::cli::terminal_input::add_to_linker_get_host(linker, closure)?;
+    crate::p3::bindings::cli::terminal_output::add_to_linker_get_host(linker, closure)?;
+    crate::p3::bindings::cli::terminal_stdin::add_to_linker_get_host(linker, closure)?;
+    crate::p3::bindings::cli::terminal_stdout::add_to_linker_get_host(linker, closure)?;
+    crate::p3::bindings::cli::terminal_stderr::add_to_linker_get_host(linker, closure)?;
     Ok(())
 }
 

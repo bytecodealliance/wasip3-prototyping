@@ -1,4 +1,6 @@
-use wasmtime::component::ResourceTable;
+use wasmtime::component::{Linker, ResourceTable};
+
+use crate::p3::bindings::LinkOptions;
 
 pub mod bindings;
 pub mod cli;
@@ -85,7 +87,24 @@ pub mod sockets;
 ///     fn sockets(&self) -> &WasiSocketsCtx { &self.sockets }
 /// }
 /// ```
-pub fn add_to_linker<T>(linker: &mut wasmtime::component::Linker<T>) -> wasmtime::Result<()>
+pub fn add_to_linker<T>(linker: &mut Linker<T>) -> wasmtime::Result<()>
+where
+    T: clocks::WasiClocksView
+        + random::WasiRandomView
+        + sockets::WasiSocketsView
+        + filesystem::WasiFilesystemView
+        + cli::WasiCliView
+        + 'static,
+{
+    let options = LinkOptions::default();
+    add_to_linker_with_options(linker, &options)
+}
+
+/// Similar to [`add_to_linker`], but with the ability to enable unstable features.
+pub fn add_to_linker_with_options<T>(
+    linker: &mut Linker<T>,
+    options: &LinkOptions,
+) -> anyhow::Result<()>
 where
     T: clocks::WasiClocksView
         + random::WasiRandomView
@@ -98,7 +117,7 @@ where
     random::add_to_linker(linker)?;
     sockets::add_to_linker(linker)?;
     filesystem::add_to_linker(linker)?;
-    cli::add_to_linker(linker)?;
+    cli::add_to_linker_with_options(linker, &options.into())?;
     Ok(())
 }
 

@@ -22,7 +22,7 @@ impl TryFrom<SystemTime> for wall_clock::Datetime {
     }
 }
 
-impl<T> wall_clock::Host for WasiClocksImpl<&mut T>
+impl<T> wall_clock::Host for WasiClocksImpl<T>
 where
     T: WasiClocksView,
 {
