@@ -4,7 +4,6 @@ mod bindings {
         world: "wasi:http/proxy",
         async: {
             imports: [
-                "wasi:http/types@0.3.0-draft#[static]body.finish",
                 "wasi:http/handler@0.3.0-draft#handle",
             ],
             exports: [
@@ -24,7 +23,6 @@ use {
         wit_future, wit_stream,
     },
     futures::{SinkExt, StreamExt},
-    std::future::IntoFuture,
     wit_bindgen_rt::async_support,
 };
 
@@ -52,11 +50,15 @@ impl Handler for Component {
 
                 drop(pipe_tx);
 
-                if let Some(trailers) = Body::finish(body).await.into_future().await {
-                    trailers_tx
-                        .write(trailers.expect("trailer does not resolve to an error when present"))
-                        .await;
-                }
+                let trailers = Body::finish(body);
+                trailers_tx
+                    .write(
+                        trailers
+                            .await
+                            .expect("trailers be present")
+                            .expect("stream not closed early w/ error"),
+                    )
+                    .await;
             });
 
             Ok(Response::new(
