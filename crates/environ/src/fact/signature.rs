@@ -26,6 +26,12 @@ impl ComponentTypesBuilder {
         let ty = &self[options.ty];
         let ptr_ty = options.options.ptr();
 
+        // The async lower ABI is always `(param i32 i32) (result i32)` (for
+        // wasm32, anyway), regardless of the component-level signature.  The
+        // first param is a pointer to linear memory where the parameters have
+        // been stored by the caller, the second param is a pointer to linear
+        // memory where the results should be stored by the callee, and the
+        // result is a status code optionally ORed with a subtask ID.
         if let (Context::Lower, true) = (&context, options.options.async_) {
             return Signature {
                 params: vec![ptr_ty; 2],
@@ -33,6 +39,8 @@ impl ComponentTypesBuilder {
             };
         }
 
+        // If we're lifting async or sync, or if we're lowering sync, we can
+        // pass up to `MAX_FLAT_PARAMS` via the stack.
         let mut params = match self.flatten_types(
             &options.options,
             MAX_FLAT_PARAMS,
@@ -44,6 +52,13 @@ impl ComponentTypesBuilder {
             }
         };
 
+        // If we're lifting async with a callback, the result is an `i32` status
+        // code, optionally ORed with a guest task identifier, and the result
+        // will be returned via `task.return`.  If we're lifting async without a
+        // callback, then there's no need to return anything here since the
+        // result will be returned via `task.return` and the guest will use
+        // `task.wait` rather than return a status code in order to suspend
+        // itself, if necessary.
         if options.options.async_ {
             return Signature {
                 params,
@@ -55,6 +70,9 @@ impl ComponentTypesBuilder {
             };
         }
 
+        // If we've reached this point, we're either lifting or lowering sync,
+        // in which case the guest will return up to `MAX_FLAT_RESULTS` via the
+        // stack or spill to linear memory otherwise.
         let results = match self.flatten_types(
             &options.options,
             MAX_FLAT_RESULTS,
@@ -80,6 +98,16 @@ impl ComponentTypesBuilder {
         Signature { params, results }
     }
 
+    /// Generates the signature for a function to be exported by the adapter
+    /// module and called by the host to lift the parameters from the caller and
+    /// lower them to the callee.
+    ///
+    /// This allows the host to delay copying the parameters until the callee
+    /// signals readiness by clearing its backpressure flag.
+    ///
+    /// Note that this function uses multi-value return to return up to
+    /// `MAX_FLAT_PARAMS` _results_ via the stack, allowing the host to pass
+    /// them directly to the callee with no additional effort.
     pub(super) fn async_start_signature(
         &self,
         lower: &AdapterOptions,
@@ -159,6 +187,14 @@ impl ComponentTypesBuilder {
         )
     }
 
+    /// Generates the signature for a function to be exported by the adapter
+    /// module and called by the host to lift the results from the callee and
+    /// lower them to the caller.
+    ///
+    /// Given that async-lifted exports return their results via the
+    /// `task.return` intrinsic, the host will need to copy the results from
+    /// callee to caller when that intrinsic is called rather than when the
+    /// callee task fully completes (which may happen much later).
     pub(super) fn async_return_signature(
         &self,
         lower: &AdapterOptions,

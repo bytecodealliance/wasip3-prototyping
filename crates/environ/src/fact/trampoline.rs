@@ -40,8 +40,6 @@ use wasmtime_component_util::{DiscriminantSize, FlagsSize};
 const MAX_STRING_BYTE_LENGTH: u32 = 1 << 31;
 const UTF16_TAG: u32 = 1 << 31;
 
-const EXIT_FLAG_ASYNC_CALLEE: i32 = 1 << 0;
-
 /// This value is arbitrarily chosen and should be fine to change at any time,
 /// it just seemed like a halfway reasonable starting point.
 const INITIAL_FUEL: usize = 1_000;
@@ -118,6 +116,11 @@ pub(super) fn compile(module: &mut Module<'_>, adapter: &AdapterData) {
         )
     }
 
+    // This closure compiles a function to be exported to the host which host to
+    // lift the parameters from the caller and lower them to the callee.
+    //
+    // This allows the host to delay copying the parameters until the callee
+    // signals readiness by clearing its backpressure flag.
     let async_start_adapter = |module: &mut Module| {
         let sig = module
             .types
@@ -134,6 +137,14 @@ pub(super) fn compile(module: &mut Module<'_>, adapter: &AdapterData) {
         result
     };
 
+    // This closure compiles a function to be exported by the adapter module and
+    // called by the host to lift the results from the callee and lower them to
+    // the caller.
+    //
+    // Given that async-lifted exports return their results via the
+    // `task.return` intrinsic, the host will need to copy the results from
+    // callee to caller when that intrinsic is called rather than when the
+    // callee task fully completes (which may happen much later).
     let async_return_adapter = |module: &mut Module| {
         let sig = module
             .types
@@ -392,6 +403,15 @@ impl<'a, 'b> Compiler<'a, 'b> {
         }
     }
 
+    /// Compile an adapter function supporting an async-lowered import to an
+    /// async-lifted export.
+    ///
+    /// This uses a pair of `async-enter` and `async-exit` built-in functions to
+    /// set up and start a subtask, respectively.  `async-enter` accepts `start`
+    /// and `return_` functions which copy the parameters and results,
+    /// respectively; the host will call the former when the callee has cleared
+    /// its backpressure flag and the latter when the callee has called
+    /// `task.return`.
     fn compile_async_to_async_adapter(
         mut self,
         adapter: &AdapterData,
@@ -417,14 +437,22 @@ impl<'a, 'b> Compiler<'a, 'b> {
         self.instruction(I32Const(
             i32::try_from(self.types[adapter.lift.ty].results.as_u32()).unwrap(),
         ));
+        // Async-lowered imports pass params and receive results via linear
+        // memory, and those pointers are in the the first and second params to
+        // this adapter.  We pass them on to the host so it can store them in
+        // the subtask for later use.
         self.instruction(LocalGet(0));
         self.instruction(LocalGet(1));
         self.instruction(Call(enter.as_u32()));
 
-        // TODO: As an optimization, consider checking the backpressure flag on the callee instance and, if it's
-        // unset _and_ the callee uses a callback, translate the params and call the callee function directly here
-        // (and make sure `exit` knows _not_ to call it in that case).
+        // TODO: As an optimization, consider checking the backpressure flag on
+        // the callee instance and, if it's unset _and_ the callee uses a
+        // callback, translate the params and call the callee function directly
+        // here (and make sure `exit` knows _not_ to call it in that case).
 
+        // We export this function so we can pass a funcref to the host.
+        //
+        // TODO: Use a declarative element segment instead of exporting this.
         self.module.exports.push((
             adapter.callee.as_u32(),
             format!("[adapter-callee]{}", adapter.name),
@@ -438,13 +466,25 @@ impl<'a, 'b> Compiler<'a, 'b> {
             i32::try_from(adapter.lift.instance.as_u32()).unwrap(),
         ));
         self.instruction(I32Const(param_count));
-        self.instruction(I32Const(1)); // leave room for the guest context result
-        self.instruction(I32Const(EXIT_FLAG_ASYNC_CALLEE));
+        // The result count for an async callee is either one (if there's a
+        // callback) or zero (if there's no callback).  We conservatively use
+        // one here to ensure the host provides room for the result, if any.
+        self.instruction(I32Const(1));
+        self.instruction(I32Const(super::EXIT_FLAG_ASYNC_CALLEE));
         self.instruction(Call(exit.as_u32()));
 
         self.finish()
     }
 
+    /// Compile an adapter function supporting a sync-lowered import to an
+    /// async-lifted export.
+    ///
+    /// This uses a pair of `sync-enter` and `sync-exit` built-in functions to
+    /// set up and start a subtask, respectively.  `sync-enter` accepts `start`
+    /// and `return_` functions which copy the parameters and results,
+    /// respectively; the host will call the former when the callee has cleared
+    /// its backpressure flag and the latter when the callee has called
+    /// `task.return`.
     fn compile_sync_to_async_adapter(
         mut self,
         adapter: &AdapterData,
@@ -498,14 +538,19 @@ impl<'a, 'b> Compiler<'a, 'b> {
 
         self.instruction(Call(enter.as_u32()));
 
-        // TODO: As an optimization, consider checking the backpressure flag on the callee instance and, if it's
-        // unset _and_ the callee uses a callback, translate the params and call the callee function directly here
-        // (and make sure `exit` knows _not_ to call it in that case).
+        // TODO: As an optimization, consider checking the backpressure flag on
+        // the callee instance and, if it's unset _and_ the callee uses a
+        // callback, translate the params and call the callee function directly
+        // here (and make sure `exit` knows _not_ to call it in that case).
 
+        // We export this function so we can pass a funcref to the host.
+        //
+        // TODO: Use a declarative element segment instead of exporting this.
         self.module.exports.push((
             adapter.callee.as_u32(),
             format!("[adapter-callee]{}", adapter.name),
         ));
+
         self.instruction(I32Const(
             i32::try_from(adapter.lower.instance.as_u32()).unwrap(),
         ));
@@ -519,6 +564,15 @@ impl<'a, 'b> Compiler<'a, 'b> {
         self.finish()
     }
 
+    /// Compile an adapter function supporting an async-lowered import to a
+    /// sync-lifted export.
+    ///
+    /// This uses a pair of `async-enter` and `async-exit` built-in functions to
+    /// set up and start a subtask, respectively.  `async-enter` accepts `start`
+    /// and `return_` functions which copy the parameters and results,
+    /// respectively; the host will call the former when the callee has cleared
+    /// its backpressure flag and the latter when the callee has returned its
+    /// result(s).
     fn compile_async_to_sync_adapter(
         mut self,
         adapter: &AdapterData,
@@ -548,10 +602,15 @@ impl<'a, 'b> Compiler<'a, 'b> {
         self.instruction(LocalGet(0));
         self.instruction(LocalGet(1));
         self.instruction(Call(enter.as_u32()));
+
+        // We export this function so we can pass a funcref to the host.
+        //
+        // TODO: Use a declarative element segment instead of exporting this.
         self.module.exports.push((
             adapter.callee.as_u32(),
             format!("[adapter-callee]{}", adapter.name),
         ));
+
         self.instruction(I32Const(
             i32::try_from(adapter.lower.instance.as_u32()).unwrap(),
         ));
@@ -567,6 +626,11 @@ impl<'a, 'b> Compiler<'a, 'b> {
         self.finish()
     }
 
+    /// Compiles a function to be exported to the host which host to lift the
+    /// parameters from the caller and lower them to the callee.
+    ///
+    /// This allows the host to delay copying the parameters until the callee
+    /// signals readiness by clearing its backpressure flag.
     fn compile_async_start_adapter(mut self, adapter: &AdapterData, sig: &Signature) {
         let param_locals = sig
             .params
@@ -582,6 +646,14 @@ impl<'a, 'b> Compiler<'a, 'b> {
         self.finish();
     }
 
+    /// Compiles a function to be exported by the adapter module and called by
+    /// the host to lift the results from the callee and lower them to the
+    /// caller.
+    ///
+    /// Given that async-lifted exports return their results via the
+    /// `task.return` intrinsic, the host will need to copy the results from
+    /// callee to caller when that intrinsic is called rather than when the
+    /// callee task fully completes (which may happen much later).
     fn compile_async_return_adapter(mut self, adapter: &AdapterData, sig: &Signature) {
         let param_locals = sig
             .params
@@ -591,12 +663,26 @@ impl<'a, 'b> Compiler<'a, 'b> {
             .collect::<Vec<_>>();
 
         self.set_flag(adapter.lower.flags, FLAG_MAY_LEAVE, false);
+        // Note that we pass `param_locals` as _both_ the `param_locals` and
+        // `result_locals` parameters to `translate_results`.  That's because
+        // the _parameters_ to `task.return` are actually the _results_ that the
+        // caller is waiting for.  Additionally, the host will append a return
+        // pointer to the end of that list before calling this adapter's
+        // `async-return` function if the results exceed `MAX_FLAT_RESULTS` or
+        // the import is lowered async, in which case `translate_results` will
+        // use that pointer to store the results.
         self.translate_results(adapter, &param_locals, &param_locals);
         self.set_flag(adapter.lower.flags, FLAG_MAY_LEAVE, true);
 
         self.finish()
     }
 
+    /// Compile an adapter function supporting a sync-lowered import to a
+    /// sync-lifted export.
+    ///
+    /// Unlike calls involving async-lowered imports or async-lifted exports,
+    /// this adapter need not involve host built-ins except possibly for
+    /// resource bookkeeping.
     fn compile_sync_to_sync_adapter(
         mut self,
         adapter: &AdapterData,
