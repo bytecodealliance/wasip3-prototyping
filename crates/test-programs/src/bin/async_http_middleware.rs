@@ -4,7 +4,6 @@ mod bindings {
         world: "wasi:http/proxy",
         async: {
             imports: [
-                "wasi:http/types@0.3.0-draft#[static]body.finish",
                 "wasi:http/handler@0.3.0-draft#handle",
             ],
             exports: [
@@ -31,7 +30,7 @@ use {
         Compression,
     },
     futures::{SinkExt, StreamExt},
-    std::{future::IntoFuture, io::Write, mem},
+    std::{io::Write, mem},
     wit_bindgen_rt::async_support,
 };
 
@@ -85,11 +84,15 @@ impl Handler for Component {
                     drop(pipe_tx);
                 }
 
-                if let Some(trailers) = Body::finish(body).await.into_future().await {
-                    trailers_tx
-                        .write(trailers.expect("trailer does not resolve to an error when present"))
-                        .await;
-                }
+                let trailers = Body::finish(body);
+                trailers_tx
+                    .write(
+                        trailers
+                            .await
+                            .expect("trailers present")
+                            .expect("stream not closed early w/ error"),
+                    )
+                    .await;
             });
 
             Body::new_with_trailers(pipe_rx, trailers_rx)
@@ -140,11 +143,15 @@ impl Handler for Component {
                     drop(pipe_tx);
                 }
 
-                if let Some(trailers) = Body::finish(body).await.into_future().await {
-                    trailers_tx
-                        .write(trailers.expect("trailer does not resolve to an error when present"))
-                        .await;
-                }
+                let trailers = Body::finish(body);
+                trailers_tx
+                    .write(
+                        trailers
+                            .await
+                            .expect("trailers present")
+                            .expect("stream not closed early w/ error"),
+                    )
+                    .await;
             });
 
             Body::new_with_trailers(pipe_rx, trailers_rx)
