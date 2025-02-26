@@ -151,7 +151,7 @@ pub fn thread_rng() -> Box<dyn RngCore + Send> {
 ///     random: WasiRandomCtx,
 /// }
 ///
-/// impl wasmtime_wasi::p3::random::WasiRandomView for MyState {
+/// impl WasiRandomView for MyState {
 ///     fn random(&mut self) -> &mut WasiRandomCtx { &mut self.random }
 /// }
 /// ```

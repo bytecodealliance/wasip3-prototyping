@@ -180,7 +180,7 @@ pub fn wall_clock() -> Box<dyn HostWallClock + Send> {
 ///     clocks: WasiClocksCtx,
 /// }
 ///
-/// impl wasmtime_wasi::p3::clocks::WasiClocksView for MyState {
+/// impl WasiClocksView for MyState {
 ///     fn clocks(&self) -> &WasiClocksCtx { &self.clocks }
 /// }
 /// ```
