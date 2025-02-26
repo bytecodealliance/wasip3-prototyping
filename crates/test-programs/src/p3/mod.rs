@@ -9,6 +9,7 @@ wit_bindgen::generate!({
          imports: [
              "wasi:clocks/monotonic-clock@0.3.0#wait-for",
              "wasi:clocks/monotonic-clock@0.3.0#wait-until",
+             "wasi:filesystem/types@0.3.0#[method]descriptor.write-via-stream",
              "wasi:sockets/ip-name-lookup@0.3.0#resolve-addresses",
              "wasi:sockets/types@0.3.0#[method]tcp-socket.connect",
              "wasi:sockets/types@0.3.0#[method]tcp-socket.send",
