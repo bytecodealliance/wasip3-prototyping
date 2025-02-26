@@ -16,8 +16,10 @@
 //!
 //! use wasmtime_wasi::p3::cli::{WasiCliCtx, WasiCliView};
 //! use wasmtime_wasi::p3::clocks::{WasiClocksCtx, WasiClocksView};
+//! use wasmtime_wasi::p3::filesystem::{WasiFilesystemCtx, WasiFilesystemView};
 //! use wasmtime_wasi::p3::random::{WasiRandomCtx, WasiRandomView};
 //! use wasmtime_wasi::p3::sockets::{WasiSocketsCtx, WasiSocketsView};
+//! use wasmtime_wasi::p3::ResourceView;
 //! use wasmtime::{Result, StoreContextMut, Engine, Config};
 //! use wasmtime::component::{Accessor, Linker, ResourceTable};
 //!
@@ -66,6 +68,7 @@
 //! struct MyState {
 //!     cli: WasiCliCtx,
 //!     clocks: WasiClocksCtx,
+//!     filesystem: WasiFilesystemCtx,
 //!     random: WasiRandomCtx,
 //!     sockets: WasiSocketsCtx,
 //!     table: ResourceTable,
@@ -77,6 +80,10 @@
 //!     }
 //! }
 //!
+//! impl ResourceView for MyState {
+//!     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
+//! }
+//!
 //! impl WasiCliView for MyState {
 //!     fn cli(&self) -> &WasiCliCtx { &self.cli }
 //! }
@@ -85,14 +92,16 @@
 //!     fn clocks(&self) -> &WasiClocksCtx { &self.clocks }
 //! }
 //!
+//! impl WasiFilesystemView for MyState {
+//!     fn filesystem(&mut self) -> &mut WasiFilesystemCtx { &mut self.filesystem }
+//! }
+//!
 //! impl WasiRandomView for MyState {
 //!     fn random(&mut self) -> &mut WasiRandomCtx { &mut self.random }
 //! }
 //!
 //! impl WasiSocketsView for MyState {
 //!     fn sockets(&self) -> &WasiSocketsCtx { &self.sockets }
-//!
-//!     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 //! }
 //!
 //! fn main() -> Result<()> {

@@ -23,6 +23,7 @@ use crate::p3::sockets::util::{
     is_valid_address_family, is_valid_remote_address, is_valid_unicast_address,
 };
 use crate::p3::sockets::{SocketAddrUse, SocketAddressFamily, WasiSocketsImpl, WasiSocketsView};
+use crate::p3::ResourceView as _;
 
 use super::is_addr_allowed;
 

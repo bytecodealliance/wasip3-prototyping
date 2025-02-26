@@ -6,10 +6,12 @@ use wasmtime::Store;
 use wasmtime_wasi::p3::bindings::Command;
 use wasmtime_wasi::p3::cli::{WasiCliCtx, WasiCliView};
 use wasmtime_wasi::p3::clocks::{WasiClocksCtx, WasiClocksView};
+use wasmtime_wasi::p3::filesystem::{WasiFilesystemCtx, WasiFilesystemView};
 use wasmtime_wasi::p3::random::{WasiRandomCtx, WasiRandomView};
 use wasmtime_wasi::p3::sockets::{
     AllowedNetworkUses, SocketAddrCheck, WasiSocketsCtx, WasiSocketsView,
 };
+use wasmtime_wasi::p3::ResourceView;
 use wasmtime_wasi::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 
 macro_rules! assert_test_exists {
@@ -22,6 +24,7 @@ macro_rules! assert_test_exists {
 struct Ctx {
     cli: WasiCliCtx,
     clocks: WasiClocksCtx,
+    filesystem: WasiFilesystemCtx,
     random: WasiRandomCtx,
     sockets: WasiSocketsCtx,
     table: ResourceTable,
@@ -33,6 +36,7 @@ impl Default for Ctx {
         Self {
             cli: WasiCliCtx::default(),
             clocks: WasiClocksCtx::default(),
+            filesystem: WasiFilesystemCtx::default(),
             sockets: WasiSocketsCtx {
                 socket_addr_check: SocketAddrCheck::new(|_, _| Box::pin(async { true })),
                 allowed_network_uses: AllowedNetworkUses {
@@ -60,6 +64,12 @@ impl IoView for Ctx {
     }
 }
 
+impl ResourceView for Ctx {
+    fn table(&mut self) -> &mut ResourceTable {
+        &mut self.table
+    }
+}
+
 impl WasiCliView for Ctx {
     fn cli(&self) -> &WasiCliCtx {
         &self.cli
@@ -72,6 +82,12 @@ impl WasiClocksView for Ctx {
     }
 }
 
+impl WasiFilesystemView for Ctx {
+    fn filesystem(&mut self) -> &mut WasiFilesystemCtx {
+        &mut self.filesystem
+    }
+}
+
 impl WasiRandomView for Ctx {
     fn random(&mut self) -> &mut WasiRandomCtx {
         &mut self.random
@@ -81,10 +97,6 @@ impl WasiRandomView for Ctx {
 impl WasiSocketsView for Ctx {
     fn sockets(&self) -> &WasiSocketsCtx {
         &self.sockets
-    }
-
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.table
     }
 }
 
