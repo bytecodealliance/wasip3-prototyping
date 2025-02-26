@@ -36,6 +36,11 @@ mod trampoline;
 mod transcode;
 mod traps;
 
+/// This flag may be passed to the `async-exit` built-in function (which is
+/// called from both async->async and async->sync adapters) to indicate that the
+/// callee is an async-lifted export.
+pub const EXIT_FLAG_ASYNC_CALLEE: i32 = 1 << 0;
+
 /// Representation of an adapter module.
 pub struct Module<'a> {
     /// Whether or not debug code is inserted into the adapters themselves.
@@ -64,13 +69,23 @@ pub struct Module<'a> {
     imported_resource_transfer_borrow: Option<FuncIndex>,
     imported_resource_enter_call: Option<FuncIndex>,
     imported_resource_exit_call: Option<FuncIndex>,
+
+    // Cached versions of imported trampolines for working with the async ABI.
     imported_async_enter_call: Option<FuncIndex>,
     imported_async_exit_call: Option<FuncIndex>,
+
+    // Cached versions of imported trampolines for fusing sync-lowered imports
+    // with async-lifted exports.  These are `HashMap`s (using the adapter
+    // function name) because the signatures of the trampolines vary depending
+    // on the signature of the adapter function we're generating code for.
+    imported_sync_enter_call: HashMap<String, FuncIndex>,
+    imported_sync_exit_call: HashMap<String, FuncIndex>,
+
+    // Cached versions of imported trampolines for working with `stream`s,
+    // `future`s, and `error-context`s.
     imported_future_transfer: Option<FuncIndex>,
     imported_stream_transfer: Option<FuncIndex>,
     imported_error_context_transfer: Option<FuncIndex>,
-    imported_sync_enter_call: HashMap<String, FuncIndex>,
-    imported_sync_exit_call: HashMap<String, FuncIndex>,
 
     // Current status of index spaces from the imports generated so far.
     imported_funcs: PrimaryMap<FuncIndex, Option<CoreDef>>,
@@ -464,6 +479,13 @@ impl<'a> Module<'a> {
         idx
     }
 
+    /// Import a host built-in function to set up a subtask for a sync-lowered
+    /// import call to an async-lifted export.
+    ///
+    /// Given that the callee may exert backpressure before the host can copy
+    /// the parameters, the adapter must use this function to set up the subtask
+    /// and stash the parameters as part of that subtask until any backpressure
+    /// has cleared.
     fn import_sync_enter_call(&mut self, suffix: &str, params: &[ValType]) -> FuncIndex {
         self.import_simple_get_and_set(
             "sync",
@@ -490,6 +512,17 @@ impl<'a> Module<'a> {
         )
     }
 
+    /// Import a host built-in function to start a subtask for a sync-lowered
+    /// import call to an async-lifted export.
+    ///
+    /// This call with block until the subtask has produced result(s) via the
+    /// `task.return` intrinsic.
+    ///
+    /// Note that this could potentially be combined with the `sync-enter`
+    /// built-in into a single built-in function that does both jobs.  However,
+    /// we've kept them separate to allow a future optimization where the caller
+    /// calls the callee directly rather than using `sync-exit` to have the host
+    /// do it.
     fn import_sync_exit_call(
         &mut self,
         suffix: &str,
@@ -515,6 +548,8 @@ impl<'a> Module<'a> {
         )
     }
 
+    /// Import a host built-in function to set up a subtask for an async-lowered
+    /// import call to an async- or sync-lifted export.
     fn import_async_enter_call(&mut self) -> FuncIndex {
         self.import_simple(
             "async",
@@ -533,6 +568,14 @@ impl<'a> Module<'a> {
         )
     }
 
+    /// Import a host built-in function to start a subtask for an async-lowered
+    /// import call to an async- or sync-lifted export.
+    ///
+    /// Note that this could potentially be combined with the `async-enter`
+    /// built-in into a single built-in function that does both jobs.  However,
+    /// we've kept them separate to allow a future optimization where the caller
+    /// calls the callee directly rather than using `async-exit` to have the
+    /// host do it.
     fn import_async_exit_call(
         &mut self,
         callback: Option<FuncIndex>,
