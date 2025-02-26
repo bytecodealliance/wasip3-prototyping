@@ -8,6 +8,7 @@ use crate::p3::bindings::sockets::types::{
 };
 use crate::p3::sockets::udp::{UdpSocket, MAX_UDP_DATAGRAM_SIZE};
 use crate::p3::sockets::{SocketAddrUse, WasiSocketsImpl, WasiSocketsView};
+use crate::p3::ResourceView as _;
 
 use super::is_addr_allowed;
 

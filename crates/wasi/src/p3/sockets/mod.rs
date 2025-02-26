@@ -8,6 +8,8 @@ use std::sync::Arc;
 use wasmtime::component::Linker;
 use wasmtime::component::ResourceTable;
 
+use crate::p3::ResourceView;
+
 mod host;
 pub mod tcp;
 pub mod udp;
@@ -20,25 +22,22 @@ impl<T: WasiSocketsView> WasiSocketsView for &mut T {
     fn sockets(&self) -> &WasiSocketsCtx {
         (**self).sockets()
     }
-
-    fn table(&mut self) -> &mut ResourceTable {
-        (**self).table()
-    }
 }
 
 impl<T: WasiSocketsView> WasiSocketsView for WasiSocketsImpl<T> {
     fn sockets(&self) -> &WasiSocketsCtx {
         self.0.sockets()
     }
+}
 
+impl<T: ResourceView> ResourceView for WasiSocketsImpl<T> {
     fn table(&mut self) -> &mut ResourceTable {
         self.0.table()
     }
 }
 
-pub trait WasiSocketsView: Send {
+pub trait WasiSocketsView: ResourceView + Send {
     fn sockets(&self) -> &WasiSocketsCtx;
-    fn table(&mut self) -> &mut ResourceTable;
 }
 
 #[derive(Default)]
@@ -50,16 +49,6 @@ pub struct WasiSocketsCtx {
 pub struct Network {
     pub socket_addr_check: SocketAddrCheck,
     pub allow_ip_name_lookup: bool,
-}
-
-impl Network {
-    pub async fn check_socket_addr(
-        &self,
-        addr: SocketAddr,
-        reason: SocketAddrUse,
-    ) -> std::io::Result<()> {
-        self.socket_addr_check.check(addr, reason).await
-    }
 }
 
 /// A check that will be called for each socket address that is used of whether the address is permitted.
@@ -170,6 +159,7 @@ impl Default for AllowedNetworkUses {
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{ResourceTable, Linker};
 /// use wasmtime_wasi::p3::sockets::{WasiSocketsView, WasiSocketsCtx};
+/// use wasmtime_wasi::p3::ResourceView;
 ///
 /// fn main() -> Result<()> {
 ///     let mut config = Config::new();
@@ -198,9 +188,12 @@ impl Default for AllowedNetworkUses {
 ///     table: ResourceTable,
 /// }
 ///
-/// impl wasmtime_wasi::p3::sockets::WasiSocketsView for MyState {
-///     fn sockets(&self) -> &WasiSocketsCtx { &self.sockets }
+/// impl ResourceView for MyState {
 ///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
+/// }
+///
+/// impl WasiSocketsView for MyState {
+///     fn sockets(&self) -> &WasiSocketsCtx { &self.sockets }
 /// }
 /// ```
 pub fn add_to_linker<T: WasiSocketsView + 'static>(linker: &mut Linker<T>) -> wasmtime::Result<()> {

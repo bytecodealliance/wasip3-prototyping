@@ -1,9 +1,11 @@
+use wasmtime::component::ResourceTable;
+
 pub mod bindings;
 pub mod cli;
 pub mod clocks;
+pub mod filesystem;
 pub mod random;
 pub mod sockets;
-//pub mod filesystem;
 
 /// Add all WASI interfaces from this module into the `linker` provided.
 ///
@@ -25,8 +27,10 @@ pub mod sockets;
 /// use wasmtime::component::{ResourceTable, Linker};
 /// use wasmtime_wasi::p3::cli::{WasiCliCtx, WasiCliView};
 /// use wasmtime_wasi::p3::clocks::{WasiClocksCtx, WasiClocksView};
+/// use wasmtime_wasi::p3::filesystem::{WasiFilesystemCtx, WasiFilesystemView};
 /// use wasmtime_wasi::p3::random::{WasiRandomCtx, WasiRandomView};
 /// use wasmtime_wasi::p3::sockets::{WasiSocketsCtx, WasiSocketsView};
+/// use wasmtime_wasi::p3::ResourceView;
 ///
 /// fn main() -> Result<()> {
 ///     let mut config = Config::new();
@@ -51,9 +55,14 @@ pub mod sockets;
 /// struct MyState {
 ///     cli: WasiCliCtx,
 ///     clocks: WasiClocksCtx,
+///     filesystem: WasiFilesystemCtx,
 ///     random: WasiRandomCtx,
 ///     sockets: WasiSocketsCtx,
 ///     table: ResourceTable,
+/// }
+///
+/// impl ResourceView for MyState {
+///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 /// }
 ///
 /// impl WasiCliView for MyState {
@@ -64,14 +73,16 @@ pub mod sockets;
 ///     fn clocks(&self) -> &WasiClocksCtx { &self.clocks }
 /// }
 ///
+/// impl WasiFilesystemView for MyState {
+///     fn filesystem(&mut self) -> &mut WasiFilesystemCtx { &mut self.filesystem }
+/// }
+///
 /// impl WasiRandomView for MyState {
 ///     fn random(&mut self) -> &mut WasiRandomCtx { &mut self.random }
 /// }
 ///
 /// impl WasiSocketsView for MyState {
 ///     fn sockets(&self) -> &WasiSocketsCtx { &self.sockets }
-///
-///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 /// }
 /// ```
 pub fn add_to_linker<T>(linker: &mut wasmtime::component::Linker<T>) -> wasmtime::Result<()>
@@ -79,14 +90,24 @@ where
     T: clocks::WasiClocksView
         + random::WasiRandomView
         + sockets::WasiSocketsView
-        //+ filesystem::WasiFilesystemView
+        + filesystem::WasiFilesystemView
         + cli::WasiCliView
         + 'static,
 {
     clocks::add_to_linker(linker)?;
     random::add_to_linker(linker)?;
     sockets::add_to_linker(linker)?;
-    //filesystem::add_to_linker(linker)?;
+    filesystem::add_to_linker(linker)?;
     cli::add_to_linker(linker)?;
     Ok(())
+}
+
+pub trait ResourceView {
+    fn table(&mut self) -> &mut ResourceTable;
+}
+
+impl<T: ResourceView> ResourceView for &mut T {
+    fn table(&mut self) -> &mut ResourceTable {
+        (**self).table()
+    }
 }
