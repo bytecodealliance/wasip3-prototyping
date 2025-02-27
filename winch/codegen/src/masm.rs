@@ -38,6 +38,70 @@ impl RemKind {
     }
 }
 
+/// Kinds of vector min operation supported by WebAssembly.
+pub(crate) enum V128MinKind {
+    /// 4 lanes of 32-bit floats.
+    F32x4,
+    /// 2 lanes of 64-bit floats.
+    F64x2,
+    /// 16 lanes of signed 8-bit integers.
+    I8x16S,
+    /// 16 lanes of unsigned 8-bit integers.
+    I8x16U,
+    /// 8 lanes of signed 16-bit integers.
+    I16x8S,
+    /// 8 lanes of unsigned 16-bit integers.
+    I16x8U,
+    /// 4 lanes of signed 32-bit integers.
+    I32x4S,
+    /// 4 lanes of unsigned 32-bit integers.
+    I32x4U,
+}
+
+impl V128MinKind {
+    /// The size of each lane.
+    pub(crate) fn lane_size(&self) -> OperandSize {
+        match self {
+            Self::F32x4 | Self::I32x4S | Self::I32x4U => OperandSize::S32,
+            Self::F64x2 => OperandSize::S64,
+            Self::I8x16S | Self::I8x16U => OperandSize::S8,
+            Self::I16x8S | Self::I16x8U => OperandSize::S16,
+        }
+    }
+}
+
+/// Kinds of vector max operation supported by WebAssembly.
+pub(crate) enum V128MaxKind {
+    /// 4 lanes of 32-bit floats.
+    F32x4,
+    /// 2 lanes of 64-bit floats.
+    F64x2,
+    /// 16 lanes of signed 8-bit integers.
+    I8x16S,
+    /// 16 lanes of unsigned 8-bit integers.
+    I8x16U,
+    /// 8 lanes of signed 16-bit integers.
+    I16x8S,
+    /// 8 lanes of unsigned 16-bit integers.
+    I16x8U,
+    /// 4 lanes of signed 32-bit integers.
+    I32x4S,
+    /// 4 lanes of unsigned 32-bit integers.
+    I32x4U,
+}
+
+impl V128MaxKind {
+    /// The size of each lane.
+    pub(crate) fn lane_size(&self) -> OperandSize {
+        match self {
+            Self::F32x4 | Self::I32x4S | Self::I32x4U => OperandSize::S32,
+            Self::F64x2 => OperandSize::S64,
+            Self::I8x16S | Self::I8x16U => OperandSize::S8,
+            Self::I16x8S | Self::I16x8U => OperandSize::S16,
+        }
+    }
+}
+
 #[derive(Eq, PartialEq)]
 pub(crate) enum MulWideKind {
     Signed,
@@ -434,6 +498,9 @@ pub(crate) enum LoadKind {
     VectorExtend(V128LoadExtendKind),
     /// Load content into select lane.
     VectorLane(LaneSelector),
+    /// Load a single element into the lowest bits of a vector and initialize
+    /// all other bits to zero.
+    VectorZero(OperandSize),
 }
 
 impl LoadKind {
@@ -447,7 +514,8 @@ impl LoadKind {
             Self::Splat(kind) => Self::operand_size_for_splat(kind),
             Self::Operand(size)
             | Self::Atomic(size, None)
-            | Self::VectorLane(LaneSelector { size, .. }) => *size,
+            | Self::VectorLane(LaneSelector { size, .. })
+            | Self::VectorZero(size) => *size,
         }
     }
 
@@ -497,6 +565,110 @@ impl StoreKind {
 pub struct LaneSelector {
     pub lane: u8,
     pub size: OperandSize,
+}
+
+/// Types of vector integer to float conversions supported by WebAssembly.
+pub(crate) enum V128ConvertKind {
+    /// 4 lanes of signed 32-bit integers to 4 lanes of 32-bit floats.
+    I32x4S,
+    /// 4 lanes of unsigned 32-bit integers to 4 lanes of 32-bit floats.
+    I32x4U,
+    /// 4 lanes of signed 32-bit integers to low bits of 2 lanes of 64-bit
+    /// floats.
+    I32x4LowS,
+    /// 4 lanes of unsigned 32-bit integers to low bits of 2 lanes of 64-bit
+    /// floats.
+    I32x4LowU,
+}
+
+impl V128ConvertKind {
+    pub(crate) fn src_lane_size(&self) -> OperandSize {
+        match self {
+            V128ConvertKind::I32x4S
+            | V128ConvertKind::I32x4U
+            | V128ConvertKind::I32x4LowS
+            | V128ConvertKind::I32x4LowU => OperandSize::S32,
+        }
+    }
+
+    pub(crate) fn dst_lane_size(&self) -> OperandSize {
+        match self {
+            V128ConvertKind::I32x4S | V128ConvertKind::I32x4U => OperandSize::S32,
+            V128ConvertKind::I32x4LowS | V128ConvertKind::I32x4LowU => OperandSize::S64,
+        }
+    }
+}
+
+/// Kinds of vector narrowing operations supported by WebAssembly.
+pub(crate) enum V128NarrowKind {
+    /// Narrow 8 lanes of 16-bit integers to 16 lanes of 8-bit integers using
+    /// signed saturation.
+    I16x8S,
+    /// Narrow 8 lanes of 16-bit integers to 16 lanes of 8-bit integers using
+    /// unsigned saturation.
+    I16x8U,
+    /// Narrow 4 lanes of 32-bit integers to 8 lanes of 16-bit integers using
+    /// signed saturation.
+    I32x4S,
+    /// Narrow 4 lanes of 32-bit integers to 8 lanes of 16-bit integers using
+    /// unsigned saturation.
+    I32x4U,
+}
+
+impl V128NarrowKind {
+    /// Return the size of the destination lanes.
+    pub(crate) fn dst_lane_size(&self) -> OperandSize {
+        match self {
+            Self::I16x8S | Self::I16x8U => OperandSize::S8,
+            Self::I32x4S | Self::I32x4U => OperandSize::S16,
+        }
+    }
+}
+
+/// Kinds of vector extending operations supported by WebAssembly.
+#[derive(Debug, Copy, Clone)]
+pub(crate) enum V128ExtendKind {
+    /// Low half of i8x16 sign extended.
+    LowI8x16S,
+    /// High half of i8x16 sign extended.
+    HighI8x16S,
+    /// Low half of i8x16 zero extended.
+    LowI8x16U,
+    /// High half of i8x16 zero extended.
+    HighI8x16U,
+    /// Low half of i16x8 sign extended.
+    LowI16x8S,
+    /// High half of i16x8 sign extended.
+    HighI16x8S,
+    /// Low half of i16x8 zero extended.
+    LowI16x8U,
+    /// High half of i16x8 zero extended.
+    HighI16x8U,
+    /// Low half of i32x4 sign extended.
+    LowI32x4S,
+    /// High half of i32x4 sign extended.
+    HighI32x4S,
+    /// Low half of i32x4 zero extended.
+    LowI32x4U,
+    /// High half of i32x4 zero extended.
+    HighI32x4U,
+}
+
+impl V128ExtendKind {
+    /// The size of the source's lanes.
+    pub(crate) fn src_lane_size(&self) -> OperandSize {
+        match self {
+            Self::LowI8x16S | Self::LowI8x16U | Self::HighI8x16S | Self::HighI8x16U => {
+                OperandSize::S8
+            }
+            Self::LowI16x8S | Self::LowI16x8U | Self::HighI16x8S | Self::HighI16x8U => {
+                OperandSize::S16
+            }
+            Self::LowI32x4S | Self::LowI32x4U | Self::HighI32x4S | Self::HighI32x4U => {
+                OperandSize::S32
+            }
+        }
+    }
 }
 
 /// Kinds of vector equalities and non-equalities supported by WebAssembly.
@@ -557,6 +729,252 @@ impl VectorCompareKind {
             Self::I16x8S | Self::I16x8U => OperandSize::S16,
             Self::I32x4S | Self::I32x4U | Self::F32x4 => OperandSize::S32,
             Self::I64x2S | Self::F64x2 => OperandSize::S64,
+        }
+    }
+}
+
+/// Kinds of vector absolute operations supported by WebAssembly.
+#[derive(Copy, Debug, Clone, Eq, PartialEq)]
+pub(crate) enum V128AbsKind {
+    /// 8 bit integers.
+    I8x16,
+    /// 16 bit integers.
+    I16x8,
+    /// 32 bit integers.
+    I32x4,
+    /// 64 bit integers.
+    I64x2,
+    /// 32 bit floats.
+    F32x4,
+    /// 64 bit floats.
+    F64x2,
+}
+
+impl V128AbsKind {
+    /// The lane size to use.
+    pub(crate) fn lane_size(&self) -> OperandSize {
+        match self {
+            Self::I8x16 => OperandSize::S8,
+            Self::I16x8 => OperandSize::S16,
+            Self::I32x4 | Self::F32x4 => OperandSize::S32,
+            Self::I64x2 | Self::F64x2 => OperandSize::S64,
+        }
+    }
+}
+
+/// Kinds of truncation for vectors supported by WebAssembly.
+pub(crate) enum V128TruncKind {
+    /// Truncates 4 lanes of 32-bit floats to nearest integral value.
+    F32x4,
+    /// Truncates 2 lanes of 64-bit floats to nearest integral value.
+    F64x2,
+    /// Integers from signed F32x4.
+    I32x4FromF32x4S,
+    /// Integers from unsigned F32x4.
+    I32x4FromF32x4U,
+    /// Integers from signed F64x2.
+    I32x4FromF64x2SZero,
+    /// Integers from unsigned F64x2.
+    I32x4FromF64x2UZero,
+}
+
+impl V128TruncKind {
+    /// The size of the source lanes.
+    pub(crate) fn src_lane_size(&self) -> OperandSize {
+        match self {
+            V128TruncKind::F32x4
+            | V128TruncKind::I32x4FromF32x4S
+            | V128TruncKind::I32x4FromF32x4U => OperandSize::S32,
+            V128TruncKind::F64x2
+            | V128TruncKind::I32x4FromF64x2SZero
+            | V128TruncKind::I32x4FromF64x2UZero => OperandSize::S64,
+        }
+    }
+
+    /// The size of the destination lanes.
+    pub(crate) fn dst_lane_size(&self) -> OperandSize {
+        if let V128TruncKind::F64x2 = self {
+            OperandSize::S64
+        } else {
+            OperandSize::S32
+        }
+    }
+}
+
+/// Kinds of vector addition supported by WebAssembly.
+pub(crate) enum V128AddKind {
+    /// 4 lanes of 32-bit floats wrapping.
+    F32x4,
+    /// 2 lanes of 64-bit floats wrapping.
+    F64x2,
+    /// 16 lanes of 8-bit integers wrapping.
+    I8x16,
+    /// 16 lanes of 8-bit integers signed saturating.
+    I8x16SatS,
+    /// 16 lanes of 8-bit integers unsigned saturating.
+    I8x16SatU,
+    /// 8 lanes of 16-bit integers wrapping.
+    I16x8,
+    /// 8 lanes of 16-bit integers signed saturating.
+    I16x8SatS,
+    /// 8 lanes of 16-bit integers unsigned saturating.
+    I16x8SatU,
+    /// 4 lanes of 32-bit integers wrapping.
+    I32x4,
+    /// 2 lanes of 64-bit integers wrapping.
+    I64x2,
+}
+
+/// Kinds of vector subtraction supported by WebAssembly.
+pub(crate) enum V128SubKind {
+    /// 4 lanes of 32-bit floats wrapping.
+    F32x4,
+    /// 2 lanes of 64-bit floats wrapping.
+    F64x2,
+    /// 16 lanes of 8-bit integers wrapping.
+    I8x16,
+    /// 16 lanes of 8-bit integers signed saturating.
+    I8x16SatS,
+    /// 16 lanes of 8-bit integers unsigned saturating.
+    I8x16SatU,
+    /// 8 lanes of 16-bit integers wrapping.
+    I16x8,
+    /// 8 lanes of 16-bit integers signed saturating.
+    I16x8SatS,
+    /// 8 lanes of 16-bit integers unsigned saturating.
+    I16x8SatU,
+    /// 4 lanes of 32-bit integers wrapping.
+    I32x4,
+    /// 2 lanes of 64-bit integers wrapping.
+    I64x2,
+}
+
+impl From<V128NegKind> for V128SubKind {
+    fn from(value: V128NegKind) -> Self {
+        match value {
+            V128NegKind::I8x16 => Self::I8x16,
+            V128NegKind::I16x8 => Self::I16x8,
+            V128NegKind::I32x4 => Self::I32x4,
+            V128NegKind::I64x2 => Self::I64x2,
+            V128NegKind::F32x4 | V128NegKind::F64x2 => unimplemented!(),
+        }
+    }
+}
+
+/// Kinds of vector multiplication supported by WebAssembly.
+pub(crate) enum V128MulKind {
+    /// 4 lanes of 32-bit floats.
+    F32x4,
+    /// 2 lanes of 64-bit floats.
+    F64x2,
+    /// 8 lanes of 16-bit integers.
+    I16x8,
+    /// 4 lanes of 32-bit integers.
+    I32x4,
+    /// 2 lanes of 64-bit integers.
+    I64x2,
+}
+
+/// Kinds of vector negation supported by WebAssembly.
+pub(crate) enum V128NegKind {
+    /// 4 lanes of 32-bit floats.
+    F32x4,
+    /// 2 lanes of 64-bit floats.
+    F64x2,
+    /// 16 lanes of 8-bit integers.
+    I8x16,
+    /// 8 lanes of 16-bit integers.
+    I16x8,
+    /// 4 lanes of 32-bit integers.
+    I32x4,
+    /// 2 lanes of 64-bit integers.
+    I64x2,
+}
+
+impl V128NegKind {
+    /// The size of the lanes.
+    pub(crate) fn lane_size(&self) -> OperandSize {
+        match self {
+            Self::F32x4 | Self::I32x4 => OperandSize::S32,
+            Self::F64x2 | Self::I64x2 => OperandSize::S64,
+            Self::I8x16 => OperandSize::S8,
+            Self::I16x8 => OperandSize::S16,
+        }
+    }
+}
+
+/// Kinds of extended pairwise addition supported by WebAssembly.
+pub(crate) enum V128ExtAddKind {
+    /// 16 lanes of signed 8-bit integers.
+    I8x16S,
+    /// 16 lanes of unsigned 8-bit integers.
+    I8x16U,
+    /// 8 lanes of signed 16-bit integers.
+    I16x8S,
+    /// 8 lanes of unsigned 16-bit integers.
+    I16x8U,
+}
+
+impl From<V128ExtAddKind> for V128AddKind {
+    fn from(value: V128ExtAddKind) -> Self {
+        match value {
+            V128ExtAddKind::I8x16S | V128ExtAddKind::I8x16U => Self::I16x8,
+            V128ExtAddKind::I16x8S | V128ExtAddKind::I16x8U => Self::I32x4,
+        }
+    }
+}
+
+/// Kinds of vector extended multiplication supported by WebAssembly.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum V128ExtMulKind {
+    LowI8x16S,
+    HighI8x16S,
+    LowI8x16U,
+    HighI8x16U,
+    LowI16x8S,
+    HighI16x8S,
+    LowI16x8U,
+    HighI16x8U,
+    LowI32x4S,
+    HighI32x4S,
+    LowI32x4U,
+    HighI32x4U,
+}
+
+impl From<V128ExtMulKind> for V128ExtendKind {
+    fn from(value: V128ExtMulKind) -> Self {
+        match value {
+            V128ExtMulKind::LowI8x16S => Self::LowI8x16S,
+            V128ExtMulKind::HighI8x16S => Self::HighI8x16S,
+            V128ExtMulKind::LowI8x16U => Self::LowI8x16U,
+            V128ExtMulKind::HighI8x16U => Self::HighI8x16U,
+            V128ExtMulKind::LowI16x8S => Self::LowI16x8S,
+            V128ExtMulKind::HighI16x8S => Self::HighI16x8S,
+            V128ExtMulKind::LowI16x8U => Self::LowI16x8U,
+            V128ExtMulKind::HighI16x8U => Self::HighI16x8U,
+            V128ExtMulKind::LowI32x4S => Self::LowI32x4S,
+            V128ExtMulKind::HighI32x4S => Self::HighI32x4S,
+            V128ExtMulKind::LowI32x4U => Self::LowI32x4U,
+            V128ExtMulKind::HighI32x4U => Self::HighI32x4U,
+        }
+    }
+}
+
+impl From<V128ExtMulKind> for V128MulKind {
+    fn from(value: V128ExtMulKind) -> Self {
+        match value {
+            V128ExtMulKind::LowI8x16S
+            | V128ExtMulKind::HighI8x16S
+            | V128ExtMulKind::LowI8x16U
+            | V128ExtMulKind::HighI8x16U => Self::I16x8,
+            V128ExtMulKind::LowI16x8S
+            | V128ExtMulKind::HighI16x8S
+            | V128ExtMulKind::LowI16x8U
+            | V128ExtMulKind::HighI16x8U => Self::I32x4,
+            V128ExtMulKind::LowI32x4S
+            | V128ExtMulKind::HighI32x4S
+            | V128ExtMulKind::LowI32x4U
+            | V128ExtMulKind::HighI32x4U => Self::I64x2,
         }
     }
 }
@@ -635,6 +1053,17 @@ impl OperandSize {
                 _ => None,
             },
             _ => None,
+        }
+    }
+
+    /// The number of bits in the mantissa.
+    ///
+    /// Only implemented for floats.
+    pub fn mantissa_bits(&self) -> u8 {
+        match self {
+            Self::S32 => 8,
+            Self::S64 => 11,
+            _ => unimplemented!(),
         }
     }
 }
@@ -1013,8 +1442,9 @@ pub(crate) trait MacroAssembler {
     /// to the pointer size of the target.
     fn load_ptr(&mut self, src: Self::Address, dst: WritableReg) -> Result<()>;
 
-    /// Loads the effective address into destination.
-    fn load_addr(
+    /// Computes the effective address and stores the result in the destination
+    /// register.
+    fn compute_addr(
         &mut self,
         _src: Self::Address,
         _dst: WritableReg,
@@ -1645,4 +2075,150 @@ pub(crate) trait MacroAssembler {
 
     /// If any bit in `src` is 1, set `dst` to 1, or 0 otherwise.
     fn v128_any_true(&mut self, src: Reg, dst: WritableReg) -> Result<()>;
+
+    /// Convert vector of integers to vector of floating points.
+    fn v128_convert(&mut self, src: Reg, dst: WritableReg, kind: V128ConvertKind) -> Result<()>;
+
+    /// Convert two input vectors into a smaller lane vector by narrowing each
+    /// lane.
+    fn v128_narrow(
+        &mut self,
+        src1: Reg,
+        src2: Reg,
+        dst: WritableReg,
+        kind: V128NarrowKind,
+    ) -> Result<()>;
+
+    /// Converts a vector containing two 64-bit floating point lanes to two
+    /// 32-bit floating point lanes and setting the two higher lanes to 0.
+    fn v128_demote(&mut self, src: Reg, dst: WritableReg) -> Result<()>;
+
+    /// Converts a vector containing four 32-bit floating point lanes to two
+    /// 64-bit floating point lanes. Only the two lower lanes are converted.
+    fn v128_promote(&mut self, src: Reg, dst: WritableReg) -> Result<()>;
+
+    /// Converts low or high half of the smaller lane vector to a larger lane
+    /// vector.
+    fn v128_extend(&mut self, src: Reg, dst: WritableReg, kind: V128ExtendKind) -> Result<()>;
+
+    /// Perform a vector add between `lsh` and `rhs`, placing the result in
+    /// `dst`.
+    fn v128_add(&mut self, lhs: Reg, rhs: Reg, dst: WritableReg, kind: V128AddKind) -> Result<()>;
+
+    /// Perform a vector sub between `lhs` and `rhs`, placing the result in `dst`.
+    fn v128_sub(&mut self, lhs: Reg, rhs: Reg, dst: WritableReg, kind: V128SubKind) -> Result<()>;
+
+    /// Perform a vector lane-wise mul between `lhs` and `rhs`, placing the result in `dst`.
+    fn v128_mul(&mut self, context: &mut CodeGenContext<Emission>, kind: V128MulKind)
+        -> Result<()>;
+
+    /// Perform an absolute operation on a vector.
+    fn v128_abs(&mut self, src: Reg, dst: WritableReg, kind: V128AbsKind) -> Result<()>;
+
+    /// Vectorized negate of the content of `op`.
+    fn v128_neg(&mut self, op: WritableReg, kind: V128NegKind) -> Result<()>;
+
+    /// Perform the shift operation specified by `kind`, by the shift amount specified by the 32-bit
+    /// integer at the top the the stack, on the 128-bit vector specified by the second value
+    /// from the top of the stack, interpreted as packed integers of size `lane_width`.
+    ///
+    /// The shift amount is taken modulo `lane_width`.
+    fn v128_shift(
+        &mut self,
+        context: &mut CodeGenContext<Emission>,
+        lane_width: OperandSize,
+        kind: ShiftKind,
+    ) -> Result<()>;
+
+    /// Perform a saturating integer q-format rounding multiplication.
+    fn v128_q15mulr_sat_s(
+        &mut self,
+        lhs: Reg,
+        rhs: Reg,
+        dst: WritableReg,
+        size: OperandSize,
+    ) -> Result<()>;
+
+    /// Sets `dst` to 1 if all lanes in `src` are non-zero, sets `dst` to 0
+    /// otherwise.
+    fn v128_all_true(&mut self, src: Reg, dst: WritableReg, size: OperandSize) -> Result<()>;
+
+    /// Extracts the high bit of each lane in `src` and produces a scalar mask
+    /// with all bits concatenated in `dst`.
+    fn v128_bitmask(&mut self, src: Reg, dst: WritableReg, size: OperandSize) -> Result<()>;
+
+    /// Lanewise truncation operation.
+    ///
+    /// If using an integer kind of truncation, then this performs a lane-wise
+    /// saturating conversion from float to integer using the IEEE
+    /// `convertToIntegerTowardZero` function. If any input lane is NaN, the
+    /// resulting lane is 0. If the rounded integer value of a lane is outside
+    /// the range of the destination type, the result is saturated to the
+    /// nearest representable integer value.
+    fn v128_trunc(
+        &mut self,
+        context: &mut CodeGenContext<Emission>,
+        kind: V128TruncKind,
+    ) -> Result<()>;
+
+    /// Perform a lane-wise `min` operation between `src1` and `src2`.
+    fn v128_min(&mut self, src1: Reg, src2: Reg, dst: WritableReg, kind: V128MinKind)
+        -> Result<()>;
+
+    /// Perform a lane-wise `max` operation between `src1` and `src2`.
+    fn v128_max(&mut self, src1: Reg, src2: Reg, dst: WritableReg, kind: V128MaxKind)
+        -> Result<()>;
+
+    /// Perform the lane-wise integer extended multiplication producing twice wider result than the
+    /// inputs. This is equivalent to an extend followed by a multiply.
+    ///
+    /// The extension to be performed is inferred from the `lane_width` and the `kind` of extmul,
+    /// e.g, if `lane_width` is `S16`, and `kind` is `LowSigned`, then we sign-extend the lower
+    /// 8bits of the 16bits lanes.
+    fn v128_extmul(
+        &mut self,
+        context: &mut CodeGenContext<Emission>,
+        kind: V128ExtMulKind,
+    ) -> Result<()>;
+
+    /// Perform the lane-wise integer extended pairwise addition producing extended results (twice
+    /// wider results than the inputs).
+    fn v128_extadd_pairwise(
+        &mut self,
+        src: Reg,
+        dst: WritableReg,
+        kind: V128ExtAddKind,
+    ) -> Result<()>;
+
+    /// Lane-wise multiply signed 16-bit integers in `lhs` and `rhs` and add
+    /// adjacent pairs of the 32-bit results.
+    fn v128_dot(&mut self, lhs: Reg, rhs: Reg, dst: WritableReg) -> Result<()>;
+
+    /// Count the number of bits set in each lane.
+    fn v128_popcnt(&mut self, context: &mut CodeGenContext<Emission>) -> Result<()>;
+
+    /// Lane-wise rounding average of vectors of integers in `lhs` and `rhs`
+    /// and put the results in `dst`.
+    fn v128_avgr(&mut self, lhs: Reg, rhs: Reg, dst: WritableReg, size: OperandSize) -> Result<()>;
+
+    /// Lane-wise IEEE division on vectors of floats.
+    fn v128_div(&mut self, lhs: Reg, rhs: Reg, dst: WritableReg, size: OperandSize) -> Result<()>;
+
+    /// Lane-wise IEEE square root of vector of floats.
+    fn v128_sqrt(&mut self, src: Reg, dst: WritableReg, size: OperandSize) -> Result<()>;
+
+    /// Lane-wise ceiling of vector of floats.
+    fn v128_ceil(&mut self, src: Reg, dst: WritableReg, size: OperandSize) -> Result<()>;
+
+    /// Lane-wise flooring of vector of floats.
+    fn v128_floor(&mut self, src: Reg, dst: WritableReg, size: OperandSize) -> Result<()>;
+
+    /// Lane-wise rounding to nearest integer for vector of floats.
+    fn v128_nearest(&mut self, src: Reg, dst: WritableReg, size: OperandSize) -> Result<()>;
+
+    /// Lane-wise minimum value defined as `rhs < lhs ? rhs : lhs`.
+    fn v128_pmin(&mut self, lhs: Reg, rhs: Reg, dst: WritableReg, size: OperandSize) -> Result<()>;
+
+    /// Lane-wise maximum value defined as `lhs < rhs ? rhs : lhs`.
+    fn v128_pmax(&mut self, lhs: Reg, rhs: Reg, dst: WritableReg, size: OperandSize) -> Result<()>;
 }

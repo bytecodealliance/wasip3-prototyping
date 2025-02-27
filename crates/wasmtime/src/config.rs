@@ -1068,6 +1068,30 @@ impl Config {
         self
     }
 
+    /// Configures whether the [WebAssembly stack switching
+    /// proposal][proposal] will be enabled for compilation.
+    ///
+    /// This feature gates the use of control tags.
+    ///
+    /// This feature depends on the `function_reference_types` and
+    /// `exceptions` features.
+    ///
+    /// This feature is `false` by default.
+    ///
+    /// # Errors
+    ///
+    /// [proposal]: https://github.com/webassembly/stack-switching
+    pub fn wasm_stack_switching(&mut self, enable: bool) -> &mut Self {
+        // FIXME(dhil): Once the config provides a handle
+        // for turning on/off exception handling proposal support,
+        // this ought to only enable stack switching.
+        self.wasm_feature(
+            WasmFeatures::EXCEPTIONS | WasmFeatures::STACK_SWITCHING,
+            enable,
+        );
+        self
+    }
+
     /// Configures whether the WebAssembly component-model [proposal] will
     /// be enabled for compilation.
     ///
@@ -1084,27 +1108,6 @@ impl Config {
     #[cfg(feature = "component-model")]
     pub fn wasm_component_model(&mut self, enable: bool) -> &mut Self {
         self.wasm_feature(WasmFeatures::COMPONENT_MODEL, enable);
-        self
-    }
-
-    /// Configures whether components support more than 32 flags in each `flags`
-    /// type.
-    ///
-    /// This is part of the transition plan in
-    /// <https://github.com/WebAssembly/component-model/issues/370>.
-    #[cfg(feature = "component-model")]
-    pub fn wasm_component_model_more_flags(&mut self, enable: bool) -> &mut Self {
-        self.wasm_feature(WasmFeatures::COMPONENT_MODEL_MORE_FLAGS, enable);
-        self
-    }
-
-    /// Configures whether components support more than one return value for functions.
-    ///
-    /// This is part of the transition plan in
-    /// <https://github.com/WebAssembly/component-model/pull/368>.
-    #[cfg(feature = "component-model")]
-    pub fn wasm_component_model_multiple_returns(&mut self, enable: bool) -> &mut Self {
-        self.wasm_feature(WasmFeatures::COMPONENT_MODEL_MULTIPLE_RETURNS, enable);
         self
     }
 

@@ -138,7 +138,6 @@ impl Config {
             tail_call,
             extended_const,
             wide_arithmetic,
-            component_model_more_flags,
             component_model_async,
             simd,
 
@@ -151,7 +150,6 @@ impl Config {
         // but are configurable in Wasmtime.
         self.module_config.function_references_enabled =
             function_references.or(gc).unwrap_or(false);
-        self.module_config.component_model_more_flags = component_model_more_flags.unwrap_or(false);
         self.module_config.component_model_async = component_model_async.unwrap_or(false);
 
         // Enable/disable proposals that wasm-smith has knobs for which will be
@@ -267,7 +265,6 @@ impl Config {
         cfg.wasm.async_stack_zeroing = Some(self.wasmtime.async_stack_zeroing);
         cfg.wasm.bulk_memory = Some(true);
         cfg.wasm.component_model_async = Some(self.module_config.component_model_async);
-        cfg.wasm.component_model_more_flags = Some(self.module_config.component_model_more_flags);
         cfg.wasm.custom_page_sizes = Some(self.module_config.config.custom_page_sizes_enabled);
         cfg.wasm.epoch_interruption = Some(self.wasmtime.epoch_interruption);
         cfg.wasm.extended_const = Some(self.module_config.config.extended_const_enabled);
@@ -388,6 +385,25 @@ impl Config {
         } else {
             None
         };
+
+        // If malloc-based memory is going to be used, which requires these four
+        // options set to specific values (and Pulley auto-sets two of them)
+        // then be sure to cap `memory_reservation_for_growth` at a smaller
+        // value than the default. For malloc-based memory reservation beyond
+        // the end of memory isn't captured by `StoreLimiter` so we need to be
+        // sure it's small enough to not blow OOM limits while fuzzing.
+        if ((cfg.opts.signals_based_traps == Some(true) && cfg.opts.memory_guard_size == Some(0))
+            || self.wasmtime.compiler_strategy == CompilerStrategy::CraneliftPulley)
+            && cfg.opts.memory_reservation == Some(0)
+            && cfg.opts.memory_init_cow == Some(false)
+        {
+            let growth = &mut cfg.opts.memory_reservation_for_growth;
+            let max = 1 << 20;
+            *growth = match *growth {
+                Some(n) => Some(n.min(max)),
+                None => Some(max),
+            };
+        }
 
         log::debug!("creating wasmtime config with CLI options:\n{cfg}");
         let mut cfg = cfg.config(None).expect("failed to create wasmtime::Config");
@@ -606,11 +622,21 @@ impl WasmtimeConfig {
                 // at this time, so if winch is selected be sure to disable wasm
                 // proposals in `Config` to ensure that Winch can compile the
                 // module that wasm-smith generates.
-                config.simd_enabled = false;
                 config.relaxed_simd_enabled = false;
                 config.gc_enabled = false;
                 config.tail_call_enabled = false;
                 config.reference_types_enabled = false;
+
+                // Winch's SIMD implementations require AVX and AVX2.
+                if self
+                    .codegen_flag("has_avx")
+                    .is_some_and(|value| value == "false")
+                    || self
+                        .codegen_flag("has_avx2")
+                        .is_some_and(|value| value == "false")
+                {
+                    config.simd_enabled = false;
+                }
 
                 // Tuning  the following engine options is currently not supported
                 // by Winch.

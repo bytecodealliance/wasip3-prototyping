@@ -1,5 +1,5 @@
 use super::GcCompiler;
-use crate::func_environ::FuncEnvironment;
+use crate::func_environ::{Extension, FuncEnvironment};
 use crate::gc::ArrayInit;
 use crate::translate::{StructFieldsVec, TargetEnvironment};
 use crate::TRAP_INTERNAL_ASSERT;
@@ -13,7 +13,7 @@ use smallvec::SmallVec;
 use wasmtime_environ::{
     wasm_unsupported, Collector, GcArrayLayout, GcLayout, GcStructLayout, ModuleInternedTypeIndex,
     PtrSize, TypeIndex, VMGcKind, WasmHeapTopType, WasmHeapType, WasmRefType, WasmResult,
-    WasmStorageType, WasmValType, I31_DISCRIMINANT, NON_NULL_NON_I31_MASK,
+    WasmStorageType, WasmValType, I31_DISCRIMINANT,
 };
 
 #[cfg(feature = "gc-drc")]
@@ -28,7 +28,7 @@ pub fn gc_compiler(func_env: &FuncEnvironment<'_>) -> WasmResult<Box<dyn GcCompi
         Some(Collector::DeferredReferenceCounting) => Ok(Box::new(drc::DrcCompiler::default())),
         #[cfg(not(feature = "gc-drc"))]
         Some(Collector::DeferredReferenceCounting) => Err(wasm_unsupported!(
-            "the null collector is unavailable because the `gc-drc` feature \
+            "the DRC collector is unavailable because the `gc-drc` feature \
              was disabled at compile time",
         )),
 
@@ -79,11 +79,6 @@ fn unbarriered_store_gc_ref(
     debug_assert!(ty.is_vmgcref_type());
     builder.ins().store(flags, gc_ref, dst, 0);
     Ok(())
-}
-
-enum Extension {
-    Sign,
-    Zero,
 }
 
 /// Emit code to read a struct field or array element from its raw address in
@@ -153,6 +148,7 @@ fn read_field_at_addr(
                         .call(get_interned_func_ref, &[vmctx, func_ref_id, expected_ty]);
                     builder.func.dfg.first_result(call_inst)
                 }
+                WasmHeapTopType::Cont => todo!(), // FIXME: #10248 stack switching support.
             },
         },
     };
@@ -288,7 +284,7 @@ pub fn translate_struct_new_default(
     builder: &mut FunctionBuilder<'_>,
     struct_type_index: TypeIndex,
 ) -> WasmResult<ir::Value> {
-    let interned_ty = func_env.module.types[struct_type_index];
+    let interned_ty = func_env.module.types[struct_type_index].unwrap_module_type_index();
     let struct_ty = func_env.types.unwrap_struct(interned_ty)?;
     let fields = struct_ty
         .fields
@@ -304,14 +300,17 @@ pub fn translate_struct_get(
     struct_type_index: TypeIndex,
     field_index: u32,
     struct_ref: ir::Value,
+    extension: Option<Extension>,
 ) -> WasmResult<ir::Value> {
+    log::trace!("translate_struct_get({struct_type_index:?}, {field_index:?}, {struct_ref:?}, {extension:?})");
+
     // TODO: If we know we have a `(ref $my_struct)` here, instead of maybe a
     // `(ref null $my_struct)`, we could omit the `trapz`. But plumbing that
     // type info from `wasmparser` and through to here is a bit funky.
     func_env.trapz(builder, struct_ref, crate::TRAP_NULL_REFERENCE);
 
     let field_index = usize::try_from(field_index).unwrap();
-    let interned_type_index = func_env.module.types[struct_type_index];
+    let interned_type_index = func_env.module.types[struct_type_index].unwrap_module_type_index();
 
     let struct_layout = func_env.struct_layout(interned_type_index);
     let struct_size = struct_layout.size;
@@ -329,80 +328,15 @@ pub fn translate_struct_get(
         BoundsCheck::Object(struct_size_val),
     );
 
-    read_field_at_addr(func_env, builder, field_ty.element_type, field_addr, None)
-}
-
-fn translate_struct_get_and_extend(
-    func_env: &mut FuncEnvironment<'_>,
-    builder: &mut FunctionBuilder<'_>,
-    struct_type_index: TypeIndex,
-    field_index: u32,
-    struct_ref: ir::Value,
-    extension: Extension,
-) -> WasmResult<ir::Value> {
-    // TODO: See comment in `translate_struct_get` about the `trapz`.
-    func_env.trapz(builder, struct_ref, crate::TRAP_NULL_REFERENCE);
-
-    let field_index = usize::try_from(field_index).unwrap();
-    let interned_type_index = func_env.module.types[struct_type_index];
-
-    let struct_layout = func_env.struct_layout(interned_type_index);
-    let struct_size = struct_layout.size;
-    let struct_size_val = builder.ins().iconst(ir::types::I32, i64::from(struct_size));
-
-    let field_offset = struct_layout.fields[field_index];
-    let field_ty = &func_env.types.unwrap_struct(interned_type_index)?.fields[field_index];
-    let field_size = wasmtime_environ::byte_size_of_wasm_ty_in_gc_heap(&field_ty.element_type);
-    assert!(field_offset + field_size <= struct_size);
-
-    let field_addr = func_env.prepare_gc_ref_access(
-        builder,
-        struct_ref,
-        Offset::Static(field_offset),
-        BoundsCheck::Object(struct_size_val),
-    );
-
-    read_field_at_addr(
+    let result = read_field_at_addr(
         func_env,
         builder,
         field_ty.element_type,
         field_addr,
-        Some(extension),
-    )
-}
-
-pub fn translate_struct_get_s(
-    func_env: &mut FuncEnvironment<'_>,
-    builder: &mut FunctionBuilder<'_>,
-    struct_type_index: TypeIndex,
-    field_index: u32,
-    struct_ref: ir::Value,
-) -> WasmResult<ir::Value> {
-    translate_struct_get_and_extend(
-        func_env,
-        builder,
-        struct_type_index,
-        field_index,
-        struct_ref,
-        Extension::Sign,
-    )
-}
-
-pub fn translate_struct_get_u(
-    func_env: &mut FuncEnvironment<'_>,
-    builder: &mut FunctionBuilder<'_>,
-    struct_type_index: TypeIndex,
-    field_index: u32,
-    struct_ref: ir::Value,
-) -> WasmResult<ir::Value> {
-    translate_struct_get_and_extend(
-        func_env,
-        builder,
-        struct_type_index,
-        field_index,
-        struct_ref,
-        Extension::Zero,
-    )
+        extension,
+    );
+    log::trace!("translate_struct_get(..) -> {result:?}");
+    result
 }
 
 pub fn translate_struct_set(
@@ -413,11 +347,15 @@ pub fn translate_struct_set(
     struct_ref: ir::Value,
     new_val: ir::Value,
 ) -> WasmResult<()> {
+    log::trace!(
+        "translate_struct_set({struct_type_index:?}, {field_index:?}, struct_ref: {struct_ref:?}, new_val: {new_val:?})"
+    );
+
     // TODO: See comment in `translate_struct_get` about the `trapz`.
     func_env.trapz(builder, struct_ref, crate::TRAP_NULL_REFERENCE);
 
     let field_index = usize::try_from(field_index).unwrap();
-    let interned_type_index = func_env.module.types[struct_type_index];
+    let interned_type_index = func_env.module.types[struct_type_index].unwrap_module_type_index();
 
     let struct_layout = func_env.struct_layout(interned_type_index);
     let struct_size = struct_layout.size;
@@ -441,7 +379,10 @@ pub fn translate_struct_set(
         field_ty.element_type,
         field_addr,
         new_val,
-    )
+    )?;
+
+    log::trace!("translate_struct_set: finished");
+    Ok(())
 }
 
 pub fn translate_array_new(
@@ -451,12 +392,15 @@ pub fn translate_array_new(
     elem: ir::Value,
     len: ir::Value,
 ) -> WasmResult<ir::Value> {
-    gc_compiler(func_env)?.alloc_array(
+    log::trace!("translate_array_new({array_type_index:?}, {elem:?}, {len:?})");
+    let result = gc_compiler(func_env)?.alloc_array(
         func_env,
         builder,
         array_type_index,
         ArrayInit::Fill { elem, len },
-    )
+    )?;
+    log::trace!("translate_array_new(..) -> {result:?}");
+    Ok(result)
 }
 
 pub fn translate_array_new_default(
@@ -465,15 +409,19 @@ pub fn translate_array_new_default(
     array_type_index: TypeIndex,
     len: ir::Value,
 ) -> WasmResult<ir::Value> {
-    let interned_ty = func_env.module.types[array_type_index];
+    log::trace!("translate_array_new_default({array_type_index:?}, {len:?})");
+
+    let interned_ty = func_env.module.types[array_type_index].unwrap_module_type_index();
     let array_ty = func_env.types.unwrap_array(interned_ty)?;
     let elem = default_value(&mut builder.cursor(), func_env, &array_ty.0.element_type);
-    gc_compiler(func_env)?.alloc_array(
+    let result = gc_compiler(func_env)?.alloc_array(
         func_env,
         builder,
         array_type_index,
         ArrayInit::Fill { elem, len },
-    )
+    )?;
+    log::trace!("translate_array_new_default(..) -> {result:?}");
+    Ok(result)
 }
 
 pub fn translate_array_new_fixed(
@@ -482,7 +430,15 @@ pub fn translate_array_new_fixed(
     array_type_index: TypeIndex,
     elems: &[ir::Value],
 ) -> WasmResult<ir::Value> {
-    gc_compiler(func_env)?.alloc_array(func_env, builder, array_type_index, ArrayInit::Elems(elems))
+    log::trace!("translate_array_new_fixed({array_type_index:?}, {elems:?})");
+    let result = gc_compiler(func_env)?.alloc_array(
+        func_env,
+        builder,
+        array_type_index,
+        ArrayInit::Elems(elems),
+    )?;
+    log::trace!("translate_array_new_fixed(..) -> {result:?}");
+    Ok(result)
 }
 
 impl ArrayInit<'_> {
@@ -516,6 +472,10 @@ impl ArrayInit<'_> {
             ir::Value,
         ) -> WasmResult<()>,
     ) -> WasmResult<()> {
+        log::trace!(
+            "initialize_array({interned_type_index:?}, {base_size:?}, {size:?}, {elems_addr:?})"
+        );
+
         assert!(!func_env.types[interned_type_index].composite_type.shared);
         let array_ty = func_env.types[interned_type_index]
             .composite_type
@@ -552,6 +512,7 @@ impl ArrayInit<'_> {
                 )?;
             }
         }
+        log::trace!("initialize_array: finished");
         Ok(())
     }
 }
@@ -568,6 +529,8 @@ fn emit_array_fill_impl(
         ir::Value,
     ) -> WasmResult<()>,
 ) -> WasmResult<()> {
+    log::trace!("emit_array_fill_impl(elem_addr: {elem_addr:?}, elem_size: {elem_size:?}, fill_end: {fill_end:?})");
+
     let pointer_ty = func_env.pointer_type();
 
     assert_eq!(builder.func.dfg.value_type(elem_addr), pointer_ty);
@@ -611,6 +574,7 @@ fn emit_array_fill_impl(
     // block or the loop body block.
     builder.switch_to_block(loop_header_block);
     builder.append_block_param(loop_header_block, pointer_ty);
+    log::trace!("emit_array_fill_impl: loop header");
     let elem_addr = builder.block_params(loop_header_block)[0];
     let done = builder.ins().icmp(IntCC::Equal, elem_addr, fill_end);
     builder
@@ -620,12 +584,14 @@ fn emit_array_fill_impl(
     // Loop body block: write the value to the current element, compute the next
     // element's address, and then jump back to the loop header block.
     builder.switch_to_block(loop_body_block);
+    log::trace!("emit_array_fill_impl: loop body");
     emit_elem_write(func_env, builder, elem_addr)?;
     let next_elem_addr = builder.ins().iadd(elem_addr, elem_size);
     builder.ins().jump(loop_header_block, &[next_elem_addr]);
 
     // Continue...
     builder.switch_to_block(continue_block);
+    log::trace!("emit_array_fill_impl: finished");
     builder.seal_block(loop_header_block);
     builder.seal_block(loop_body_block);
     builder.seal_block(continue_block);
@@ -641,6 +607,10 @@ pub fn translate_array_fill(
     value: ir::Value,
     n: ir::Value,
 ) -> WasmResult<()> {
+    log::trace!(
+        "translate_array_fill({array_type_index:?}, {array_ref:?}, {index:?}, {value:?}, {n:?})"
+    );
+
     let len = translate_array_len(func_env, builder, array_ref)?;
 
     // Check that the full range of elements we want to fill is within bounds.
@@ -651,7 +621,7 @@ pub fn translate_array_fill(
     func_env.trapnz(builder, out_of_bounds, crate::TRAP_ARRAY_OUT_OF_BOUNDS);
 
     // Get the address of the first element we want to fill.
-    let interned_type_index = func_env.module.types[array_type_index];
+    let interned_type_index = func_env.module.types[array_type_index].unwrap_module_type_index();
     let ArraySizeInfo {
         obj_size,
         one_elem_size,
@@ -673,7 +643,7 @@ pub fn translate_array_fill(
     let one_elem_size =
         uextend_i32_to_pointer_type(builder, func_env.pointer_type(), one_elem_size);
 
-    emit_array_fill_impl(
+    let result = emit_array_fill_impl(
         func_env,
         builder,
         elem_addr,
@@ -687,7 +657,9 @@ pub fn translate_array_fill(
                 .element_type;
             write_field_at_addr(func_env, builder, elem_ty, elem_addr, value)
         },
-    )
+    )?;
+    log::trace!("translate_array_fill(..) -> {result:?}");
+    Ok(result)
 }
 
 pub fn translate_array_len(
@@ -695,6 +667,8 @@ pub fn translate_array_len(
     builder: &mut FunctionBuilder,
     array_ref: ir::Value,
 ) -> WasmResult<ir::Value> {
+    log::trace!("translate_array_len({array_ref:?})");
+
     func_env.trapz(builder, array_ref, crate::TRAP_NULL_REFERENCE);
 
     let len_offset = gc_compiler(func_env)?.layouts().array_length_field_offset();
@@ -706,9 +680,11 @@ pub fn translate_array_len(
         // don't know its length yet. Chicken and egg problem.
         BoundsCheck::Access(ir::types::I32.bytes()),
     );
-    Ok(builder
+    let result = builder
         .ins()
-        .load(ir::types::I32, ir::MemFlags::trusted(), len_field, 0))
+        .load(ir::types::I32, ir::MemFlags::trusted(), len_field, 0);
+    log::trace!("translate_array_len(..) -> {result:?}");
+    Ok(result)
 }
 
 struct ArraySizeInfo {
@@ -841,46 +817,19 @@ pub fn translate_array_get(
     array_type_index: TypeIndex,
     array_ref: ir::Value,
     index: ir::Value,
+    extension: Option<Extension>,
 ) -> WasmResult<ir::Value> {
-    let array_type_index = func_env.module.types[array_type_index];
+    log::trace!("translate_array_get({array_type_index:?}, {array_ref:?}, {index:?})");
+
+    let array_type_index = func_env.module.types[array_type_index].unwrap_module_type_index();
     let elem_addr = array_elem_addr(func_env, builder, array_type_index, array_ref, index);
 
     let array_ty = func_env.types.unwrap_array(array_type_index)?;
     let elem_ty = array_ty.0.element_type;
 
-    read_field_at_addr(func_env, builder, elem_ty, elem_addr, None)
-}
-
-pub fn translate_array_get_s(
-    func_env: &mut FuncEnvironment<'_>,
-    builder: &mut FunctionBuilder,
-    array_type_index: TypeIndex,
-    array_ref: ir::Value,
-    index: ir::Value,
-) -> WasmResult<ir::Value> {
-    let array_type_index = func_env.module.types[array_type_index];
-    let elem_addr = array_elem_addr(func_env, builder, array_type_index, array_ref, index);
-
-    let array_ty = func_env.types.unwrap_array(array_type_index)?;
-    let elem_ty = array_ty.0.element_type;
-
-    read_field_at_addr(func_env, builder, elem_ty, elem_addr, Some(Extension::Sign))
-}
-
-pub fn translate_array_get_u(
-    func_env: &mut FuncEnvironment<'_>,
-    builder: &mut FunctionBuilder,
-    array_type_index: TypeIndex,
-    array_ref: ir::Value,
-    index: ir::Value,
-) -> WasmResult<ir::Value> {
-    let array_type_index = func_env.module.types[array_type_index];
-    let elem_addr = array_elem_addr(func_env, builder, array_type_index, array_ref, index);
-
-    let array_ty = func_env.types.unwrap_array(array_type_index)?;
-    let elem_ty = array_ty.0.element_type;
-
-    read_field_at_addr(func_env, builder, elem_ty, elem_addr, Some(Extension::Zero))
+    let result = read_field_at_addr(func_env, builder, elem_ty, elem_addr, extension)?;
+    log::trace!("translate_array_get(..) -> {result:?}");
+    Ok(result)
 }
 
 pub fn translate_array_set(
@@ -891,13 +840,18 @@ pub fn translate_array_set(
     index: ir::Value,
     value: ir::Value,
 ) -> WasmResult<()> {
-    let array_type_index = func_env.module.types[array_type_index];
+    log::trace!("translate_array_set({array_type_index:?}, {array_ref:?}, {index:?}, {value:?})");
+
+    let array_type_index = func_env.module.types[array_type_index].unwrap_module_type_index();
     let elem_addr = array_elem_addr(func_env, builder, array_type_index, array_ref, index);
 
     let array_ty = func_env.types.unwrap_array(array_type_index)?;
     let elem_ty = array_ty.0.element_type;
 
-    write_field_at_addr(func_env, builder, elem_ty, elem_addr, value)
+    write_field_at_addr(func_env, builder, elem_ty, elem_addr, value)?;
+
+    log::trace!("translate_array_set: finished");
+    Ok(())
 }
 
 pub fn translate_ref_test(
@@ -906,6 +860,8 @@ pub fn translate_ref_test(
     ref_ty: WasmRefType,
     val: ir::Value,
 ) -> WasmResult<ir::Value> {
+    log::trace!("translate_ref_test({ref_ty:?}, {val:?})");
+
     // First special case: testing for references to bottom types.
     if ref_ty.heap_type.is_bottom() {
         let result = if ref_ty.nullable {
@@ -917,6 +873,7 @@ pub fn translate_ref_test(
             // bottom types are uninhabited.
             builder.ins().iconst(ir::types::I32, 0)
         };
+        log::trace!("translate_ref_test(..) -> {result:?}");
         return Ok(result);
     }
 
@@ -933,6 +890,7 @@ pub fn translate_ref_test(
             let one = builder.ins().iconst(ir::types::I32, 1);
             builder.ins().select(is_null, zero, one)
         };
+        log::trace!("translate_ref_test(..) -> {result:?}");
         return Ok(result);
     }
 
@@ -941,7 +899,7 @@ pub fn translate_ref_test(
     if ref_ty.heap_type == WasmHeapType::I31 {
         let i31_mask = builder.ins().iconst(
             ir::types::I32,
-            i64::try_from(wasmtime_environ::I31_DISCRIMINANT).unwrap(),
+            i64::from(wasmtime_environ::I31_DISCRIMINANT),
         );
         let is_i31 = builder.ins().band(val, i31_mask);
         let result = if ref_ty.nullable {
@@ -950,6 +908,7 @@ pub fn translate_ref_test(
         } else {
             is_i31
         };
+        log::trace!("translate_ref_test(..) -> {result:?}");
         return Ok(result);
     }
 
@@ -964,17 +923,11 @@ pub fn translate_ref_test(
 
     // Current block: check if the reference is null and branch appropriately.
     let is_null = func_env.translate_ref_is_null(builder.cursor(), val)?;
-    let is_null_result = if ref_ty.nullable {
-        is_null
-    } else {
-        let zero = builder.ins().iconst(ir::types::I32, 0);
-        let one = builder.ins().iconst(ir::types::I32, 1);
-        builder.ins().select(is_null, zero, one)
-    };
+    let result_when_is_null = builder.ins().iconst(ir::types::I32, ref_ty.nullable as i64);
     builder.ins().brif(
         is_null,
         continue_block,
-        &[is_null_result],
+        &[result_when_is_null],
         non_null_block,
         &[],
     );
@@ -982,25 +935,26 @@ pub fn translate_ref_test(
     // Non-null block: We know the GC ref is non-null, but we need to also check
     // for `i31` references that don't point to GC objects.
     builder.switch_to_block(non_null_block);
+    log::trace!("translate_ref_test: non-null ref block");
     if is_any_hierarchy {
         let i31_mask = builder.ins().iconst(
             ir::types::I32,
-            i64::try_from(wasmtime_environ::I31_DISCRIMINANT).unwrap(),
+            i64::from(wasmtime_environ::I31_DISCRIMINANT),
         );
         let is_i31 = builder.ins().band(val, i31_mask);
         // If it is an `i31`, then create the result value based on whether we
         // want `i31`s to pass the test or not.
-        let is_i31_result = if ref_ty.heap_type == WasmHeapType::Eq {
-            is_i31
-        } else {
-            let zero = builder.ins().iconst(ir::types::I32, 0);
-            let one = builder.ins().iconst(ir::types::I32, 1);
-            builder.ins().select(is_i31, zero, one)
-        };
+        let result_when_is_i31 = builder.ins().iconst(
+            ir::types::I32,
+            matches!(
+                ref_ty.heap_type,
+                WasmHeapType::Any | WasmHeapType::Eq | WasmHeapType::I31
+            ) as i64,
+        );
         builder.ins().brif(
             is_i31,
             continue_block,
-            &[is_i31_result],
+            &[result_when_is_i31],
             non_null_non_i31_block,
             &[],
         );
@@ -1015,6 +969,7 @@ pub fn translate_ref_test(
     // `VMSharedTypeIndex` out of the object's header and check whether it
     // matches the expected type.
     builder.switch_to_block(non_null_non_i31_block);
+    log::trace!("translate_ref_test: non-null and non-i31 ref block");
     let check_header_kind = |func_env: &mut FuncEnvironment<'_>,
                              builder: &mut FunctionBuilder,
                              val: ir::Value,
@@ -1077,7 +1032,7 @@ pub fn translate_ref_test(
                 builder,
                 val,
                 Offset::Static(wasmtime_environ::VM_GC_HEADER_TYPE_INDEX_OFFSET),
-                BoundsCheck::Access(wasmtime_environ::VM_GC_HEADER_SIZE),
+                BoundsCheck::Access(func_env.offsets.size_of_vmshared_type_index().into()),
             );
             let actual_shared_ty = builder.ins().load(
                 ir::types::I32,
@@ -1105,12 +1060,15 @@ pub fn translate_ref_test(
 
             func_env.is_subtype(builder, actual_shared_ty, expected_shared_ty)
         }
+
+        WasmHeapType::Cont | WasmHeapType::ConcreteCont(_) | WasmHeapType::NoCont => todo!(), // FIXME: #10248 stack switching support.
     };
     builder.ins().jump(continue_block, &[result]);
 
     // Control flow join point with the result.
     builder.switch_to_block(continue_block);
     let result = builder.append_block_param(continue_block, ir::types::I32);
+    log::trace!("translate_ref_test(..) -> {result:?}");
 
     builder.seal_block(non_null_block);
     builder.seal_block(non_null_non_i31_block);
@@ -1120,6 +1078,7 @@ pub fn translate_ref_test(
 }
 
 /// A static or dynamic offset from a GC reference.
+#[derive(Debug)]
 enum Offset {
     /// A static offset from a GC reference.
     Static(u32),
@@ -1130,6 +1089,7 @@ enum Offset {
 
 /// The kind of bounds check to perform when accessing a GC object's fields and
 /// elements.
+#[derive(Debug)]
 enum BoundsCheck {
     /// Check that this whole object is inside the GC heap:
     ///
@@ -1335,6 +1295,7 @@ impl FuncEnvironment<'_> {
         offset: Offset,
         check: BoundsCheck,
     ) -> ir::Value {
+        log::trace!("prepare_gc_ref_access({gc_ref:?}, {offset:?}, {check:?})");
         assert_eq!(builder.func.dfg.value_type(gc_ref), ir::types::I32);
 
         let pointer_type = self.pointer_type();
@@ -1381,7 +1342,9 @@ impl FuncEnvironment<'_> {
         // NB: No need to check for overflow here, as that would mean that the
         // GC heap is hanging off the end of the address space, which is
         // impossible.
-        builder.ins().iadd(base, index_and_offset)
+        let result = builder.ins().iadd(base, index_and_offset);
+        log::trace!("prepare_gc_ref_access(..) -> {result:?}");
+        result
     }
 
     /// Emit checks (if necessary) for whether the given `gc_ref` is null or is
@@ -1401,6 +1364,7 @@ impl FuncEnvironment<'_> {
         ty: WasmRefType,
         gc_ref: ir::Value,
     ) -> ir::Value {
+        assert_eq!(builder.func.dfg.value_type(gc_ref), ir::types::I32);
         assert!(ty.is_vmgcref_type_and_not_i31());
 
         let might_be_i31 = match ty.heap_type {
@@ -1430,6 +1394,8 @@ impl FuncEnvironment<'_> {
             WasmHeapType::Func | WasmHeapType::ConcreteFunc(_) | WasmHeapType::NoFunc => {
                 unreachable!()
             }
+
+            WasmHeapType::Cont | WasmHeapType::ConcreteCont(_) | WasmHeapType::NoCont => todo!(), // FIXME: #10248 stack switching support.
         };
 
         match (ty.nullable, might_be_i31) {
@@ -1439,7 +1405,7 @@ impl FuncEnvironment<'_> {
             (false, false) => builder.ins().iconst(ir::types::I32, 0),
 
             // This GC reference is always non-null, but might be an i31.
-            (false, true) => builder.ins().band_imm(gc_ref, I31_DISCRIMINANT as i64),
+            (false, true) => builder.ins().band_imm(gc_ref, i64::from(I31_DISCRIMINANT)),
 
             // This GC reference might be null, but can never be an i31.
             (true, false) => builder.ins().icmp_imm(IntCC::Equal, gc_ref, 0),
@@ -1447,17 +1413,10 @@ impl FuncEnvironment<'_> {
             // Fully general case: this GC reference could be either null or an
             // i31.
             (true, true) => {
-                // Mask for checking whether any bits are set, other than the
-                // `i31ref` discriminant, which should not be set. This folds
-                // the null and i31ref checks together into a single `band`.
-                let mask = builder.ins().iconst(
-                    ir::types::I32,
-                    (NON_NULL_NON_I31_MASK & u32::MAX as u64) as i64,
-                );
-                let is_non_null_and_non_i31 = builder.ins().band(gc_ref, mask);
-                builder
-                    .ins()
-                    .icmp_imm(ir::condcodes::IntCC::Equal, is_non_null_and_non_i31, 0)
+                let is_i31 = builder.ins().band_imm(gc_ref, i64::from(I31_DISCRIMINANT));
+                let is_null = builder.ins().icmp_imm(IntCC::Equal, gc_ref, 0);
+                let is_null = builder.ins().uextend(ir::types::I32, is_null);
+                builder.ins().bor(is_i31, is_null)
             }
         }
     }
@@ -1469,10 +1428,13 @@ impl FuncEnvironment<'_> {
         a: ir::Value,
         b: ir::Value,
     ) -> ir::Value {
+        log::trace!("is_subtype({a:?}, {b:?})");
+
         let diff_tys_block = builder.create_block();
         let continue_block = builder.create_block();
 
         // Current block: fast path for when `a == b`.
+        log::trace!("is_subtype: fast path check for exact same types");
         let same_ty = builder.ins().icmp(IntCC::Equal, a, b);
         let same_ty = builder.ins().uextend(ir::types::I32, same_ty);
         builder
@@ -1481,6 +1443,7 @@ impl FuncEnvironment<'_> {
 
         // Different types block: fall back to the `is_subtype` libcall.
         builder.switch_to_block(diff_tys_block);
+        log::trace!("is_subtype: slow path to do full `is_subtype` libcall");
         let is_subtype = self.builtin_functions.is_subtype(builder.func);
         let vmctx = self.vmctx_val(&mut builder.cursor());
         let call_inst = builder.ins().call(is_subtype, &[vmctx, a, b]);
@@ -1490,6 +1453,7 @@ impl FuncEnvironment<'_> {
         // Continue block: join point for the result.
         builder.switch_to_block(continue_block);
         let result = builder.append_block_param(continue_block, ir::types::I32);
+        log::trace!("is_subtype(..) -> {result:?}");
 
         builder.seal_block(diff_tys_block);
         builder.seal_block(continue_block);
