@@ -55,10 +55,11 @@ impl ComponentTypesBuilder {
 
         // If we're lifting async with a callback, the result is an `i32` status
         // code, optionally ORed with a guest task identifier, and the result
-        // will be returned via `task.return`.  If we're lifting async without a
-        // callback, then there's no need to return anything here since the
-        // result will be returned via `task.return` and the guest will use
-        // `task.wait` rather than return a status code in order to suspend
+        // will be returned via `task.return`.  
+        // 
+        // If we're lifting async without a callback, then there's no need to return 
+        // anything here since the result will be returned via `task.return` and the 
+        // guest will use `task.wait` rather than return a status code in order to suspend
         // itself, if necessary.
         if options.options.async_ {
             return Signature {
