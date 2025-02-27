@@ -37,10 +37,13 @@ use {
         vec::Vec,
     },
     table::{Table, TableId},
-    wasmtime_environ::component::{
-        InterfaceType, RuntimeComponentInstanceIndex, StringEncoding,
-        TypeComponentLocalErrorContextTableIndex, TypeFutureTableIndex, TypeStreamTableIndex,
-        TypeTupleIndex, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS,
+    wasmtime_environ::{
+        component::{
+            InterfaceType, RuntimeComponentInstanceIndex, StringEncoding,
+            TypeComponentLocalErrorContextTableIndex, TypeFutureTableIndex, TypeStreamTableIndex,
+            TypeTupleIndex, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS,
+        },
+        fact,
     },
     wasmtime_fiber::{Fiber, Suspend},
 };
@@ -81,7 +84,7 @@ enum Event {
     FutureWrite,
 }
 
-const EXIT_FLAG_ASYNC_CALLEE: u32 = 1 << 0;
+const EXIT_FLAG_ASYNC_CALLEE: u32 = fact::EXIT_FLAG_ASYNC_CALLEE as u32;
 
 /// Represents the result of a concurrent operation.
 ///
