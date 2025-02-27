@@ -36,6 +36,8 @@ mod trampoline;
 mod transcode;
 mod traps;
 
+/// Bit flag for indicating async-lifted exports
+/// 
 /// This flag may be passed to the `async-exit` built-in function (which is
 /// called from both async->async and async->sync adapters) to indicate that the
 /// callee is an async-lifted export.
