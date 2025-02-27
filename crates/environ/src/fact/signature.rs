@@ -27,8 +27,9 @@ impl ComponentTypesBuilder {
         let ptr_ty = options.options.ptr();
 
         // The async lower ABI is always `(param i32 i32) (result i32)` (for
-        // wasm32, anyway), regardless of the component-level signature.  The
-        // first param is a pointer to linear memory where the parameters have
+        // wasm32, anyway), regardless of the component-level signature.  
+        //
+        // The first param is a pointer to linear memory where the parameters have
         // been stored by the caller, the second param is a pointer to linear
         // memory where the results should be stored by the callee, and the
         // result is a status code optionally ORed with a subtask ID.
