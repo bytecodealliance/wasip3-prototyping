@@ -49,6 +49,7 @@ async fn sockets_0_3_udp_connect() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
+#[ignore = "https://github.com/bytecodealliance/wasip3-prototyping/issues/44"]
 async fn sockets_0_3_udp_sample_application() -> anyhow::Result<()> {
     run(SOCKETS_0_3_UDP_SAMPLE_APPLICATION_COMPONENT).await
 }

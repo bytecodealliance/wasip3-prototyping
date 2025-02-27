@@ -151,6 +151,15 @@ pub async fn async_round_trip_stackless() -> Result<()> {
     .await
 }
 
+#[tokio::test]
+pub async fn async_round_trip_stackless_sync_import() -> Result<()> {
+    test_round_trip_uncomposed(
+        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_SYNC_IMPORT_COMPONENT)
+            .await?,
+    )
+    .await
+}
+
 pub async fn test_round_trip(component: &[u8], inputs_and_outputs: &[(&str, &str)]) -> Result<()> {
     init_logger();
 
