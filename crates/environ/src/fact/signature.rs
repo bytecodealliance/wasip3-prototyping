@@ -27,7 +27,7 @@ impl ComponentTypesBuilder {
         let ptr_ty = options.options.ptr();
 
         // The async lower ABI is always `(param i32 i32) (result i32)` (for
-        // wasm32, anyway), regardless of the component-level signature.  
+        // wasm32, anyway), regardless of the component-level signature.
         //
         // The first param is a pointer to linear memory where the parameters have
         // been stored by the caller, the second param is a pointer to linear
@@ -55,10 +55,10 @@ impl ComponentTypesBuilder {
 
         // If we're lifting async with a callback, the result is an `i32` status
         // code, optionally ORed with a guest task identifier, and the result
-        // will be returned via `task.return`.  
-        // 
-        // If we're lifting async without a callback, then there's no need to return 
-        // anything here since the result will be returned via `task.return` and the 
+        // will be returned via `task.return`.
+        //
+        // If we're lifting async without a callback, then there's no need to return
+        // anything here since the result will be returned via `task.return` and the
         // guest will use `task.wait` rather than return a status code in order to suspend
         // itself, if necessary.
         if options.options.async_ {
