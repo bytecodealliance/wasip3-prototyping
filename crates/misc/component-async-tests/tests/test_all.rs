@@ -22,8 +22,8 @@ use scenario::post_return::{async_post_return_callee, async_post_return_caller};
 use scenario::proxy::{async_http_echo, async_http_middleware};
 use scenario::read_resource_stream::async_read_resource_stream;
 use scenario::round_trip::{
-    async_round_trip_stackful, async_round_trip_stackless, async_round_trip_synchronous,
-    async_round_trip_wait,
+    async_round_trip_stackful, async_round_trip_stackless, async_round_trip_stackless_sync_import,
+    async_round_trip_synchronous, async_round_trip_wait,
 };
 use scenario::round_trip_direct::async_round_trip_direct_stackless;
 use scenario::round_trip_many::{
