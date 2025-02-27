@@ -68,7 +68,7 @@ fn typecheck() -> Result<()> {
             (func (export "take-two-args") (param "a" s32) (param "b" (list u8))
                 (canon lift (core func $i "two-args") (memory $i "memory") (realloc (func $i "realloc")))
             )
-            (func (export "ret-tuple") (result "a" u8) (result "b" s8)
+            (func (export "ret-tuple") (result (tuple u8 s8))
                 (canon lift (core func $i "ret-one") (memory $i "memory") (realloc (func $i "realloc")))
             )
             (func (export "ret-tuple1") (result (tuple u32))
@@ -83,9 +83,7 @@ fn typecheck() -> Result<()> {
         )
     "#;
 
-    let mut config = Config::new();
-    config.wasm_component_model_multiple_returns(true);
-    let engine = Engine::new(&config)?;
+    let engine = Engine::default();
     let component = Component::new(&engine, component)?;
     let mut store = Store::new(&engine, ());
     let instance = Linker::new(&engine).instantiate(&mut store, &component)?;
@@ -109,7 +107,7 @@ fn typecheck() -> Result<()> {
     assert!(take_two_args.typed::<(i32, &[u8]), ()>(&store).is_ok());
     assert!(ret_tuple.typed::<(), ()>(&store).is_err());
     assert!(ret_tuple.typed::<(), (u8,)>(&store).is_err());
-    assert!(ret_tuple.typed::<(), (u8, i8)>(&store).is_ok());
+    assert!(ret_tuple.typed::<(), ((u8, i8),)>(&store).is_ok());
     assert!(ret_tuple1.typed::<(), ((u32,),)>(&store).is_ok());
     assert!(ret_tuple1.typed::<(), (u32,)>(&store).is_err());
     assert!(ret_string.typed::<(), ()>(&store).is_err());

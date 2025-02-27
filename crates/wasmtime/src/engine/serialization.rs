@@ -200,11 +200,10 @@ struct WasmFeatures {
     function_references: bool,
     gc: bool,
     custom_page_sizes: bool,
-    component_model_more_flags: bool,
-    component_model_multiple_returns: bool,
     component_model_async: bool,
     gc_types: bool,
     wide_arithmetic: bool,
+    stack_switching: bool,
 }
 
 impl Metadata<'_> {
@@ -230,8 +229,6 @@ impl Metadata<'_> {
             shared_everything_threads,
             component_model_values,
             component_model_nested_names,
-            component_model_more_flags,
-            component_model_multiple_returns,
             component_model_async,
             legacy_exceptions,
             gc_types,
@@ -253,7 +250,6 @@ impl Metadata<'_> {
         assert!(!component_model_nested_names);
         assert!(!shared_everything_threads);
         assert!(!legacy_exceptions);
-        assert!(!stack_switching);
 
         Metadata {
             target: engine.compiler().triple().to_string(),
@@ -276,11 +272,10 @@ impl Metadata<'_> {
                 function_references,
                 gc,
                 custom_page_sizes,
-                component_model_more_flags,
-                component_model_multiple_returns,
                 component_model_async,
                 gc_types,
                 wide_arithmetic,
+                stack_switching,
             },
         }
     }
@@ -487,11 +482,10 @@ impl Metadata<'_> {
             function_references,
             gc,
             custom_page_sizes,
-            component_model_more_flags,
-            component_model_multiple_returns,
             component_model_async,
             gc_types,
             wide_arithmetic,
+            stack_switching,
         } = self.features;
 
         use wasmparser::WasmFeatures as F;
@@ -567,16 +561,6 @@ impl Metadata<'_> {
             "WebAssembly custom-page-sizes support",
         )?;
         Self::check_bool(
-            component_model_more_flags,
-            other.contains(F::COMPONENT_MODEL_MORE_FLAGS),
-            "WebAssembly component model support for more than 32 flags",
-        )?;
-        Self::check_bool(
-            component_model_multiple_returns,
-            other.contains(F::COMPONENT_MODEL_MULTIPLE_RETURNS),
-            "WebAssembly component model support for multiple returns",
-        )?;
-        Self::check_bool(
             component_model_async,
             other.contains(F::COMPONENT_MODEL_ASYNC),
             "WebAssembly component model support for async lifts/lowers, futures, streams, and errors",
@@ -593,7 +577,11 @@ impl Metadata<'_> {
             other.contains(F::WIDE_ARITHMETIC),
             "WebAssembly wide-arithmetic support",
         )?;
-
+        Self::check_bool(
+            stack_switching,
+            other.contains(F::STACK_SWITCHING),
+            "WebAssembly stack switching support",
+        )?;
         Ok(())
     }
 

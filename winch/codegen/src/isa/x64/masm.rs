@@ -1,7 +1,7 @@
 use super::{
     abi::X64ABI,
     address::Address,
-    asm::{Assembler, PatchableAddToReg, VcmpKind},
+    asm::{Assembler, PatchableAddToReg, VcmpKind, VcvtKind, VroundMode},
     regs::{self, rbp, rsp},
 };
 use anyhow::{anyhow, bail, Result};
@@ -9,8 +9,10 @@ use anyhow::{anyhow, bail, Result};
 use crate::masm::{
     DivKind, Extend, ExtendKind, ExtractLaneKind, FloatCmpKind, Imm as I, IntCmpKind, LaneSelector,
     LoadKind, MacroAssembler as Masm, MulWideKind, OperandSize, RegImm, RemKind, ReplaceLaneKind,
-    RmwOp, RoundingMode, ShiftKind, SplatKind, StoreKind, TrapCode, TruncKind, VectorCompareKind,
-    VectorEqualityKind, Zero, TRUSTED_FLAGS, UNTRUSTED_FLAGS,
+    RmwOp, RoundingMode, ShiftKind, SplatKind, StoreKind, TrapCode, TruncKind, V128AbsKind,
+    V128AddKind, V128ConvertKind, V128ExtAddKind, V128ExtMulKind, V128ExtendKind, V128MaxKind,
+    V128MinKind, V128MulKind, V128NarrowKind, V128NegKind, V128SubKind, V128TruncKind,
+    VectorCompareKind, VectorEqualityKind, Zero, TRUSTED_FLAGS, UNTRUSTED_FLAGS,
 };
 use crate::{
     abi::{self, align_to, calculate_frame_adjustment, LocalSlot},
@@ -34,7 +36,7 @@ use cranelift_codegen::{
     isa::{
         unwind::UnwindInst,
         x64::{
-            args::{AvxOpcode, FenceKind, CC},
+            args::{Avx512Opcode, AvxOpcode, FenceKind, CC},
             settings as x64_settings, AtomicRmwSeqOp,
         },
     },
@@ -42,6 +44,38 @@ use cranelift_codegen::{
 };
 use wasmtime_cranelift::TRAP_UNREACHABLE;
 use wasmtime_environ::{PtrSize, WasmValType};
+
+// Taken from `cranelift/codegen/src/isa/x64/lower/isle.rs`
+// Since x64 doesn't have 8x16 shifts and we must use a 16x8 shift instead, we
+// need to fix up the bits that migrate from one half of the lane to the
+// other. Each 16-byte mask is indexed by the shift amount: e.g. if we shift
+// right by 0 (no movement), we want to retain all the bits so we mask with
+// `0xff`; if we shift right by 1, we want to retain all bits except the MSB so
+// we mask with `0x7f`; etc.
+
+#[rustfmt::skip] // Preserve 16 bytes (i.e. one mask) per row.
+const I8X16_ISHL_MASKS: [u8; 128] = [
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe,
+    0xfc, 0xfc, 0xfc, 0xfc, 0xfc, 0xfc, 0xfc, 0xfc, 0xfc, 0xfc, 0xfc, 0xfc, 0xfc, 0xfc, 0xfc, 0xfc,
+    0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8, 0xf8,
+    0xf0, 0xf0, 0xf0, 0xf0, 0xf0, 0xf0, 0xf0, 0xf0, 0xf0, 0xf0, 0xf0, 0xf0, 0xf0, 0xf0, 0xf0, 0xf0,
+    0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0,
+    0xc0, 0xc0, 0xc0, 0xc0, 0xc0, 0xc0, 0xc0, 0xc0, 0xc0, 0xc0, 0xc0, 0xc0, 0xc0, 0xc0, 0xc0, 0xc0,
+    0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+];
+
+#[rustfmt::skip] // Preserve 16 bytes (i.e. one mask) per row.
+const I8X16_USHR_MASKS: [u8; 128] = [
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f,
+    0x3f, 0x3f, 0x3f, 0x3f, 0x3f, 0x3f, 0x3f, 0x3f, 0x3f, 0x3f, 0x3f, 0x3f, 0x3f, 0x3f, 0x3f, 0x3f,
+    0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f,
+    0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f,
+    0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
+    0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03,
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+];
 
 /// x64 MacroAssembler.
 pub(crate) struct MacroAssembler {
@@ -294,7 +328,12 @@ impl Masm for MacroAssembler {
         self.load(src, dst, self.ptr_size)
     }
 
-    fn load_addr(&mut self, src: Self::Address, dst: WritableReg, size: OperandSize) -> Result<()> {
+    fn compute_addr(
+        &mut self,
+        src: Self::Address,
+        dst: WritableReg,
+        size: OperandSize,
+    ) -> Result<()> {
         self.asm.lea(&src, dst, size);
         Ok(())
     }
@@ -324,7 +363,8 @@ impl Masm for MacroAssembler {
             }
             LoadKind::VectorExtend(ext) => {
                 self.ensure_has_avx()?;
-                self.asm.xmm_vpmov_mr(&src, dst, ext, UNTRUSTED_FLAGS)
+                self.asm
+                    .xmm_vpmov_mr(&src, dst, ext.into(), UNTRUSTED_FLAGS)
             }
             LoadKind::Splat(_) => {
                 self.ensure_has_avx()?;
@@ -349,6 +389,12 @@ impl Masm for MacroAssembler {
                 self.load_impl(src, writable!(byte_tmp), size, UNTRUSTED_FLAGS)?;
                 self.asm
                     .xmm_vpinsr_rrr(dst, dst.to_reg(), byte_tmp, lane, size);
+            }
+            LoadKind::VectorZero(size) => {
+                self.ensure_has_avx()?;
+                let scratch = regs::scratch();
+                self.load_impl(src, writable!(scratch), size, UNTRUSTED_FLAGS)?;
+                self.asm.avx_gpr_to_xmm(scratch, dst, size);
             }
         }
 
@@ -1655,7 +1701,7 @@ impl Masm for MacroAssembler {
                     .xmm_vpcmpeq_rrr(writable!(lhs), lhs, rhs, kind.lane_size());
                 self.asm
                     .xmm_vpcmpeq_rrr(writable!(rhs), rhs, rhs, kind.lane_size());
-                self.asm.xmm_rmi_rvex(AvxOpcode::Vpxor, lhs, rhs, dst);
+                self.asm.xmm_vex_rr(AvxOpcode::Vpxor, lhs, rhs, dst);
             }
             VectorEqualityKind::F32x4 | VectorEqualityKind::F64x2 => {
                 self.asm
@@ -1694,7 +1740,7 @@ impl Masm for MacroAssembler {
                     .xmm_vpcmpeq_rrr(writable!(lhs), lhs, rhs, kind.lane_size());
                 self.asm
                     .xmm_vpcmpeq_rrr(writable!(rhs), rhs, rhs, kind.lane_size());
-                self.asm.xmm_rmi_rvex(AvxOpcode::Vpxor, lhs, rhs, dst);
+                self.asm.xmm_vex_rr(AvxOpcode::Vpxor, lhs, rhs, dst);
             }
             VectorCompareKind::F32x4 | VectorCompareKind::F64x2 => {
                 self.asm
@@ -1727,7 +1773,7 @@ impl Masm for MacroAssembler {
                     .xmm_vpcmpgt_rrr(writable!(lhs), lhs, rhs, kind.lane_size());
                 self.asm
                     .xmm_vpcmpeq_rrr(writable!(rhs), rhs, rhs, kind.lane_size());
-                self.asm.xmm_rmi_rvex(AvxOpcode::Vpxor, lhs, rhs, dst);
+                self.asm.xmm_vex_rr(AvxOpcode::Vpxor, lhs, rhs, dst);
             }
             VectorCompareKind::I8x16U | VectorCompareKind::I16x8U | VectorCompareKind::I32x4U => {
                 // Set the `rhs` vector to the signed minimum values and then
@@ -1772,7 +1818,7 @@ impl Masm for MacroAssembler {
                     .xmm_vpcmpeq_rrr(writable!(lhs), lhs, rhs, kind.lane_size());
                 self.asm
                     .xmm_vpcmpeq_rrr(writable!(rhs), rhs, rhs, kind.lane_size());
-                self.asm.xmm_rmi_rvex(AvxOpcode::Vpxor, lhs, rhs, dst);
+                self.asm.xmm_vex_rr(AvxOpcode::Vpxor, lhs, rhs, dst);
             }
             VectorCompareKind::F32x4 | VectorCompareKind::F64x2 => {
                 // Do a less than comparison with the operands swapped.
@@ -1806,7 +1852,7 @@ impl Masm for MacroAssembler {
                     .xmm_vpcmpgt_rrr(writable!(rhs), rhs, lhs, kind.lane_size());
                 self.asm.xmm_vpcmpeq_rrr(dst, lhs, lhs, kind.lane_size());
                 self.asm
-                    .xmm_rmi_rvex(AvxOpcode::Vpxor, dst.to_reg(), rhs, dst);
+                    .xmm_vex_rr(AvxOpcode::Vpxor, dst.to_reg(), rhs, dst);
             }
             VectorCompareKind::I8x16U | VectorCompareKind::I16x8U | VectorCompareKind::I32x4U => {
                 // Set lanes to maximum values and compare them for equality.
@@ -1835,34 +1881,34 @@ impl Masm for MacroAssembler {
         let tmp = regs::scratch_xmm();
         // First, we initialize `tmp` with all ones, by comparing it with itself.
         self.asm
-            .xmm_rmi_rvex(AvxOpcode::Vpcmpeqd, tmp, tmp, writable!(tmp));
+            .xmm_vex_rr(AvxOpcode::Vpcmpeqd, tmp, tmp, writable!(tmp));
         // then we `xor` tmp and `dst` together, yielding `!dst`.
         self.asm
-            .xmm_rmi_rvex(AvxOpcode::Vpxor, tmp, dst.to_reg(), dst);
+            .xmm_vex_rr(AvxOpcode::Vpxor, tmp, dst.to_reg(), dst);
         Ok(())
     }
 
     fn v128_and(&mut self, src1: Reg, src2: Reg, dst: WritableReg) -> Result<()> {
         self.ensure_has_avx()?;
-        self.asm.xmm_rmi_rvex(AvxOpcode::Vpand, src1, src2, dst);
+        self.asm.xmm_vex_rr(AvxOpcode::Vpand, src1, src2, dst);
         Ok(())
     }
 
     fn v128_and_not(&mut self, src1: Reg, src2: Reg, dst: WritableReg) -> Result<()> {
         self.ensure_has_avx()?;
-        self.asm.xmm_rmi_rvex(AvxOpcode::Vpandn, src1, src2, dst);
+        self.asm.xmm_vex_rr(AvxOpcode::Vpandn, src1, src2, dst);
         Ok(())
     }
 
     fn v128_or(&mut self, src1: Reg, src2: Reg, dst: WritableReg) -> Result<()> {
         self.ensure_has_avx()?;
-        self.asm.xmm_rmi_rvex(AvxOpcode::Vpor, src1, src2, dst);
+        self.asm.xmm_vex_rr(AvxOpcode::Vpor, src1, src2, dst);
         Ok(())
     }
 
     fn v128_xor(&mut self, src1: Reg, src2: Reg, dst: WritableReg) -> Result<()> {
         self.ensure_has_avx()?;
-        self.asm.xmm_rmi_rvex(AvxOpcode::Vpxor, src1, src2, dst);
+        self.asm.xmm_vex_rr(AvxOpcode::Vpxor, src1, src2, dst);
         Ok(())
     }
 
@@ -1880,6 +1926,962 @@ impl Masm for MacroAssembler {
         self.ensure_has_avx()?;
         self.asm.xmm_vptest(src, src);
         self.asm.setcc(IntCmpKind::Ne, dst);
+        Ok(())
+    }
+
+    fn v128_convert(&mut self, src: Reg, dst: WritableReg, kind: V128ConvertKind) -> Result<()> {
+        self.ensure_has_avx()?;
+        match kind {
+            V128ConvertKind::I32x4S => self.asm.xmm_vcvt_rr(src, dst, VcvtKind::I32ToF32),
+            V128ConvertKind::I32x4LowS => self.asm.xmm_vcvt_rr(src, dst, VcvtKind::I32ToF64),
+            V128ConvertKind::I32x4U => {
+                let scratch = writable!(regs::scratch_xmm());
+
+                // Split each 32-bit integer into 16-bit parts.
+                // `scratch` will contain the low bits and `dst` will contain
+                // the high bits.
+                self.asm
+                    .xmm_vpsll_rr(src, scratch, 0x10, kind.src_lane_size());
+                self.asm
+                    .xmm_vpsrl_rr(scratch.to_reg(), scratch, 0x10, kind.src_lane_size());
+                self.asm
+                    .xmm_vpsub_rrr(src, scratch.to_reg(), dst, kind.src_lane_size());
+
+                // Convert the low bits in `scratch` to floating point numbers.
+                self.asm
+                    .xmm_vcvt_rr(scratch.to_reg(), scratch, VcvtKind::I32ToF32);
+
+                // Prevent overflow by right shifting high bits.
+                self.asm
+                    .xmm_vpsrl_rr(dst.to_reg(), dst, 1, kind.src_lane_size());
+                // Convert high bits in `dst` to floating point numbers.
+                self.asm.xmm_vcvt_rr(dst.to_reg(), dst, VcvtKind::I32ToF32);
+                // Double high bits in `dst` to reverse right shift.
+                self.asm
+                    .xmm_vaddp_rrr(dst.to_reg(), dst.to_reg(), dst, kind.src_lane_size());
+                // Add high bits in `dst` to low bits in `scratch`.
+                self.asm
+                    .xmm_vaddp_rrr(dst.to_reg(), scratch.to_reg(), dst, kind.src_lane_size());
+            }
+            V128ConvertKind::I32x4LowU => {
+                // See
+                // https://github.com/bytecodealliance/wasmtime/blob/bb886ffc3c81a476d8ba06311ff2dede15a6f7e1/cranelift/codegen/src/isa/x64/lower.isle#L3668
+                // for details on the Cranelift AVX implementation.
+                // Use `vunpcklp` to create doubles from the integers.
+                // Interleaving 0x1.0p52 (i.e., 0x43300000) with the integers
+                // creates a byte array for a double that sets the mantissa
+                // bits to the original integer value.
+                let conversion_constant = self
+                    .asm
+                    .add_constant(&[0x00, 0x00, 0x30, 0x43, 0x00, 0x00, 0x30, 0x43]);
+                self.asm
+                    .xmm_vunpcklp_rrm(src, &conversion_constant, dst, kind.src_lane_size());
+                // Subtract the 0x1.0p52 added above.
+                let conversion_constant = self.asm.add_constant(&[
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x43, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x30, 0x43,
+                ]);
+                self.asm.xmm_vsub_rrm(
+                    dst.to_reg(),
+                    &conversion_constant,
+                    dst,
+                    kind.dst_lane_size(),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn v128_narrow(
+        &mut self,
+        src1: Reg,
+        src2: Reg,
+        dst: WritableReg,
+        kind: V128NarrowKind,
+    ) -> Result<()> {
+        self.ensure_has_avx()?;
+        match kind {
+            V128NarrowKind::I16x8S | V128NarrowKind::I32x4S => {
+                self.asm
+                    .xmm_vpackss_rrr(src1, src2, dst, kind.dst_lane_size())
+            }
+            V128NarrowKind::I16x8U | V128NarrowKind::I32x4U => {
+                self.asm
+                    .xmm_vpackus_rrr(src1, src2, dst, kind.dst_lane_size())
+            }
+        }
+        Ok(())
+    }
+
+    fn v128_demote(&mut self, src: Reg, dst: WritableReg) -> Result<()> {
+        self.ensure_has_avx()?;
+        self.asm.xmm_vcvt_rr(src, dst, VcvtKind::F64ToF32);
+        Ok(())
+    }
+
+    fn v128_promote(&mut self, src: Reg, dst: WritableReg) -> Result<()> {
+        self.ensure_has_avx()?;
+        self.asm.xmm_vcvt_rr(src, dst, VcvtKind::F32ToF64);
+        Ok(())
+    }
+
+    fn v128_extend(&mut self, src: Reg, dst: WritableReg, kind: V128ExtendKind) -> Result<()> {
+        self.ensure_has_avx()?;
+        match kind {
+            V128ExtendKind::LowI8x16S
+            | V128ExtendKind::LowI8x16U
+            | V128ExtendKind::LowI16x8S
+            | V128ExtendKind::LowI16x8U
+            | V128ExtendKind::LowI32x4S
+            | V128ExtendKind::LowI32x4U => self.asm.xmm_vpmov_rr(src, dst, kind.into()),
+            V128ExtendKind::HighI8x16S | V128ExtendKind::HighI16x8S => {
+                self.asm.xmm_vpalignr_rrr(src, src, dst, 0x8);
+                self.asm.xmm_vpmov_rr(dst.to_reg(), dst, kind.into());
+            }
+            V128ExtendKind::HighI8x16U | V128ExtendKind::HighI16x8U => {
+                let scratch = regs::scratch_xmm();
+                self.asm
+                    .xmm_vex_rr(AvxOpcode::Vpxor, scratch, scratch, writable!(scratch));
+                self.asm
+                    .xmm_vpunpckh_rrr(src, scratch, dst, kind.src_lane_size());
+            }
+            V128ExtendKind::HighI32x4S => {
+                // Move the 3rd element (i.e., 0b10) to the 1st (rightmost)
+                // position and the 4th element (i.e., 0b11) to the 2nd (second
+                // from the right) position and then perform the extend.
+                self.asm
+                    .xmm_vpshuf_rr(src, dst, 0b11_10_11_10, kind.src_lane_size());
+                self.asm.xmm_vpmov_rr(dst.to_reg(), dst, kind.into());
+            }
+            V128ExtendKind::HighI32x4U => {
+                // Set `scratch` to a vector 0s.
+                let scratch = regs::scratch_xmm();
+                self.asm
+                    .xmm_vxorp_rrr(scratch, scratch, writable!(scratch), kind.src_lane_size());
+                // Interleave the 0 bits into the two 32-bit integers to zero extend them.
+                self.asm
+                    .xmm_vunpckhp_rrr(src, scratch, dst, kind.src_lane_size());
+            }
+        }
+        Ok(())
+    }
+
+    fn v128_add(&mut self, lhs: Reg, rhs: Reg, dst: WritableReg, kind: V128AddKind) -> Result<()> {
+        self.ensure_has_avx()?;
+
+        let op = match kind {
+            V128AddKind::F32x4 => AvxOpcode::Vaddps,
+            V128AddKind::F64x2 => AvxOpcode::Vaddpd,
+            V128AddKind::I8x16 => AvxOpcode::Vpaddb,
+            V128AddKind::I8x16SatS => AvxOpcode::Vpaddsb,
+            V128AddKind::I8x16SatU => AvxOpcode::Vpaddusb,
+            V128AddKind::I16x8 => AvxOpcode::Vpaddw,
+            V128AddKind::I16x8SatS => AvxOpcode::Vpaddsw,
+            V128AddKind::I16x8SatU => AvxOpcode::Vpaddusw,
+            V128AddKind::I32x4 => AvxOpcode::Vpaddd,
+            V128AddKind::I64x2 => AvxOpcode::Vpaddq,
+        };
+        self.asm.xmm_vex_rr(op, lhs, rhs, dst);
+        Ok(())
+    }
+
+    fn v128_sub(&mut self, lhs: Reg, rhs: Reg, dst: WritableReg, kind: V128SubKind) -> Result<()> {
+        self.ensure_has_avx()?;
+
+        let op = match kind {
+            V128SubKind::F32x4 => AvxOpcode::Vsubps,
+            V128SubKind::F64x2 => AvxOpcode::Vsubpd,
+            V128SubKind::I8x16 => AvxOpcode::Vpsubb,
+            V128SubKind::I8x16SatS => AvxOpcode::Vpsubsb,
+            V128SubKind::I8x16SatU => AvxOpcode::Vpsubusb,
+            V128SubKind::I16x8 => AvxOpcode::Vpsubw,
+            V128SubKind::I16x8SatS => AvxOpcode::Vpsubsw,
+            V128SubKind::I16x8SatU => AvxOpcode::Vpsubusw,
+            V128SubKind::I32x4 => AvxOpcode::Vpsubd,
+            V128SubKind::I64x2 => AvxOpcode::Vpsubq,
+        };
+        self.asm.xmm_vex_rr(op, lhs, rhs, dst);
+        Ok(())
+    }
+
+    fn v128_mul(
+        &mut self,
+        context: &mut CodeGenContext<Emission>,
+        kind: V128MulKind,
+    ) -> Result<()> {
+        self.ensure_has_avx()?;
+
+        let rhs = context.pop_to_reg(self, None)?;
+        let lhs = context.pop_to_reg(self, None)?;
+
+        let mul_avx = |this: &mut Self, op| {
+            this.asm
+                .xmm_vex_rr(op, lhs.reg, rhs.reg, writable!(lhs.reg));
+        };
+
+        let mul_i64x2_avx512 = |this: &mut Self| {
+            this.asm
+                .xmm_rm_rvex3(Avx512Opcode::Vpmullq, lhs.reg, rhs.reg, writable!(lhs.reg));
+        };
+
+        let mul_i64x2_fallback =
+            |this: &mut Self, context: &mut CodeGenContext<Emission>| -> Result<()> {
+                // Standard AVX doesn't have an instruction for i64x2 multiplication, instead, we have to fallback
+                // to an instruction sequence using 32bits multiplication (taken from cranelift
+                // implementation, in `isa/x64/lower.isle`):
+                //
+                // > Otherwise, for i64x2 multiplication we describe a lane A as being composed of
+                // > a 32-bit upper half "Ah" and a 32-bit lower half "Al". The 32-bit long hand
+                // > multiplication can then be written as:
+                //
+                // >    Ah Al
+                // > *  Bh Bl
+                // >    -----
+                // >    Al * Bl
+                // > + (Ah * Bl) << 32
+                // > + (Al * Bh) << 32
+                //
+                // > So for each lane we will compute:
+                //
+                // >   A * B  = (Al * Bl) + ((Ah * Bl) + (Al * Bh)) << 32
+                //
+                // > Note, the algorithm will use `pmuludq` which operates directly on the lower
+                // > 32-bit (`Al` or `Bl`) of a lane and writes the result to the full 64-bits of
+                // > the lane of the destination. For this reason we don't need shifts to isolate
+                // > the lower 32-bits, however, we will need to use shifts to isolate the high
+                // > 32-bits when doing calculations, i.e., `Ah == A >> 32`.
+
+                let tmp1 = regs::scratch_xmm();
+                let tmp2 = context.any_fpr(this)?;
+
+                // tmp1 = lhs_hi = (lhs >> 32)
+                this.asm
+                    .xmm_vex_ri(AvxOpcode::Vpsrlq, lhs.reg, 32, writable!(tmp1));
+                // tmp2 = lhs_hi * rhs_low = tmp1 * rhs
+                this.asm
+                    .xmm_vex_rr(AvxOpcode::Vpmuldq, tmp1, rhs.reg, writable!(tmp2));
+
+                // tmp1 = rhs_hi = rhs >> 32
+                this.asm
+                    .xmm_vex_ri(AvxOpcode::Vpsrlq, rhs.reg, 32, writable!(tmp1));
+
+                // tmp1 = lhs_low * rhs_high = tmp1 * lhs
+                this.asm
+                    .xmm_vex_rr(AvxOpcode::Vpmuludq, tmp1, lhs.reg, writable!(tmp1));
+
+                // tmp1 = ((lhs_hi * rhs_low) + (lhs_lo * rhs_hi)) = tmp1 + tmp2
+                this.asm
+                    .xmm_vex_rr(AvxOpcode::Vpaddq, tmp1, tmp2, writable!(tmp1));
+
+                //tmp1 = tmp1 << 32
+                this.asm
+                    .xmm_vex_ri(AvxOpcode::Vpsllq, tmp1, 32, writable!(tmp1));
+
+                // tmp2 = lhs_lo + rhs_lo
+                this.asm
+                    .xmm_vex_rr(AvxOpcode::Vpmuludq, lhs.reg, rhs.reg, writable!(tmp2));
+
+                // finally, with `lhs` as destination:
+                // lhs = (lhs_low * rhs_low) + ((lhs_hi * rhs_low) + (lhs_lo * rhs_hi)) = tmp1 + tmp2
+                this.asm
+                    .xmm_vex_rr(AvxOpcode::Vpaddq, tmp1, tmp2, writable!(lhs.reg));
+
+                context.free_reg(tmp2);
+
+                Ok(())
+            };
+
+        match kind {
+            V128MulKind::F32x4 => mul_avx(self, AvxOpcode::Vmulps),
+            V128MulKind::F64x2 => mul_avx(self, AvxOpcode::Vmulpd),
+            V128MulKind::I16x8 => mul_avx(self, AvxOpcode::Vpmullw),
+            V128MulKind::I32x4 => mul_avx(self, AvxOpcode::Vpmulld),
+            // This is the fast path when AVX512 is available.
+            V128MulKind::I64x2
+                if self.ensure_has_avx512vl().is_ok() && self.ensure_has_avx512dq().is_ok() =>
+            {
+                mul_i64x2_avx512(self)
+            }
+            // Otherwise, we emit AVX fallback sequence.
+            V128MulKind::I64x2 => mul_i64x2_fallback(self, context)?,
+        }
+
+        context.stack.push(lhs.into());
+        context.free_reg(rhs);
+
+        Ok(())
+    }
+
+    fn v128_abs(&mut self, src: Reg, dst: WritableReg, kind: V128AbsKind) -> Result<()> {
+        self.ensure_has_avx()?;
+
+        match kind {
+            V128AbsKind::I8x16 | V128AbsKind::I16x8 | V128AbsKind::I32x4 => {
+                self.asm.xmm_vpabs_rr(src, dst, kind.lane_size())
+            }
+            V128AbsKind::I64x2 => {
+                let scratch = writable!(regs::scratch_xmm());
+                // Perform an arithmetic right shift of 31 bits. If the number
+                // is positive, this will result in all zeroes in the upper
+                // 32-bits. If the number is negative, this will result in all
+                // ones in the upper 32-bits.
+                self.asm.xmm_vpsra_rri(src, scratch, 0x1f, OperandSize::S32);
+                // Copy the ones and zeroes in the high bits of each 64-bit
+                // lane to the low bits of each 64-bit lane.
+                self.asm
+                    .xmm_vpshuf_rr(scratch.to_reg(), scratch, 0b11_11_01_01, OperandSize::S32);
+                // Flip the bits in lanes that were negative in `src` and leave
+                // the positive lanes as they are. Positive lanes will have a
+                // zero mask in `scratch` so xor doesn't affect them.
+                self.asm
+                    .xmm_vex_rr(AvxOpcode::Vpxor, src, scratch.to_reg(), dst);
+                // Subtract the mask from the results of xor which will
+                // complete the two's complement for lanes which were negative.
+                self.asm
+                    .xmm_vpsub_rrr(dst.to_reg(), scratch.to_reg(), dst, kind.lane_size());
+            }
+            V128AbsKind::F32x4 | V128AbsKind::F64x2 => {
+                let scratch = writable!(regs::scratch_xmm());
+                // Create a mask of all ones.
+                self.asm.xmm_vpcmpeq_rrr(
+                    scratch,
+                    scratch.to_reg(),
+                    scratch.to_reg(),
+                    kind.lane_size(),
+                );
+                // Right shift the mask so each lane is a single zero followed
+                // by all ones.
+                self.asm
+                    .xmm_vpsrl_rr(scratch.to_reg(), scratch, 0x1, kind.lane_size());
+                // Use the mask to zero the sign bit in each lane which will
+                // make the float value positive.
+                self.asm
+                    .xmm_vandp_rrr(src, scratch.to_reg(), dst, kind.lane_size());
+            }
+        }
+        Ok(())
+    }
+
+    fn v128_neg(&mut self, op: WritableReg, kind: V128NegKind) -> Result<()> {
+        self.ensure_has_avx()?;
+
+        let tmp = regs::scratch_xmm();
+        match kind {
+            V128NegKind::I8x16 | V128NegKind::I16x8 | V128NegKind::I32x4 | V128NegKind::I64x2 => {
+                self.v128_xor(tmp, tmp, writable!(tmp))?;
+                self.v128_sub(tmp, op.to_reg(), op, kind.into())?;
+            }
+            V128NegKind::F32x4 | V128NegKind::F64x2 => {
+                // Create a mask of all 1s.
+                self.asm
+                    .xmm_vpcmpeq_rrr(writable!(tmp), tmp, tmp, kind.lane_size());
+                // Left shift the lanes in the mask so only the sign bit in the
+                // mask is set to 1.
+                self.asm.xmm_vpsll_rr(
+                    tmp,
+                    writable!(tmp),
+                    (kind.lane_size().num_bits() - 1) as u32,
+                    kind.lane_size(),
+                );
+                // Use the mask to flip the sign bit.
+                self.asm
+                    .xmm_vxorp_rrr(op.to_reg(), tmp, op, kind.lane_size());
+            }
+        }
+        Ok(())
+    }
+
+    fn v128_shift(
+        &mut self,
+        context: &mut CodeGenContext<Emission>,
+        lane_width: OperandSize,
+        kind: ShiftKind,
+    ) -> Result<()> {
+        self.ensure_has_avx()?;
+        let shift_amount = context.pop_to_reg(self, None)?.reg;
+        let operand = context.pop_to_reg(self, None)?.reg;
+
+        let tmp_xmm = regs::scratch_xmm();
+        let tmp = regs::scratch();
+        let amount_mask = lane_width.num_bits() - 1;
+        self.and(
+            writable!(shift_amount),
+            shift_amount,
+            RegImm::i32(amount_mask as i32),
+            OperandSize::S32,
+        )?;
+
+        let shl_normal = |this: &mut Self, op: AvxOpcode| {
+            this.asm
+                .avx_gpr_to_xmm(shift_amount, writable!(tmp_xmm), OperandSize::S32);
+            this.asm
+                .xmm_vex_rr(op, operand, tmp_xmm, writable!(operand));
+        };
+
+        let shift_i8x16 = |this: &mut Self, masks: &'static [u8], op: AvxOpcode| {
+            // The case for i8x16 is a little bit trickier because x64 doesn't provide a 8bit
+            // shift instruction. Instead, we shift as 16bits, and then mask the bits in the
+            // 8bits lane, for example (with 2 8bits lanes):
+            // - Before shifting:
+            // 01001101 11101110
+            // - shifting by 2 left:
+            // 00110111 10111000
+            //       ^^_ these bits come from the previous byte, and need to be masked.
+            // - The mask:
+            // 11111100 11111111
+            // - After masking:
+            // 00110100 10111000
+            //
+            // The mask is loaded from a well known memory, depending on the shift amount.
+
+            this.asm
+                .avx_gpr_to_xmm(shift_amount, writable!(tmp_xmm), OperandSize::S32);
+
+            // perform 16 bit shift
+            this.asm
+                .xmm_vex_rr(op, operand, tmp_xmm, writable!(operand));
+
+            // get a handle to the masks array constant.
+            let masks_addr = this.asm.add_constant(masks);
+
+            // Load the masks array effective address into the tmp register.
+            this.asm.lea(&masks_addr, writable!(tmp), OperandSize::S64);
+
+            // Compute the offset of the mask that we need to use. This is shift_amount * 16 ==
+            // shift_amount << 4.
+            this.asm
+                .shift_ir(4, writable!(shift_amount), ShiftKind::Shl, OperandSize::S32);
+
+            // Load the mask to tmp_xmm.
+            this.asm.xmm_vmovdqu_mr(
+                &Address::ImmRegRegShift {
+                    simm32: 0,
+                    base: tmp,
+                    index: shift_amount,
+                    shift: 0,
+                },
+                writable!(tmp_xmm),
+                MemFlags::trusted(),
+            );
+
+            // Mask unwanted bits from operand.
+            this.asm
+                .xmm_vex_rr(AvxOpcode::Vpand, tmp_xmm, operand, writable!(operand));
+        };
+
+        let i64x2_shr_s = |this: &mut Self, context: &mut CodeGenContext<Emission>| -> Result<()> {
+            const SIGN_MASK: u128 = 0x8000000000000000_8000000000000000;
+
+            // AVX doesn't have an instruction for i64x2 signed right shift. Instead we use the
+            // following formula (from hacker's delight 2-7), where x is the value and n the shift
+            // amount, for each lane:
+            // t = (1 << 63) >> n; ((x >> n) ^ t) - t
+
+            // we need an extra scratch register
+            let tmp_xmm2 = context.any_fpr(this)?;
+
+            this.asm
+                .avx_gpr_to_xmm(shift_amount, writable!(tmp_xmm), OperandSize::S32);
+
+            let cst = this.asm.add_constant(&SIGN_MASK.to_le_bytes());
+
+            this.asm
+                .xmm_vmovdqu_mr(&cst, writable!(tmp_xmm2), MemFlags::trusted());
+            this.asm
+                .xmm_vex_rr(AvxOpcode::Vpsrlq, tmp_xmm2, tmp_xmm, writable!(tmp_xmm2));
+            this.asm
+                .xmm_vex_rr(AvxOpcode::Vpsrlq, operand, tmp_xmm, writable!(operand));
+            this.asm
+                .xmm_vex_rr(AvxOpcode::Vpxor, operand, tmp_xmm2, writable!(operand));
+            this.asm
+                .xmm_vex_rr(AvxOpcode::Vpsubq, operand, tmp_xmm2, writable!(operand));
+
+            context.free_reg(tmp_xmm2);
+
+            Ok(())
+        };
+
+        let i8x16_shr_s = |this: &mut Self, context: &mut CodeGenContext<Emission>| -> Result<()> {
+            // Since the x86 instruction set does not have an 8x16 shift instruction and the
+            // approach used for `ishl` and `ushr` cannot be easily used (the masks do not
+            // preserve the sign), we use a different approach here: separate the low and
+            // high lanes, shift them separately, and merge them into the final result.
+            //
+            // Visually, this looks like the following, where `src.i8x16 = [s0, s1, ...,
+            // s15]:
+            //
+            //   lo.i16x8 = [(s0, s0), (s1, s1), ..., (s7, s7)]
+            //   shifted_lo.i16x8 = shift each lane of `low`
+            //   hi.i16x8 = [(s8, s8), (s9, s9), ..., (s15, s15)]
+            //   shifted_hi.i16x8 = shift each lane of `high`
+            //   result = [s0'', s1'', ..., s15'']
+
+            // In order for `packsswb` later to only use the high byte of each
+            // 16x8 lane, we shift right an extra 8 bits, relying on `psraw` to
+            // fill in the upper bits appropriately.
+            this.asm
+                .add_ir(8, writable!(shift_amount), OperandSize::S32);
+            this.asm
+                .avx_gpr_to_xmm(shift_amount, writable!(tmp_xmm), OperandSize::S32);
+
+            let tmp_lo = context.any_fpr(this)?;
+            let tmp_hi = context.any_fpr(this)?;
+
+            // Extract lower and upper bytes.
+            this.asm
+                .xmm_vex_rr(AvxOpcode::Vpunpcklbw, operand, operand, writable!(tmp_lo));
+            this.asm
+                .xmm_vex_rr(AvxOpcode::Vpunpckhbw, operand, operand, writable!(tmp_hi));
+
+            // Perform 16bit right shift of upper and lower bytes.
+            this.asm
+                .xmm_vex_rr(AvxOpcode::Vpsraw, tmp_lo, tmp_xmm, writable!(tmp_lo));
+            this.asm
+                .xmm_vex_rr(AvxOpcode::Vpsraw, tmp_hi, tmp_xmm, writable!(tmp_hi));
+
+            // Merge lower and upper bytes back.
+            this.asm
+                .xmm_vex_rr(AvxOpcode::Vpacksswb, tmp_lo, tmp_hi, writable!(operand));
+
+            context.free_reg(tmp_lo);
+            context.free_reg(tmp_hi);
+
+            Ok(())
+        };
+
+        match (lane_width, kind) {
+            // shl
+            (OperandSize::S8, ShiftKind::Shl) => {
+                shift_i8x16(self, &I8X16_ISHL_MASKS, AvxOpcode::Vpsllw)
+            }
+            (OperandSize::S16, ShiftKind::Shl) => shl_normal(self, AvxOpcode::Vpsllw),
+            (OperandSize::S32, ShiftKind::Shl) => shl_normal(self, AvxOpcode::Vpslld),
+            (OperandSize::S64, ShiftKind::Shl) => shl_normal(self, AvxOpcode::Vpsllq),
+            // shr_u
+            (OperandSize::S8, ShiftKind::ShrU) => {
+                shift_i8x16(self, &I8X16_USHR_MASKS, AvxOpcode::Vpsrlw)
+            }
+            (OperandSize::S16, ShiftKind::ShrU) => shl_normal(self, AvxOpcode::Vpsrlw),
+            (OperandSize::S32, ShiftKind::ShrU) => shl_normal(self, AvxOpcode::Vpsrld),
+            (OperandSize::S64, ShiftKind::ShrU) => shl_normal(self, AvxOpcode::Vpsrlq),
+            // shr_s
+            (OperandSize::S8, ShiftKind::ShrS) => i8x16_shr_s(self, context)?,
+            (OperandSize::S16, ShiftKind::ShrS) => shl_normal(self, AvxOpcode::Vpsraw),
+            (OperandSize::S32, ShiftKind::ShrS) => shl_normal(self, AvxOpcode::Vpsrad),
+            (OperandSize::S64, ShiftKind::ShrS) => i64x2_shr_s(self, context)?,
+
+            _ => bail!(CodeGenError::invalid_operand_combination()),
+        }
+
+        context.free_reg(shift_amount);
+        context
+            .stack
+            .push(TypedReg::new(WasmValType::V128, operand).into());
+        Ok(())
+    }
+
+    fn v128_q15mulr_sat_s(
+        &mut self,
+        lhs: Reg,
+        rhs: Reg,
+        dst: WritableReg,
+        size: OperandSize,
+    ) -> Result<()> {
+        self.ensure_has_avx()?;
+
+        self.asm.xmm_vpmulhrs_rrr(lhs, rhs, dst, size);
+
+        // Need to handle edge case of multiplying -1 by -1 (0x8000 in Q15
+        // format) because of how `vpmulhrs` handles rounding. `vpmulhrs`
+        // produces 0x8000 in that case when the correct result is 0x7FFF (that
+        // is, +1) so need to check if the result is 0x8000 and flip the bits
+        // of the result if it is.
+        let address = self.asm.add_constant(&[
+            0x00, 0x80, 0x00, 0x80, 0x00, 0x80, 0x00, 0x80, 0x00, 0x80, 0x00, 0x80, 0x00, 0x80,
+            0x00, 0x80,
+        ]);
+        self.asm
+            .xmm_vpcmpeq_rrm(writable!(rhs), dst.to_reg(), &address, size);
+        self.asm
+            .xmm_vex_rr(AvxOpcode::Vpxor, dst.to_reg(), rhs, dst);
+        Ok(())
+    }
+
+    fn v128_all_true(&mut self, src: Reg, dst: WritableReg, size: OperandSize) -> Result<()> {
+        self.ensure_has_avx()?;
+
+        let scratch = regs::scratch_xmm();
+        // Create a mask of all 0s.
+        self.asm
+            .xmm_vex_rr(AvxOpcode::Vpxor, scratch, scratch, writable!(scratch));
+        // Sets lane in `dst` to not zero if `src` lane was zero, and lane in
+        // `dst` to zero if `src` lane was not zero.
+        self.asm.xmm_vpcmpeq_rrr(writable!(src), src, scratch, size);
+        // Sets ZF if all values are zero (i.e., if all original values were not zero).
+        self.asm.xmm_vptest(src, src);
+        // Set byte if ZF=1.
+        self.asm.setcc(IntCmpKind::Eq, dst);
+        Ok(())
+    }
+
+    fn v128_bitmask(&mut self, src: Reg, dst: WritableReg, size: OperandSize) -> Result<()> {
+        self.ensure_has_avx()?;
+
+        match size {
+            OperandSize::S8 => self.asm.xmm_vpmovmsk_rr(src, dst, size, OperandSize::S32),
+            OperandSize::S16 => {
+                // Signed conversion of 16-bit integers to 8-bit integers.
+                self.asm
+                    .xmm_vpackss_rrr(src, src, writable!(src), OperandSize::S8);
+                // Creates a mask from each byte in `src`.
+                self.asm
+                    .xmm_vpmovmsk_rr(src, dst, OperandSize::S8, OperandSize::S32);
+                // Removes 8 bits added as a result of the `vpackss` step.
+                self.asm
+                    .shift_ir(0x8, dst, ShiftKind::ShrU, OperandSize::S32);
+            }
+            OperandSize::S32 | OperandSize::S64 => self.asm.xmm_vmovskp_rr(src, dst, size, size),
+            _ => unimplemented!(),
+        }
+
+        Ok(())
+    }
+
+    fn v128_trunc(
+        &mut self,
+        context: &mut CodeGenContext<Emission>,
+        kind: V128TruncKind,
+    ) -> Result<()> {
+        self.ensure_has_avx()?;
+
+        let reg = writable!(context.pop_to_reg(self, None)?.reg);
+        match kind {
+            V128TruncKind::F32x4 | V128TruncKind::F64x2 => self.asm.xmm_vroundp_rri(
+                reg.to_reg(),
+                reg,
+                VroundMode::TowardZero,
+                kind.dst_lane_size(),
+            ),
+            V128TruncKind::I32x4FromF32x4S => {
+                self.v128_trunc_sat_f32x4_s(reg, kind.src_lane_size(), kind.dst_lane_size());
+            }
+            V128TruncKind::I32x4FromF32x4U => {
+                let temp_reg = writable!(context.any_fpr(self)?);
+                self.v128_trunc_sat_f32x4_u(
+                    reg,
+                    temp_reg,
+                    kind.src_lane_size(),
+                    kind.dst_lane_size(),
+                );
+                context.free_reg(temp_reg.to_reg());
+            }
+            V128TruncKind::I32x4FromF64x2SZero => {
+                self.v128_trunc_sat_f64x2_s_zero(reg, kind.src_lane_size());
+            }
+            V128TruncKind::I32x4FromF64x2UZero => {
+                self.v128_trunc_sat_f64x2_u_zero(reg, kind.src_lane_size(), kind.dst_lane_size());
+            }
+        }
+
+        context.stack.push(TypedReg::v128(reg.to_reg()).into());
+        Ok(())
+    }
+
+    fn v128_min(
+        &mut self,
+        src1: Reg,
+        src2: Reg,
+        dst: WritableReg,
+        kind: V128MinKind,
+    ) -> Result<()> {
+        self.ensure_has_avx()?;
+
+        match kind {
+            V128MinKind::I8x16S
+            | V128MinKind::I8x16U
+            | V128MinKind::I16x8S
+            | V128MinKind::I16x8U
+            | V128MinKind::I32x4S
+            | V128MinKind::I32x4U => {
+                let op = match kind {
+                    V128MinKind::I8x16S => AvxOpcode::Vpminsb,
+                    V128MinKind::I8x16U => AvxOpcode::Vpminub,
+                    V128MinKind::I16x8S => AvxOpcode::Vpminsw,
+                    V128MinKind::I16x8U => AvxOpcode::Vpminuw,
+                    V128MinKind::I32x4S => AvxOpcode::Vpminsd,
+                    V128MinKind::I32x4U => AvxOpcode::Vpminud,
+                    _ => unreachable!(),
+                };
+                self.asm.xmm_vex_rr(op, src1, src2, dst);
+            }
+            V128MinKind::F32x4 | V128MinKind::F64x2 => {
+                // Handling +0 and -0 as well as NaN values are not commutative
+                // when using `vminp` so we have to compensate.
+                let scratch = writable!(regs::scratch_xmm());
+                // Perform two comparison operations with the operands swapped
+                // and OR the result to propagate 0 (positive and negative) and
+                // NaN.
+                self.asm
+                    .xmm_vminp_rrr(src1, src2, scratch, kind.lane_size());
+                self.asm.xmm_vminp_rrr(src2, src1, dst, kind.lane_size());
+                // Use a single OR instruction to set the sign bit if either
+                // result has the sign bit set to correctly propagate -0.
+                self.asm
+                    .xmm_vorp_rrr(dst.to_reg(), scratch.to_reg(), dst, kind.lane_size());
+                // Set lanes with NaN to all 1s.
+                self.asm.xmm_vcmpp_rrr(
+                    writable!(src2),
+                    src2,
+                    dst.to_reg(),
+                    kind.lane_size(),
+                    VcmpKind::Unord,
+                );
+                // Doesn't change non-NaN values. For NaN values, sets all bits.
+                self.asm
+                    .xmm_vorp_rrr(src2, dst.to_reg(), dst, kind.lane_size());
+                self.canonicalize_nans(writable!(src2), dst, kind.lane_size());
+            }
+        }
+
+        Ok(())
+    }
+
+    fn v128_max(
+        &mut self,
+        src1: Reg,
+        src2: Reg,
+        dst: WritableReg,
+        kind: V128MaxKind,
+    ) -> Result<()> {
+        self.ensure_has_avx()?;
+
+        match kind {
+            V128MaxKind::I8x16S
+            | V128MaxKind::I8x16U
+            | V128MaxKind::I16x8S
+            | V128MaxKind::I16x8U
+            | V128MaxKind::I32x4S
+            | V128MaxKind::I32x4U => {
+                let op = match kind {
+                    V128MaxKind::I8x16S => AvxOpcode::Vpmaxsb,
+                    V128MaxKind::I8x16U => AvxOpcode::Vpmaxub,
+                    V128MaxKind::I16x8S => AvxOpcode::Vpmaxsw,
+                    V128MaxKind::I16x8U => AvxOpcode::Vpmaxuw,
+                    V128MaxKind::I32x4S => AvxOpcode::Vpmaxsd,
+                    V128MaxKind::I32x4U => AvxOpcode::Vpmaxud,
+                    _ => unreachable!(),
+                };
+                self.asm.xmm_vex_rr(op, src1, src2, dst);
+            }
+            V128MaxKind::F32x4 | V128MaxKind::F64x2 => {
+                // Handling +0 and -0 as well as NaN values are not commutative
+                // when using `vmaxp` so we have to compensate.
+                let scratch = writable!(regs::scratch_xmm());
+                // Perform two comparison operations with the operands swapped
+                // so we can propagate 0 (positive and negative) and NaNs
+                // correctly.
+                self.asm
+                    .xmm_vmaxp_rrr(src1, src2, scratch, kind.lane_size());
+                self.asm.xmm_vmaxp_rrr(src2, src1, dst, kind.lane_size());
+                // This combination of XOR, OR, and SUB will set the sign bit
+                // on a 0 result to the correct value for a max operation.
+                self.asm
+                    .xmm_vxorp_rrr(dst.to_reg(), scratch.to_reg(), dst, kind.lane_size());
+                self.asm.xmm_vorp_rrr(
+                    dst.to_reg(),
+                    scratch.to_reg(),
+                    writable!(src2),
+                    kind.lane_size(),
+                );
+                self.asm
+                    .xmm_vsub_rrr(src2, dst.to_reg(), dst, kind.lane_size());
+                // Set lanes of NaN values to 1.
+                self.asm.xmm_vcmpp_rrr(
+                    writable!(src2),
+                    src2,
+                    src2,
+                    kind.lane_size(),
+                    VcmpKind::Unord,
+                );
+                self.canonicalize_nans(writable!(src2), dst, kind.lane_size());
+            }
+        }
+        Ok(())
+    }
+
+    fn v128_extmul(
+        &mut self,
+        context: &mut CodeGenContext<Emission>,
+        kind: V128ExtMulKind,
+    ) -> Result<()> {
+        self.ensure_has_avx()?;
+
+        // The implementation for extmul is not optimized; for simplicity's sake, we simply perform
+        // an extension followed by a multiplication using already implemented primitives.
+
+        let src1 = context.pop_to_reg(self, None)?;
+        let src2 = context.pop_to_reg(self, None)?;
+
+        let ext_kind = kind.into();
+        self.v128_extend(src1.reg, writable!(src1.reg), ext_kind)?;
+        self.v128_extend(src2.reg, writable!(src2.reg), ext_kind)?;
+
+        context.stack.push(src2.into());
+        context.stack.push(src1.into());
+
+        self.v128_mul(context, kind.into())
+    }
+
+    fn v128_extadd_pairwise(
+        &mut self,
+        src: Reg,
+        dst: WritableReg,
+        kind: V128ExtAddKind,
+    ) -> Result<()> {
+        use V128ExtendKind::*;
+
+        self.ensure_has_avx()?;
+
+        // The implementation for extadd is not optimized; for simplicity's sake, we simply perform
+        // an extension followed by an addition using already implemented primitives.
+        let (low_kind, high_kind) = match kind {
+            V128ExtAddKind::I8x16S => (LowI8x16S, HighI8x16S),
+            V128ExtAddKind::I8x16U => (LowI8x16U, HighI8x16U),
+            V128ExtAddKind::I16x8S => (LowI16x8S, HighI16x8S),
+            V128ExtAddKind::I16x8U => (LowI16x8U, HighI16x8U),
+        };
+
+        let tmp = regs::scratch_xmm();
+
+        self.v128_extend(src, writable!(tmp), low_kind)?;
+        self.v128_extend(src, dst, high_kind)?;
+
+        self.v128_add(src, dst.to_reg(), dst, kind.into())
+    }
+
+    fn v128_dot(&mut self, lhs: Reg, rhs: Reg, dst: WritableReg) -> Result<()> {
+        self.ensure_has_avx()?;
+        self.asm.xmm_vex_rr(AvxOpcode::Vpmaddwd, lhs, rhs, dst);
+        Ok(())
+    }
+
+    fn v128_popcnt(&mut self, context: &mut CodeGenContext<Emission>) -> Result<()> {
+        self.ensure_has_avx()?;
+
+        let reg = writable!(context.pop_to_reg(self, None)?.reg);
+        let scratch = writable!(regs::scratch_xmm());
+
+        // This works by using a lookup table to determine the count of bits
+        // set in the upper 4 bits and lower 4 bits separately and then adding
+        // the counts.
+
+        // A mask to zero out the upper 4 bits in each lane.
+        let address = self.asm.add_constant(&[
+            0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F,
+            0x0F, 0x0F,
+        ]);
+        // Zero out the upper 4 bits of each lane.
+        self.asm.xmm_vpand_rrm(reg.to_reg(), &address, scratch);
+        // Right shift bytes in input by 4 bits to put the upper 4 bits in the
+        // lower 4 bits.
+        self.asm
+            .xmm_vpsrl_rr(reg.to_reg(), reg, 0x4, OperandSize::S16);
+        // Zero out the upper 4 bits of each shifted lane.
+        self.asm.xmm_vpand_rrm(reg.to_reg(), &address, reg);
+
+        // Write a lookup table of 4 bit values to number of bits set to a
+        // register so we only perform the memory read once.
+        // Index (hex) | Value (binary) | Population Count
+        // 0x0         | 0000          | 0
+        // 0x1         | 0001          | 1
+        // 0x2         | 0010          | 1
+        // 0x3         | 0011          | 2
+        // 0x4         | 0100          | 1
+        // 0x5         | 0101          | 2
+        // 0x6         | 0110          | 2
+        // 0x7         | 0111          | 3
+        // 0x8         | 1000          | 1
+        // 0x9         | 1001          | 2
+        // 0xA         | 1010          | 2
+        // 0xB         | 1011          | 3
+        // 0xC         | 1100          | 2
+        // 0xD         | 1101          | 3
+        // 0xE         | 1110          | 3
+        // 0xF         | 1111          | 4
+        let address = self.asm.add_constant(&[
+            0x0, 0x1, 0x1, 0x2, 0x1, 0x2, 0x2, 0x3, 0x1, 0x2, 0x2, 0x3, 0x2, 0x3, 0x3, 0x4,
+        ]);
+        let reg2 = writable!(context.any_fpr(self)?);
+        self.asm
+            .xmm_mov_mr(&address, reg2, OperandSize::S128, MemFlags::trusted());
+        // Use the upper 4 bits as an index into the lookup table.
+        self.asm.xmm_vpshufb_rrr(reg, reg2.to_reg(), reg.to_reg());
+        // Use the lower 4 bits as an index into the lookup table.
+        self.asm
+            .xmm_vpshufb_rrr(scratch, reg2.to_reg(), scratch.to_reg());
+        context.free_reg(reg2.to_reg());
+
+        // Add the counts of the upper 4 bits and the lower 4 bits to get the
+        // total number of bits set.
+        self.asm
+            .xmm_vpadd_rrr(reg.to_reg(), scratch.to_reg(), reg, OperandSize::S8);
+
+        context.stack.push(TypedReg::v128(reg.to_reg()).into());
+        Ok(())
+    }
+
+    fn v128_avgr(&mut self, lhs: Reg, rhs: Reg, dst: WritableReg, size: OperandSize) -> Result<()> {
+        self.ensure_has_avx()?;
+        self.asm.xmm_vpavg_rrr(lhs, rhs, dst, size);
+        Ok(())
+    }
+
+    fn v128_div(&mut self, lhs: Reg, rhs: Reg, dst: WritableReg, size: OperandSize) -> Result<()> {
+        self.ensure_has_avx()?;
+        self.asm.xmm_vdivp_rrr(lhs, rhs, dst, size);
+        Ok(())
+    }
+
+    fn v128_sqrt(&mut self, src: Reg, dst: WritableReg, size: OperandSize) -> Result<()> {
+        self.ensure_has_avx()?;
+        self.asm.xmm_vsqrtp_rr(src, dst, size);
+        Ok(())
+    }
+
+    fn v128_ceil(&mut self, src: Reg, dst: WritableReg, size: OperandSize) -> Result<()> {
+        self.ensure_has_avx()?;
+        self.asm
+            .xmm_vroundp_rri(src, dst, VroundMode::TowardPositiveInfinity, size);
+        Ok(())
+    }
+
+    fn v128_floor(&mut self, src: Reg, dst: WritableReg, size: OperandSize) -> Result<()> {
+        self.ensure_has_avx()?;
+        self.asm
+            .xmm_vroundp_rri(src, dst, VroundMode::TowardNegativeInfinity, size);
+        Ok(())
+    }
+
+    fn v128_nearest(&mut self, src: Reg, dst: WritableReg, size: OperandSize) -> Result<()> {
+        self.ensure_has_avx()?;
+        self.asm
+            .xmm_vroundp_rri(src, dst, VroundMode::TowardNearest, size);
+        Ok(())
+    }
+
+    fn v128_pmin(&mut self, lhs: Reg, rhs: Reg, dst: WritableReg, size: OperandSize) -> Result<()> {
+        self.ensure_has_avx()?;
+        // Reverse operands since Wasm specifies returning the first operand if
+        // either operand is NaN while x86 returns the second operand.
+        self.asm.xmm_vminp_rrr(rhs, lhs, dst, size);
+        Ok(())
+    }
+
+    fn v128_pmax(&mut self, lhs: Reg, rhs: Reg, dst: WritableReg, size: OperandSize) -> Result<()> {
+        self.ensure_has_avx()?;
+        // Reverse operands since Wasm specifies returning the first operand if
+        // either operand is NaN while x86 returns the second operand.
+        self.asm.xmm_vmaxp_rrr(rhs, lhs, dst, size);
         Ok(())
     }
 }
@@ -1920,6 +2922,22 @@ impl MacroAssembler {
 
     fn ensure_has_avx2(&self) -> Result<()> {
         anyhow::ensure!(self.flags.has_avx2(), CodeGenError::UnimplementedForNoAvx2);
+        Ok(())
+    }
+
+    fn ensure_has_avx512vl(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.flags.has_avx512vl(),
+            CodeGenError::UnimplementedForNoAvx512VL
+        );
+        Ok(())
+    }
+
+    fn ensure_has_avx512dq(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.flags.has_avx512dq(),
+            CodeGenError::UnimplementedForNoAvx512DQ
+        );
         Ok(())
     }
 
@@ -2047,5 +3065,196 @@ impl MacroAssembler {
         // [d0, d1, d2, d3, d4, d5, d6, d7, ...] yields
         // [d4, d5, d6, d7, d0, d1, d2, d3, d4, d5, d6, d7, d0, d1, d2, d3].
         0b01_00_01_00
+    }
+
+    fn v128_trunc_sat_f32x4_s(
+        &mut self,
+        reg: WritableReg,
+        src_lane_size: OperandSize,
+        dst_lane_size: OperandSize,
+    ) {
+        let scratch = writable!(regs::scratch_xmm());
+        // Create a mask to handle NaN values (1 for not NaN, 0 for
+        // NaN).
+        self.asm.xmm_vcmpp_rrr(
+            scratch,
+            reg.to_reg(),
+            reg.to_reg(),
+            src_lane_size,
+            VcmpKind::Eq,
+        );
+        // Zero out any NaN values.
+        self.asm
+            .xmm_vandp_rrr(reg.to_reg(), scratch.to_reg(), reg, src_lane_size);
+        // Create a mask for the sign bits.
+        self.asm
+            .xmm_vex_rr(AvxOpcode::Vpxor, scratch.to_reg(), reg.to_reg(), scratch);
+        // Convert floats to integers.
+        self.asm.xmm_vcvt_rr(reg.to_reg(), reg, VcvtKind::F32ToI32);
+        // Apply sign mask to the converted integers.
+        self.asm
+            .xmm_vex_rr(AvxOpcode::Vpand, reg.to_reg(), scratch.to_reg(), scratch);
+        // Create a saturation mask of all 1s for negative numbers,
+        // all 0s for positive numbers. The arithmetic shift will cop
+        // the sign bit.
+        self.asm
+            .xmm_vpsra_rri(scratch.to_reg(), scratch, 0x1F, dst_lane_size);
+        // Combine converted integers with saturation mask.
+        self.asm
+            .xmm_vex_rr(AvxOpcode::Vpxor, reg.to_reg(), scratch.to_reg(), reg);
+    }
+
+    fn v128_trunc_sat_f32x4_u(
+        &mut self,
+        reg: WritableReg,
+        temp_reg: WritableReg,
+        src_lane_size: OperandSize,
+        dst_lane_size: OperandSize,
+    ) {
+        let scratch = writable!(regs::scratch_xmm());
+        // Set scratch to all zeros.
+        self.asm
+            .xmm_vxorp_rrr(reg.to_reg(), reg.to_reg(), scratch, src_lane_size);
+        // Clamp negative numbers to 0.
+        self.asm
+            .xmm_vmaxp_rrr(reg.to_reg(), scratch.to_reg(), reg, src_lane_size);
+        // Create a vector of all 1s.
+        self.asm
+            .xmm_vpcmpeq_rrr(scratch, scratch.to_reg(), scratch.to_reg(), src_lane_size);
+        // Set scratch to 0x7FFFFFFF (max signed 32-bit integer) by
+        // performing a logical shift right.
+        self.asm
+            .xmm_vpsrl_rr(scratch.to_reg(), scratch, 0x1, src_lane_size);
+        // Convert max signed int to float as a reference point for saturation.
+        self.asm
+            .xmm_vcvt_rr(scratch.to_reg(), scratch, VcvtKind::I32ToF32);
+        // Convert the floats to integers and put the results in `reg2`.
+        // This is signed and not unsigned so we need to handle the
+        // value for the high bit in each lane.
+        self.asm
+            .xmm_vcvt_rr(reg.to_reg(), temp_reg, VcvtKind::F32ToI32);
+        // Set `reg` lanes to the amount that the value in the lane
+        // exceeds the maximum signed 32-bit integer.
+        self.asm
+            .xmm_vsub_rrr(reg.to_reg(), scratch.to_reg(), reg, dst_lane_size);
+        // Create mask in `scratch` for numbers that are larger than
+        // the maximum signed 32-bit integer. Lanes that don't fit
+        // in 32-bits ints will be 1.
+        self.asm.xmm_vcmpp_rrr(
+            scratch,
+            scratch.to_reg(),
+            reg.to_reg(),
+            dst_lane_size,
+            VcmpKind::Le,
+        );
+        // Convert the excess over signed 32-bits from floats to integers.
+        self.asm.xmm_vcvt_rr(reg.to_reg(), reg, VcvtKind::F32ToI32);
+        // Apply large number mask to excess values which will flip the
+        // bits in any lanes that exceed signed 32-bits. Adding this
+        // flipped value to the signed value will set the high bit and
+        // the carry behavior will update the other bits correctly.
+        self.asm
+            .xmm_vex_rr(AvxOpcode::Vpxor, reg.to_reg(), scratch.to_reg(), scratch);
+        // Set `reg` to all 0s.
+        self.asm
+            .xmm_vex_rr(AvxOpcode::Vpxor, reg.to_reg(), reg.to_reg(), reg);
+        // Ensure excess values are not negative by taking max b/w
+        // excess values and zero.
+        self.asm
+            .xmm_vpmaxs_rrr(reg, scratch.to_reg(), reg.to_reg(), dst_lane_size);
+        // Perform the addition between the signed conversion value (in
+        // `reg2`) and the flipped excess value (in `reg`) to get the
+        // unsigned value.
+        self.asm
+            .xmm_vpadd_rrr(reg.to_reg(), temp_reg.to_reg(), reg, dst_lane_size);
+    }
+
+    fn v128_trunc_sat_f64x2_s_zero(&mut self, reg: WritableReg, src_lane_size: OperandSize) {
+        let scratch = writable!(regs::scratch_xmm());
+        // Create a NaN mask (1s for non-NaN, 0s for NaN).
+        self.asm.xmm_vcmpp_rrr(
+            scratch,
+            reg.to_reg(),
+            reg.to_reg(),
+            src_lane_size,
+            VcmpKind::Eq,
+        );
+        // Clamp NaN values to maximum 64-bit float that can be
+        // converted to an i32.
+        let address = self.asm.add_constant(&[
+            0x00, 0x00, 0xC0, 0xFF, 0xFF, 0xFF, 0xDF, 0x41, 0x00, 0x00, 0xC0, 0xFF, 0xFF, 0xFF,
+            0xDF, 0x41,
+        ]);
+        self.asm
+            .xmm_vandp_rrm(scratch.to_reg(), &address, scratch, src_lane_size);
+        // Handle the saturation for values too large to fit in an i32.
+        self.asm
+            .xmm_vminp_rrr(reg.to_reg(), scratch.to_reg(), reg, src_lane_size);
+        // Convert the floats to integers.
+        self.asm.xmm_vcvt_rr(reg.to_reg(), reg, VcvtKind::F64ToI32);
+    }
+
+    fn v128_trunc_sat_f64x2_u_zero(
+        &mut self,
+        reg: WritableReg,
+        src_lane_size: OperandSize,
+        dst_lane_size: OperandSize,
+    ) {
+        let scratch = writable!(regs::scratch_xmm());
+        // Zero out the scratch register.
+        self.asm
+            .xmm_vxorp_rrr(scratch.to_reg(), scratch.to_reg(), scratch, src_lane_size);
+        // Clamp negative values to zero.
+        self.asm
+            .xmm_vmaxp_rrr(reg.to_reg(), scratch.to_reg(), reg, src_lane_size);
+        // Clamp value to maximum unsigned 32-bit integer value
+        // (0x41F0000000000000).
+        let address = self.asm.add_constant(&[
+            0x00, 0x00, 0xE0, 0xFF, 0xFF, 0xFF, 0xEF, 0x41, 0x00, 0x00, 0xE0, 0xFF, 0xFF, 0xFF,
+            0xEF, 0x41,
+        ]);
+        self.asm
+            .xmm_vminp_rrm(reg.to_reg(), &address, reg, src_lane_size);
+        // Truncate floating point values.
+        self.asm
+            .xmm_vroundp_rri(reg.to_reg(), reg, VroundMode::TowardZero, src_lane_size);
+        // Add 2^52 (doubles store 52 bits in their mantissa) to each
+        // lane causing values in the lower bits to be shifted into
+        // position for integer conversion.
+        let address = self.asm.add_constant(&[
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x43, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x30, 0x43,
+        ]);
+        self.asm
+            .xmm_vaddp_rrm(reg.to_reg(), &address, reg, src_lane_size);
+        // Takes lanes 0 and 2 from `reg` (converted values) and lanes
+        // 0 and 2 from `scratch` (zeroes) to put the converted ints in
+        // the lower lanes and zeroes in the upper lanes.
+        self.asm.xmm_vshufp_rrri(
+            reg.to_reg(),
+            scratch.to_reg(),
+            reg,
+            0b10_00_10_00,
+            dst_lane_size,
+        );
+    }
+
+    /// Given a vector of floats where lanes with NaN values are set to all 1s
+    /// in `reg` and a vector register `dst` with a mix of non-NaN values and
+    /// possibly non-canonical NaN values, this canonicalize any NaNs in `dst`.
+    fn canonicalize_nans(&mut self, mask: WritableReg, dst: WritableReg, size: OperandSize) {
+        // Canonical NaNs do not preserve the sign bit, have the exponent bits
+        // all set, and have only the high bit of the mantissa set so shift by
+        // that number.
+        // The mask we're producing in this step will be inverted in the next
+        // step.
+        let amount_to_shift = 1 + size.mantissa_bits() + 1;
+        self.asm
+            .xmm_vpsrl_rr(mask.to_reg(), mask, amount_to_shift as u32, size);
+        // The mask will be inverted by the ANDN so non-NaN values will be all
+        // 1s and NaN values will set the sign bit, exponent bits, and zero out
+        // almost all of the mantissa.
+        self.asm
+            .xmm_vandnp_rrr(mask.to_reg(), dst.to_reg(), dst, size);
     }
 }

@@ -24,6 +24,22 @@ start = "2021-10-29"
 end = "2025-07-30"
 notes = "The Bytecode Alliance is the author of this crate."
 
+[[wildcard-audits.cranelift-assembler-x64]]
+who = "Saúl Cabrera <saulecabrera@gmail.com>"
+criteria = "safe-to-deploy"
+user-id = 73222 # wasmtime-publish
+start = "2025-02-20"
+end = "2026-02-20"
+notes = "The Bytecode Alliance is the author of this crate"
+
+[[wildcard-audits.cranelift-assembler-x64-meta]]
+who = "Saúl Cabrera <saulecabrera@gmail.com>"
+criteria = "safe-to-deploy"
+user-id = 73222 # wasmtime-publish
+start = "2025-02-20"
+end = "2026-02-20"
+notes = "The Bytecode Alliance is the author of this crate."
+
 [[wildcard-audits.cranelift-bforest]]
 who = "Bobby Holley <bobbyholley@gmail.com>"
 criteria = "safe-to-deploy"
@@ -557,6 +573,14 @@ start = "2023-05-22"
 end = "2025-07-30"
 notes = "The Bytecode Alliance is the author of this crate."
 
+[[wildcard-audits.wasmtime-wasi-io]]
+who = "Saúl Cabrera <saulecabrera@gmail.com>"
+criteria = "safe-to-deploy"
+user-id = 73222 # wasmtime-publish
+start = "2025-02-20"
+end = "2026-02-20"
+notes = "The Bytecode Alliance is the author of this crate."
+
 [[wildcard-audits.wasmtime-wasi-keyvalue]]
 who = "Alex Crichton <alex@alexcrichton.com>"
 criteria = "safe-to-deploy"
@@ -1004,6 +1028,12 @@ notes = "I am the author of this crate."
 who = "Nick Fitzgerald <fitzgen@gmail.com>"
 criteria = "safe-to-deploy"
 version = "1.4.1"
+
+[[audits.arbtest]]
+who = "Andrew Brown <andrew.brown@intel.com>"
+criteria = "safe-to-run"
+version = "0.3.1"
+notes = "Nothing unusual; the most notable bit was a terminal escape sequence to make a random seed bold."
 
 [[audits.arrayref]]
 who = "Nick Fitzgerald <fitzgen@gmail.com>"
@@ -2168,6 +2198,12 @@ who = "Nick Fitzgerald <fitzgen@gmail.com>"
 criteria = "safe-to-deploy"
 version = "0.2.5"
 notes = "I am the author of this crate."
+
+[[audits.leb128fmt]]
+who = "Alex Crichton <alex@alexcrichton.com>"
+criteria = "safe-to-deploy"
+version = "0.1.0"
+notes = "Well-scoped crate do doing LEB encoding with no `unsafe` code and does what it says on the tin."
 
 [[audits.libc]]
 who = "Dan Gohman <dev@sunfishcode.online>"

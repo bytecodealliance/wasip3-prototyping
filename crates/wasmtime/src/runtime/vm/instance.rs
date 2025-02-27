@@ -9,11 +9,12 @@ use crate::runtime::vm::table::{Table, TableElement, TableElementType};
 use crate::runtime::vm::vmcontext::{
     VMBuiltinFunctionsArray, VMContext, VMFuncRef, VMFunctionImport, VMGlobalDefinition,
     VMGlobalImport, VMMemoryDefinition, VMMemoryImport, VMOpaqueContext, VMRuntimeLimits,
-    VMTableDefinition, VMTableImport,
+    VMTableDefinition, VMTableImport, VMTagDefinition, VMTagImport,
 };
 use crate::runtime::vm::{
-    ExportFunction, ExportGlobal, ExportMemory, ExportTable, GcStore, Imports, ModuleRuntimeInfo,
-    SendSyncPtr, VMFunctionBody, VMGcRef, VMStore, VMStoreRawPtr, VmPtr, VmSafe, WasmFault,
+    ExportFunction, ExportGlobal, ExportMemory, ExportTable, ExportTag, GcStore, Imports,
+    ModuleRuntimeInfo, SendSyncPtr, VMFunctionBody, VMGcRef, VMStore, VMStoreRawPtr, VmPtr, VmSafe,
+    WasmFault,
 };
 use crate::store::{StoreInner, StoreOpaque};
 use crate::{prelude::*, StoreContextMut};
@@ -26,11 +27,13 @@ use core::ptr::NonNull;
 use core::sync::atomic::AtomicU64;
 use core::{mem, ptr};
 use sptr::Strict;
+#[cfg(feature = "gc")]
+use wasmtime_environ::ModuleInternedTypeIndex;
 use wasmtime_environ::{
     packed_option::ReservedValue, DataIndex, DefinedGlobalIndex, DefinedMemoryIndex,
-    DefinedTableIndex, ElemIndex, EntityIndex, EntityRef, EntitySet, FuncIndex, GlobalIndex,
-    HostPtr, MemoryIndex, Module, ModuleInternedTypeIndex, PrimaryMap, PtrSize, TableIndex,
-    TableInitialValue, TableSegmentElements, Trap, VMOffsets, VMSharedTypeIndex, WasmHeapTopType,
+    DefinedTableIndex, DefinedTagIndex, ElemIndex, EntityIndex, EntityRef, EntitySet, FuncIndex,
+    GlobalIndex, HostPtr, MemoryIndex, Module, PrimaryMap, PtrSize, TableIndex, TableInitialValue,
+    TableSegmentElements, TagIndex, Trap, VMOffsets, VMSharedTypeIndex, WasmHeapTopType,
     VMCONTEXT_MAGIC,
 };
 #[cfg(feature = "wmemcheck")]
@@ -410,6 +413,7 @@ impl Instance {
 
     /// Translate a module-level interned type index into an engine-level
     /// interned type index.
+    #[cfg(feature = "gc")]
     pub fn engine_type_index(&self, module_index: ModuleInternedTypeIndex) -> VMSharedTypeIndex {
         self.runtime_info.engine_type_index(module_index)
     }
@@ -437,6 +441,16 @@ impl Instance {
     /// Return the indexed `VMGlobalImport`.
     fn imported_global(&self, index: GlobalIndex) -> &VMGlobalImport {
         unsafe { &*self.vmctx_plus_offset(self.offsets().vmctx_vmglobal_import(index)) }
+    }
+
+    /// Return the indexed `VMTagImport`.
+    fn imported_tag(&self, index: TagIndex) -> &VMTagImport {
+        unsafe { &*self.vmctx_plus_offset(self.offsets().vmctx_vmtag_import(index)) }
+    }
+
+    /// Return the indexed `VMTagDefinition`.
+    fn tag_ptr(&mut self, index: DefinedTagIndex) -> NonNull<VMTagDefinition> {
+        unsafe { self.vmctx_plus_offset_mut(self.offsets().vmctx_vmtag_definition(index)) }
     }
 
     /// Return the indexed `VMTableDefinition`.
@@ -712,6 +726,17 @@ impl Instance {
         }
     }
 
+    fn get_exported_tag(&mut self, index: TagIndex) -> ExportTag {
+        ExportTag {
+            definition: if let Some(def_index) = self.env_module().defined_tag_index(index) {
+                self.tag_ptr(def_index)
+            } else {
+                self.imported_tag(index).from.as_non_null()
+            },
+            tag: self.env_module().tags[index],
+        }
+    }
+
     /// Return an iterator over the exports of this instance.
     ///
     /// Specifically, it provides access to the key-value pairs, where the keys
@@ -857,14 +882,9 @@ impl Instance {
     fn construct_func_ref(
         &mut self,
         index: FuncIndex,
-        sig: ModuleInternedTypeIndex,
+        type_index: VMSharedTypeIndex,
         into: *mut VMFuncRef,
     ) {
-        let type_index = unsafe {
-            let base = self.type_ids_array().read().as_ptr();
-            *base.add(sig.index())
-        };
-
         let func_ref = if let Some(def_index) = self.env_module().defined_func_index(index) {
             VMFuncRef {
                 array_call: self
@@ -932,7 +952,7 @@ impl Instance {
             // if we don't have to track "is-initialized" state at
             // all!
             let func = &self.env_module().functions[index];
-            let sig = func.signature;
+            let sig = func.signature.unwrap_engine_type_index();
             let func_ref = self
                 .vmctx_plus_offset_mut::<VMFuncRef>(self.offsets().vmctx_func_ref(func.func_ref));
             self.construct_func_ref(index, sig, func_ref.as_ptr());
@@ -1068,6 +1088,7 @@ impl Instance {
                             )
                         }),
                     )?,
+                    WasmHeapTopType::Cont => todo!(), // FIXME: #10248 stack switching support.
                 }
             }
         }
@@ -1409,6 +1430,14 @@ impl Instance {
             imports.globals.len(),
         );
 
+        debug_assert_eq!(imports.tags.len(), module.num_imported_tags);
+        ptr::copy_nonoverlapping(
+            imports.tags.as_ptr(),
+            self.vmctx_plus_offset_mut(offsets.vmctx_imported_tags_begin())
+                .as_ptr(),
+            imports.tags.len(),
+        );
+
         // N.B.: there is no need to initialize the funcrefs array because we
         // eagerly construct each element in it whenever asked for a reference
         // to that element. In other words, there is no state needed to track
@@ -1452,6 +1481,18 @@ impl Instance {
         // allocated.
         for (index, _init) in module.global_initializers.iter() {
             self.global_ptr(index).write(VMGlobalDefinition::new());
+        }
+
+        // Initialize the defined tags
+        let mut ptr = self.vmctx_plus_offset_mut(offsets.vmctx_tags_begin());
+        for i in 0..module.num_defined_tags() {
+            let defined_index = DefinedTagIndex::new(i);
+            let tag_index = module.tag_index(defined_index);
+            let tag = module.tags[tag_index];
+            ptr.write(VMTagDefinition::new(
+                tag.signature.unwrap_engine_type_index(),
+            ));
+            ptr = ptr.add(1);
         }
     }
 
@@ -1507,6 +1548,11 @@ impl InstanceHandle {
         self.instance_mut().get_exported_global(export)
     }
 
+    /// Lookup a tag by index.
+    pub fn get_exported_tag(&mut self, export: TagIndex) -> ExportTag {
+        self.instance_mut().get_exported_tag(export)
+    }
+
     /// Lookup a memory by index.
     pub fn get_exported_memory(&mut self, export: MemoryIndex) -> ExportMemory {
         self.instance_mut().get_exported_memory(export)
@@ -1524,6 +1570,7 @@ impl InstanceHandle {
             EntityIndex::Global(i) => Export::Global(self.get_exported_global(i)),
             EntityIndex::Table(i) => Export::Table(self.get_exported_table(i)),
             EntityIndex::Memory(i) => Export::Memory(self.get_exported_memory(i)),
+            EntityIndex::Tag(i) => Export::Tag(self.get_exported_tag(i)),
         }
     }
 

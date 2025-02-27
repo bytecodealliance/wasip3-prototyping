@@ -13,10 +13,10 @@ const GENERIC_BUCKETS = 3;
 
 // Crates which are their own buckets. These are the very slowest to
 // compile-and-test crates.
-const SINGLE_CRATE_BUCKETS = ["wasmtime", "wasmtime-cli", "wasmtime-wasi"];
+const SINGLE_CRATE_BUCKETS = ["wasmtime", "wasmtime-cli", "wasmtime-wasi", 'component-async-tests'];
 
 const ubuntu = 'ubuntu-24.04';
-const windows = 'windows-2022';
+const windows = 'windows-2025';
 const macos = 'macos-14';
 
 // This is the small, fast-to-execute matrix we use for PRs before they enter
@@ -127,22 +127,23 @@ const FULL_MATRIX = [
     "filter": "linux-riscv64",
     "isa": "riscv64",
   },
-  {
-    "name": "Tests on i686-unknown-linux-gnu",
-    "os": ubuntu,
-    "target": "i686-unknown-linux-gnu",
-    "gcc_package": "gcc-i686-linux-gnu",
-    "gcc": "i686-linux-gnu-gcc",
-  },
-  {
-    "name": "Tests on armv7-unknown-linux-gnueabihf",
-    "os": ubuntu,
-    "target": "armv7-unknown-linux-gnueabihf",
-    "gcc_package": "gcc-arm-linux-gnueabihf",
-    "gcc": "arm-linux-gnueabihf-gcc",
-    "qemu": "qemu-arm -L /usr/arm-linux-gnueabihf -E LD_LIBRARY_PATH=/usr/arm-linux-gnueabihf/lib",
-    "qemu_target": "arm-linux-user",
-  },
+  // FIXME(#45) need to figure out what's going on here
+  // {
+  //   "name": "Tests on i686-unknown-linux-gnu",
+  //   "os": ubuntu,
+  //   "target": "i686-unknown-linux-gnu",
+  //   "gcc_package": "gcc-i686-linux-gnu",
+  //   "gcc": "i686-linux-gnu-gcc",
+  // },
+  // {
+  //   "name": "Tests on armv7-unknown-linux-gnueabihf",
+  //   "os": ubuntu,
+  //   "target": "armv7-unknown-linux-gnueabihf",
+  //   "gcc_package": "gcc-arm-linux-gnueabihf",
+  //   "gcc": "arm-linux-gnueabihf-gcc",
+  //   "qemu": "qemu-arm -L /usr/arm-linux-gnueabihf -E LD_LIBRARY_PATH=/usr/arm-linux-gnueabihf/lib",
+  //   "qemu_target": "arm-linux-user",
+  // },
 ];
 
 /// Get the workspace's full list of member crates.

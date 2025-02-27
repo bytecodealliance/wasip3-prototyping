@@ -1178,12 +1178,17 @@ fn gen_inst_builder(inst: &Instruction, format: &InstructionFormat, fmt: &mut Fo
         // Call to the format constructor,
         let fcall = format!("self.{}({})", format.name, args.join(", "));
 
+        fmtln!(fmt, "let (inst, dfg) = {};", fcall);
+        fmtln!(
+            fmt,
+            "crate::trace!(\"inserted {inst:?}: {}\", dfg.display_inst(inst));"
+        );
+
         if inst.value_results.is_empty() {
-            fmtln!(fmt, "{}.0", fcall);
+            fmtln!(fmt, "inst");
             return;
         }
 
-        fmtln!(fmt, "let (inst, dfg) = {};", fcall);
         if inst.value_results.len() == 1 {
             fmt.line("dfg.first_result(inst)");
         } else {
@@ -1228,6 +1233,9 @@ fn gen_builder(
 
         There is also a method per instruction format. These methods all
         return an `Inst`.
+
+        When an address to a load or store is specified, its integer
+        size is required to be equal to the platform's pointer width.
     "#,
     );
     fmt.line("pub trait InstBuilder<'f>: InstBuilderBase<'f> {");

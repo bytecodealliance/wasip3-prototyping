@@ -14,9 +14,11 @@ use core::ops::DerefMut;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use wasmtime_environ::{
-    DefinedFuncIndex, DefinedMemoryIndex, HostPtr, ModuleInternedTypeIndex, VMOffsets,
-    VMSharedTypeIndex,
+    DefinedFuncIndex, DefinedMemoryIndex, HostPtr, VMOffsets, VMSharedTypeIndex,
 };
+
+#[cfg(feature = "gc")]
+use wasmtime_environ::ModuleInternedTypeIndex;
 
 #[cfg(has_host_compiler_backend)]
 mod arch;
@@ -91,7 +93,7 @@ pub use crate::runtime::vm::unwind::*;
 pub use crate::runtime::vm::vmcontext::{
     VMArrayCallFunction, VMArrayCallHostFuncContext, VMContext, VMFuncRef, VMFunctionBody,
     VMFunctionImport, VMGlobalDefinition, VMGlobalImport, VMMemoryDefinition, VMMemoryImport,
-    VMOpaqueContext, VMRuntimeLimits, VMTableImport, VMWasmCallFunction, ValRaw,
+    VMOpaqueContext, VMRuntimeLimits, VMTableImport, VMTagImport, VMWasmCallFunction, ValRaw,
 };
 pub use send_sync_ptr::SendSyncPtr;
 
@@ -303,6 +305,7 @@ impl ModuleRuntimeInfo {
 
     /// Translate a module-level interned type index into an engine-level
     /// interned type index.
+    #[cfg(feature = "gc")]
     fn engine_type_index(&self, module_index: ModuleInternedTypeIndex) -> VMSharedTypeIndex {
         match self {
             ModuleRuntimeInfo::Module(m) => m

@@ -1153,6 +1153,7 @@ impl<_T> {camel}Pre<_T> {{
             );
 
             if !unused_imports.is_empty() {
+                dbg!(&self.used_trappable_imports_opts);
                 unused_imports.sort();
                 anyhow::bail!("names specified in the `trappable_imports` config option but are not referenced in the target world: {unused_imports:?}");
             }
@@ -2496,23 +2497,10 @@ impl<'a> InterfaceGenerator<'a> {
         self.assert_type(id, &name);
     }
 
-    fn print_result_ty(&mut self, results: &Results, mode: TypeMode) {
-        match results {
-            Results::Named(rs) => match rs.len() {
-                0 => self.push_str("()"),
-                1 => self.print_ty(&rs[0].1, mode),
-                _ => {
-                    self.push_str("(");
-                    for (i, (_, ty)) in rs.iter().enumerate() {
-                        if i > 0 {
-                            self.push_str(", ")
-                        }
-                        self.print_ty(ty, mode)
-                    }
-                    self.push_str(")");
-                }
-            },
-            Results::Anon(ty) => self.print_ty(ty, mode),
+    fn print_result_ty(&mut self, result: Option<Type>, mode: TypeMode) {
+        match result {
+            Some(ty) => self.print_ty(&ty, mode),
+            None => self.push_str("()"),
         }
     }
 
@@ -2520,24 +2508,20 @@ impl<'a> InterfaceGenerator<'a> {
         &mut self,
         func: &Function,
     ) -> Option<(&'a Result_, TypeId, String)> {
-        let results = &func.results;
-
         self.generator
             .used_trappable_imports_opts
             .insert(func.name.clone());
 
+        let result = func.result?;
+
         // We fill in a special trappable error type in the case when a function has just one
         // result, which is itself a `result<a, e>`, and the `e` is *not* a primitive
         // (i.e. defined in std) type, and matches the typename given by the user.
-        let mut i = results.iter_types();
-        let id = match i.next()? {
+        let id = match result {
             Type::Id(id) => id,
             _ => return None,
         };
-        if i.next().is_some() {
-            return None;
-        }
-        let result = match &self.resolve.types[*id].kind {
+        let result = match &self.resolve.types[id].kind {
             TypeDefKind::Result(r) => r,
             _ => return None,
         };
@@ -2980,12 +2964,12 @@ impl<'a> InterfaceGenerator<'a> {
             uwrite!(
                 self.src,
                 "tracing::event!(tracing::Level::TRACE, {}, \"return\");",
-                formatting_for_results(&func.results, &self.generator.opts, &self.resolve)
+                formatting_for_results(func.result, &self.generator.opts, &self.resolve)
             );
         }
 
         if !self.generator.opts.trappable_imports.can_trap(&func) {
-            if func.results.iter_types().len() == 1 {
+            if func.result.is_some() {
                 uwrite!(self.src, "Ok((r,))\n");
             } else {
                 uwrite!(self.src, "Ok(r)\n");
@@ -3009,7 +2993,7 @@ impl<'a> InterfaceGenerator<'a> {
                     Err(e) => Err({convert}(host, e)?),
                 }},))"
             );
-        } else if func.results.iter_types().len() == 1 {
+        } else if func.result.is_some() {
             uwrite!(self.src, "Ok((r?,))\n");
         } else {
             uwrite!(self.src, "r\n");
@@ -3086,7 +3070,7 @@ impl<'a> InterfaceGenerator<'a> {
 
     fn generate_function_result(&mut self, func: &Function) {
         if !self.generator.opts.trappable_imports.can_trap(func) {
-            self.print_result_ty(&func.results, TypeMode::Owned);
+            self.print_result_ty(func.result, TypeMode::Owned);
         } else if let Some((r, _id, error_typename)) = self.special_case_trappable_error(func) {
             // Functions which have a single result `result<ok,err>` get special
             // cased to use the host_wasmtime_rust::Error<err>, making it possible
@@ -3105,7 +3089,7 @@ impl<'a> InterfaceGenerator<'a> {
             // Returning the anyhow::Error case can be used to trap.
             let wt = self.generator.wasmtime_path();
             uwrite!(self.src, "{wt}::Result<");
-            self.print_result_ty(&func.results, TypeMode::Owned);
+            self.print_result_ty(func.result, TypeMode::Owned);
             self.push_str(">");
         }
     }
@@ -3160,8 +3144,8 @@ impl<'a> InterfaceGenerator<'a> {
             self.push_str(", ");
         }
         self.src.push_str("), (");
-        for ty in func.results.iter_types() {
-            self.print_ty(ty, TypeMode::Owned);
+        if let Some(ty) = func.result {
+            self.print_ty(&ty, TypeMode::Owned);
             self.push_str(", ");
         }
         uwriteln!(self.src, ")>(&mut store, &self.{snake})?.func()");
@@ -3216,7 +3200,7 @@ impl<'a> InterfaceGenerator<'a> {
         if concurrent {
             uwrite!(self.src, "{wt}::component::Promise<");
         }
-        self.print_result_ty(&func.results, TypeMode::Owned);
+        self.print_result_ty(func.result, TypeMode::Owned);
         if concurrent {
             uwrite!(self.src, ">");
         }
@@ -3261,8 +3245,8 @@ impl<'a> InterfaceGenerator<'a> {
             self.push_str(", ");
         }
         self.src.push_str("), (");
-        for ty in func.results.iter_types() {
-            self.print_ty(ty, TypeMode::Owned);
+        if let Some(ty) = func.result {
+            self.print_ty(&ty, TypeMode::Owned);
             self.push_str(", ");
         }
         let projection_to_func = match &func.kind {
@@ -3286,15 +3270,15 @@ impl<'a> InterfaceGenerator<'a> {
             }
             self.src.push_str(")).await?;");
 
-            if func.results.iter_types().len() == 1 {
+            if func.result.is_some() {
                 self.src.push_str("Ok(promise.map(|(v,)| v))\n");
             } else {
                 self.src.push_str("Ok(promise)");
             }
         } else {
             self.src.push_str("let (");
-            for (i, _) in func.results.iter_types().enumerate() {
-                uwrite!(self.src, "ret{},", i);
+            if func.result.is_some() {
+                uwrite!(self.src, "ret0,");
             }
             uwrite!(
                 self.src,
@@ -3327,14 +3311,10 @@ impl<'a> InterfaceGenerator<'a> {
             );
 
             self.src.push_str("Ok(");
-            if func.results.iter_types().len() == 1 {
+            if func.result.is_some() {
                 self.src.push_str("ret0");
             } else {
-                self.src.push_str("(");
-                for (i, _) in func.results.iter_types().enumerate() {
-                    uwrite!(self.src, "ret{},", i);
-                }
-                self.src.push_str(")");
+                self.src.push_str("()");
             }
             self.src.push_str(")\n");
         }
@@ -3592,12 +3572,10 @@ fn formatting_for_arg(
 }
 
 /// Produce a string for tracing function results.
-fn formatting_for_results(results: &Results, opts: &Opts, resolve: &Resolve) -> String {
-    let contains_lists = match results {
-        Results::Anon(ty) => type_contains_lists(*ty, resolve),
-        Results::Named(params) => params
-            .iter()
-            .any(|(_, ty)| type_contains_lists(*ty, resolve)),
+fn formatting_for_results(result: Option<Type>, opts: &Opts, resolve: &Resolve) -> String {
+    let contains_lists = match result {
+        Some(ty) => type_contains_lists(ty, resolve),
+        None => false,
     };
 
     if !opts.verbose_tracing && contains_lists {

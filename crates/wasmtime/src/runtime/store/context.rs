@@ -20,7 +20,7 @@ pub struct StoreContextMut<'a, T>(pub(crate) &'a mut StoreInner<T>);
 
 impl<'a, T> StoreContextMut<'a, T> {
     #[doc(hidden)]
-    pub fn traitobj(&self) -> std::ptr::NonNull<dyn crate::runtime::vm::VMStore> {
+    pub fn traitobj(&self) -> core::ptr::NonNull<dyn crate::runtime::vm::VMStore> {
         self.0.traitobj()
     }
 

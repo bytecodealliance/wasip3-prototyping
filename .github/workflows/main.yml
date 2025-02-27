@@ -125,7 +125,7 @@ jobs:
   cargo_vet:
     name: Cargo vet
     needs: determine
-    if: needs.determine.outputs.audit
+    if: github.repository == 'bytecodealliance/wasmtime' && needs.determine.outputs.audit
     runs-on: ubuntu-latest
     outputs:
       outcome: ${{ steps.vet.outcome }}
@@ -634,6 +634,7 @@ jobs:
     - run: cargo fuzz build --dev
     - run: cargo fuzz build --dev --fuzz-dir ./cranelift/isle/fuzz
     - run: cargo fuzz build --dev --fuzz-dir ./crates/environ/fuzz --features component-model
+    - run: cargo fuzz build --dev --fuzz-dir ./cranelift/assembler-x64/fuzz
 
     # common logic to cancel the entire run if this job fails
     - uses: ./.github/actions/cancel-on-failure
@@ -773,7 +774,7 @@ jobs:
       run: sysctl hw
       if: runner.os == 'macOS'
     - name: CPU information
-      run: wmic cpu list /format:list
+      run: Get-WmiObject Win32_Processor
       shell: pwsh
       if: runner.os == 'Windows'
 
@@ -1069,7 +1070,7 @@ jobs:
     name: Miri
     runs-on: ubuntu-latest
     env:
-      CARGO_NEXTEST_VERSION: 0.9.67
+      CARGO_NEXTEST_VERSION: 0.9.88
       MIRIFLAGS: -Zmiri-permissive-provenance
     steps:
     - uses: actions/checkout@v4

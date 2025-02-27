@@ -623,18 +623,6 @@ pub mod foo {
                 ) -> impl ::core::future::Future<Output = IsClone> + Send + Sync
                 where
                     Self: Sized;
-                fn return_named_option<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                ) -> impl ::core::future::Future<Output = Option<u8>> + Send + Sync
-                where
-                    Self: Sized;
-                fn return_named_result<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                ) -> impl ::core::future::Future<
-                    Output = Result<u8, MyErrno>,
-                > + Send + Sync
-                where
-                    Self: Sized;
             }
             struct State {
                 host: *mut u8,
@@ -1324,56 +1312,6 @@ pub mod foo {
                         )
                     },
                 )?;
-                inst.func_wrap_concurrent(
-                    "return-named-option",
-                    move |caller: wasmtime::StoreContextMut<'_, T>, (): ()| {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(get_host_and_store, spawn_task)
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::return_named_option(&mut accessor)
-                                .await;
-                            Ok((r,))
-                        });
-                        let store = wasmtime::VMStoreRawPtr(caller.traitobj());
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| poll_with_state(
-                                host_getter,
-                                store,
-                                cx,
-                                future.as_mut(),
-                            )),
-                        )
-                    },
-                )?;
-                inst.func_wrap_concurrent(
-                    "return-named-result",
-                    move |caller: wasmtime::StoreContextMut<'_, T>, (): ()| {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(get_host_and_store, spawn_task)
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::return_named_result(&mut accessor)
-                                .await;
-                            Ok((r,))
-                        });
-                        let store = wasmtime::VMStoreRawPtr(caller.traitobj());
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| poll_with_state(
-                                host_getter,
-                                store,
-                                cx,
-                                future.as_mut(),
-                            )),
-                        )
-                    },
-                )?;
                 Ok(())
             }
             pub fn add_to_linker<T, U>(
@@ -1866,41 +1804,6 @@ pub mod foo {
                     }
                     accessor.forward(|v| *v, Task {}).await
                 }
-                async fn return_named_option<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                ) -> Option<u8> {
-                    struct Task {}
-                    impl<
-                        T: 'static,
-                        U: Host,
-                    > wasmtime::component::AccessorTask<T, U, Option<u8>> for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> Option<u8> {
-                            <U as Host>::return_named_option(accessor).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task {}).await
-                }
-                async fn return_named_result<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                ) -> Result<u8, MyErrno> {
-                    struct Task {}
-                    impl<
-                        T: 'static,
-                        U: Host,
-                    > wasmtime::component::AccessorTask<T, U, Result<u8, MyErrno>>
-                    for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> Result<u8, MyErrno> {
-                            <U as Host>::return_named_result(accessor).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task {}).await
-                }
             }
         }
     }
@@ -2277,8 +2180,6 @@ pub mod exports {
                     result_simple: wasmtime::component::Func,
                     is_clone_arg: wasmtime::component::Func,
                     is_clone_return: wasmtime::component::Func,
-                    return_named_option: wasmtime::component::Func,
-                    return_named_result: wasmtime::component::Func,
                 }
                 #[derive(Clone)]
                 pub struct GuestIndices {
@@ -2302,8 +2203,6 @@ pub mod exports {
                     result_simple: wasmtime::component::ComponentExportIndex,
                     is_clone_arg: wasmtime::component::ComponentExportIndex,
                     is_clone_return: wasmtime::component::ComponentExportIndex,
-                    return_named_option: wasmtime::component::ComponentExportIndex,
-                    return_named_result: wasmtime::component::ComponentExportIndex,
                 }
                 impl GuestIndices {
                     /// Constructor for [`GuestIndices`] which takes a
@@ -2378,8 +2277,6 @@ pub mod exports {
                         let result_simple = lookup("result-simple")?;
                         let is_clone_arg = lookup("is-clone-arg")?;
                         let is_clone_return = lookup("is-clone-return")?;
-                        let return_named_option = lookup("return-named-option")?;
-                        let return_named_result = lookup("return-named-result")?;
                         Ok(GuestIndices {
                             e1_arg,
                             e1_result,
@@ -2401,8 +2298,6 @@ pub mod exports {
                             result_simple,
                             is_clone_arg,
                             is_clone_return,
-                            return_named_option,
-                            return_named_result,
                         })
                     }
                     pub fn load(
@@ -2553,18 +2448,6 @@ pub mod exports {
                                 (IsClone,),
                             >(&mut store, &self.is_clone_return)?
                             .func();
-                        let return_named_option = *_instance
-                            .get_typed_func::<
-                                (),
-                                (Option<u8>,),
-                            >(&mut store, &self.return_named_option)?
-                            .func();
-                        let return_named_result = *_instance
-                            .get_typed_func::<
-                                (),
-                                (Result<u8, MyErrno>,),
-                            >(&mut store, &self.return_named_result)?
-                            .func();
                         Ok(Guest {
                             e1_arg,
                             e1_result,
@@ -2586,8 +2469,6 @@ pub mod exports {
                             result_simple,
                             is_clone_arg,
                             is_clone_return,
-                            return_named_option,
-                            return_named_result,
                         })
                     }
                 }
@@ -3055,44 +2936,6 @@ pub mod exports {
                                 (),
                                 (IsClone,),
                             >::new_unchecked(self.is_clone_return)
-                        };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), ())
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
-                    }
-                    pub async fn call_return_named_option<S: wasmtime::AsContextMut>(
-                        &self,
-                        mut store: S,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<Option<u8>>>
-                    where
-                        <S as wasmtime::AsContext>::Data: Send,
-                    {
-                        let callee = unsafe {
-                            wasmtime::component::TypedFunc::<
-                                (),
-                                (Option<u8>,),
-                            >::new_unchecked(self.return_named_option)
-                        };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), ())
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
-                    }
-                    pub async fn call_return_named_result<S: wasmtime::AsContextMut>(
-                        &self,
-                        mut store: S,
-                    ) -> wasmtime::Result<
-                        wasmtime::component::Promise<Result<u8, MyErrno>>,
-                    >
-                    where
-                        <S as wasmtime::AsContext>::Data: Send,
-                    {
-                        let callee = unsafe {
-                            wasmtime::component::TypedFunc::<
-                                (),
-                                (Result<u8, MyErrno>,),
-                            >::new_unchecked(self.return_named_result)
                         };
                         let promise = callee
                             .call_concurrent(store.as_context_mut(), ())
