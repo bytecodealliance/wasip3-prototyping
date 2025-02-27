@@ -2504,15 +2504,6 @@ impl<'a> InterfaceGenerator<'a> {
         }
     }
 
-    fn print_result_ty_tuple(&mut self, result: Option<Type>, mode: TypeMode) {
-        self.push_str("(");
-        if let Some(ty) = result {
-            self.print_ty(&ty, mode);
-            self.push_str(",");
-        }
-        self.push_str(")");
-    }
-
     fn special_case_trappable_error(
         &mut self,
         func: &Function,
@@ -3010,28 +3001,12 @@ impl<'a> InterfaceGenerator<'a> {
 
         match &style {
             CallStyle::Sync => (),
-            CallStyle::Async => {
+            CallStyle::Async | CallStyle::Concurrent => {
                 if self.generator.opts.tracing {
                     self.src.push_str("}.instrument(span))\n");
                 } else {
                     self.src.push_str("})\n");
                 }
-            }
-            CallStyle::Concurrent => {
-                let old_source = mem::take(&mut self.src);
-                self.print_result_ty_tuple(func.result, TypeMode::Owned);
-                let result_type = String::from(mem::replace(&mut self.src, old_source));
-                let box_fn = format!(
-                    "Box<dyn FnOnce(wasmtime::StoreContextMut<'_, T>) -> \
-                     wasmtime::Result<{result_type}> + Send + Sync>"
-                );
-                uwriteln!(
-                    self.src,
-                    "        }}) as {box_fn}
-                         }}) as ::core::pin::Pin<Box<dyn ::core::future::Future<Output = {box_fn}> \
-                               + Send + Sync + 'static>>
-                    "
-                );
             }
         }
 
