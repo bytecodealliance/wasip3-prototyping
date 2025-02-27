@@ -5,7 +5,7 @@ use anyhow::Result;
 use std::rc::Rc;
 use std::sync::Arc;
 use wasmtime::component::*;
-use wasmtime::{Engine, Store, StoreContextMut, Trap};
+use wasmtime::{Config, Engine, Store, StoreContextMut, Trap};
 
 const CANON_32BIT_NAN: u32 = 0b01111111110000000000000000000000;
 const CANON_64BIT_NAN: u64 = 0b0111111111111000000000000000000000000000000000000000000000000000;
