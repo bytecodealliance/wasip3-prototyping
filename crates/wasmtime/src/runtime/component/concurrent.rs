@@ -1792,20 +1792,27 @@ pub(crate) fn poll_and_block<'a, T, R: Send + Sync + 'static>(
             }
             Poll::Pending => {
                 store.concurrent_state().futures.get_mut().push(future);
-                loop {
-                    if let Some(result) = store
+
+                store = poll_loop(store, |store| {
+                    Ok(store
                         .concurrent_state()
                         .table
                         .get_mut(caller)?
                         .result
-                        .take()
-                    {
-                        store.concurrent_state().table.get_mut(caller)?.result = old_result;
-                        break (*result.downcast().unwrap(), store);
-                    } else {
-                        let async_cx = AsyncCx::new(&mut store);
-                        store = unsafe { async_cx.suspend(Some(store)) }?.unwrap();
-                    }
+                        .is_none())
+                })?;
+
+                if let Some(result) = store
+                    .concurrent_state()
+                    .table
+                    .get_mut(caller)?
+                    .result
+                    .take()
+                {
+                    store.concurrent_state().table.get_mut(caller)?.result = old_result;
+                    (*result.downcast().unwrap(), store)
+                } else {
+                    return Err(anyhow!(crate::Trap::NoAsyncResult));
                 }
             }
         },
