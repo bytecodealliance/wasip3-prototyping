@@ -666,7 +666,9 @@ impl<'a, 'b> Compiler<'a, 'b> {
         // Note that we pass `param_locals` as _both_ the `param_locals` and
         // `result_locals` parameters to `translate_results`.  That's because
         // the _parameters_ to `task.return` are actually the _results_ that the
-        // caller is waiting for.  Additionally, the host will append a return
+        // caller is waiting for.  
+        //
+        // Additionally, the host will append a return
         // pointer to the end of that list before calling this adapter's
         // `async-return` function if the results exceed `MAX_FLAT_RESULTS` or
         // the import is lowered async, in which case `translate_results` will
