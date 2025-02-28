@@ -84,15 +84,13 @@ impl Handler for Component {
                     drop(pipe_tx);
                 }
 
-                let trailers = Body::finish(body);
-                trailers_tx
-                    .write(
-                        trailers
-                            .await
-                            .expect("trailers present")
-                            .expect("stream not closed early w/ error"),
-                    )
-                    .await;
+                if let Some(trailers) = Body::finish(body)
+                    .await
+                    .transpose()
+                    .expect("stream not closed early w/ error")
+                {
+                    trailers_tx.write(trailers).await;
+                }
             });
 
             Body::new_with_trailers(pipe_rx, trailers_rx)
@@ -143,15 +141,13 @@ impl Handler for Component {
                     drop(pipe_tx);
                 }
 
-                let trailers = Body::finish(body);
-                trailers_tx
-                    .write(
-                        trailers
-                            .await
-                            .expect("trailers present")
-                            .expect("stream not closed early w/ error"),
-                    )
-                    .await;
+                if let Some(trailers) = Body::finish(body)
+                    .await
+                    .transpose()
+                    .expect("stream not closed early w/ error")
+                {
+                    trailers_tx.write(trailers).await;
+                }
             });
 
             Body::new_with_trailers(pipe_rx, trailers_rx)

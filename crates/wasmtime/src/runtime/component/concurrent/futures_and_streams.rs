@@ -206,6 +206,8 @@ fn accept<T: func::Lower + Send + Sync + 'static, U>(
                         accept: Box::new(accept::<T, U>(values, offset, transmit_id, tx)),
                         post_write: PostWrite::Continue,
                     };
+                } else {
+                    _ = tx.send(());
                 }
 
                 count
@@ -214,9 +216,9 @@ fn accept<T: func::Lower + Send + Sync + 'static, U>(
                 assert!(offset == 0); // todo: do we need to handle offset != 0?
                 let count = values.len();
                 accept(Box::new(values))?;
+                _ = tx.send(());
                 count
             }
-            Reader::None => 0,
         };
 
         Ok(count)
@@ -243,6 +245,8 @@ fn host_write<T: func::Lower + Send + Sync + 'static, U, S: AsContextMut<Data = 
     let transmit_id = TableId::<TransmitState>::new(transmit_rep);
     let mut offset = 0;
 
+    let mut tx = Some(tx);
+
     loop {
         let transmit = store
             .concurrent_state()
@@ -261,7 +265,12 @@ fn host_write<T: func::Lower + Send + Sync + 'static, U, S: AsContextMut<Data = 
                 assert!(matches!(&transmit.write, WriteState::Open));
 
                 transmit.write = WriteState::HostReady {
-                    accept: Box::new(accept::<T, U>(values, offset, transmit_id, tx)),
+                    accept: Box::new(accept::<T, U>(
+                        values,
+                        offset,
+                        transmit_id,
+                        tx.take().unwrap(),
+                    )),
                     post_write,
                 };
                 post_write = PostWrite::Continue;
@@ -330,11 +339,18 @@ fn host_write<T: func::Lower + Send + Sync + 'static, U, S: AsContextMut<Data = 
                 })?;
             }
 
-            ReadState::Closed => {}
+            ReadState::Closed => {
+                store.concurrent_state().table.delete(transmit_id)?;
+                break Ok(rx);
+            }
         }
 
         if let PostWrite::Close(err_ctx) = post_write {
             host_close_writer(store, transmit_rep, err_ctx)?;
+        }
+
+        if let Some(tx) = tx.take() {
+            _ = tx.send(());
         }
 
         break Ok(rx);
@@ -734,13 +750,8 @@ fn host_close_reader<U, S: AsContextMut<Data = U>>(mut store: S, transmit_rep: u
         },
 
         // If the reader is closed, we can ignore the waiting write from  host
-        WriteState::HostReady {
-            accept, post_write, ..
-        } => {
-            accept(Reader::None)?;
-            if let PostWrite::Close(_) = post_write {
-                store.concurrent_state().table.delete(transmit_id)?;
-            }
+        WriteState::HostReady { .. } => {
+            store.concurrent_state().table.delete(transmit_id)?;
         }
 
         WriteState::Open => {}
@@ -767,12 +778,16 @@ pub struct FutureWriter<T> {
 
 impl<T> FutureWriter<T> {
     /// Write the specified value to this `future`.
-    pub fn write<U, S: AsContextMut<Data = U>>(self, store: S, value: T) -> Result<Promise<()>>
+    ///
+    /// The returned `Promise` will yield `true` if the read end accepted the
+    /// value; otherwise it will return `false`, meaning the read end was closed
+    /// before the value could be delivered.
+    pub fn write<U, S: AsContextMut<Data = U>>(self, store: S, value: T) -> Result<Promise<bool>>
     where
         T: func::Lower + Send + Sync + 'static,
     {
         Ok(Promise(Box::pin(
-            host_write(store, self.rep, vec![value], PostWrite::Close(None))?.map(drop),
+            host_write(store, self.rep, vec![value], PostWrite::Close(None))?.map(|v| v.is_ok()),
         )))
     }
 
@@ -988,16 +1003,21 @@ pub struct StreamWriter<T> {
 
 impl<T> StreamWriter<T> {
     /// Write the specified values to the `stream`.
+    ///
+    /// The returned `Promise` will yield `None` if the read end has been closed
+    /// (possibly after accepting some or all of the values); otherwise it will
+    /// yield `self`.
     pub fn write<U, S: AsContextMut<Data = U>>(
         self,
         store: S,
         values: Vec<T>,
-    ) -> Result<Promise<StreamWriter<T>>>
+    ) -> Result<Promise<Option<StreamWriter<T>>>>
     where
         T: func::Lower + Send + Sync + 'static,
     {
         Ok(Promise(Box::pin(
-            host_write(store, self.rep, values, PostWrite::Continue)?.map(move |_| self),
+            host_write(store, self.rep, values, PostWrite::Continue)?
+                .map(move |v| v.map(|_| self).ok()),
         )))
     }
 
@@ -1394,7 +1414,6 @@ enum Reader<'a> {
     Host {
         accept: Box<dyn FnOnce(Box<dyn Any>) -> Result<()>>,
     },
-    None,
 }
 
 pub(super) fn guest_new<T>(

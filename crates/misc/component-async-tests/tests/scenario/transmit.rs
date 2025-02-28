@@ -230,12 +230,12 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
 
     enum Event<Test: TransmitTest> {
         Result(Test::Result),
-        ControlWriteA(StreamWriter<Control>),
-        ControlWriteB(StreamWriter<Control>),
-        ControlWriteC(StreamWriter<Control>),
-        ControlWriteD(StreamWriter<Control>),
-        WriteA(StreamWriter<String>),
-        WriteB,
+        ControlWriteA(Option<StreamWriter<Control>>),
+        ControlWriteB(Option<StreamWriter<Control>>),
+        ControlWriteC(Option<StreamWriter<Control>>),
+        ControlWriteD(Option<StreamWriter<Control>>),
+        WriteA(Option<StreamWriter<String>>),
+        WriteB(bool),
         ReadC(Option<(StreamReader<String>, Vec<String>)>),
         ReadD(Option<Result<String, ErrorContext>>),
         ReadNone(Option<(StreamReader<String>, Vec<String>)>),
@@ -289,27 +289,30 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
             }
             Event::ControlWriteA(tx) => {
                 promises.push(
-                    tx.write(&mut store, vec![Control::ReadFuture("b".into())])?
+                    tx.unwrap()
+                        .write(&mut store, vec![Control::ReadFuture("b".into())])?
                         .map(Event::ControlWriteB),
                 );
             }
             Event::WriteA(tx) => {
-                tx.close(&mut store)?;
+                tx.unwrap().close(&mut store)?;
                 promises.push(
                     caller_future1_tx
                         .take()
                         .unwrap()
                         .write(&mut store, "b".into())?
-                        .map(|()| Event::WriteB),
+                        .map(Event::WriteB),
                 );
             }
             Event::ControlWriteB(tx) => {
                 promises.push(
-                    tx.write(&mut store, vec![Control::WriteStream("c".into())])?
+                    tx.unwrap()
+                        .write(&mut store, vec![Control::WriteStream("c".into())])?
                         .map(Event::ControlWriteC),
                 );
             }
-            Event::WriteB => {
+            Event::WriteB(delivered) => {
+                assert!(delivered);
                 promises.push(
                     callee_stream_rx
                         .take()
@@ -320,7 +323,8 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
             }
             Event::ControlWriteC(tx) => {
                 promises.push(
-                    tx.write(&mut store, vec![Control::WriteFuture("d".into())])?
+                    tx.unwrap()
+                        .write(&mut store, vec![Control::WriteFuture("d".into())])?
                         .map(Event::ControlWriteD),
                 );
             }
@@ -337,7 +341,7 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
                 callee_stream_rx = Some(rx);
             }
             Event::ControlWriteD(tx) => {
-                tx.close(&mut store)?;
+                tx.unwrap().close(&mut store)?;
             }
             Event::ReadD(None) => unreachable!(),
             Event::ReadD(Some(value)) => {
