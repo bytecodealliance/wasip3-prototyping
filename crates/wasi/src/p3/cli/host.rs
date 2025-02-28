@@ -70,7 +70,7 @@ impl<T> stdin::Host for WasiCliImpl<T>
 where
     T: WasiCliView,
 {
-    fn get_stdin(&mut self) -> wasmtime::Result<wasmtime::component::StreamReader<u8>> {
+    fn get_stdin(&mut self) -> wasmtime::Result<wasmtime::component::HostStream<u8>> {
         todo!()
     }
 }
@@ -79,7 +79,7 @@ impl<T> stdout::Host for WasiCliImpl<T>
 where
     T: WasiCliView,
 {
-    fn set_stdout(&mut self, data: wasmtime::component::StreamReader<u8>) -> wasmtime::Result<()> {
+    fn set_stdout(&mut self, data: wasmtime::component::HostStream<u8>) -> wasmtime::Result<()> {
         todo!()
     }
 }
@@ -88,7 +88,7 @@ impl<T> stderr::Host for WasiCliImpl<T>
 where
     T: WasiCliView,
 {
-    fn set_stderr(&mut self, data: wasmtime::component::StreamReader<u8>) -> wasmtime::Result<()> {
+    fn set_stderr(&mut self, data: wasmtime::component::HostStream<u8>) -> wasmtime::Result<()> {
         todo!()
     }
 }

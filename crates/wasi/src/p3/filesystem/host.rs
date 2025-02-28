@@ -4,8 +4,7 @@ use anyhow::{anyhow, Context as _};
 use system_interface::fs::FileIoExt as _;
 use tokio::sync::mpsc;
 use wasmtime::component::{
-    future, stream, Accessor, AccessorTask, FutureReader, Lower, Resource, ResourceTable,
-    StreamReader,
+    future, stream, Accessor, AccessorTask, HostFuture, HostStream, Lower, Resource, ResourceTable,
 };
 
 use crate::p3::bindings::filesystem::types::{
@@ -16,7 +15,7 @@ use crate::p3::bindings::filesystem::{preopens, types};
 use crate::p3::filesystem::{
     Descriptor, DirPerms, FilePerms, WasiFilesystemImpl, WasiFilesystemView,
 };
-use crate::p3::{next_item, AccessorTaskFn, IoTask, ResourceView as _, TaskTable};
+use crate::p3::{AccessorTaskFn, IoTask, ResourceView as _, TaskTable};
 
 fn get_descriptor<'a>(
     table: &'a ResourceTable,
@@ -55,7 +54,7 @@ where
         store: &mut Accessor<U, Self>,
         fd: Resource<Descriptor>,
         mut offset: Filesize,
-    ) -> wasmtime::Result<(StreamReader<u8>, FutureReader<Result<(), ErrorCode>>)> {
+    ) -> wasmtime::Result<(HostStream<u8>, HostFuture<Result<(), ErrorCode>>)> {
         store.with(|mut view| {
             let (data_tx, data_rx) = stream(&mut view).context("failed to create stream")?;
             let (res_tx, res_rx) = future(&mut view).context("failed to create future")?;
@@ -122,29 +121,27 @@ where
                     });
                 }
                 Err(err) => {
-                    data_tx.close(&mut view).context("failed to close stream")?;
-                    let fut = res_tx
-                        .write(&mut view, Err(err))
-                        .context("failed to write result to future")?;
-                    let fut = fut.into_future();
+                    drop(data_tx);
+                    let fut = res_tx.write(Err(err)).into_future();
                     view.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                         fut.await;
                         Ok(())
                     }));
                 }
             }
-            Ok((data_rx, res_rx))
+            Ok((data_rx.into(), res_rx.into()))
         })
     }
 
     async fn write_via_stream<U>(
         store: &mut Accessor<U, Self>,
         fd: Resource<Descriptor>,
-        data: StreamReader<u8>,
+        data: HostStream<u8>,
         mut offset: Filesize,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let (fd, fut) = store.with(|mut view| {
-            let fut = data.read(&mut view).context("failed to read from stream")?;
+            let data = data.into_reader(&mut view);
+            let fut = data.read();
             let fd = get_descriptor(view.table(), &fd)?;
             anyhow::Ok((fd.clone(), fut))
         })?;
@@ -157,7 +154,7 @@ where
         }
         let mut fut = fut.into_future();
         loop {
-            let Some((tail, buf)) = fut.await else {
+            let Ok((tail, buf)) = fut.await else {
                 return Ok(Ok(()));
             };
             match f
@@ -178,17 +175,18 @@ where
                 }
                 Err(err) => return Ok(Err(err)),
             }
-            fut = next_item(store, tail)?;
+            fut = tail.read().into_future();
         }
     }
 
     async fn append_via_stream<U>(
         store: &mut Accessor<U, Self>,
         fd: Resource<Descriptor>,
-        data: StreamReader<u8>,
+        data: HostStream<u8>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let (fd, fut) = store.with(|mut view| {
-            let fut = data.read(&mut view).context("failed to read from stream")?;
+            let data = data.into_reader(&mut view);
+            let fut = data.read();
             let fd = get_descriptor(view.table(), &fd)?;
             anyhow::Ok((fd.clone(), fut))
         })?;
@@ -201,7 +199,7 @@ where
         }
         let mut fut = fut.into_future();
         loop {
-            let Some((tail, buf)) = fut.await else {
+            let Ok((tail, buf)) = fut.await else {
                 return Ok(Ok(()));
             };
             if let Err(err) = f
@@ -219,7 +217,7 @@ where
             {
                 return Ok(Err(err));
             }
-            fut = next_item(store, tail)?;
+            fut = tail.read().into_future()
         }
     }
 
@@ -293,8 +291,8 @@ where
         store: &mut Accessor<U, Self>,
         fd: Resource<Descriptor>,
     ) -> wasmtime::Result<(
-        StreamReader<DirectoryEntry>,
-        FutureReader<Result<(), ErrorCode>>,
+        HostStream<DirectoryEntry>,
+        HostFuture<Result<(), ErrorCode>>,
     )> {
         store.with(|mut view| {
             let (data_tx, data_rx) = stream(&mut view).context("failed to create stream")?;
@@ -397,18 +395,15 @@ where
                     });
                 }
                 Err(err) => {
-                    data_tx.close(&mut view).context("failed to close stream")?;
-                    let fut = res_tx
-                        .write(&mut view, Err(err))
-                        .context("failed to write result to future")?;
-                    let fut = fut.into_future();
+                    drop(data_tx);
+                    let fut = res_tx.write(Err(err)).into_future();
                     view.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                         fut.await;
                         Ok(())
                     }));
                 }
             }
-            Ok((data_rx, res_rx))
+            Ok((data_rx.into(), res_rx.into()))
         })
     }
 
