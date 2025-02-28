@@ -1,6 +1,6 @@
 #![allow(unused)] // TODO: remove
 
-use wasmtime::component::{FutureReader, Resource, StreamReader};
+use wasmtime::component::{HostFuture, HostStream, Resource};
 
 use crate::p3::bindings::filesystem::types::{
     Advice, Descriptor, DescriptorFlags, DescriptorStat, DescriptorType, DirectoryEntry, ErrorCode,
@@ -19,14 +19,14 @@ where
         &mut self,
         descriptor: Resource<Descriptor>,
         offset: Filesize,
-    ) -> wasmtime::Result<(StreamReader<u8>, FutureReader<Result<(), ErrorCode>>)> {
+    ) -> wasmtime::Result<(HostStream<u8>, HostFuture<Result<(), ErrorCode>>)> {
         todo!()
     }
 
     fn write_via_stream(
         &mut self,
         descriptor: Resource<Descriptor>,
-        data: StreamReader<u8>,
+        data: HostStream<u8>,
         offset: Filesize,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         todo!()
@@ -35,7 +35,7 @@ where
     fn append_via_stream(
         &mut self,
         descriptor: Resource<Descriptor>,
-        data: StreamReader<u8>,
+        data: HostStream<u8>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         todo!()
     }
@@ -92,8 +92,8 @@ where
         &mut self,
         descriptor: Resource<Descriptor>,
     ) -> wasmtime::Result<(
-        StreamReader<DirectoryEntry>,
-        FutureReader<Result<(), ErrorCode>>,
+        HostStream<DirectoryEntry>,
+        HostFuture<Result<(), ErrorCode>>,
     )> {
         todo!()
     }

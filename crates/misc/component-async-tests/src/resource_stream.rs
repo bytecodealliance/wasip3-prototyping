@@ -1,6 +1,5 @@
 use anyhow::Result;
-use wasmtime::component::{Accessor, AccessorTask, Resource, StreamReader, StreamWriter};
-use wasmtime::AsContextMut;
+use wasmtime::component::{Accessor, AccessorTask, HostStream, Resource, StreamWriter};
 use wasmtime_wasi::IoView;
 
 use super::Ctx;
@@ -39,7 +38,7 @@ impl bindings::local::local::resource_stream::Host for &mut Ctx {
     async fn foo<T: 'static>(
         accessor: &mut Accessor<T, Self>,
         count: u32,
-    ) -> wasmtime::Result<StreamReader<Resource<ResourceStreamX>>> {
+    ) -> wasmtime::Result<HostStream<Resource<ResourceStreamX>>> {
         struct Task {
             tx: StreamWriter<Resource<ResourceStreamX>>,
             count: u32,
@@ -47,25 +46,23 @@ impl bindings::local::local::resource_stream::Host for &mut Ctx {
 
         impl<T, U: wasmtime_wasi::IoView> AccessorTask<T, U, Result<()>> for Task {
             async fn run(self, accessor: &mut Accessor<T, U>) -> Result<()> {
-                let mut tx = self.tx;
+                let mut tx = Some(self.tx);
                 for _ in 0..self.count {
                     tx = accessor
                         .with(|mut view| {
                             let item = IoView::table(&mut *view).push(ResourceStreamX)?;
                             Ok::<_, anyhow::Error>(
-                                tx.write(view.as_context_mut(), vec![item])?.into_future(),
+                                tx.take().unwrap().write(vec![item]).into_future(),
                             )
                         })?
-                        .await
-                        .unwrap();
+                        .await;
                 }
-                accessor.with(|mut view| tx.close(view.as_context_mut()))
+                Ok(())
             }
         }
 
-        let (tx, rx) =
-            accessor.with(|mut view| wasmtime::component::stream(view.as_context_mut()))?;
+        let (tx, rx) = accessor.with(|mut view| wasmtime::component::stream(&mut view))?;
         accessor.spawn(Task { tx, count });
-        Ok(rx)
+        Ok(rx.into())
     }
 }

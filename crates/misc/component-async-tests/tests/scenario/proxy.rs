@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use component_async_tests::Ctx;
 use tokio::fs;
 use wasi_http_draft::wasi::http::types::{ErrorCode, Method, Scheme};
@@ -79,8 +79,8 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
         RequestBodyWrite(Option<StreamWriter<u8>>),
         RequestTrailersWrite(bool),
         Response(Result<Resource<Response>, ErrorCode>),
-        ResponseBodyRead(Option<(StreamReader<u8>, Vec<u8>)>),
-        ResponseTrailersRead(Option<Result<Resource<Fields>, ErrorContext>>),
+        ResponseBodyRead(Result<(StreamReader<u8>, Vec<u8>), Option<ErrorContext>>),
+        ResponseTrailersRead(Result<Resource<Fields>, Option<ErrorContext>>),
     }
 
     let mut promises = PromisesUnordered::new();
@@ -89,16 +89,13 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
 
     promises.push(
         request_body_tx
-            .write(
-                &mut store,
-                if use_compression {
-                    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
-                    encoder.write_all(body)?;
-                    encoder.finish()?
-                } else {
-                    body.to_vec()
-                },
-            )?
+            .write(if use_compression {
+                let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
+                encoder.write_all(body)?;
+                encoder.finish()?
+            } else {
+                body.to_vec()
+            })
             .map(Event::RequestBodyWrite),
     );
 
@@ -110,7 +107,7 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
 
     promises.push(
         request_trailers_tx
-            .write(&mut store, request_trailers)?
+            .write(request_trailers)
             .map(Event::RequestTrailersWrite),
     );
 
@@ -153,7 +150,7 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
     let mut received_trailers = false;
     while let Some(event) = promises.next(&mut store).await? {
         match event {
-            Event::RequestBodyWrite(Some(tx)) => tx.close(&mut store)?,
+            Event::RequestBodyWrite(Some(_)) => {}
             Event::RequestBodyWrite(None) => panic!("write should have been accepted"),
             Event::RequestTrailersWrite(success) => assert!(success),
             Event::Response(response) => {
@@ -182,15 +179,17 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
                         .stream
                         .take()
                         .unwrap()
-                        .read(&mut store)?
+                        .read()
                         .map(Event::ResponseBodyRead),
                 );
             }
-            Event::ResponseBodyRead(Some((rx, chunk))) => {
+            Event::ResponseBodyRead(Ok((rx, chunk))) => {
                 response_body.extend(chunk);
-                promises.push(rx.read(&mut store)?.map(Event::ResponseBodyRead));
+                promises.push(rx.read().map(Event::ResponseBodyRead));
             }
-            Event::ResponseBodyRead(None) => {
+            Event::ResponseBodyRead(Err(e)) => {
+                assert!(e.is_none());
+
                 let response_body = if use_compression {
                     let mut decoder = DeflateDecoder::new(Vec::new());
                     decoder.write_all(&response_body)?;
@@ -205,13 +204,13 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
                     response_trailers
                         .take()
                         .unwrap()
-                        .read(&mut store)?
+                        .read()
                         .map(Event::ResponseTrailersRead),
                 );
             }
-            Event::ResponseTrailersRead(Some(response_trailers)) => {
-                let response_trailers = IoView::table(store.data_mut())
-                    .delete(response_trailers.map_err(|_| anyhow!("failed to remove trailers"))?)?;
+            Event::ResponseTrailersRead(Ok(response_trailers)) => {
+                let response_trailers =
+                    IoView::table(store.data_mut()).delete(response_trailers)?;
 
                 assert!(trailers.iter().all(|(k0, v0)| response_trailers
                     .0
@@ -220,7 +219,7 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
 
                 received_trailers = true;
             }
-            Event::ResponseTrailersRead(None) => panic!("expected response trailers; got none"),
+            Event::ResponseTrailersRead(Err(_)) => panic!("expected response trailers; got none"),
         }
     }
 

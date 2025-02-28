@@ -117,7 +117,8 @@ pub use self::component::{Component, ComponentExportIndex};
 #[cfg(feature = "component-model-async")]
 pub use self::concurrent::{
     future, stream, AbortOnDropHandle, Accessor, AccessorTask, ErrorContext, FutureReader,
-    FutureWriter, Promise, PromisesUnordered, StreamReader, StreamWriter, VMComponentAsyncStore,
+    FutureWriter, HostFuture, HostStream, Promise, PromisesUnordered, StreamReader, StreamWriter,
+    VMComponentAsyncStore,
 };
 pub use self::func::{
     ComponentNamedList, ComponentType, Func, Lift, Lower, TypedFunc, WasmList, WasmStr,
@@ -784,11 +785,11 @@ pub(crate) mod concurrent {
         }
     }
 
-    pub struct StreamReader<P> {
+    pub struct HostStream<P> {
         _phantom: PhantomData<P>,
     }
 
-    impl<P> StreamReader<P> {
+    impl<P> HostStream<P> {
         pub(crate) fn new(_rep: u32) -> Self {
             unreachable!()
         }
@@ -832,11 +833,11 @@ pub(crate) mod concurrent {
         }
     }
 
-    pub struct FutureReader<P> {
+    pub struct HostFuture<P> {
         _phantom: PhantomData<P>,
     }
 
-    impl<P> FutureReader<P> {
+    impl<P> HostFuture<P> {
         pub(crate) fn new(_rep: u32) -> Self {
             unreachable!()
         }
