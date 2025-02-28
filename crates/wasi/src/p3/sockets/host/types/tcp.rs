@@ -98,8 +98,8 @@ struct ListenTask {
 
 impl<T, U: WasiSocketsView> AccessorTask<T, U, wasmtime::Result<()>> for ListenTask {
     async fn run(mut self, store: &mut Accessor<T, U>) -> wasmtime::Result<()> {
-        let mut tx = self.tx;
-        while let Some(res) = self.rx.recv().await {
+        let mut tx = Some(self.tx);
+        while let (Some(res), Some(my_tx)) = (self.rx.recv().await, tx.take()) {
             let state = match res {
                 Ok((stream, _addr)) => {
                     #[cfg(target_os = "macos")]
@@ -199,12 +199,15 @@ impl<T, U: WasiSocketsView> AccessorTask<T, U, wasmtime::Result<()>> for ListenT
                     .table()
                     .push(TcpSocket::from_state(state, self.family))
                     .context("failed to push socket to table")?;
-                tx.write(&mut view, vec![socket])
+                my_tx
+                    .write(&mut view, vec![socket])
                     .context("failed to send socket")
             })?;
             tx = fut.into_future().await;
         }
-        store.with(|view| tx.close(view).context("failed to close stream"))?;
+        if let Some(tx) = tx {
+            store.with(|view| tx.close(view).context("failed to close stream"))?;
+        }
         Ok(())
     }
 }
@@ -217,20 +220,26 @@ struct ReceiveTask {
 
 impl<T, U: WasiSocketsView> AccessorTask<T, U, wasmtime::Result<()>> for ReceiveTask {
     async fn run(mut self, store: &mut Accessor<T, U>) -> wasmtime::Result<()> {
-        let mut tx = self.data;
+        let mut tx = Some(self.data);
         let res = loop {
             match self.rx.recv().await {
                 None => break Ok(()),
                 Some(Ok(buf)) => {
-                    let fut =
-                        store.with(|view| tx.write(view, buf).context("failed to send chunk"))?;
-                    tx = fut.into_future().await;
+                    if let Some(my_tx) = tx.take() {
+                        let fut = store
+                            .with(|view| my_tx.write(view, buf).context("failed to send chunk"))?;
+                        tx = fut.into_future().await;
+                    } else {
+                        break Ok(());
+                    }
                 }
                 Some(Err(err)) => break Err(err.into()),
             }
         };
         let fut = store.with(|mut view| {
-            tx.close(&mut view).context("failed to close stream")?;
+            if let Some(tx) = tx {
+                tx.close(&mut view).context("failed to close stream")?;
+            }
             self.result
                 .write(&mut view, res)
                 .context("failed to write result")

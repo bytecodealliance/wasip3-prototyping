@@ -121,6 +121,11 @@ interface resource-stream {
   foo: func(count: u32) -> stream<x>;
 }
 
+interface closed {
+  read-stream: func(rx: stream<u8>, expected: list<u8>);
+  read-future: func(rx: future<u8>, expected: u8, rx-ignore: future<u8>);
+}
+
 world yield-caller {
   import continue;
   import ready;
@@ -235,3 +240,8 @@ world read-resource-stream {
   import resource-stream;
   export run;
 }
+
+world closed-streams {
+  export closed;
+}
+

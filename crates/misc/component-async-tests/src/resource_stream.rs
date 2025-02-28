@@ -56,7 +56,8 @@ impl bindings::local::local::resource_stream::Host for &mut Ctx {
                                 tx.write(view.as_context_mut(), vec![item])?.into_future(),
                             )
                         })?
-                        .await;
+                        .await
+                        .unwrap();
                 }
                 accessor.with(|mut view| tx.close(view.as_context_mut()))
             }
