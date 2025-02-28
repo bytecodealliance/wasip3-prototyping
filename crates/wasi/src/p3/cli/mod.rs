@@ -1,5 +1,8 @@
 mod host;
 
+use core::fmt;
+
+use tokio::io::{empty, AsyncRead, AsyncWrite, Empty};
 use wasmtime::component::{Linker, ResourceTable};
 
 use crate::p3::ResourceView;
@@ -33,6 +36,9 @@ pub struct WasiCliCtx {
     pub environment: Vec<(String, String)>,
     pub arguments: Vec<String>,
     pub initial_cwd: Option<String>,
+    pub stdin: Box<dyn InputStream + Send>,
+    pub stdout: Box<dyn OutputStream + Send>,
+    pub stderr: Box<dyn OutputStream + Send>,
 }
 
 impl Default for WasiCliCtx {
@@ -41,6 +47,9 @@ impl Default for WasiCliCtx {
             environment: Vec::default(),
             arguments: Vec::default(),
             initial_cwd: None,
+            stdin: Box::new(empty()),
+            stdout: Box::new(empty()),
+            stderr: Box::new(empty()),
         }
     }
 }
@@ -137,3 +146,40 @@ where
 {
     val
 }
+
+/// An error returned from the `proc_exit` host syscall.
+///
+/// Embedders can test if an error returned from wasm is this error, in which
+/// case it may signal a non-fatal trap.
+#[derive(Debug)]
+pub struct I32Exit(pub i32);
+
+impl fmt::Display for I32Exit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Exited with i32 exit status {}", self.0)
+    }
+}
+
+impl std::error::Error for I32Exit {}
+
+pub struct TerminalInput;
+pub struct TerminalOutput;
+
+pub trait IsTerminal {
+    /// Returns whether this stream is backed by a TTY.
+    fn is_terminal(&self) -> bool;
+}
+
+impl IsTerminal for Empty {
+    fn is_terminal(&self) -> bool {
+        false
+    }
+}
+
+pub trait InputStream: AsyncRead + IsTerminal {}
+
+impl<T: AsyncRead + IsTerminal> InputStream for T {}
+
+pub trait OutputStream: AsyncWrite + IsTerminal {}
+
+impl<T: AsyncWrite + IsTerminal> OutputStream for T {}
