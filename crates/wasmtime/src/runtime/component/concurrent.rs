@@ -49,7 +49,8 @@ use {
 };
 
 pub use futures_and_streams::{
-    future, stream, ErrorContext, FutureReader, FutureWriter, StreamReader, StreamWriter,
+    future, stream, ErrorContext, FutureReader, FutureWriter, HostFuture, HostStream, StreamReader,
+    StreamWriter,
 };
 use futures_and_streams::{FlatAbi, TableIndex, TransmitState};
 

@@ -16,12 +16,13 @@ use {
             },
             SendSyncPtr, VMFuncRef, VMMemoryDefinition, VMStore,
         },
-        AsContextMut, StoreContextMut, ValRaw,
+        AsContextMut, StoreContextMut, VMStoreRawPtr, ValRaw,
     },
     anyhow::{anyhow, bail, ensure, Context, Result},
     futures::{
-        channel::oneshot,
+        channel::{mpsc, oneshot},
         future::{self, FutureExt},
+        stream::StreamExt,
     },
     std::{
         any::Any,
@@ -63,15 +64,6 @@ pub(crate) enum HostReadResult<T> {
     /// When host streams end, they may have an attached error-context
     #[allow(unused)]
     EndOfStream(Option<ErrorContext>),
-}
-
-impl<T> HostReadResult<T> {
-    fn into_values(self) -> Option<Vec<T>> {
-        match self {
-            HostReadResult::Values(maybe_vec) => Some(maybe_vec),
-            HostReadResult::EndOfStream(_) => None,
-        }
-    }
 }
 
 fn payload(ty: TableIndex, types: &Arc<ComponentTypes>) -> Option<InterfaceType> {
@@ -239,9 +231,9 @@ fn host_write<T: func::Lower + Send + Sync + 'static, U, S: AsContextMut<Data = 
     transmit_rep: u32,
     values: Vec<T>,
     mut post_write: PostWrite,
-) -> Result<oneshot::Receiver<()>> {
+    tx: oneshot::Sender<()>,
+) -> Result<()> {
     let mut store = store.as_context_mut();
-    let (tx, rx) = oneshot::channel();
     let transmit_id = TableId::<TransmitState>::new(transmit_rep);
     let mut offset = 0;
 
@@ -341,7 +333,7 @@ fn host_write<T: func::Lower + Send + Sync + 'static, U, S: AsContextMut<Data = 
 
             ReadState::Closed => {
                 store.concurrent_state().table.delete(transmit_id)?;
-                break Ok(rx);
+                break Ok(());
             }
         }
 
@@ -353,16 +345,16 @@ fn host_write<T: func::Lower + Send + Sync + 'static, U, S: AsContextMut<Data = 
             _ = tx.send(());
         }
 
-        break Ok(rx);
+        break Ok(());
     }
 }
 
 pub fn host_read<T: func::Lift + Sync + Send + 'static, U, S: AsContextMut<Data = U>>(
     mut store: S,
     rep: u32,
-) -> Result<oneshot::Receiver<HostReadResult<T>>> {
+    tx: oneshot::Sender<HostReadResult<T>>,
+) -> Result<()> {
     let mut store = store.as_context_mut();
-    let (tx, rx) = oneshot::channel::<HostReadResult<T>>();
     let transmit_id = TableId::<TransmitState>::new(rep);
     let transmit = store
         .concurrent_state()
@@ -510,7 +502,7 @@ pub fn host_read<T: func::Lift + Sync + Send + 'static, U, S: AsContextMut<Data 
         }
     }
 
-    Ok(rx)
+    Ok(())
 }
 
 fn host_cancel_write<U, S: AsContextMut<Data = U>>(mut store: S, rep: u32) -> Result<u32> {
@@ -586,7 +578,11 @@ fn host_close_writer<U, S: AsContextMut<Data = U>>(
 ) -> Result<()> {
     let mut store = store.as_context_mut();
     let transmit_id = TableId::<TransmitState>::new(transmit_rep);
-    let transmit = store.concurrent_state().table.get_mut(transmit_id)?;
+    let transmit = store
+        .concurrent_state()
+        .table
+        .get_mut(transmit_id)
+        .with_context(|| format!("writer {transmit_rep}"))?;
 
     // Existing queued transmits must be updated with information for the impending writer closure
     match &mut transmit.write {
@@ -707,7 +703,11 @@ fn host_close_writer<U, S: AsContextMut<Data = U>>(
 fn host_close_reader<U, S: AsContextMut<Data = U>>(mut store: S, transmit_rep: u32) -> Result<()> {
     let mut store = store.as_context_mut();
     let transmit_id = TableId::<TransmitState>::new(transmit_rep);
-    let transmit = store.concurrent_state().table.get_mut(transmit_id)?;
+    let transmit = store
+        .concurrent_state()
+        .table
+        .get_mut(transmit_id)
+        .with_context(|| format!("reader {transmit_rep}"))?;
 
     transmit.read = ReadState::Closed;
 
@@ -770,10 +770,107 @@ pub(super) struct FlatAbi {
     pub(super) align: u32,
 }
 
+enum StreamOrFutureEvent<T> {
+    Write {
+        values: Vec<T>,
+        post_write: PostWrite,
+        tx: oneshot::Sender<()>,
+    },
+    CloseWriter {
+        err_ctx: Option<ErrorContext>,
+    },
+    Read {
+        tx: oneshot::Sender<HostReadResult<T>>,
+    },
+    CloseReader,
+}
+
+fn start_event_loop<
+    T: func::Lower + func::Lift + Sync + Send + 'static,
+    U,
+    S: AsContextMut<Data = U>,
+>(
+    mut store: S,
+    rep: u32,
+) -> mpsc::Sender<StreamOrFutureEvent<T>> {
+    fn write<T: func::Lower + Sync + Send + 'static, U>(
+        store: VMStoreRawPtr,
+        rep: u32,
+        values: Vec<T>,
+        post_write: PostWrite,
+        tx: oneshot::Sender<()>,
+    ) -> Result<()> {
+        let store = unsafe { StoreContextMut::<U>(&mut *store.0.as_ptr().cast()) };
+        host_write(store, rep, values, post_write, tx)
+    }
+
+    fn close_writer<U>(
+        store: VMStoreRawPtr,
+        rep: u32,
+        err_ctx: Option<ErrorContext>,
+    ) -> Result<()> {
+        let store = unsafe { StoreContextMut::<U>(&mut *store.0.as_ptr().cast()) };
+        host_close_writer(
+            store,
+            rep,
+            err_ctx.map(|v| TypeComponentGlobalErrorContextTableIndex::from_u32(v.rep)),
+        )
+    }
+
+    fn read<T: func::Lift + Sync + Send + 'static, U>(
+        store: VMStoreRawPtr,
+        rep: u32,
+        tx: oneshot::Sender<HostReadResult<T>>,
+    ) -> Result<()> {
+        let store = unsafe { StoreContextMut::<U>(&mut *store.0.as_ptr().cast()) };
+        host_read::<T, _, _>(store, rep, tx)
+    }
+
+    fn close_reader<U>(store: VMStoreRawPtr, rep: u32) -> Result<()> {
+        let store = unsafe { StoreContextMut::<U>(&mut *store.0.as_ptr().cast()) };
+        host_close_reader(store, rep)
+    }
+
+    let mut store = store.as_context_mut();
+    let (tx, mut rx) = mpsc::channel(1);
+    let task = Box::pin(
+        {
+            let store = VMStoreRawPtr(store.0.traitobj());
+            async move {
+                while let Some(event) = rx.next().await {
+                    match event {
+                        StreamOrFutureEvent::Write {
+                            values,
+                            post_write,
+                            tx,
+                        } => write::<_, U>(store, rep, values, post_write, tx)?,
+                        StreamOrFutureEvent::CloseWriter { err_ctx } => {
+                            close_writer::<U>(store, rep, err_ctx)?
+                        }
+                        StreamOrFutureEvent::Read { tx } => read::<_, U>(store, rep, tx)?,
+                        StreamOrFutureEvent::CloseReader => close_reader::<U>(store, rep)?,
+                    }
+                }
+                Ok(())
+            }
+        }
+        .map(HostTaskOutput::Background),
+    );
+    store.concurrent_state().futures.get_mut().push(task);
+    tx
+}
+
+fn send<T>(tx: &mut mpsc::Sender<T>, value: T) {
+    if let Err(e) = tx.try_send(value) {
+        if e.is_full() {
+            unreachable!();
+        }
+    }
+}
+
 /// Represents the writable end of a Component Model `future`.
 pub struct FutureWriter<T> {
-    rep: u32,
-    _phantom: PhantomData<T>,
+    tx: Option<mpsc::Sender<StreamOrFutureEvent<T>>>,
 }
 
 impl<T> FutureWriter<T> {
@@ -782,58 +879,57 @@ impl<T> FutureWriter<T> {
     /// The returned `Promise` will yield `true` if the read end accepted the
     /// value; otherwise it will return `false`, meaning the read end was closed
     /// before the value could be delivered.
-    pub fn write<U, S: AsContextMut<Data = U>>(self, store: S, value: T) -> Result<Promise<bool>>
-    where
-        T: func::Lower + Send + Sync + 'static,
-    {
-        Ok(Promise(Box::pin(
-            host_write(store, self.rep, vec![value], PostWrite::Close(None))?.map(|v| v.is_ok()),
-        )))
+    pub fn write(mut self, value: T) -> Promise<bool> {
+        let (tx, rx) = oneshot::channel();
+        send(
+            &mut self.tx.take().unwrap(),
+            StreamOrFutureEvent::Write {
+                values: vec![value],
+                post_write: PostWrite::Close(None),
+                tx,
+            },
+        );
+        Promise(Box::pin(rx.map(|v| v.is_ok())))
     }
 
-    /// Close this object without writing a value.
-    ///
-    /// If this object is dropped without calling either this method or `write`,
-    /// any read on the readable end will remain pending forever.
+    /// Close this object with and error instead of writing a value.
     ///
     /// # Arguments
     ///
-    /// * `store` - The store associated with the component instance
+    /// * `err_ctx` - The handle of an error context that should be reported with the stream closure
     ///
-    pub fn close<U, S: AsContextMut<Data = U>>(self, store: S) -> Result<()> {
-        self.close_with_error(store, 0)
+    pub fn close_with_error(mut self, err_ctx: ErrorContext) {
+        send(
+            &mut self.tx.take().unwrap(),
+            StreamOrFutureEvent::CloseWriter {
+                err_ctx: Some(err_ctx),
+            },
+        );
     }
+}
 
-    /// Close this object without writing a value.
-    ///
-    /// If this object is dropped without calling either this method or `write`,
-    /// any read on the readable end will remain pending forever.
-    ///
-    /// # Arguments
-    ///
-    /// * `store` - The store associated with the component instance
-    /// * `err_ctx` - The handle of an error context that should be reported with the stream closure (`0` if none)
-    ///
-    pub fn close_with_error<U, S: AsContextMut<Data = U>>(
-        self,
-        store: S,
-        err_ctx: u32,
-    ) -> Result<()> {
-        host_close_writer(
-            store,
-            self.rep,
-            (err_ctx != 0).then(|| TypeComponentGlobalErrorContextTableIndex::from_u32(err_ctx)),
-        )
+impl<T> Drop for FutureWriter<T> {
+    fn drop(&mut self) {
+        if let Some(mut tx) = self.tx.take() {
+            send(&mut tx, StreamOrFutureEvent::CloseWriter { err_ctx: None });
+        }
     }
 }
 
 /// Represents the readable end of a Component Model `future`.
-pub struct FutureReader<T> {
+///
+/// In order to actually read from or close this `future`, first convert it to a
+/// [`FutureReader`] using the `into_reader` method.
+///
+/// Note that if a value of this type is dropped without either being converted
+/// to a `FutureReader` or passed to the guest, any writes on the write end may
+/// block forever.
+pub struct HostFuture<T> {
     rep: u32,
     _phantom: PhantomData<T>,
 }
 
-impl<T> FutureReader<T> {
+impl<T> HostFuture<T> {
     pub(crate) fn new(rep: u32) -> Self {
         Self {
             rep,
@@ -841,24 +937,19 @@ impl<T> FutureReader<T> {
         }
     }
 
-    /// Read the value from this `future`.
-    pub fn read<U, S: AsContextMut<Data = U>>(
-        self,
-        store: S,
-    ) -> Result<Promise<Option<Result<T, ErrorContext>>>>
+    /// Convert this object into a [`FutureReader`].
+    pub fn into_reader<U, S: AsContextMut<Data = U>>(self, store: S) -> FutureReader<T>
     where
-        T: func::Lift + Sync + Send + 'static,
+        T: func::Lower + func::Lift + Send + Sync + 'static,
     {
-        let recv = host_read::<T, _, _>(store, self.rep)?;
-        let result = recv.map(|v| match v {
-            Ok(HostReadResult::Values(v)) => v.into_iter().next().map(Result::Ok),
-            Ok(HostReadResult::EndOfStream(None)) | Err(_) => None,
-            Ok(HostReadResult::EndOfStream(s)) => s.map(Result::Err),
-        });
-        Ok(Promise(Box::pin(result)))
+        FutureReader {
+            rep: self.rep,
+            tx: Some(start_event_loop(store, self.rep)),
+        }
     }
 
     /// Convert this `FutureReader` into a [`Val`].
+    // See TODO comment for `FutureAny`; this is prone to handle leakage.
     pub fn into_val(self) -> Val {
         Val::Future(FutureAny(self.rep))
     }
@@ -915,17 +1006,9 @@ impl<T> FutureReader<T> {
             _ => func::bad_type_info(),
         }
     }
-
-    /// Close this object without reading the value.
-    ///
-    /// If this object is dropped without calling either this method or `read`,
-    /// any write on the writable end will remain pending forever.
-    pub fn close<U, S: AsContextMut<Data = U>>(self, store: S) -> Result<()> {
-        host_close_reader(store, self.rep)
-    }
 }
 
-unsafe impl<T> func::ComponentType for FutureReader<T> {
+unsafe impl<T> func::ComponentType for HostFuture<T> {
     const ABI: CanonicalAbiInfo = CanonicalAbiInfo::SCALAR4;
 
     type Lower = <u32 as func::ComponentType>::Lower;
@@ -938,7 +1021,7 @@ unsafe impl<T> func::ComponentType for FutureReader<T> {
     }
 }
 
-unsafe impl<T> func::Lower for FutureReader<T> {
+unsafe impl<T> func::Lower for HostFuture<T> {
     fn lower<U>(
         &self,
         cx: &mut LowerContext<'_, U>,
@@ -960,7 +1043,7 @@ unsafe impl<T> func::Lower for FutureReader<T> {
     }
 }
 
-unsafe impl<T> func::Lift for FutureReader<T> {
+unsafe impl<T> func::Lift for HostFuture<T> {
     fn lift(cx: &mut LiftContext<'_>, ty: InterfaceType, src: &Self::Lower) -> Result<Self> {
         let index = u32::lift(cx, InterfaceType::U32, src)?;
         Self::lift_from_index(cx, ty, index)
@@ -972,9 +1055,60 @@ unsafe impl<T> func::Lift for FutureReader<T> {
     }
 }
 
+impl<T> From<FutureReader<T>> for HostFuture<T> {
+    fn from(mut value: FutureReader<T>) -> Self {
+        value.tx.take();
+
+        Self {
+            rep: value.rep,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+/// Represents the readable end of a Component Model `future`.
+///
+/// In order to pass this end to guest code, first convert it to a
+/// [`HostFuture`] using the `into` method.
+pub struct FutureReader<T> {
+    rep: u32,
+    tx: Option<mpsc::Sender<StreamOrFutureEvent<T>>>,
+}
+
+impl<T> FutureReader<T> {
+    /// Read the value from this `future`.
+    ///
+    /// The returned `Promise` will yield `Err(None)` if the guest has trapped
+    /// before it could produce a result.
+    pub fn read(mut self) -> Promise<Result<T, Option<ErrorContext>>>
+    where
+        T: Send + 'static,
+    {
+        let (tx, rx) = oneshot::channel();
+        send(
+            &mut self.tx.take().unwrap(),
+            StreamOrFutureEvent::Read { tx },
+        );
+        Promise(Box::pin(rx.map(|v| match v {
+            Ok(HostReadResult::Values(v)) => Ok(v.into_iter().next().unwrap()),
+            Ok(HostReadResult::EndOfStream(None)) => unreachable!(),
+            Err(_) => Err(None),
+            Ok(HostReadResult::EndOfStream(s)) => Err(s),
+        })))
+    }
+}
+
+impl<T> Drop for FutureReader<T> {
+    fn drop(&mut self) {
+        if let Some(mut tx) = self.tx.take() {
+            send(&mut tx, StreamOrFutureEvent::CloseReader);
+        }
+    }
+}
+
 /// Create a new Component Model `future` as pair of writable and readable ends,
 /// the latter of which may be passed to guest code.
-pub fn future<T, U, S: AsContextMut<Data = U>>(
+pub fn future<T: func::Lower + func::Lift + Sync + Send + 'static, U, S: AsContextMut<Data = U>>(
     mut store: S,
 ) -> Result<(FutureWriter<T>, FutureReader<T>)> {
     let mut store = store.as_context_mut();
@@ -985,85 +1119,86 @@ pub fn future<T, U, S: AsContextMut<Data = U>>(
 
     Ok((
         FutureWriter {
-            rep: transmit.rep(),
-            _phantom: PhantomData,
+            tx: Some(start_event_loop(&mut store, transmit.rep())),
         },
         FutureReader {
             rep: transmit.rep(),
-            _phantom: PhantomData,
+            tx: Some(start_event_loop(store, transmit.rep())),
         },
     ))
 }
 
 /// Represents the writable end of a Component Model `stream`.
 pub struct StreamWriter<T> {
-    rep: u32,
-    _phantom: PhantomData<T>,
+    tx: Option<mpsc::Sender<StreamOrFutureEvent<T>>>,
 }
 
 impl<T> StreamWriter<T> {
     /// Write the specified values to the `stream`.
     ///
     /// The returned `Promise` will yield `None` if the read end has been closed
-    /// (possibly after accepting some or all of the values); otherwise it will
-    /// yield `self`.
-    pub fn write<U, S: AsContextMut<Data = U>>(
-        self,
-        store: S,
-        values: Vec<T>,
-    ) -> Result<Promise<Option<StreamWriter<T>>>>
+    /// before it could accept all of the values; otherwise it will yield
+    /// `self`.
+    pub fn write(mut self, values: Vec<T>) -> Promise<Option<StreamWriter<T>>>
     where
-        T: func::Lower + Send + Sync + 'static,
+        T: Send + 'static,
     {
-        Ok(Promise(Box::pin(
-            host_write(store, self.rep, values, PostWrite::Continue)?
-                .map(move |v| v.map(|_| self).ok()),
-        )))
+        let (tx, rx) = oneshot::channel();
+        send(
+            self.tx.as_mut().unwrap(),
+            StreamOrFutureEvent::Write {
+                values,
+                post_write: PostWrite::Continue,
+                tx,
+            },
+        );
+        Promise(Box::pin(rx.map(|v| match v {
+            Ok(()) => Some(self),
+            Err(_) => {
+                self.tx.take();
+                None
+            }
+        })))
     }
 
-    /// Close this object without writing any more values.
-    ///
-    /// If this object is dropped without calling this method, any read on the
-    /// readable end will remain pending forever.
+    /// Close this object with a final error.
     ///
     /// # Arguments
     ///
-    /// * `store` - The store associated with the component instance
+    /// * `err_ctx` - The handle of an error context that should be reported with the stream closure.
     ///
-    pub fn close<U, S: AsContextMut<Data = U>>(self, store: S) -> Result<()> {
-        self.close_with_error(store, 0)
+    pub fn close_with_error(mut self, err_ctx: ErrorContext) {
+        send(
+            &mut self.tx.take().unwrap(),
+            StreamOrFutureEvent::CloseWriter {
+                err_ctx: Some(err_ctx),
+            },
+        );
     }
+}
 
-    /// Close this object with a final error
-    ///
-    /// If this object is dropped without calling this method, any read on the
-    /// readable end will remain pending forever.
-    ///
-    /// # Arguments
-    ///
-    /// * `store` - The store associated with the component instance
-    /// * `err_ctx` - The handle of an error context that should be reported with the stream closure (`0` if none)
-    ///
-    pub fn close_with_error<U, S: AsContextMut<Data = U>>(
-        self,
-        store: S,
-        err_ctx: u32,
-    ) -> Result<()> {
-        host_close_writer(
-            store,
-            self.rep,
-            (err_ctx != 0).then(|| TypeComponentGlobalErrorContextTableIndex::from_u32(err_ctx)),
-        )
+impl<T> Drop for StreamWriter<T> {
+    fn drop(&mut self) {
+        if let Some(mut tx) = self.tx.take() {
+            send(&mut tx, StreamOrFutureEvent::CloseWriter { err_ctx: None });
+        }
     }
 }
 
 /// Represents the readable end of a Component Model `stream`.
-pub struct StreamReader<T> {
+///
+/// In order to actually read from or close this `stream`, first convert it to a
+/// [`FutureReader`] using the `into_reader` method.
+///
+/// Note that if a value of this type is dropped without either being converted
+/// to a `StreamReader` or passed to the guest, any writes on the write end may
+/// block forever.
+pub struct HostStream<T> {
     rep: u32,
     _phantom: PhantomData<T>,
 }
 
-impl<T> StreamReader<T> {
+impl<T> HostStream<T> {
     pub(crate) fn new(rep: u32) -> Self {
         Self {
             rep,
@@ -1071,25 +1206,24 @@ impl<T> StreamReader<T> {
         }
     }
 
-    /// Read the next values (if any) from this `stream`.
-    pub fn read<U, S: AsContextMut<Data = U>>(
-        self,
-        store: S,
-    ) -> Result<Promise<Option<(StreamReader<T>, Vec<T>)>>>
+    /// Convert this object into a [`StreamReader`].
+    pub fn into_reader<U, S: AsContextMut<Data = U>>(self, store: S) -> StreamReader<T>
     where
-        T: func::Lift + Sync + Send + 'static,
+        T: func::Lower + func::Lift + Sync + Send + 'static,
     {
-        Ok(Promise(Box::pin(host_read(store, self.rep)?.map(
-            move |v| v.ok().and_then(|v| v.into_values().map(|v| (self, v))),
-        ))))
+        StreamReader {
+            rep: self.rep,
+            tx: Some(start_event_loop(store, self.rep)),
+        }
     }
 
-    /// Convert this `StreamReader` into a [`Val`].
+    /// Convert this `HostStream` into a [`Val`].
+    // See TODO comment for `StreamAny`; this is prone to handle leakage.
     pub fn into_val(self) -> Val {
         Val::Stream(StreamAny(self.rep))
     }
 
-    /// Attempt to convert the specified [`Val`] to a `StreamReader`.
+    /// Attempt to convert the specified [`Val`] to a `HostStream`.
     pub fn from_val<U, S: AsContextMut<Data = U>>(mut store: S, value: &Val) -> Result<Self> {
         let Val::Stream(StreamAny(rep)) = value else {
             bail!("expected `stream`; got `{}`", value.desc());
@@ -1141,18 +1275,9 @@ impl<T> StreamReader<T> {
             _ => func::bad_type_info(),
         }
     }
-
-    /// Close this object without reading any more values.
-    ///
-    /// If the object is dropped without either calling this method or reading
-    /// until the end of the stream, any write on the writable end will remain
-    /// pending forever.
-    pub fn close<U, S: AsContextMut<Data = U>>(self, store: S) -> Result<()> {
-        host_close_reader(store, self.rep)
-    }
 }
 
-unsafe impl<T> func::ComponentType for StreamReader<T> {
+unsafe impl<T> func::ComponentType for HostStream<T> {
     const ABI: CanonicalAbiInfo = CanonicalAbiInfo::SCALAR4;
 
     type Lower = <u32 as func::ComponentType>::Lower;
@@ -1165,7 +1290,7 @@ unsafe impl<T> func::ComponentType for StreamReader<T> {
     }
 }
 
-unsafe impl<T> func::Lower for StreamReader<T> {
+unsafe impl<T> func::Lower for HostStream<T> {
     fn lower<U>(
         &self,
         cx: &mut LowerContext<'_, U>,
@@ -1187,7 +1312,7 @@ unsafe impl<T> func::Lower for StreamReader<T> {
     }
 }
 
-unsafe impl<T> func::Lift for StreamReader<T> {
+unsafe impl<T> func::Lift for HostStream<T> {
     fn lift(cx: &mut LiftContext<'_>, ty: InterfaceType, src: &Self::Lower) -> Result<Self> {
         let index = u32::lift(cx, InterfaceType::U32, src)?;
         Self::lift_from_index(cx, ty, index)
@@ -1199,9 +1324,59 @@ unsafe impl<T> func::Lift for StreamReader<T> {
     }
 }
 
+impl<T> From<StreamReader<T>> for HostStream<T> {
+    fn from(mut value: StreamReader<T>) -> Self {
+        value.tx.take();
+
+        Self {
+            rep: value.rep,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+/// Represents the readable end of a Component Model `stream`.
+///
+/// In order to pass this end to guest code, first convert it to a
+/// [`HostStream`] using the `into` method.
+pub struct StreamReader<T> {
+    rep: u32,
+    tx: Option<mpsc::Sender<StreamOrFutureEvent<T>>>,
+}
+
+impl<T> StreamReader<T> {
+    /// Read the value from this `stream`.
+    pub fn read(mut self) -> Promise<Result<(StreamReader<T>, Vec<T>), Option<ErrorContext>>>
+    where
+        T: Send + 'static,
+    {
+        let (tx, rx) = oneshot::channel();
+        send(self.tx.as_mut().unwrap(), StreamOrFutureEvent::Read { tx });
+        Promise(Box::pin(rx.map(|v| match v {
+            Ok(HostReadResult::Values(v)) => Ok((self, v)),
+            Err(_) => {
+                self.tx.take();
+                Err(None)
+            }
+            Ok(HostReadResult::EndOfStream(s)) => {
+                self.tx.take();
+                Err(s)
+            }
+        })))
+    }
+}
+
+impl<T> Drop for StreamReader<T> {
+    fn drop(&mut self) {
+        if let Some(mut tx) = self.tx.take() {
+            send(&mut tx, StreamOrFutureEvent::CloseReader);
+        }
+    }
+}
+
 /// Create a new Component Model `stream` as pair of writable and readable ends,
 /// the latter of which may be passed to guest code.
-pub fn stream<T, U, S: AsContextMut<Data = U>>(
+pub fn stream<T: func::Lower + func::Lift + Sync + Send + 'static, U, S: AsContextMut<Data = U>>(
     mut store: S,
 ) -> Result<(StreamWriter<T>, StreamReader<T>)> {
     let mut store = store.as_context_mut();
@@ -1212,12 +1387,11 @@ pub fn stream<T, U, S: AsContextMut<Data = U>>(
 
     Ok((
         StreamWriter {
-            rep: transmit.rep(),
-            _phantom: PhantomData,
+            tx: Some(start_event_loop(&mut store, transmit.rep())),
         },
         StreamReader {
             rep: transmit.rep(),
-            _phantom: PhantomData,
+            tx: Some(start_event_loop(store, transmit.rep())),
         },
     ))
 }

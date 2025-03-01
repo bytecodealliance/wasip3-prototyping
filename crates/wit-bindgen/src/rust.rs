@@ -166,12 +166,12 @@ pub trait RustGenerator<'a> {
                 panic!("unsupported anonymous type reference: enum")
             }
             TypeDefKind::Future(ty) => {
-                self.push_str("wasmtime::component::FutureReader<");
+                self.push_str("wasmtime::component::HostFuture<");
                 self.print_optional_ty(ty.as_ref(), TypeMode::Owned);
                 self.push_str(">");
             }
             TypeDefKind::Stream(ty) => {
-                self.push_str("wasmtime::component::StreamReader<");
+                self.push_str("wasmtime::component::HostStream<");
                 self.print_optional_ty(ty.as_ref(), TypeMode::Owned);
                 self.push_str(">");
             }
@@ -226,14 +226,14 @@ pub trait RustGenerator<'a> {
 
     fn print_stream(&mut self, ty: Option<&Type>) {
         let wt = self.wasmtime_path();
-        self.push_str(&format!("{wt}::component::StreamReader<"));
+        self.push_str(&format!("{wt}::component::HostStream<"));
         self.print_optional_ty(ty, TypeMode::Owned);
         self.push_str(">");
     }
 
     fn print_future(&mut self, ty: Option<&Type>) {
         let wt = self.wasmtime_path();
-        self.push_str(&format!("{wt}::component::FutureReader<"));
+        self.push_str(&format!("{wt}::component::HostFuture<"));
         self.print_optional_ty(ty, TypeMode::Owned);
         self.push_str(">");
     }

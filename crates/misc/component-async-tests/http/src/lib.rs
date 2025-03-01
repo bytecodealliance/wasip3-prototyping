@@ -10,6 +10,8 @@ wasmtime::component::bindgen!({
     concurrent_imports: true,
     async: {
         only_imports: [
+            "wasi:http/types@0.3.0-draft#[constructor]body",
+            "wasi:http/types@0.3.0-draft#[static]body.new-with-trailers",
             "wasi:http/types@0.3.0-draft#[static]body.finish",
             "wasi:http/handler@0.3.0-draft#handle",
         ]
@@ -28,8 +30,8 @@ use {
     std::{fmt, future::Future, mem},
     wasi::http::types::{ErrorCode, HeaderError, Method, RequestOptionsError, Scheme},
     wasmtime::component::{
-        future, Accessor, AccessorTask, ErrorContext, FutureReader, Linker, Resource,
-        ResourceTable, StreamReader,
+        future, Accessor, AccessorTask, ErrorContext, FutureReader, HostFuture, HostStream, Linker,
+        Resource, ResourceTable, StreamReader,
     },
 };
 
@@ -214,31 +216,40 @@ impl<T: WasiHttpView> wasi::http::types::HostFields for WasiHttpImpl<T> {
 }
 
 impl<T: WasiHttpView> wasi::http::types::HostBody for WasiHttpImpl<T> {
-    fn new(&mut self, stream: StreamReader<u8>) -> wasmtime::Result<Resource<Body>> {
-        Ok(self.table().push(Body {
-            stream: Some(stream),
-            trailers: None,
-        })?)
-    }
-
-    fn new_with_trailers(
-        &mut self,
-        stream: StreamReader<u8>,
-        trailers: FutureReader<Resource<Fields>>,
+    async fn new<U>(
+        accessor: &mut Accessor<U, Self>,
+        stream: HostStream<u8>,
     ) -> wasmtime::Result<Resource<Body>> {
-        Ok(self.table().push(Body {
-            stream: Some(stream),
-            trailers: Some(trailers),
-        })?)
+        accessor.with(|mut view| {
+            let body = Body {
+                stream: Some(stream.into_reader(&mut view)),
+                trailers: None,
+            };
+            Ok(view.table().push(body)?)
+        })
     }
 
-    fn stream(&mut self, this: Resource<Body>) -> wasmtime::Result<Result<StreamReader<u8>, ()>> {
+    async fn new_with_trailers<U>(
+        accessor: &mut Accessor<U, Self>,
+        stream: HostStream<u8>,
+        trailers: HostFuture<Resource<Fields>>,
+    ) -> wasmtime::Result<Resource<Body>> {
+        accessor.with(|mut view| {
+            let body = Body {
+                stream: Some(stream.into_reader(&mut view)),
+                trailers: Some(trailers.into_reader(&mut view)),
+            };
+            Ok(view.table().push(body)?)
+        })
+    }
+
+    fn stream(&mut self, this: Resource<Body>) -> wasmtime::Result<Result<HostStream<u8>, ()>> {
         // TODO: This should return a child handle
         let stream = self.table().get_mut(&this)?.stream.take().ok_or_else(|| {
             anyhow!("todo: allow wasi:http/types#body.stream to be called multiple times")
         })?;
 
-        Ok(Ok(stream))
+        Ok(Ok(stream.into()))
     }
 
     // TODO: once access to the store is possible in a non-async context (similar to Accessor pattern)
@@ -246,20 +257,16 @@ impl<T: WasiHttpView> wasi::http::types::HostBody for WasiHttpImpl<T> {
     async fn finish<U>(
         accessor: &mut Accessor<U, Self>,
         this: Resource<Body>,
-    ) -> wasmtime::Result<FutureReader<Resource<Fields>>> {
+    ) -> wasmtime::Result<HostFuture<Resource<Fields>>> {
         let trailers = accessor.with(|mut store| {
             let trailers = store.table().delete(this)?.trailers;
             Ok::<FutureReader<_>, anyhow::Error>(match trailers {
                 Some(t) => t,
-                None => {
-                    let (future_tx, future_rx) = future(&mut store)?;
-                    future_tx.close(store)?;
-                    future_rx
-                }
+                None => future(&mut store)?.1,
             })
         })?;
 
-        Ok(trailers)
+        Ok(trailers.into())
     }
 
     fn drop(&mut self, this: Resource<Body>) -> wasmtime::Result<()> {
