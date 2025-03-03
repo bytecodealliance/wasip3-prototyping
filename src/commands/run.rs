@@ -13,6 +13,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use tokio::io::{stderr, stdin, stdout};
 use wasi_common::sync::{ambient_authority, Dir, TcpListener, WasiCtxBuilder};
 use wasmtime::{Engine, Func, Module, Store, StoreLimits, Val, ValType};
 use wasmtime_wasi::{IoView, WasiView};
@@ -471,19 +472,34 @@ impl RunCommand {
                 }
 
                 let component = module.unwrap_component();
-
-                let command = wasmtime_wasi::bindings::Command::instantiate_async(
-                    &mut *store,
-                    component,
-                    linker,
-                )
-                .await?;
-                let result = command
-                    .wasi_cli_run()
-                    .call_run(&mut *store)
+                let result = if let Ok(command) =
+                    wasmtime_wasi::p3::bindings::Command::instantiate_async(
+                        &mut *store,
+                        component,
+                        linker,
+                    )
                     .await
-                    .context("failed to invoke `run` function")
-                    .map_err(|e| self.handle_core_dump(&mut *store, e));
+                {
+                    let p = command
+                        .wasi_cli_run()
+                        .call_run(&mut *store)
+                        .await
+                        .context("failed to call `wasi:cli/run#run`")?;
+                    p.get(&mut *store).await
+                } else {
+                    let command = wasmtime_wasi::bindings::Command::instantiate_async(
+                        &mut *store,
+                        component,
+                        linker,
+                    )
+                    .await?;
+                    command
+                        .wasi_cli_run()
+                        .call_run(&mut *store)
+                        .await
+                        .context("failed to invoke `run` function")
+                }
+                .map_err(|e| self.handle_core_dump(&mut *store, e));
 
                 // Translate the `Result<(),()>` produced by wasm into a feigned
                 // explicit exit here with status 1 if `Err(())` is returned.
@@ -655,6 +671,7 @@ impl RunCommand {
                                 t.preview2_ctx()
                             })?;
                             self.set_preview2_ctx(store)?;
+                            self.set_p3_ctx(store)?;
                         }
                     }
                 }
@@ -662,7 +679,10 @@ impl RunCommand {
                 CliLinker::Component(linker) => {
                     let link_options = self.run.compute_wasi_features();
                     wasmtime_wasi::add_to_linker_with_options_async(linker, &link_options)?;
+                    wasmtime_wasi::p3::add_to_linker(linker)
+                        .context("failed to link `wasi:cli@0.3.x`")?;
                     self.set_preview2_ctx(store)?;
+                    self.set_p3_ctx(store)?;
                 }
             }
         }
@@ -884,6 +904,79 @@ impl RunCommand {
         Ok(())
     }
 
+    fn set_p3_ctx(&self, store: &mut Store<Host>) -> Result<()> {
+        store.data_mut().p3_clocks = Some(Arc::default());
+        store.data_mut().p3_random = Some(Arc::default());
+
+        let mut environment = Vec::default();
+        if self.run.common.wasi.inherit_env == Some(true) {
+            for (k, v) in std::env::vars() {
+                environment.push((k, v));
+            }
+        }
+        for (key, value) in self.run.vars.iter() {
+            let value = match value {
+                Some(value) => value.clone(),
+                None => match std::env::var_os(key) {
+                    Some(val) => val
+                        .into_string()
+                        .map_err(|_| anyhow!("environment variable `{key}` not valid utf-8"))?,
+                    None => {
+                        // leave the env var un-set in the guest
+                        continue;
+                    }
+                },
+            };
+            environment.push((key.clone(), value));
+        }
+        let arguments = self.compute_argv()?;
+        store.data_mut().p3_cli = Some(Arc::new(Mutex::new(wasmtime_wasi::p3::cli::WasiCliCtx {
+            environment,
+            arguments,
+            initial_cwd: None,
+            stdin: Box::new(stdin()),
+            stdout: Box::new(stdout()),
+            stderr: Box::new(stderr()),
+        })));
+
+        let mut p3_filesystem = wasmtime_wasi::p3::filesystem::WasiFilesystemCtx::default();
+        p3_filesystem.allow_blocking_current_thread = self.run.common.wasm.timeout.is_none();
+        for (host, guest) in self.run.dirs.iter() {
+            p3_filesystem.preopened_dir(
+                host,
+                guest,
+                wasmtime_wasi::p3::filesystem::DirPerms::all(),
+                wasmtime_wasi::p3::filesystem::FilePerms::all(),
+            )?;
+        }
+        store.data_mut().p3_filesystem = Some(p3_filesystem);
+
+        if self.run.common.wasi.listenfd == Some(true) {
+            bail!("components do not support --listenfd");
+        }
+        for _ in self.run.compute_preopen_sockets()? {
+            bail!("components do not support --tcplisten");
+        }
+
+        let mut p3_sockets = wasmtime_wasi::p3::sockets::WasiSocketsCtx::default();
+        if self.run.common.wasi.inherit_network == Some(true) {
+            p3_sockets.socket_addr_check =
+                wasmtime_wasi::p3::sockets::SocketAddrCheck::new(|_, _| Box::pin(async { true }))
+        }
+        if let Some(enable) = self.run.common.wasi.allow_ip_name_lookup {
+            p3_sockets.allowed_network_uses.ip_name_lookup = enable;
+        }
+        if let Some(enable) = self.run.common.wasi.tcp {
+            p3_sockets.allowed_network_uses.tcp = enable;
+        }
+        if let Some(enable) = self.run.common.wasi.udp {
+            p3_sockets.allowed_network_uses.udp = enable;
+        }
+        store.data_mut().p3_sockets = Some(p3_sockets);
+
+        Ok(())
+    }
+
     #[cfg(feature = "wasi-nn")]
     fn collect_preloaded_nn_graphs(
         &self,
@@ -908,6 +1001,12 @@ struct Host {
     // actually perform any locking on it as we use Mutex::get_mut for every
     // access.
     preview2_ctx: Option<Arc<Mutex<wasmtime_wasi::preview1::WasiP1Ctx>>>,
+
+    p3_cli: Option<Arc<Mutex<wasmtime_wasi::p3::cli::WasiCliCtx>>>,
+    p3_clocks: Option<Arc<Mutex<wasmtime_wasi::p3::clocks::WasiClocksCtx>>>,
+    p3_filesystem: Option<wasmtime_wasi::p3::filesystem::WasiFilesystemCtx>,
+    p3_random: Option<Arc<Mutex<wasmtime_wasi::p3::random::WasiRandomCtx>>>,
+    p3_sockets: Option<wasmtime_wasi::p3::sockets::WasiSocketsCtx>,
 
     #[cfg(feature = "wasi-nn")]
     wasi_nn_wit: Option<Arc<wasmtime_wasi_nn::wit::WasiNnCtx>>,
@@ -953,6 +1052,59 @@ impl IoView for Host {
 impl WasiView for Host {
     fn ctx(&mut self) -> &mut wasmtime_wasi::WasiCtx {
         self.preview2_ctx().ctx()
+    }
+}
+impl wasmtime_wasi::p3::ResourceView for Host {
+    fn table(&mut self) -> &mut wasmtime::component::ResourceTable {
+        self.preview2_ctx().table()
+    }
+}
+impl wasmtime_wasi::p3::cli::WasiCliView for Host {
+    fn cli(&mut self) -> &wasmtime_wasi::p3::cli::WasiCliCtx {
+        let cli = self
+            .p3_cli
+            .as_mut()
+            .and_then(Arc::get_mut)
+            .expect("`wasi:cli@0.3` not configured");
+        cli.get_mut().unwrap()
+    }
+}
+
+impl wasmtime_wasi::p3::clocks::WasiClocksView for Host {
+    fn clocks(&mut self) -> &wasmtime_wasi::p3::clocks::WasiClocksCtx {
+        let clocks = self
+            .p3_clocks
+            .as_mut()
+            .and_then(Arc::get_mut)
+            .expect("`wasi:clocks@0.3` not configured");
+        clocks.get_mut().unwrap()
+    }
+}
+
+impl wasmtime_wasi::p3::filesystem::WasiFilesystemView for Host {
+    fn filesystem(&self) -> &wasmtime_wasi::p3::filesystem::WasiFilesystemCtx {
+        self.p3_filesystem
+            .as_ref()
+            .expect("`wasi:filesystem@0.3` not configured")
+    }
+}
+
+impl wasmtime_wasi::p3::random::WasiRandomView for Host {
+    fn random(&mut self) -> &mut wasmtime_wasi::p3::random::WasiRandomCtx {
+        let random = self
+            .p3_random
+            .as_mut()
+            .and_then(Arc::get_mut)
+            .expect("`wasi:random@0.3` not configured");
+        random.get_mut().unwrap()
+    }
+}
+
+impl wasmtime_wasi::p3::sockets::WasiSocketsView for Host {
+    fn sockets(&self) -> &wasmtime_wasi::p3::sockets::WasiSocketsCtx {
+        self.p3_sockets
+            .as_ref()
+            .expect("`wasi:sockets@0.3` not configured")
     }
 }
 

@@ -76,11 +76,11 @@ pub mod sockets;
 /// }
 ///
 /// impl WasiCliView for MyState {
-///     fn cli(&self) -> &WasiCliCtx { &self.cli }
+///     fn cli(&mut self) -> &WasiCliCtx { &self.cli }
 /// }
 ///
 /// impl WasiClocksView for MyState {
-///     fn clocks(&self) -> &WasiClocksCtx { &self.clocks }
+///     fn clocks(&mut self) -> &WasiClocksCtx { &self.clocks }
 /// }
 ///
 /// impl WasiFilesystemView for MyState {
