@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, Result};
 use tokio::fs;
 use wasmtime::component::{
-    self, Component, ErrorContext, FutureReader, Instance, Linker, Promise, PromisesUnordered,
-    ResourceTable, StreamReader, StreamWriter, Val,
+    self, Component, ErrorContext, HostFuture, HostStream, Instance, Linker, Promise,
+    PromisesUnordered, ResourceTable, StreamReader, StreamWriter, Val,
 };
 use wasmtime::{AsContextMut, Config, Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;
@@ -49,20 +49,16 @@ pub trait TransmitTest {
     ) -> impl Future<Output = Result<Promise<Self::Result>>>;
 
     fn into_params(
-        control: StreamReader<Control>,
-        caller_stream: StreamReader<String>,
-        caller_future1: FutureReader<String>,
-        caller_future2: FutureReader<String>,
+        control: HostStream<Control>,
+        caller_stream: HostStream<String>,
+        caller_future1: HostFuture<String>,
+        caller_future2: HostFuture<String>,
     ) -> Self::Params;
 
     fn from_result(
         store: impl AsContextMut<Data = Ctx>,
         result: Self::Result,
-    ) -> Result<(
-        StreamReader<String>,
-        FutureReader<String>,
-        FutureReader<String>,
-    )>;
+    ) -> Result<(HostStream<String>, HostFuture<String>, HostFuture<String>)>;
 }
 
 struct StaticTransmitTest;
@@ -70,16 +66,12 @@ struct StaticTransmitTest;
 impl TransmitTest for StaticTransmitTest {
     type Instance = transmit::bindings::TransmitCallee;
     type Params = (
-        StreamReader<Control>,
-        StreamReader<String>,
-        FutureReader<String>,
-        FutureReader<String>,
+        HostStream<Control>,
+        HostStream<String>,
+        HostFuture<String>,
+        HostFuture<String>,
     );
-    type Result = (
-        StreamReader<String>,
-        FutureReader<String>,
-        FutureReader<String>,
-    );
+    type Result = (HostStream<String>, HostFuture<String>, HostFuture<String>);
 
     async fn instantiate(
         store: impl AsContextMut<Data = Ctx>,
@@ -101,10 +93,10 @@ impl TransmitTest for StaticTransmitTest {
     }
 
     fn into_params(
-        control: StreamReader<Control>,
-        caller_stream: StreamReader<String>,
-        caller_future1: FutureReader<String>,
-        caller_future2: FutureReader<String>,
+        control: HostStream<Control>,
+        caller_stream: HostStream<String>,
+        caller_future1: HostFuture<String>,
+        caller_future2: HostFuture<String>,
     ) -> Self::Params {
         (control, caller_stream, caller_future1, caller_future2)
     }
@@ -112,11 +104,7 @@ impl TransmitTest for StaticTransmitTest {
     fn from_result(
         _: impl AsContextMut<Data = Ctx>,
         result: Self::Result,
-    ) -> Result<(
-        StreamReader<String>,
-        FutureReader<String>,
-        FutureReader<String>,
-    )> {
+    ) -> Result<(HostStream<String>, HostFuture<String>, HostFuture<String>)> {
         Ok(result)
     }
 }
@@ -158,10 +146,10 @@ impl TransmitTest for DynamicTransmitTest {
     }
 
     fn into_params(
-        control: StreamReader<Control>,
-        caller_stream: StreamReader<String>,
-        caller_future1: FutureReader<String>,
-        caller_future2: FutureReader<String>,
+        control: HostStream<Control>,
+        caller_stream: HostStream<String>,
+        caller_future1: HostFuture<String>,
+        caller_future2: HostFuture<String>,
     ) -> Self::Params {
         vec![
             control.into_val(),
@@ -174,17 +162,13 @@ impl TransmitTest for DynamicTransmitTest {
     fn from_result(
         mut store: impl AsContextMut<Data = Ctx>,
         result: Self::Result,
-    ) -> Result<(
-        StreamReader<String>,
-        FutureReader<String>,
-        FutureReader<String>,
-    )> {
+    ) -> Result<(HostStream<String>, HostFuture<String>, HostFuture<String>)> {
         let Val::Tuple(fields) = result else {
             unreachable!()
         };
-        let stream = StreamReader::from_val(store.as_context_mut(), &fields[0])?;
-        let future1 = FutureReader::from_val(store.as_context_mut(), &fields[1])?;
-        let future2 = FutureReader::from_val(store.as_context_mut(), &fields[2])?;
+        let stream = HostStream::from_val(store.as_context_mut(), &fields[0])?;
+        let future1 = HostFuture::from_val(store.as_context_mut(), &fields[1])?;
+        let future2 = HostFuture::from_val(store.as_context_mut(), &fields[2])?;
         Ok((stream, future1, future2))
     }
 }
@@ -233,12 +217,12 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
         ControlWriteA(Option<StreamWriter<Control>>),
         ControlWriteB(Option<StreamWriter<Control>>),
         ControlWriteC(Option<StreamWriter<Control>>),
-        ControlWriteD(Option<StreamWriter<Control>>),
-        WriteA(Option<StreamWriter<String>>),
+        ControlWriteD,
+        WriteA,
         WriteB(bool),
-        ReadC(Option<(StreamReader<String>, Vec<String>)>),
-        ReadD(Option<Result<String, ErrorContext>>),
-        ReadNone(Option<(StreamReader<String>, Vec<String>)>),
+        ReadC(Result<(StreamReader<String>, Vec<String>), Option<ErrorContext>>),
+        ReadD(Result<String, Option<ErrorContext>>),
+        ReadNone(Result<(StreamReader<String>, Vec<String>), Option<ErrorContext>>),
     }
 
     let (control_tx, control_rx) = component::stream(&mut store)?;
@@ -254,14 +238,14 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
 
     promises.push(
         control_tx
-            .write(&mut store, vec![Control::ReadStream("a".into())])?
+            .write(vec![Control::ReadStream("a".into())])
             .map(Event::ControlWriteA),
     );
 
     promises.push(
         caller_stream_tx
-            .write(&mut store, vec!["a".into()])?
-            .map(Event::WriteA),
+            .write(vec!["a".into()])
+            .map(|_| Event::WriteA),
     );
 
     promises.push(
@@ -269,10 +253,10 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
             &mut store,
             &instance,
             Test::into_params(
-                control_rx,
-                caller_stream_rx,
-                caller_future1_rx,
-                caller_future2_rx,
+                control_rx.into(),
+                caller_stream_rx.into(),
+                caller_future1_rx.into(),
+                caller_future2_rx.into(),
             ),
         )
         .await?
@@ -283,79 +267,58 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
         match event {
             Event::Result(result) => {
                 let results = Test::from_result(&mut store, result)?;
-                callee_stream_rx = Some(results.0);
-                callee_future1_rx = Some(results.1);
-                results.2.close(&mut store)?;
+                callee_stream_rx = Some(results.0.into_reader(&mut store));
+                callee_future1_rx = Some(results.1.into_reader(&mut store));
             }
             Event::ControlWriteA(tx) => {
                 promises.push(
                     tx.unwrap()
-                        .write(&mut store, vec![Control::ReadFuture("b".into())])?
+                        .write(vec![Control::ReadFuture("b".into())])
                         .map(Event::ControlWriteB),
                 );
             }
-            Event::WriteA(tx) => {
-                tx.unwrap().close(&mut store)?;
+            Event::WriteA => {
                 promises.push(
                     caller_future1_tx
                         .take()
                         .unwrap()
-                        .write(&mut store, "b".into())?
+                        .write("b".into())
                         .map(Event::WriteB),
                 );
             }
             Event::ControlWriteB(tx) => {
                 promises.push(
                     tx.unwrap()
-                        .write(&mut store, vec![Control::WriteStream("c".into())])?
+                        .write(vec![Control::WriteStream("c".into())])
                         .map(Event::ControlWriteC),
                 );
             }
             Event::WriteB(delivered) => {
                 assert!(delivered);
-                promises.push(
-                    callee_stream_rx
-                        .take()
-                        .unwrap()
-                        .read(&mut store)?
-                        .map(Event::ReadC),
-                );
+                promises.push(callee_stream_rx.take().unwrap().read().map(Event::ReadC));
             }
             Event::ControlWriteC(tx) => {
                 promises.push(
                     tx.unwrap()
-                        .write(&mut store, vec![Control::WriteFuture("d".into())])?
-                        .map(Event::ControlWriteD),
+                        .write(vec![Control::WriteFuture("d".into())])
+                        .map(|_| Event::ControlWriteD),
                 );
             }
-            Event::ReadC(None) => unreachable!(),
-            Event::ReadC(Some((rx, values))) => {
+            Event::ReadC(Err(_)) => unreachable!(),
+            Event::ReadC(Ok((rx, values))) => {
                 assert_eq!("c", &values[0]);
-                promises.push(
-                    callee_future1_rx
-                        .take()
-                        .unwrap()
-                        .read(&mut store)?
-                        .map(Event::ReadD),
-                );
+                promises.push(callee_future1_rx.take().unwrap().read().map(Event::ReadD));
                 callee_stream_rx = Some(rx);
             }
-            Event::ControlWriteD(tx) => {
-                tx.unwrap().close(&mut store)?;
+            Event::ControlWriteD => {}
+            Event::ReadD(Err(_)) => unreachable!(),
+            Event::ReadD(Ok(value)) => {
+                assert_eq!(value, "d");
+                promises.push(callee_stream_rx.take().unwrap().read().map(Event::ReadNone));
             }
-            Event::ReadD(None) => unreachable!(),
-            Event::ReadD(Some(value)) => {
-                assert!(value.is_ok_and(|v| v == "d"));
-                promises.push(
-                    callee_stream_rx
-                        .take()
-                        .unwrap()
-                        .read(&mut store)?
-                        .map(Event::ReadNone),
-                );
-            }
-            Event::ReadNone(Some(_)) => unreachable!(),
-            Event::ReadNone(None) => {
+            Event::ReadNone(Ok(_)) => unreachable!(),
+            Event::ReadNone(Err(e)) => {
+                assert!(e.is_none());
                 complete = true;
             }
         }

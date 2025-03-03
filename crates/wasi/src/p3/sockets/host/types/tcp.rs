@@ -9,7 +9,7 @@ use io_lifetimes::AsSocketlike as _;
 use rustix::io::Errno;
 use tokio::sync::mpsc;
 use wasmtime::component::{
-    future, stream, Accessor, AccessorTask, FutureReader, Resource, ResourceTable, StreamReader,
+    future, stream, Accessor, AccessorTask, HostFuture, HostStream, Resource, ResourceTable,
     StreamWriter,
 };
 
@@ -21,7 +21,7 @@ use crate::p3::sockets::util::{
     is_valid_address_family, is_valid_remote_address, is_valid_unicast_address,
 };
 use crate::p3::sockets::{SocketAddrUse, SocketAddressFamily, WasiSocketsImpl, WasiSocketsView};
-use crate::p3::{next_item, AccessorTaskFn, IoTask, ResourceView as _};
+use crate::p3::{AccessorTaskFn, IoTask, ResourceView as _};
 
 use super::is_addr_allowed;
 
@@ -171,15 +171,13 @@ impl<T, U: WasiSocketsView> AccessorTask<T, U, wasmtime::Result<()>> for ListenT
                     .table()
                     .push(TcpSocket::from_state(state, self.family))
                     .context("failed to push socket to table")?;
-                tx.write(&mut view, vec![socket])
-                    .context("failed to send socket")
+                Ok::<_, wasmtime::Error>(tx.write(vec![socket]))
             })?;
             let Some(tail) = fut.into_future().await else {
                 return Ok(());
             };
             tx = tail;
         }
-        store.with(|view| tx.close(view).context("failed to close stream"))?;
         Ok(())
     }
 }
@@ -271,7 +269,7 @@ where
     async fn listen<U: 'static>(
         store: &mut Accessor<U, Self>,
         socket: Resource<TcpSocket>,
-    ) -> wasmtime::Result<Result<StreamReader<Resource<TcpSocket>>, ErrorCode>> {
+    ) -> wasmtime::Result<Result<HostStream<Resource<TcpSocket>>, ErrorCode>> {
         match store.with(|mut view| {
             if !view.sockets().allowed_network_uses.tcp {
                 return Ok(Err(ErrorCode::AccessDenied));
@@ -360,7 +358,7 @@ where
         }) {
             Ok(Ok((rx, task))) => {
                 store.spawn(task);
-                Ok(Ok(rx))
+                Ok(Ok(rx.into()))
             }
             Ok(Err(err)) => Ok(Err(err)),
             Err(err) => Err(err),
@@ -370,10 +368,11 @@ where
     async fn send<U>(
         store: &mut Accessor<U, Self>,
         socket: Resource<TcpSocket>,
-        data: StreamReader<u8>,
+        data: HostStream<u8>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let (stream, fut) = match store.with(|mut view| {
-            let fut = data.read(&mut view).context("failed to read from stream")?;
+            let data = data.into_reader(&mut view);
+            let fut = data.read();
             let sock = get_socket(view.table(), &socket)?;
             if let TcpState::Connected { stream, .. } = &sock.tcp_state {
                 Ok(Ok((Arc::clone(&stream), fut)))
@@ -387,7 +386,7 @@ where
         };
         let mut fut = fut.into_future();
         'outer: loop {
-            let Some((tail, buf)) = fut.await else {
+            let Ok((tail, buf)) = fut.await else {
                 _ = stream
                     .as_socketlike_view::<std::net::TcpStream>()
                     .shutdown(Shutdown::Write);
@@ -398,7 +397,7 @@ where
                 match stream.try_write(&buf) {
                     Ok(n) => {
                         if n == buf.len() {
-                            fut = next_item(store, tail)?;
+                            fut = tail.read().into_future();
                             continue 'outer;
                         } else {
                             buf = &buf[n..];
@@ -426,7 +425,7 @@ where
     async fn receive<U: 'static>(
         store: &mut Accessor<U, Self>,
         socket: Resource<TcpSocket>,
-    ) -> wasmtime::Result<(StreamReader<u8>, FutureReader<Result<(), ErrorCode>>)> {
+    ) -> wasmtime::Result<(HostStream<u8>, HostFuture<Result<(), ErrorCode>>)> {
         store.with(|mut view| {
             let (data_tx, data_rx) = stream(&mut view).context("failed to create stream")?;
             let (res_tx, res_rx) = future(&mut view).context("failed to create future")?;
@@ -481,18 +480,14 @@ where
                     *rx_task = Some(task.abort_handle());
                 }
                 _ => {
-                    data_tx.close(&mut view).context("failed to close stream")?;
-                    let fut = res_tx
-                        .write(&mut view, Err(ErrorCode::InvalidState))
-                        .context("failed to write result to future")?;
-                    let fut = fut.into_future();
+                    let fut = res_tx.write(Err(ErrorCode::InvalidState)).into_future();
                     view.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                         fut.await;
                         Ok(())
                     }));
                 }
             }
-            Ok((data_rx, res_rx))
+            Ok((data_rx.into(), res_rx.into()))
         })
     }
 

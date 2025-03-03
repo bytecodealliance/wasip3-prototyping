@@ -49,14 +49,14 @@ pub async fn async_closed_streams() -> Result<()> {
 
     enum StreamEvent {
         FirstWrite(Option<StreamWriter<u8>>),
-        FirstRead(Option<(StreamReader<u8>, Vec<u8>)>),
+        FirstRead(Result<(StreamReader<u8>, Vec<u8>), Option<ErrorContext>>),
         SecondWrite(Option<StreamWriter<u8>>),
         GuestCompleted,
     }
 
     enum FutureEvent {
         Write(bool),
-        Read(Option<Result<u8, ErrorContext>>),
+        Read(Result<u8, Option<ErrorContext>>),
         WriteIgnored(bool),
         GuestCompleted,
     }
@@ -70,28 +70,21 @@ pub async fn async_closed_streams() -> Result<()> {
         let (tx, rx) = component::stream(&mut store)?;
 
         let mut promises = PromisesUnordered::new();
-        promises.push(
-            tx.write(&mut store, values.clone())?
-                .map(StreamEvent::FirstWrite),
-        );
-        promises.push(rx.read(&mut store)?.map(StreamEvent::FirstRead));
+        promises.push(tx.write(values.clone()).map(StreamEvent::FirstWrite));
+        promises.push(rx.read().map(StreamEvent::FirstRead));
 
         let mut count = 0;
         while let Some(event) = promises.next(&mut store).await? {
             count += 1;
             match event {
                 StreamEvent::FirstWrite(Some(tx)) => {
-                    promises.push(
-                        tx.write(&mut store, values.clone())?
-                            .map(StreamEvent::SecondWrite),
-                    );
+                    promises.push(tx.write(values.clone()).map(StreamEvent::SecondWrite));
                 }
                 StreamEvent::FirstWrite(None) => panic!("first write should have been accepted"),
-                StreamEvent::FirstRead(Some((rx, results))) => {
+                StreamEvent::FirstRead(Ok((_, results))) => {
                     assert_eq!(values, results);
-                    rx.close(&mut store)?;
                 }
-                StreamEvent::FirstRead(None) => unreachable!(),
+                StreamEvent::FirstRead(Err(_)) => unreachable!(),
                 StreamEvent::SecondWrite(None) => {}
                 StreamEvent::SecondWrite(Some(_)) => {
                     panic!("second write should _not_ have been accepted")
@@ -109,14 +102,10 @@ pub async fn async_closed_streams() -> Result<()> {
         let (tx_ignored, rx_ignored) = component::future(&mut store)?;
 
         let mut promises = PromisesUnordered::new();
-        promises.push(tx.write(&mut store, value)?.map(FutureEvent::Write));
-        promises.push(rx.read(&mut store)?.map(FutureEvent::Read));
-        promises.push(
-            tx_ignored
-                .write(&mut store, value)?
-                .map(FutureEvent::WriteIgnored),
-        );
-        rx_ignored.close(&mut store)?;
+        promises.push(tx.write(value).map(FutureEvent::Write));
+        promises.push(rx.read().map(FutureEvent::Read));
+        promises.push(tx_ignored.write(value).map(FutureEvent::WriteIgnored));
+        drop(rx_ignored);
 
         let mut count = 0;
         while let Some(event) = promises.next(&mut store).await? {
@@ -125,10 +114,10 @@ pub async fn async_closed_streams() -> Result<()> {
                 FutureEvent::Write(delivered) => {
                     assert!(delivered);
                 }
-                FutureEvent::Read(Some(Ok(result))) => {
+                FutureEvent::Read(Ok(result)) => {
                     assert_eq!(value, result);
                 }
-                FutureEvent::Read(_) => panic!("read should have succeeded"),
+                FutureEvent::Read(Err(_)) => panic!("read should have succeeded"),
                 FutureEvent::WriteIgnored(delivered) => {
                     assert!(!delivered);
                 }
@@ -147,24 +136,18 @@ pub async fn async_closed_streams() -> Result<()> {
         promises.push(
             closed_streams
                 .local_local_closed()
-                .call_read_stream(&mut store, rx, values.clone())
+                .call_read_stream(&mut store, rx.into(), values.clone())
                 .await?
                 .map(|()| StreamEvent::GuestCompleted),
         );
-        promises.push(
-            tx.write(&mut store, values.clone())?
-                .map(StreamEvent::FirstWrite),
-        );
+        promises.push(tx.write(values.clone()).map(StreamEvent::FirstWrite));
 
         let mut count = 0;
         while let Some(event) = promises.next(&mut store).await? {
             count += 1;
             match event {
                 StreamEvent::FirstWrite(Some(tx)) => {
-                    promises.push(
-                        tx.write(&mut store, values.clone())?
-                            .map(StreamEvent::SecondWrite),
-                    );
+                    promises.push(tx.write(values.clone()).map(StreamEvent::SecondWrite));
                 }
                 StreamEvent::FirstWrite(None) => panic!("first write should have been accepted"),
                 StreamEvent::FirstRead(_) => unreachable!(),
@@ -188,16 +171,12 @@ pub async fn async_closed_streams() -> Result<()> {
         promises.push(
             closed_streams
                 .local_local_closed()
-                .call_read_future(&mut store, rx, value, rx_ignored)
+                .call_read_future(&mut store, rx.into(), value, rx_ignored.into())
                 .await?
                 .map(|()| FutureEvent::GuestCompleted),
         );
-        promises.push(tx.write(&mut store, value)?.map(FutureEvent::Write));
-        promises.push(
-            tx_ignored
-                .write(&mut store, value)?
-                .map(FutureEvent::WriteIgnored),
-        );
+        promises.push(tx.write(value).map(FutureEvent::Write));
+        promises.push(tx_ignored.write(value).map(FutureEvent::WriteIgnored));
 
         let mut count = 0;
         while let Some(event) = promises.next(&mut store).await? {

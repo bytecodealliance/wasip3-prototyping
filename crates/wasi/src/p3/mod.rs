@@ -1,13 +1,11 @@
 use core::future::Future;
-use core::pin::Pin;
 
 use std::collections::HashMap;
 
-use anyhow::Context as _;
 use tokio::sync::mpsc;
 use wasmtime::component::{
-    AbortOnDropHandle, Accessor, AccessorTask, FutureWriter, Lift, Linker, Lower, ResourceTable,
-    StreamReader, StreamWriter,
+    AbortOnDropHandle, Accessor, AccessorTask, FutureWriter, Linker, Lower, ResourceTable,
+    StreamWriter,
 };
 
 use crate::p3::bindings::LinkOptions;
@@ -141,20 +139,6 @@ impl<T: ResourceView> ResourceView for &mut T {
     }
 }
 
-fn next_item<T, U, V>(
-    store: &mut Accessor<T, U>,
-    stream: StreamReader<V>,
-) -> wasmtime::Result<
-    Pin<Box<dyn Future<Output = Option<(StreamReader<V>, Vec<V>)>> + Send + Sync + 'static>>,
->
-where
-    V: Send + Sync + Lift + 'static,
-{
-    let fut =
-        store.with(|mut view| stream.read(&mut view).context("failed to read from stream"))?;
-    Ok(fut.into_future())
-}
-
 pub struct AccessorTaskFn<F>(pub F);
 
 impl<T, U, R, F, Fut> AccessorTask<T, U, R> for AccessorTaskFn<F>
@@ -178,38 +162,29 @@ where
     O: Lower + Send + Sync + 'static,
     E: Lower + Send + Sync + 'static,
 {
-    async fn run(mut self, store: &mut Accessor<T, U>) -> wasmtime::Result<()> {
+    async fn run(mut self, _: &mut Accessor<T, U>) -> wasmtime::Result<()> {
         let mut tx = self.data;
         let res = loop {
             match self.rx.recv().await {
                 None => {
-                    store.with(|mut view| tx.close(&mut view).context("failed to close stream"))?;
+                    drop(tx);
                     break Ok(());
                 }
                 Some(Ok(buf)) => {
-                    let fut =
-                        store.with(|view| tx.write(view, buf).context("failed to send chunk"))?;
+                    let fut = tx.write(buf);
                     let Some(tail) = fut.into_future().await else {
                         break Ok(());
                     };
                     tx = tail;
                 }
                 Some(Err(err)) => {
-                    // TODO: Close the stream with the real error context
-                    store.with(|mut view| {
-                        tx.close_with_error(&mut view, 0)
-                            .context("failed to close stream")
-                    })?;
+                    // TODO: Close the stream with an error context
+                    drop(tx);
                     break Err(err.into());
                 }
             }
         };
-        let fut = store.with(|mut view| {
-            self.result
-                .write(&mut view, res)
-                .context("failed to write result")
-        })?;
-        fut.into_future().await;
+        self.result.write(res).into_future().await;
         Ok(())
     }
 }

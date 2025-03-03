@@ -1,4 +1,4 @@
-use crate::component::concurrent::{ErrorContext, FutureReader, StreamReader};
+use crate::component::concurrent::{ErrorContext, HostFuture, HostStream};
 use crate::component::func::{desc, Lift, LiftContext, Lower, LowerContext};
 use crate::component::ResourceAny;
 use crate::prelude::*;
@@ -202,8 +202,8 @@ impl Val {
 
                 Val::Flags(flags.into())
             }
-            InterfaceType::Future(_) => FutureReader::<()>::lift(cx, ty, next(src))?.into_val(),
-            InterfaceType::Stream(_) => StreamReader::<()>::lift(cx, ty, next(src))?.into_val(),
+            InterfaceType::Future(_) => HostFuture::<()>::lift(cx, ty, next(src))?.into_val(),
+            InterfaceType::Stream(_) => HostStream::<()>::lift(cx, ty, next(src))?.into_val(),
             InterfaceType::ErrorContext(_) => ErrorContext::lift(cx, ty, next(src))?.into_val(),
         })
     }
@@ -326,8 +326,8 @@ impl Val {
                 }
                 Val::Flags(flags.into())
             }
-            InterfaceType::Future(_) => FutureReader::<()>::load(cx, ty, bytes)?.into_val(),
-            InterfaceType::Stream(_) => StreamReader::<()>::load(cx, ty, bytes)?.into_val(),
+            InterfaceType::Future(_) => HostFuture::<()>::load(cx, ty, bytes)?.into_val(),
+            InterfaceType::Stream(_) => HostStream::<()>::load(cx, ty, bytes)?.into_val(),
             InterfaceType::ErrorContext(_) => ErrorContext::load(cx, ty, bytes)?.into_val(),
         })
     }
@@ -440,11 +440,11 @@ impl Val {
             }
             (InterfaceType::Flags(_), _) => unexpected(ty, self),
             (InterfaceType::Future(_), Val::Future(FutureAny(rep))) => {
-                FutureReader::<()>::new(*rep).lower(cx, ty, next_mut(dst))
+                HostFuture::<()>::new(*rep).lower(cx, ty, next_mut(dst))
             }
             (InterfaceType::Future(_), _) => unexpected(ty, self),
             (InterfaceType::Stream(_), Val::Stream(StreamAny(rep))) => {
-                StreamReader::<()>::new(*rep).lower(cx, ty, next_mut(dst))
+                HostStream::<()>::new(*rep).lower(cx, ty, next_mut(dst))
             }
             (InterfaceType::Stream(_), _) => unexpected(ty, self),
             (InterfaceType::ErrorContext(_), Val::ErrorContext(ErrorContextAny(rep))) => {
@@ -587,11 +587,11 @@ impl Val {
             }
             (InterfaceType::Flags(_), _) => unexpected(ty, self),
             (InterfaceType::Future(_), Val::Future(FutureAny(rep))) => {
-                FutureReader::<()>::new(*rep).store(cx, ty, offset)
+                HostFuture::<()>::new(*rep).store(cx, ty, offset)
             }
             (InterfaceType::Future(_), _) => unexpected(ty, self),
             (InterfaceType::Stream(_), Val::Stream(StreamAny(rep))) => {
-                StreamReader::<()>::new(*rep).store(cx, ty, offset)
+                HostStream::<()>::new(*rep).store(cx, ty, offset)
             }
             (InterfaceType::Stream(_), _) => unexpected(ty, self),
             (InterfaceType::ErrorContext(_), Val::ErrorContext(ErrorContextAny(rep))) => {
@@ -1032,11 +1032,20 @@ fn unexpected<T>(ty: InterfaceType, val: &Val) -> Result<T> {
     )
 }
 
+// TODO: This is prone to leaks and infinitely blocked writers given that
+// there's no reference counting and thus no way to know when to close the
+// handle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FutureAny(pub(crate) u32);
 
+// TODO: This is prone to leaks and infinitely blocked writers given that
+// there's no reference counting and thus no way to know when to close the
+// handle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamAny(pub(crate) u32);
 
+// TODO: This is prone to leaks and infinitely blocked writers given that
+// there's no reference counting and thus no way to know when to close the
+// handle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorContextAny(pub(crate) u32);
