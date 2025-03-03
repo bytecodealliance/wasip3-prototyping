@@ -215,12 +215,12 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
     #[allow(clippy::type_complexity)]
     enum Event<Test: TransmitTest> {
         Result(Test::Result),
-        ControlWriteA(Option<StreamWriter<Single<Control>>>),
-        ControlWriteB(Option<StreamWriter<Single<Control>>>),
-        ControlWriteC(Option<StreamWriter<Single<Control>>>),
+        ControlWriteA(Result<StreamWriter<Single<Control>>, ErrorContext>),
+        ControlWriteB(Result<StreamWriter<Single<Control>>, ErrorContext>),
+        ControlWriteC(Result<StreamWriter<Single<Control>>, ErrorContext>),
         ControlWriteD,
         WriteA,
-        WriteB(bool),
+        WriteB(Result<(), ErrorContext>),
         ReadC(Result<(StreamReader<Vec<String>>, Vec<String>), Option<ErrorContext>>),
         ReadD(Result<String, Option<ErrorContext>>),
         ReadNone(Result<(StreamReader<Vec<String>>, Vec<String>), Option<ErrorContext>>),
@@ -273,7 +273,8 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
             }
             Event::ControlWriteA(tx) => {
                 promises.push(
-                    tx.unwrap()
+                    tx.map_err(|_| anyhow::anyhow!("WriteA failed"))
+                        .unwrap()
                         .write(Single(Control::ReadFuture("b".into())))
                         .map(Event::ControlWriteB),
                 );
@@ -289,18 +290,20 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
             }
             Event::ControlWriteB(tx) => {
                 promises.push(
-                    tx.unwrap()
+                    tx.map_err(|_| anyhow::anyhow!("WriteB failed"))
+                        .unwrap()
                         .write(Single(Control::WriteStream("c".into())))
                         .map(Event::ControlWriteC),
                 );
             }
             Event::WriteB(delivered) => {
-                assert!(delivered);
+                assert!(delivered.is_ok());
                 promises.push(callee_stream_rx.take().unwrap().read().map(Event::ReadC));
             }
             Event::ControlWriteC(tx) => {
                 promises.push(
-                    tx.unwrap()
+                    tx.map_err(|_| anyhow::anyhow!("WriteC failed"))
+                        .unwrap()
                         .write(Single(Control::WriteFuture("d".into())))
                         .map(|_| Event::ControlWriteD),
                 );

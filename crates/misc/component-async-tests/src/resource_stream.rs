@@ -48,14 +48,17 @@ impl bindings::local::local::resource_stream::Host for &mut Ctx {
             async fn run(self, accessor: &mut Accessor<T, U>) -> Result<()> {
                 let mut tx = Some(self.tx);
                 for _ in 0..self.count {
-                    tx = accessor
-                        .with(|mut view| {
-                            let item = IoView::table(&mut *view).push(ResourceStreamX)?;
-                            Ok::<_, anyhow::Error>(
-                                tx.take().unwrap().write(Single(item)).into_future(),
-                            )
-                        })?
-                        .await;
+                    tx = Some(
+                        accessor
+                            .with(|mut view| {
+                                let item = IoView::table(&mut *view).push(ResourceStreamX)?;
+                                Ok::<_, anyhow::Error>(
+                                    tx.take().unwrap().write(Single(item)).into_future(),
+                                )
+                            })?
+                            .await
+                            .map_err(|_| anyhow::anyhow!("stream already closed"))?,
+                    );
                 }
                 Ok(())
             }
