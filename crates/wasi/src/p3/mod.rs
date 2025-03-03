@@ -84,7 +84,7 @@ pub mod sockets;
 /// }
 ///
 /// impl WasiFilesystemView for MyState {
-///     fn filesystem(&mut self) -> &mut WasiFilesystemCtx { &mut self.filesystem }
+///     fn filesystem(&self) -> &WasiFilesystemCtx { &self.filesystem }
 /// }
 ///
 /// impl WasiRandomView for MyState {
