@@ -1,0 +1,135 @@
+use core::fmt;
+
+use anyhow::{anyhow, Context as _, Result};
+use futures::{try_join, SinkExt as _, TryStreamExt as _};
+
+use crate::p3::wasi::http::{handler, types};
+use crate::p3::{wit_future, wit_stream};
+
+pub struct Response {
+    pub status: types::StatusCode,
+    pub headers: Vec<(String, Vec<u8>)>,
+    pub body: Vec<u8>,
+    pub trailers: Option<Vec<(String, Vec<u8>)>>,
+}
+impl fmt::Debug for Response {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut out = f.debug_struct("Response");
+        out.field("status", &self.status)
+            .field("headers", &self.headers);
+        if let Ok(body) = std::str::from_utf8(&self.body) {
+            out.field("body", &body);
+        } else {
+            out.field("body", &self.body);
+        }
+        out.field("trailers", &self.trailers);
+        out.finish()
+    }
+}
+
+impl Response {
+    pub fn header(&self, name: &str) -> Option<&Vec<u8>> {
+        self.headers
+            .iter()
+            .find_map(|(k, v)| if k == name { Some(v) } else { None })
+    }
+}
+
+pub async fn request(
+    method: types::Method,
+    scheme: types::Scheme,
+    authority: &str,
+    path_with_query: &str,
+    body: Option<&[u8]>,
+    additional_headers: Option<&[(String, Vec<u8>)]>,
+    connect_timeout: Option<u64>,
+    first_by_timeout: Option<u64>,
+    between_bytes_timeout: Option<u64>,
+) -> Result<Response> {
+    fn header_val(v: &str) -> Vec<u8> {
+        v.to_string().into_bytes()
+    }
+    let headers = types::Headers::from_list(
+        &[
+            &[
+                ("User-agent".to_string(), header_val("WASI-HTTP/0.0.1")),
+                ("Content-type".to_string(), header_val("application/json")),
+            ],
+            additional_headers.unwrap_or(&[]),
+        ]
+        .concat(),
+    )?;
+
+    let options = types::RequestOptions::new();
+    options
+        .set_connect_timeout(connect_timeout)
+        .map_err(|_err| anyhow!("failed to set connect_timeout"))?;
+    options
+        .set_first_byte_timeout(first_by_timeout)
+        .map_err(|_err| anyhow!("failed to set first_byte_timeout"))?;
+    options
+        .set_between_bytes_timeout(between_bytes_timeout)
+        .map_err(|_err| anyhow!("failed to set between_bytes_timeout"))?;
+
+    let (mut contents_tx, contents_rx) = wit_stream::new();
+    let (trailers_tx, trailers_rx) = wit_future::new();
+    let (request, transmit) =
+        types::Request::new(headers, Some(contents_rx), trailers_rx, Some(options));
+
+    request
+        .set_method(&method)
+        .map_err(|()| anyhow!("failed to set method"))?;
+    request
+        .set_scheme(Some(&scheme))
+        .map_err(|()| anyhow!("failed to set scheme"))?;
+    request
+        .set_authority(Some(authority))
+        .map_err(|()| anyhow!("failed to set authority"))?;
+    request
+        .set_path_with_query(Some(&path_with_query))
+        .map_err(|()| anyhow!("failed to set path_with_query"))?;
+
+    let ((), (), response) = try_join!(
+        async {
+            if let Some(buf) = body {
+                contents_tx
+                    .send(buf.into())
+                    .await
+                    .expect("failed to send body content chunk");
+            }
+            drop(contents_tx);
+            trailers_tx.write(Ok(None)).await;
+            anyhow::Ok(())
+        },
+        async {
+            transmit
+                .await
+                .expect("transmit sender dropped")
+                .expect("failed to receive request transmit result")
+                .context("failed to transmit request")?;
+            Ok(())
+        },
+        async {
+            let response = handler::handle(request).await?;
+            let status = response.status_code();
+            let headers = response.headers().entries();
+
+            let (body, trailers) = response.body().expect("failed to get response body");
+            let body = body.try_collect::<Vec<_>>().await?;
+            let body = body.concat();
+            let trailers = trailers
+                .await
+                .expect("trailers sender dropped")
+                .expect("failed to receive response trailers result")
+                .context("failed to read body")?;
+            let trailers = trailers.map(|trailers| trailers.entries());
+            Ok(Response {
+                status,
+                headers,
+                body,
+                trailers,
+            })
+        },
+    )?;
+    Ok(response)
+}
