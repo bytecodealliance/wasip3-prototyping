@@ -73,13 +73,13 @@ impl ResourceView for Ctx {
 }
 
 impl WasiCliView for Ctx {
-    fn cli(&self) -> &WasiCliCtx {
+    fn cli(&mut self) -> &WasiCliCtx {
         &self.cli
     }
 }
 
 impl WasiClocksView for Ctx {
-    fn clocks(&self) -> &WasiClocksCtx {
+    fn clocks(&mut self) -> &WasiClocksCtx {
         &self.clocks
     }
 }

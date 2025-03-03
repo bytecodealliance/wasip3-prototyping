@@ -13,13 +13,13 @@ use crate::p3::ResourceView;
 pub struct WasiCliImpl<T>(pub T);
 
 impl<T: WasiCliView> WasiCliView for &mut T {
-    fn cli(&self) -> &WasiCliCtx {
+    fn cli(&mut self) -> &WasiCliCtx {
         (**self).cli()
     }
 }
 
 impl<T: WasiCliView> WasiCliView for WasiCliImpl<T> {
-    fn cli(&self) -> &WasiCliCtx {
+    fn cli(&mut self) -> &WasiCliCtx {
         self.0.cli()
     }
 }
@@ -31,7 +31,7 @@ impl<T: ResourceView> ResourceView for WasiCliImpl<T> {
 }
 
 pub trait WasiCliView: ResourceView + Send {
-    fn cli(&self) -> &WasiCliCtx;
+    fn cli(&mut self) -> &WasiCliCtx;
 }
 
 pub struct WasiCliCtx {
@@ -109,7 +109,7 @@ impl Default for WasiCliCtx {
 /// }
 ///
 /// impl WasiCliView for MyState {
-///     fn cli(&self) -> &WasiCliCtx { &self.cli }
+///     fn cli(&mut self) -> &WasiCliCtx { &self.cli }
 /// }
 /// ```
 pub fn add_to_linker<T>(linker: &mut Linker<T>) -> wasmtime::Result<()>

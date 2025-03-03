@@ -59,7 +59,7 @@ where
         store: &mut Accessor<U, Self>,
         when: monotonic_clock::Instant,
     ) -> impl Future<Output = wasmtime::Result<()>> {
-        let clock_now = store.with(|view| view.clocks().monotonic_clock.now());
+        let clock_now = store.with(|mut view| view.clocks().monotonic_clock.now());
         async move {
             if when > clock_now {
                 sleep(Duration::from_nanos(when - clock_now)).await;
