@@ -43,7 +43,7 @@ pub trait WasiFilesystemView: ResourceView + Send {
     fn filesystem(&mut self) -> &mut WasiFilesystemCtx;
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct WasiFilesystemCtx {
     pub preopens: Vec<(Dir, String)>,
     pub allow_blocking_current_thread: bool,

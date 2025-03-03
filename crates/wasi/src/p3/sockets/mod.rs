@@ -40,7 +40,7 @@ pub trait WasiSocketsView: ResourceView + Send {
     fn sockets(&self) -> &WasiSocketsCtx;
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct WasiSocketsCtx {
     pub socket_addr_check: SocketAddrCheck,
     pub allowed_network_uses: AllowedNetworkUses,
@@ -124,6 +124,7 @@ pub enum SocketAddressFamily {
     Ipv6,
 }
 
+#[derive(Copy, Clone)]
 pub struct AllowedNetworkUses {
     pub ip_name_lookup: bool,
     pub udp: bool,
