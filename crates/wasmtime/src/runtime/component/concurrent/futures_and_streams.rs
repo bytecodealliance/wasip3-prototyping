@@ -27,11 +27,14 @@ use {
     std::{
         any::Any,
         boxed::Box,
+        future::Future,
         marker::PhantomData,
         mem::{self, MaybeUninit},
+        pin::Pin,
         ptr::NonNull,
         string::ToString,
         sync::Arc,
+        task::Poll,
         vec::Vec,
     },
     wasmtime_environ::component::{
@@ -584,6 +587,8 @@ fn host_close_writer<U, S: AsContextMut<Data = U>>(
         .get_mut(transmit_id)
         .with_context(|| format!("writer {transmit_rep}"))?;
 
+    transmit.writer_watcher = None;
+
     // Existing queued transmits must be updated with information for the impending writer closure
     match &mut transmit.write {
         WriteState::GuestReady { post_write, .. } => {
@@ -710,6 +715,7 @@ fn host_close_reader<U, S: AsContextMut<Data = U>>(mut store: S, transmit_rep: u
         .with_context(|| format!("reader {transmit_rep}"))?;
 
     transmit.read = ReadState::Closed;
+    transmit.reader_watcher = None;
 
     // If the write end is already closed, it should stay closed,
     // otherwise, it should be opened.
@@ -779,10 +785,16 @@ enum StreamOrFutureEvent<T> {
     CloseWriter {
         err_ctx: Option<ErrorContext>,
     },
+    WatchWriter {
+        tx: oneshot::Sender<()>,
+    },
     Read {
         tx: oneshot::Sender<HostReadResult<T>>,
     },
     CloseReader,
+    WatchReader {
+        tx: oneshot::Sender<()>,
+    },
 }
 
 fn start_event_loop<
@@ -817,6 +829,18 @@ fn start_event_loop<
         )
     }
 
+    fn watch_writer<U>(store: VMStoreRawPtr, rep: u32, tx: oneshot::Sender<()>) -> Result<()> {
+        let mut store = unsafe { StoreContextMut::<U>(&mut *store.0.as_ptr().cast()) };
+        let state = store
+            .concurrent_state()
+            .table
+            .get_mut(TableId::<TransmitState>::new(rep))?;
+        if !matches!(&state.write, WriteState::Closed(_)) {
+            state.writer_watcher = Some(tx);
+        }
+        Ok(())
+    }
+
     fn read<T: func::Lift + Sync + Send + 'static, U>(
         store: VMStoreRawPtr,
         rep: u32,
@@ -829,6 +853,18 @@ fn start_event_loop<
     fn close_reader<U>(store: VMStoreRawPtr, rep: u32) -> Result<()> {
         let store = unsafe { StoreContextMut::<U>(&mut *store.0.as_ptr().cast()) };
         host_close_reader(store, rep)
+    }
+
+    fn watch_reader<U>(store: VMStoreRawPtr, rep: u32, tx: oneshot::Sender<()>) -> Result<()> {
+        let mut store = unsafe { StoreContextMut::<U>(&mut *store.0.as_ptr().cast()) };
+        let state = store
+            .concurrent_state()
+            .table
+            .get_mut(TableId::<TransmitState>::new(rep))?;
+        if !matches!(&state.read, ReadState::Closed) {
+            state.reader_watcher = Some(tx);
+        }
+        Ok(())
     }
 
     let mut store = store.as_context_mut();
@@ -847,8 +883,14 @@ fn start_event_loop<
                         StreamOrFutureEvent::CloseWriter { err_ctx } => {
                             close_writer::<U>(store, rep, err_ctx)?
                         }
+                        StreamOrFutureEvent::WatchWriter { tx } => {
+                            watch_writer::<U>(store, rep, tx)?
+                        }
                         StreamOrFutureEvent::Read { tx } => read::<_, U>(store, rep, tx)?,
                         StreamOrFutureEvent::CloseReader => close_reader::<U>(store, rep)?,
+                        StreamOrFutureEvent::WatchReader { tx } => {
+                            watch_reader::<U>(store, rep, tx)?
+                        }
                     }
                 }
                 Ok(())
@@ -865,6 +907,32 @@ fn send<T>(tx: &mut mpsc::Sender<T>, value: T) {
         if e.is_full() {
             unreachable!();
         }
+    }
+}
+
+/// Wrapper `struct` that implements `Future` to represent a state change
+/// concerning the inner value.
+///
+/// This `Future` will resolve when the state change occurs, and may be
+/// converted back into the inner value using `into_inner` before or after that
+/// happens.
+pub struct Watch<T> {
+    inner: T,
+    rx: oneshot::Receiver<()>,
+}
+
+impl<T> Watch<T> {
+    /// Convert this object into its inner value.
+    pub fn into_inner(self) -> T {
+        self.inner
+    }
+}
+
+impl<T: Unpin> Future for Watch<T> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<()> {
+        self.get_mut().rx.poll_unpin(cx).map(drop)
     }
 }
 
@@ -905,6 +973,20 @@ impl<T> FutureWriter<T> {
                 err_ctx: Some(err_ctx),
             },
         );
+    }
+
+    /// Convert this object into a `Watch` which will resolve when the write end
+    /// of this `stream` is closed.
+    ///
+    /// You may convert the `Watch` back into a `FutureWriter` at any time using
+    /// `Watch::into_inner`.
+    pub fn watch_reader(mut self) -> Watch<Self> {
+        let (tx, rx) = oneshot::channel();
+        send(
+            &mut self.tx.as_mut().unwrap(),
+            StreamOrFutureEvent::WatchReader { tx },
+        );
+        Watch { inner: self, rx }
     }
 }
 
@@ -1096,6 +1178,20 @@ impl<T> FutureReader<T> {
             Ok(HostReadResult::EndOfStream(s)) => Err(s),
         })))
     }
+
+    /// Convert this object into a `Watch` which will resolve when the write end
+    /// of this `stream` is closed.
+    ///
+    /// You may convert the `Watch` back into a `FutureReader` at any time using
+    /// `Watch::into_inner`.
+    pub fn watch_writer(mut self) -> Watch<Self> {
+        let (tx, rx) = oneshot::channel();
+        send(
+            &mut self.tx.as_mut().unwrap(),
+            StreamOrFutureEvent::WatchWriter { tx },
+        );
+        Watch { inner: self, rx }
+    }
 }
 
 impl<T> Drop for FutureReader<T> {
@@ -1115,6 +1211,8 @@ pub fn future<T: func::Lower + func::Lift + Sync + Send + 'static, U, S: AsConte
     let transmit = store.concurrent_state().table.push(TransmitState {
         read: ReadState::Open,
         write: WriteState::Open,
+        reader_watcher: None,
+        writer_watcher: None,
     })?;
 
     Ok((
@@ -1174,6 +1272,20 @@ impl<T> StreamWriter<T> {
                 err_ctx: Some(err_ctx),
             },
         );
+    }
+
+    /// Convert this object into a `Watch` which will resolve when the read end
+    /// of this `stream` is closed.
+    ///
+    /// You may convert the `Watch` back into a `StreamWriter` at any time using
+    /// `Watch::into_inner`.
+    pub fn watch_reader(mut self) -> Watch<Self> {
+        let (tx, rx) = oneshot::channel();
+        send(
+            &mut self.tx.as_mut().unwrap(),
+            StreamOrFutureEvent::WatchReader { tx },
+        );
+        Watch { inner: self, rx }
     }
 }
 
@@ -1364,6 +1476,20 @@ impl<T> StreamReader<T> {
             }
         })))
     }
+
+    /// Convert this object into a `Watch` which will resolve when the write end
+    /// of this `stream` is closed.
+    ///
+    /// You may convert the `Watch` back into a `StreamReader` at any time using
+    /// `Watch::into_inner`.
+    pub fn watch_writer(mut self) -> Watch<Self> {
+        let (tx, rx) = oneshot::channel();
+        send(
+            &mut self.tx.as_mut().unwrap(),
+            StreamOrFutureEvent::WatchWriter { tx },
+        );
+        Watch { inner: self, rx }
+    }
 }
 
 impl<T> Drop for StreamReader<T> {
@@ -1383,6 +1509,8 @@ pub fn stream<T: func::Lower + func::Lift + Sync + Send + 'static, U, S: AsConte
     let transmit = store.concurrent_state().table.push(TransmitState {
         read: ReadState::Open,
         write: WriteState::Open,
+        reader_watcher: None,
+        writer_watcher: None,
     })?;
 
     Ok((
@@ -1510,6 +1638,8 @@ unsafe impl func::Lift for ErrorContext {
 pub(super) struct TransmitState {
     write: WriteState,
     read: ReadState,
+    writer_watcher: Option<oneshot::Sender<()>>,
+    reader_watcher: Option<oneshot::Sender<()>>,
 }
 
 enum WriteState {
@@ -1598,6 +1728,8 @@ pub(super) fn guest_new<T>(
     let transmit = cx.concurrent_state().table.push(TransmitState {
         read: ReadState::Open,
         write: WriteState::Open,
+        reader_watcher: None,
+        writer_watcher: None,
     })?;
     state_table(instance, ty).insert(transmit.rep(), waitable_state(ty, StreamFutureState::Local))
 }
