@@ -780,10 +780,15 @@ impl<'a> Inliner<'a> {
                 };
                 let options = self.adapter_options(frame, types, options);
                 let options = self.canonical_options(options);
-                let index = self
-                    .result
-                    .trampolines
-                    .push((*func, dfg::Trampoline::StreamWrite { ty, options }));
+                let err_ctx_ty = types.error_context_table_type()?;
+                let index = self.result.trampolines.push((
+                    *func,
+                    dfg::Trampoline::StreamWrite {
+                        ty,
+                        err_ctx_ty,
+                        options,
+                    },
+                ));
                 frame.funcs.push(dfg::CoreDef::Trampoline(index));
             }
             StreamCancelRead { ty, func, async_ } => {
@@ -822,10 +827,11 @@ impl<'a> Inliner<'a> {
                 else {
                     unreachable!()
                 };
-                let index = self
-                    .result
-                    .trampolines
-                    .push((*func, dfg::Trampoline::StreamCloseReadable { ty }));
+                let err_ctx_ty = types.error_context_table_type()?;
+                let index = self.result.trampolines.push((
+                    *func,
+                    dfg::Trampoline::StreamCloseReadable { ty, err_ctx_ty },
+                ));
                 frame.funcs.push(dfg::CoreDef::Trampoline(index));
             }
             StreamCloseWritable { ty, func } => {
@@ -880,10 +886,15 @@ impl<'a> Inliner<'a> {
                 };
                 let options = self.adapter_options(frame, types, options);
                 let options = self.canonical_options(options);
-                let index = self
-                    .result
-                    .trampolines
-                    .push((*func, dfg::Trampoline::FutureWrite { ty, options }));
+                let err_ctx_ty = types.error_context_table_type()?;
+                let index = self.result.trampolines.push((
+                    *func,
+                    dfg::Trampoline::FutureWrite {
+                        ty,
+                        err_ctx_ty,
+                        options,
+                    },
+                ));
                 frame.funcs.push(dfg::CoreDef::Trampoline(index));
             }
             FutureCancelRead { ty, func, async_ } => {
@@ -922,10 +933,11 @@ impl<'a> Inliner<'a> {
                 else {
                     unreachable!()
                 };
-                let index = self
-                    .result
-                    .trampolines
-                    .push((*func, dfg::Trampoline::FutureCloseReadable { ty }));
+                let err_ctx_ty = types.error_context_table_type()?;
+                let index = self.result.trampolines.push((
+                    *func,
+                    dfg::Trampoline::FutureCloseReadable { ty, err_ctx_ty },
+                ));
                 frame.funcs.push(dfg::CoreDef::Trampoline(index));
             }
             FutureCloseWritable { ty, func } => {

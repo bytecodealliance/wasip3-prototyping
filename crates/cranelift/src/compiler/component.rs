@@ -142,8 +142,12 @@ impl<'a> TrampolineCompiler<'a> {
                     )
                 }
             }
-            Trampoline::StreamWrite { ty, options } => {
-                let tys = &[ty.as_u32()];
+            Trampoline::StreamWrite {
+                ty,
+                err_ctx_ty,
+                options,
+            } => {
+                let tys = &[ty.as_u32(), err_ctx_ty.as_u32()];
                 if let Some(info) = self.flat_stream_element_info(*ty) {
                     self.translate_flat_stream_call(tys, options, host::flat_stream_write, &info)
                 } else {
@@ -161,12 +165,13 @@ impl<'a> TrampolineCompiler<'a> {
             Trampoline::StreamCancelWrite { ty, async_ } => {
                 self.translate_cancel_call(ty.as_u32(), *async_, host::stream_cancel_write)
             }
-            Trampoline::StreamCloseReadable { ty } => self.translate_future_or_stream_call(
-                &[ty.as_u32()],
-                None,
-                host::stream_close_readable,
-                ir::types::I8,
-            ),
+            Trampoline::StreamCloseReadable { ty, err_ctx_ty } => self
+                .translate_future_or_stream_call(
+                    &[ty.as_u32(), err_ctx_ty.as_u32()],
+                    None,
+                    host::stream_close_readable,
+                    ir::types::I8,
+                ),
             Trampoline::StreamCloseWritable { ty, err_ctx_ty } => self
                 .translate_future_or_stream_call(
                     &[ty.as_u32(), err_ctx_ty.as_u32()],
@@ -190,8 +195,12 @@ impl<'a> TrampolineCompiler<'a> {
                 host::future_read,
                 ir::types::I64,
             ),
-            Trampoline::FutureWrite { ty, options } => self.translate_future_or_stream_call(
-                &[ty.as_u32()],
+            Trampoline::FutureWrite {
+                ty,
+                err_ctx_ty,
+                options,
+            } => self.translate_future_or_stream_call(
+                &[ty.as_u32(), err_ctx_ty.as_u32()],
                 Some(options),
                 host::future_write,
                 ir::types::I64,
@@ -202,12 +211,13 @@ impl<'a> TrampolineCompiler<'a> {
             Trampoline::FutureCancelWrite { ty, async_ } => {
                 self.translate_cancel_call(ty.as_u32(), *async_, host::future_cancel_write)
             }
-            Trampoline::FutureCloseReadable { ty } => self.translate_future_or_stream_call(
-                &[ty.as_u32()],
-                None,
-                host::future_close_readable,
-                ir::types::I8,
-            ),
+            Trampoline::FutureCloseReadable { ty, err_ctx_ty } => self
+                .translate_future_or_stream_call(
+                    &[ty.as_u32(), err_ctx_ty.as_u32()],
+                    None,
+                    host::future_close_readable,
+                    ir::types::I8,
+                ),
             Trampoline::FutureCloseWritable { ty, err_ctx_ty } => self
                 .translate_future_or_stream_call(
                     &[ty.as_u32(), err_ctx_ty.as_u32()],

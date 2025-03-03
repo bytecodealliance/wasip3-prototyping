@@ -315,6 +315,7 @@ pub enum Trampoline {
     },
     StreamWrite {
         ty: TypeStreamTableIndex,
+        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         options: CanonicalOptions,
     },
     StreamCancelRead {
@@ -327,6 +328,7 @@ pub enum Trampoline {
     },
     StreamCloseReadable {
         ty: TypeStreamTableIndex,
+        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
     },
     StreamCloseWritable {
         ty: TypeStreamTableIndex,
@@ -342,6 +344,7 @@ pub enum Trampoline {
     },
     FutureWrite {
         ty: TypeFutureTableIndex,
+        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         options: CanonicalOptions,
     },
     FutureCancelRead {
@@ -354,6 +357,7 @@ pub enum Trampoline {
     },
     FutureCloseReadable {
         ty: TypeFutureTableIndex,
+        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
     },
     FutureCloseWritable {
         ty: TypeFutureTableIndex,
@@ -810,8 +814,13 @@ impl LinearizeDfg<'_> {
                 err_ctx_ty: *err_ctx_ty,
                 options: self.options(options),
             },
-            Trampoline::StreamWrite { ty, options } => info::Trampoline::StreamWrite {
+            Trampoline::StreamWrite {
+                ty,
+                err_ctx_ty,
+                options,
+            } => info::Trampoline::StreamWrite {
                 ty: *ty,
+                err_ctx_ty: *err_ctx_ty,
                 options: self.options(options),
             },
             Trampoline::StreamCancelRead { ty, async_ } => info::Trampoline::StreamCancelRead {
@@ -822,8 +831,11 @@ impl LinearizeDfg<'_> {
                 ty: *ty,
                 async_: *async_,
             },
-            Trampoline::StreamCloseReadable { ty } => {
-                info::Trampoline::StreamCloseReadable { ty: *ty }
+            Trampoline::StreamCloseReadable { ty, err_ctx_ty } => {
+                info::Trampoline::StreamCloseReadable {
+                    ty: *ty,
+                    err_ctx_ty: *err_ctx_ty,
+                }
             }
             Trampoline::StreamCloseWritable { ty, err_ctx_ty } => {
                 info::Trampoline::StreamCloseWritable {
@@ -841,8 +853,13 @@ impl LinearizeDfg<'_> {
                 err_ctx_ty: *err_ctx_ty,
                 options: self.options(options),
             },
-            Trampoline::FutureWrite { ty, options } => info::Trampoline::FutureWrite {
+            Trampoline::FutureWrite {
+                ty,
+                err_ctx_ty,
+                options,
+            } => info::Trampoline::FutureWrite {
                 ty: *ty,
+                err_ctx_ty: *err_ctx_ty,
                 options: self.options(options),
             },
             Trampoline::FutureCancelRead { ty, async_ } => info::Trampoline::FutureCancelRead {
@@ -853,8 +870,11 @@ impl LinearizeDfg<'_> {
                 ty: *ty,
                 async_: *async_,
             },
-            Trampoline::FutureCloseReadable { ty } => {
-                info::Trampoline::FutureCloseReadable { ty: *ty }
+            Trampoline::FutureCloseReadable { ty, err_ctx_ty } => {
+                info::Trampoline::FutureCloseReadable {
+                    ty: *ty,
+                    err_ctx_ty: *err_ctx_ty,
+                }
             }
             Trampoline::FutureCloseWritable { ty, err_ctx_ty } => {
                 info::Trampoline::FutureCloseWritable {
