@@ -70,6 +70,15 @@ make_vendor "wasi/src/p3" "
     random@9499404@wit-0.3.0-draft
     sockets@41d7079@wit-0.3.0-draft
 "
+# `wasi:http` from https://github.com/WebAssembly/wasi-http/pull/158
+make_vendor "wasi-http/src/p3" "
+    cli@82b86d9@wit-0.3.0-draft
+    clocks@646092f@wit-0.3.0-draft
+    filesystem@740cd76@wit-0.3.0-draft
+    random@9499404@wit-0.3.0-draft
+    sockets@41d7079@wit-0.3.0-draft
+    http@ae89575@wit-0.3.0-draft
+"
 
 rm -rf $cache_dir
 

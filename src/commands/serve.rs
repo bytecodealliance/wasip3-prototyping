@@ -1,7 +1,8 @@
 use crate::common::{Profile, RunCommon, RunTarget};
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context as _, Result};
 use clap::Parser;
-use std::net::SocketAddr;
+use http_body_util::BodyExt as _;
+use std::{net::SocketAddr, sync::Mutex};
 use std::{
     path::PathBuf,
     sync::{
@@ -9,6 +10,7 @@ use std::{
         Arc,
     },
 };
+use tokio::io::{stderr, stdin, stdout};
 use wasmtime::component::Linker;
 use wasmtime::{Engine, Store, StoreLimits};
 use wasmtime_wasi::{IoView, StreamError, StreamResult, WasiCtx, WasiCtxBuilder, WasiView};
@@ -33,6 +35,13 @@ struct Host {
     http: WasiHttpCtx,
     http_outgoing_body_buffer_chunks: Option<usize>,
     http_outgoing_body_chunk_size: Option<usize>,
+
+    p3_cli: Option<Arc<Mutex<wasmtime_wasi::p3::cli::WasiCliCtx>>>,
+    p3_clocks: Option<Arc<Mutex<wasmtime_wasi::p3::clocks::WasiClocksCtx>>>,
+    p3_filesystem: Option<wasmtime_wasi::p3::filesystem::WasiFilesystemCtx>,
+    p3_random: Option<Arc<Mutex<wasmtime_wasi::p3::random::WasiRandomCtx>>>,
+    p3_sockets: Option<wasmtime_wasi::p3::sockets::WasiSocketsCtx>,
+    p3_http: wasmtime_wasi_http::p3::WasiHttpCtx,
 
     limits: StoreLimits,
 
@@ -70,6 +79,68 @@ impl WasiHttpView for Host {
     fn outgoing_body_chunk_size(&mut self) -> usize {
         self.http_outgoing_body_chunk_size
             .unwrap_or_else(|| DEFAULT_OUTGOING_BODY_CHUNK_SIZE)
+    }
+}
+
+impl wasmtime_wasi::p3::ResourceView for Host {
+    fn table(&mut self) -> &mut wasmtime::component::ResourceTable {
+        &mut self.table
+    }
+}
+impl wasmtime_wasi::p3::cli::WasiCliView for Host {
+    fn cli(&mut self) -> &wasmtime_wasi::p3::cli::WasiCliCtx {
+        let cli = self
+            .p3_cli
+            .as_mut()
+            .and_then(Arc::get_mut)
+            .expect("`wasi:cli@0.3` not configured");
+        cli.get_mut().unwrap()
+    }
+}
+
+impl wasmtime_wasi::p3::clocks::WasiClocksView for Host {
+    fn clocks(&mut self) -> &wasmtime_wasi::p3::clocks::WasiClocksCtx {
+        let clocks = self
+            .p3_clocks
+            .as_mut()
+            .and_then(Arc::get_mut)
+            .expect("`wasi:clocks@0.3` not configured");
+        clocks.get_mut().unwrap()
+    }
+}
+
+impl wasmtime_wasi::p3::filesystem::WasiFilesystemView for Host {
+    fn filesystem(&self) -> &wasmtime_wasi::p3::filesystem::WasiFilesystemCtx {
+        self.p3_filesystem
+            .as_ref()
+            .expect("`wasi:filesystem@0.3` not configured")
+    }
+}
+
+impl wasmtime_wasi::p3::random::WasiRandomView for Host {
+    fn random(&mut self) -> &mut wasmtime_wasi::p3::random::WasiRandomCtx {
+        let random = self
+            .p3_random
+            .as_mut()
+            .and_then(Arc::get_mut)
+            .expect("`wasi:random@0.3` not configured");
+        random.get_mut().unwrap()
+    }
+}
+
+impl wasmtime_wasi::p3::sockets::WasiSocketsView for Host {
+    fn sockets(&self) -> &wasmtime_wasi::p3::sockets::WasiSocketsCtx {
+        self.p3_sockets
+            .as_ref()
+            .expect("`wasi:sockets@0.3` not configured")
+    }
+}
+
+impl wasmtime_wasi_http::p3::WasiHttpView for Host {
+    type Client = wasmtime_wasi_http::p3::DefaultClient;
+
+    fn http(&self) -> &wasmtime_wasi_http::p3::WasiHttpCtx<Self::Client> {
+        &self.p3_http
     }
 }
 
@@ -149,6 +220,78 @@ impl ServeCommand {
         Ok(())
     }
 
+    fn set_p3_ctx(&self, store: &mut Store<Host>) -> Result<()> {
+        store.data_mut().p3_clocks = Some(Arc::default());
+        store.data_mut().p3_random = Some(Arc::default());
+
+        let mut environment = Vec::default();
+        if self.run.common.wasi.inherit_env == Some(true) {
+            for (k, v) in std::env::vars() {
+                environment.push((k, v));
+            }
+        }
+        for (key, value) in self.run.vars.iter() {
+            let value = match value {
+                Some(value) => value.clone(),
+                None => match std::env::var_os(key) {
+                    Some(val) => val
+                        .into_string()
+                        .map_err(|_| anyhow!("environment variable `{key}` not valid utf-8"))?,
+                    None => {
+                        // leave the env var un-set in the guest
+                        continue;
+                    }
+                },
+            };
+            environment.push((key.clone(), value));
+        }
+        store.data_mut().p3_cli = Some(Arc::new(Mutex::new(wasmtime_wasi::p3::cli::WasiCliCtx {
+            environment,
+            arguments: vec![],
+            initial_cwd: None,
+            stdin: Box::new(stdin()),
+            stdout: Box::new(stdout()),
+            stderr: Box::new(stderr()),
+        })));
+
+        let mut p3_filesystem = wasmtime_wasi::p3::filesystem::WasiFilesystemCtx::default();
+        p3_filesystem.allow_blocking_current_thread = self.run.common.wasm.timeout.is_none();
+        for (host, guest) in self.run.dirs.iter() {
+            p3_filesystem.preopened_dir(
+                host,
+                guest,
+                wasmtime_wasi::p3::filesystem::DirPerms::all(),
+                wasmtime_wasi::p3::filesystem::FilePerms::all(),
+            )?;
+        }
+        store.data_mut().p3_filesystem = Some(p3_filesystem);
+
+        if self.run.common.wasi.listenfd == Some(true) {
+            bail!("components do not support --listenfd");
+        }
+        for _ in self.run.compute_preopen_sockets()? {
+            bail!("components do not support --tcplisten");
+        }
+
+        let mut p3_sockets = wasmtime_wasi::p3::sockets::WasiSocketsCtx::default();
+        if self.run.common.wasi.inherit_network == Some(true) {
+            p3_sockets.socket_addr_check =
+                wasmtime_wasi::p3::sockets::SocketAddrCheck::new(|_, _| Box::pin(async { true }))
+        }
+        if let Some(enable) = self.run.common.wasi.allow_ip_name_lookup {
+            p3_sockets.allowed_network_uses.ip_name_lookup = enable;
+        }
+        if let Some(enable) = self.run.common.wasi.tcp {
+            p3_sockets.allowed_network_uses.tcp = enable;
+        }
+        if let Some(enable) = self.run.common.wasi.udp {
+            p3_sockets.allowed_network_uses.udp = enable;
+        }
+        store.data_mut().p3_sockets = Some(p3_sockets);
+
+        Ok(())
+    }
+
     fn new_store(&self, engine: &Engine, req_id: u64) -> Result<Store<Host>> {
         let mut builder = WasiCtxBuilder::new();
         self.run.configure_wasip2(&mut builder)?;
@@ -182,6 +325,13 @@ impl ServeCommand {
             wasi_config: None,
             #[cfg(feature = "wasi-keyvalue")]
             wasi_keyvalue: None,
+
+            p3_cli: None,
+            p3_clocks: None,
+            p3_filesystem: None,
+            p3_random: None,
+            p3_sockets: None,
+            p3_http: wasmtime_wasi_http::p3::WasiHttpCtx::default(),
         };
 
         if self.run.common.wasi.nn == Some(true) {
@@ -233,6 +383,7 @@ impl ServeCommand {
         }
 
         let mut store = Store::new(engine, host);
+        self.set_p3_ctx(&mut store)?;
 
         if self.run.common.wasm.timeout.is_some() {
             store.set_epoch_deadline(u64::from(EPOCH_PRECISION) + 1);
@@ -367,9 +518,7 @@ impl ServeCommand {
             RunTarget::Core(_) => bail!("The serve command currently requires a component"),
             RunTarget::Component(c) => c,
         };
-
         let instance = linker.instantiate_pre(&component)?;
-        let instance = ProxyPre::new(instance)?;
 
         let socket = match &self.addr {
             SocketAddr::V4(_) => tokio::net::TcpSocket::new_v4()?,
@@ -399,6 +548,47 @@ impl ServeCommand {
         };
 
         log::info!("Listening on {}", self.addr);
+
+        if let Ok(instance) = wasmtime_wasi_http::p3::bindings::ProxyPre::new(instance.clone()) {
+            let next_id = AtomicU64::default();
+            loop {
+                let (stream, _) = listener.accept().await?;
+                tokio::task::spawn(async {
+                    if let Err(e) = http1::Builder::new()
+                        .keep_alive(true)
+                        .serve_connection(
+                            TokioIo::new(stream),
+                            hyper::service::service_fn(move |req| {
+let instance = instance.clone();
+                                let engine = engine.clone();
+async move {
+                                let req_id = next_id.fetch_add(1, Ordering::Relaxed);
+                                let mut store = self.new_store(&engine, req_id).context("failed")?;
+                                let proxy = instance.instantiate_async(&mut store).await?;
+                                let res = proxy
+                                    .handle(
+                                        store,
+                                        req.map(|body: hyper::body::Incoming| {
+                                            body.map_err(|err| {
+                                                eprintln!("TODO: convert error {err:?}");
+                                                wasmtime_wasi_http::p3::bindings::http::types::ErrorCode::InternalError(None)
+                                            })
+                                        }),
+                                    )
+                                    .await.context("failed")?.context("failed")?;
+                                anyhow::Ok(res.map(|body| body.map_err(|err| err.unwrap())))
+                            }
+                            }),
+                        )
+                        .await
+                    {
+                        eprintln!("error: {e:?}");
+                    }
+                });
+            }
+        }
+
+        let instance = wasmtime_wasi_http::bindings::ProxyPre::new(instance)?;
 
         let handler = ProxyHandler::new(self, engine, instance);
 
