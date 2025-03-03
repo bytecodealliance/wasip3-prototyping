@@ -122,6 +122,11 @@ impl<T: Send + Sync + 'static> Promise<T> {
     pub fn into_future(self) -> Pin<Box<dyn Future<Output = T> + Send + Sync + 'static>> {
         self.0
     }
+
+    /// Wrap the specified `Future` in a `Promise`.
+    pub fn from(fut: impl Future<Output = T> + Send + Sync + 'static) -> Self {
+        Self(Box::pin(fut))
+    }
 }
 
 /// Represents a collection of zero or more concurrent operations.

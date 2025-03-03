@@ -5,8 +5,8 @@ use {
     tokio::fs,
     wasmtime::{
         component::{
-            self, Component, ErrorContext, Linker, PromisesUnordered, ResourceTable, StreamReader,
-            StreamWriter,
+            self, Component, ErrorContext, Linker, Promise, PromisesUnordered, ResourceTable,
+            StreamReader, StreamWriter,
         },
         Config, Engine, Store,
     },
@@ -14,7 +14,66 @@ use {
 };
 
 #[tokio::test]
+pub async fn async_watch_streams() -> Result<()> {
+    let mut config = Config::new();
+    config.wasm_component_model(true);
+    config.wasm_component_model_async(true);
+    config.async_support(true);
+
+    let engine = Engine::new(&config)?;
+
+    let mut store = Store::new(&engine, ());
+
+    let (tx, rx) = component::stream::<u8, _, _>(&mut store)?;
+    let watch = tx.watch_reader();
+    drop(rx);
+    Promise::from(watch).get(&mut store).await?;
+
+    let (tx, rx) = component::stream::<u8, _, _>(&mut store)?;
+    drop(rx);
+    Promise::from(tx.watch_reader()).get(&mut store).await?;
+
+    let (tx, rx) = component::stream::<u8, _, _>(&mut store)?;
+    let watch = rx.watch_writer();
+    drop(tx);
+    Promise::from(watch).get(&mut store).await?;
+
+    let (tx, rx) = component::stream::<u8, _, _>(&mut store)?;
+    drop(tx);
+    Promise::from(rx.watch_writer()).get(&mut store).await?;
+
+    let (tx, rx) = component::future::<u8, _, _>(&mut store)?;
+    let watch = tx.watch_reader();
+    drop(rx);
+    Promise::from(watch).get(&mut store).await?;
+
+    let (tx, rx) = component::future::<u8, _, _>(&mut store)?;
+    drop(rx);
+    Promise::from(tx.watch_reader()).get(&mut store).await?;
+
+    let (tx, rx) = component::future::<u8, _, _>(&mut store)?;
+    let watch = rx.watch_writer();
+    drop(tx);
+    Promise::from(watch).get(&mut store).await?;
+
+    let (tx, rx) = component::future::<u8, _, _>(&mut store)?;
+    drop(tx);
+    Promise::from(rx.watch_writer()).get(&mut store).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
 pub async fn async_closed_streams() -> Result<()> {
+    test_closed_streams(false).await
+}
+
+#[tokio::test]
+pub async fn async_closed_streams_with_watch() -> Result<()> {
+    test_closed_streams(true).await
+}
+
+pub async fn test_closed_streams(watch: bool) -> Result<()> {
     let mut config = Config::new();
     config.debug_info(true);
     config.cranelift_debug_verifier(true);
@@ -78,7 +137,14 @@ pub async fn async_closed_streams() -> Result<()> {
             count += 1;
             match event {
                 StreamEvent::FirstWrite(Some(tx)) => {
-                    promises.push(tx.write(values.clone()).map(StreamEvent::SecondWrite));
+                    if watch {
+                        promises.push(
+                            Promise::from(tx.watch_reader())
+                                .map(|()| StreamEvent::SecondWrite(None)),
+                        );
+                    } else {
+                        promises.push(tx.write(values.clone()).map(StreamEvent::SecondWrite));
+                    }
                 }
                 StreamEvent::FirstWrite(None) => panic!("first write should have been accepted"),
                 StreamEvent::FirstRead(Ok((_, results))) => {
@@ -104,7 +170,13 @@ pub async fn async_closed_streams() -> Result<()> {
         let mut promises = PromisesUnordered::new();
         promises.push(tx.write(value).map(FutureEvent::Write));
         promises.push(rx.read().map(FutureEvent::Read));
-        promises.push(tx_ignored.write(value).map(FutureEvent::WriteIgnored));
+        if watch {
+            promises.push(
+                Promise::from(tx_ignored.watch_reader()).map(|()| FutureEvent::WriteIgnored(false)),
+            );
+        } else {
+            promises.push(tx_ignored.write(value).map(FutureEvent::WriteIgnored));
+        }
         drop(rx_ignored);
 
         let mut count = 0;
@@ -147,7 +219,14 @@ pub async fn async_closed_streams() -> Result<()> {
             count += 1;
             match event {
                 StreamEvent::FirstWrite(Some(tx)) => {
-                    promises.push(tx.write(values.clone()).map(StreamEvent::SecondWrite));
+                    if watch {
+                        promises.push(
+                            Promise::from(tx.watch_reader())
+                                .map(|()| StreamEvent::SecondWrite(None)),
+                        );
+                    } else {
+                        promises.push(tx.write(values.clone()).map(StreamEvent::SecondWrite));
+                    }
                 }
                 StreamEvent::FirstWrite(None) => panic!("first write should have been accepted"),
                 StreamEvent::FirstRead(_) => unreachable!(),
@@ -176,7 +255,13 @@ pub async fn async_closed_streams() -> Result<()> {
                 .map(|()| FutureEvent::GuestCompleted),
         );
         promises.push(tx.write(value).map(FutureEvent::Write));
-        promises.push(tx_ignored.write(value).map(FutureEvent::WriteIgnored));
+        if watch {
+            promises.push(
+                Promise::from(tx_ignored.watch_reader()).map(|()| FutureEvent::WriteIgnored(false)),
+            );
+        } else {
+            promises.push(tx_ignored.write(value).map(FutureEvent::WriteIgnored));
+        }
 
         let mut count = 0;
         while let Some(event) = promises.next(&mut store).await? {
