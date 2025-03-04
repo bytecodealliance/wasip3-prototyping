@@ -49,6 +49,9 @@
 //!     async: {
 //!         only_imports: [
 //!             "example:wasi/custom-host#my-custom-function",
+//!             "wasi:cli/stdin@0.3.0#get-stdin",
+//!             "wasi:cli/stdout@0.3.0#set-stdout",
+//!             "wasi:cli/stderr@0.3.0#set-stderr",
 //!             "wasi:clocks/monotonic-clock@0.3.0#wait-for",
 //!             "wasi:clocks/monotonic-clock@0.3.0#wait-until",
 //!             "wasi:filesystem/types@0.3.0#[method]descriptor.read-via-stream",
@@ -110,11 +113,11 @@
 //! }
 //!
 //! impl WasiCliView for MyState {
-//!     fn cli(&self) -> &WasiCliCtx { &self.cli }
+//!     fn cli(&mut self) -> &WasiCliCtx { &self.cli }
 //! }
 //!
 //! impl WasiClocksView for MyState {
-//!     fn clocks(&self) -> &WasiClocksCtx { &self.clocks }
+//!     fn clocks(&mut self) -> &WasiClocksCtx { &self.clocks }
 //! }
 //!
 //! impl WasiFilesystemView for MyState {
@@ -153,6 +156,9 @@ mod generated {
         concurrent_imports: true,
         async: {
             only_imports: [
+                "wasi:cli/stdin@0.3.0#get-stdin",
+                "wasi:cli/stdout@0.3.0#set-stdout",
+                "wasi:cli/stderr@0.3.0#set-stderr",
                 "wasi:clocks/monotonic-clock@0.3.0#wait-for",
                 "wasi:clocks/monotonic-clock@0.3.0#wait-until",
                 "wasi:filesystem/types@0.3.0#[method]descriptor.read-via-stream",
@@ -193,6 +199,8 @@ mod generated {
             ],
         },
         with: {
+            "wasi:cli/terminal-input/terminal-input": crate::p3::cli::TerminalInput,
+            "wasi:cli/terminal-output/terminal-output": crate::p3::cli::TerminalOutput,
             "wasi:filesystem/types/descriptor": crate::p3::filesystem::Descriptor,
             "wasi:sockets/types/tcp-socket": crate::p3::sockets::tcp::TcpSocket,
             "wasi:sockets/types/udp-socket": crate::p3::sockets::udp::UdpSocket,

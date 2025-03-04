@@ -8,26 +8,20 @@ use wasmtime::component::Linker;
 #[repr(transparent)]
 pub struct WasiClocksImpl<T>(pub T);
 
-impl<T: WasiClocksView + Sync> WasiClocksView for &T {
-    fn clocks(&self) -> &WasiClocksCtx {
-        (**self).clocks()
-    }
-}
-
 impl<T: WasiClocksView> WasiClocksView for &mut T {
-    fn clocks(&self) -> &WasiClocksCtx {
+    fn clocks(&mut self) -> &WasiClocksCtx {
         (**self).clocks()
     }
 }
 
 impl<T: WasiClocksView> WasiClocksView for WasiClocksImpl<T> {
-    fn clocks(&self) -> &WasiClocksCtx {
+    fn clocks(&mut self) -> &WasiClocksCtx {
         self.0.clocks()
     }
 }
 
 pub trait WasiClocksView: Send {
-    fn clocks(&self) -> &WasiClocksCtx;
+    fn clocks(&mut self) -> &WasiClocksCtx;
 }
 
 pub struct WasiClocksCtx {
@@ -181,7 +175,7 @@ pub fn wall_clock() -> Box<dyn HostWallClock + Send> {
 /// }
 ///
 /// impl WasiClocksView for MyState {
-///     fn clocks(&self) -> &WasiClocksCtx { &self.clocks }
+///     fn clocks(&mut self) -> &WasiClocksCtx { &self.clocks }
 /// }
 /// ```
 pub fn add_to_linker<T: WasiClocksView + 'static>(linker: &mut Linker<T>) -> wasmtime::Result<()> {
