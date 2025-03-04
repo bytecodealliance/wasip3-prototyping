@@ -902,12 +902,22 @@ fn start_event_loop<
     tx
 }
 
+/// Send the specified value to the specified `Sender`.
+///
+/// This will panic if there is no room in the channel's buffer, so it should
+/// only be used in a context where there is at least one empty spot in the
+/// buffer.  It will silently ignore any other error (e.g. if the `Receiver` has
+/// been dropped).
 fn send<T>(tx: &mut mpsc::Sender<T>, value: T) {
     if let Err(e) = tx.try_send(value) {
         if e.is_full() {
             unreachable!();
         }
     }
+}
+
+pub trait Ready {
+    fn ready(&mut self) -> impl Future<Output = ()> + Send;
 }
 
 /// Wrapper `struct` that implements `Future` to represent a state change
@@ -921,9 +931,10 @@ pub struct Watch<T> {
     rx: oneshot::Receiver<()>,
 }
 
-impl<T> Watch<T> {
+impl<T: Ready> Watch<T> {
     /// Convert this object into its inner value.
-    pub fn into_inner(self) -> T {
+    pub async fn into_inner(mut self) -> T {
+        self.inner.ready().await;
         self.inner
     }
 }
@@ -987,6 +998,12 @@ impl<T> FutureWriter<T> {
             StreamOrFutureEvent::WatchReader { tx },
         );
         Watch { inner: self, rx }
+    }
+}
+
+impl<T: Send> Ready for FutureWriter<T> {
+    async fn ready(&mut self) {
+        _ = future::poll_fn(|cx| self.tx.as_mut().unwrap().poll_ready(cx)).await;
     }
 }
 
@@ -1194,6 +1211,12 @@ impl<T> FutureReader<T> {
     }
 }
 
+impl<T: Send> Ready for FutureReader<T> {
+    async fn ready(&mut self) {
+        _ = future::poll_fn(|cx| self.tx.as_mut().unwrap().poll_ready(cx)).await;
+    }
+}
+
 impl<T> Drop for FutureReader<T> {
     fn drop(&mut self) {
         if let Some(mut tx) = self.tx.take() {
@@ -1286,6 +1309,12 @@ impl<T> StreamWriter<T> {
             StreamOrFutureEvent::WatchReader { tx },
         );
         Watch { inner: self, rx }
+    }
+}
+
+impl<T: Send> Ready for StreamWriter<T> {
+    async fn ready(&mut self) {
+        _ = future::poll_fn(|cx| self.tx.as_mut().unwrap().poll_ready(cx)).await;
     }
 }
 
@@ -1489,6 +1518,12 @@ impl<T> StreamReader<T> {
             StreamOrFutureEvent::WatchWriter { tx },
         );
         Watch { inner: self, rx }
+    }
+}
+
+impl<T: Send> Ready for StreamReader<T> {
+    async fn ready(&mut self) {
+        _ = future::poll_fn(|cx| self.tx.as_mut().unwrap().poll_ready(cx)).await;
     }
 }
 
