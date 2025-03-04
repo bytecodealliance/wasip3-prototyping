@@ -123,7 +123,10 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
                 .chain(if use_compression {
                     vec![
                         ("content-encoding".into(), b"deflate".into()),
-                        ("accept-encoding".into(), b"deflate".into()),
+                        (
+                            "accept-encoding".into(),
+                            b"nonexistent-encoding, deflate".into(),
+                        ),
                     ]
                 } else {
                     Vec::new()
@@ -169,6 +172,11 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
                         (k.as_str(), v.as_slice()),
                         ("content-encoding", b"deflate")
                     )));
+                    assert!(response
+                        .headers
+                        .0
+                        .iter()
+                        .all(|(k, _)| k.as_str() != "content-length"));
                 }
 
                 response_trailers = response.body.trailers.take();

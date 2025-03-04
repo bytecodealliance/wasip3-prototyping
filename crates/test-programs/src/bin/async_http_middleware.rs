@@ -51,7 +51,11 @@ impl Handler for Component {
         let (headers, body) = Request::into_parts(request);
         let mut headers = headers.entries();
         headers.retain(|(k, v)| match (k.as_str(), v.as_slice()) {
-            ("accept-encoding", b"deflate") => {
+            ("accept-encoding", value)
+                if std::str::from_utf8(value)
+                    .map(|v| v.contains("deflate"))
+                    .unwrap_or(false) =>
+            {
                 accept_deflated = true;
                 false
             }
@@ -119,6 +123,8 @@ impl Handler for Component {
         }
 
         let body = if accept_deflated {
+            headers.retain(|(name, _value)| name != "content-length");
+
             // Spawn another task; this one is to pipe and encode the original response body and trailers into a
             // new response we'll create below.  This will run concurrently with the caller's code (i.e. it won't
             // necessarily complete before we return a value).
