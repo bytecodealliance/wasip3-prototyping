@@ -129,6 +129,18 @@ impl<T: Send + Sync + 'static> Promise<T> {
     }
 }
 
+/// Poll the specified future until it yields a result _or_ there are no more
+/// tasks to run in the `Store`.
+///
+/// This is a more concise form of `Promise::from(fut).get(&mut store)`, plus it
+/// supports non-`'static` and/or non-`Sync` `Future`s.
+pub async fn get<U: Send, V: Send + Sync + 'static>(
+    mut store: impl AsContextMut<Data = U>,
+    fut: impl Future<Output = V> + Send,
+) -> Result<V> {
+    Ok(poll_until(store.as_context_mut(), Box::pin(fut)).await?.1)
+}
+
 /// Represents a collection of zero or more concurrent operations.
 ///
 /// Similar to [`futures::stream::FuturesUnordered`], this type supports
@@ -153,9 +165,12 @@ impl<T: Send + Sync + 'static> PromisesUnordered<T> {
         &mut self,
         mut store: impl AsContextMut<Data = U>,
     ) -> Result<Option<T>> {
-        Ok(poll_until(store.as_context_mut(), Box::pin(self.0.next()))
-            .await?
-            .1)
+        Ok(poll_until(
+            store.as_context_mut(),
+            Box::pin(self.0.next()) as Pin<Box<dyn Future<Output = Option<T>> + Send + Sync + '_>>,
+        )
+        .await?
+        .1)
     }
 }
 
@@ -3041,7 +3056,7 @@ pub(crate) fn call<'a, T: Send, LowerParams: Copy, R: Send + Sync + 'static>(
 
 fn loop_until<'a, T, R>(
     mut store: StoreContextMut<'a, T>,
-    mut future: Pin<Box<dyn Future<Output = R> + Send + Sync + '_>>,
+    mut future: Pin<Box<dyn Future<Output = R> + Send + '_>>,
 ) -> Result<(R, StoreContextMut<'a, T>)> {
     let result = Arc::new(Mutex::new(None));
     let poll = &mut {
@@ -3076,7 +3091,7 @@ fn loop_until<'a, T, R>(
 
 async fn poll_until<'a, T: Send, R: Send + Sync + 'static>(
     store: StoreContextMut<'a, T>,
-    future: Pin<Box<dyn Future<Output = R> + Send + Sync + '_>>,
+    future: Pin<Box<dyn Future<Output = R> + Send + '_>>,
 ) -> Result<(StoreContextMut<'a, T>, R)> {
     let (result, store) = on_fiber(store, None, move |store| {
         Ok::<_, anyhow::Error>(loop_until(store.as_context_mut(), future)?.0)

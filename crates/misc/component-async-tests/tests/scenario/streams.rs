@@ -1,6 +1,7 @@
 use {
     anyhow::Result,
     component_async_tests::{closed_streams, Ctx},
+    futures::{future, FutureExt},
     std::sync::{Arc, Mutex},
     tokio::fs,
     wasmtime::{
@@ -24,41 +25,85 @@ pub async fn async_watch_streams() -> Result<()> {
 
     let mut store = Store::new(&engine, ());
 
+    // Test watching and then dropping the read end of a stream.
     let (tx, rx) = component::stream::<u8, _, _>(&mut store)?;
     let watch = tx.watch_reader();
     drop(rx);
-    Promise::from(watch).get(&mut store).await?;
+    component::get(&mut store, watch).await?;
 
+    // Test dropping and then watching the read end of a stream.
     let (tx, rx) = component::stream::<u8, _, _>(&mut store)?;
     drop(rx);
-    Promise::from(tx.watch_reader()).get(&mut store).await?;
+    component::get(&mut store, tx.watch_reader()).await?;
 
+    // Test watching and then dropping the write end of a stream.
     let (tx, rx) = component::stream::<u8, _, _>(&mut store)?;
     let watch = rx.watch_writer();
     drop(tx);
-    Promise::from(watch).get(&mut store).await?;
+    component::get(&mut store, watch).await?;
 
+    // Test dropping and then watching the write end of a stream.
     let (tx, rx) = component::stream::<u8, _, _>(&mut store)?;
     drop(tx);
-    Promise::from(rx.watch_writer()).get(&mut store).await?;
+    component::get(&mut store, rx.watch_writer()).await?;
 
+    // Test watching and then dropping the read end of a future.
     let (tx, rx) = component::future::<u8, _, _>(&mut store)?;
     let watch = tx.watch_reader();
     drop(rx);
-    Promise::from(watch).get(&mut store).await?;
+    component::get(&mut store, watch).await?;
 
+    // Test dropping and then watching the read end of a future.
     let (tx, rx) = component::future::<u8, _, _>(&mut store)?;
     drop(rx);
-    Promise::from(tx.watch_reader()).get(&mut store).await?;
+    component::get(&mut store, tx.watch_reader()).await?;
 
+    // Test watching and then dropping the write end of a future.
     let (tx, rx) = component::future::<u8, _, _>(&mut store)?;
     let watch = rx.watch_writer();
     drop(tx);
-    Promise::from(watch).get(&mut store).await?;
+    component::get(&mut store, watch).await?;
 
+    // Test dropping and then watching the write end of a future.
     let (tx, rx) = component::future::<u8, _, _>(&mut store)?;
     drop(tx);
-    Promise::from(rx.watch_writer()).get(&mut store).await?;
+    component::get(&mut store, rx.watch_writer()).await?;
+
+    enum Event {
+        Write(Option<StreamWriter<u8>>),
+        Read(Result<(StreamReader<u8>, Vec<u8>), Option<ErrorContext>>),
+    }
+
+    // Test watching, then writing to, then dropping, then writing again to the
+    // read end of a stream.
+    let mut promises = PromisesUnordered::new();
+    let (tx, rx) = component::stream::<u8, _, _>(&mut store)?;
+    let watch = tx.watch_reader();
+    promises.push(watch.into_inner().await.write(vec![42]).map(Event::Write));
+    promises.push(rx.read().map(Event::Read));
+    let mut rx = None;
+    let mut tx = None;
+    while let Some(event) = promises.next(&mut store).await? {
+        match event {
+            Event::Write(None) => unreachable!(),
+            Event::Write(Some(new_tx)) => tx = Some(new_tx),
+            Event::Read(Err(_)) => unreachable!(),
+            Event::Read(Ok((new_rx, values))) => {
+                assert_eq!(values, vec![42]);
+                rx = Some(new_rx);
+            }
+        }
+    }
+    drop(rx);
+    let mut watch = tx.take().unwrap().watch_reader();
+    component::get(&mut store, future::poll_fn(|cx| watch.poll_unpin(cx))).await?;
+    assert!(watch
+        .into_inner()
+        .await
+        .write(vec![42])
+        .get(&mut store)
+        .await?
+        .is_none());
 
     Ok(())
 }
