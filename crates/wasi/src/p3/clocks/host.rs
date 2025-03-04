@@ -1,4 +1,3 @@
-use core::future::Future;
 use core::time::Duration;
 
 use cap_std::time::SystemTime;
@@ -55,28 +54,24 @@ where
         Ok(self.clocks().monotonic_clock.resolution())
     }
 
-    fn wait_until<U>(
+    async fn wait_until<U>(
         store: &mut Accessor<U, Self>,
         when: monotonic_clock::Instant,
-    ) -> impl Future<Output = wasmtime::Result<()>> {
+    ) -> wasmtime::Result<()> {
         let clock_now = store.with(|mut view| view.clocks().monotonic_clock.now());
-        async move {
-            if when > clock_now {
-                sleep(Duration::from_nanos(when - clock_now)).await;
-            };
-            Ok(())
-        }
+        if when > clock_now {
+            sleep(Duration::from_nanos(when - clock_now)).await;
+        };
+        Ok(())
     }
 
-    fn wait_for<U>(
+    async fn wait_for<U>(
         _store: &mut Accessor<U, Self>,
         duration: monotonic_clock::Duration,
-    ) -> impl Future<Output = wasmtime::Result<()>> {
-        async move {
-            if duration > 0 {
-                sleep(Duration::from_nanos(duration)).await;
-            }
-            Ok(())
+    ) -> wasmtime::Result<()> {
+        if duration > 0 {
+            sleep(Duration::from_nanos(duration)).await;
         }
+        Ok(())
     }
 }
