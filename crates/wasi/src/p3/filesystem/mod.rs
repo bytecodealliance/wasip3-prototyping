@@ -22,13 +22,13 @@ mod host;
 pub struct WasiFilesystemImpl<T>(pub T);
 
 impl<T: WasiFilesystemView> WasiFilesystemView for &mut T {
-    fn filesystem(&mut self) -> &mut WasiFilesystemCtx {
+    fn filesystem(&self) -> &WasiFilesystemCtx {
         (**self).filesystem()
     }
 }
 
 impl<T: WasiFilesystemView> WasiFilesystemView for WasiFilesystemImpl<T> {
-    fn filesystem(&mut self) -> &mut WasiFilesystemCtx {
+    fn filesystem(&self) -> &WasiFilesystemCtx {
         self.0.filesystem()
     }
 }
@@ -40,7 +40,7 @@ impl<T: ResourceView> ResourceView for WasiFilesystemImpl<T> {
 }
 
 pub trait WasiFilesystemView: ResourceView + Send {
-    fn filesystem(&mut self) -> &mut WasiFilesystemCtx;
+    fn filesystem(&self) -> &WasiFilesystemCtx;
 }
 
 #[derive(Clone, Default)]
@@ -177,7 +177,7 @@ impl WasiFilesystemCtx {
 /// }
 ///
 /// impl WasiFilesystemView for MyState {
-///     fn filesystem(&mut self) -> &mut WasiFilesystemCtx { &mut self.filesystem }
+///     fn filesystem(&self) -> &WasiFilesystemCtx { &self.filesystem }
 /// }
 /// ```
 pub fn add_to_linker<T: WasiFilesystemView + 'static>(

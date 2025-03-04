@@ -85,8 +85,8 @@ impl WasiClocksView for Ctx {
 }
 
 impl WasiFilesystemView for Ctx {
-    fn filesystem(&mut self) -> &mut WasiFilesystemCtx {
-        &mut self.filesystem
+    fn filesystem(&self) -> &WasiFilesystemCtx {
+        &self.filesystem
     }
 }
 
