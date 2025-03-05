@@ -1187,7 +1187,6 @@ impl Func {
                 self.call_impl_do_call(store, params, results)
             })
             .await?
-            .0
         }
         #[cfg(not(feature = "component-model-async"))]
         {

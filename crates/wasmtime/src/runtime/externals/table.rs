@@ -104,7 +104,6 @@ impl Table {
                 Table::_new(store.0, ty, init)
             })
             .await?
-            .0
         }
         #[cfg(not(feature = "component-model-async"))]
         {
@@ -310,7 +309,6 @@ impl Table {
                 self.grow(store, delta, init)
             })
             .await?
-            .0
         }
         #[cfg(not(feature = "component-model-async"))]
         {

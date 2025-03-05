@@ -336,7 +336,6 @@ impl Func {
                 self.call_impl(store, params, results)
             })
             .await?
-            .0
         }
         #[cfg(not(feature = "component-model-async"))]
         {
@@ -371,7 +370,6 @@ impl Func {
             self.start_call(store.as_context_mut(), params)
         })
         .await?
-        .0
     }
 
     #[cfg(feature = "component-model-async")]
@@ -398,7 +396,7 @@ impl Func {
             Self::lift_results_sync as LiftFn<_>
         };
 
-        Ok(self.start_call_raw_async(store, params, lower, lift)?.0)
+        self.start_call_raw_async(store, params, lower, lift)
     }
 
     fn call_impl<U: Send>(
@@ -437,7 +435,6 @@ impl Func {
                         Self::lower_args,
                         Self::lift_results_async,
                     )?
-                    .0
                     .into_iter()
                     .zip(results)
                 {
@@ -477,7 +474,7 @@ impl Func {
         params: Params,
         lower: LowerFn<T, Params, LowerParams>,
         lift: LiftFn<Return>,
-    ) -> Result<(Return, StoreContextMut<'a, T>)>
+    ) -> Result<Return>
     where
         LowerParams: Copy,
     {
@@ -519,7 +516,7 @@ impl Func {
         params: Params,
         lower: LowerFn<T, Params, LowerParams>,
         lift: LiftFn<Return>,
-    ) -> Result<(Promise<Return>, StoreContextMut<'a, T>)>
+    ) -> Result<Promise<Return>>
     where
         LowerParams: Copy,
     {

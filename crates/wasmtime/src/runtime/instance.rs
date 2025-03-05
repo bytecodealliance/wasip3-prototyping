@@ -234,7 +234,6 @@ impl Instance {
                 Self::new_started_impl(store, module, imports)
             })
             .await?
-            .0
         }
         #[cfg(not(feature = "component-model-async"))]
         {

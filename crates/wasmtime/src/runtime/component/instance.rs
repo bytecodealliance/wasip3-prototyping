@@ -843,7 +843,6 @@ impl<T> InstancePre<T> {
                 self.instantiate_impl(store)
             })
             .await?
-            .0
         }
         #[cfg(not(feature = "component-model-async"))]
         {
