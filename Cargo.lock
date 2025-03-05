@@ -634,6 +634,7 @@ name = "component-async-tests"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "flate2",
  "futures",
  "pretty_env_logger",
@@ -4024,6 +4025,7 @@ name = "wasi-http-draft"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "futures",
  "wasmtime",
 ]
@@ -4284,6 +4286,7 @@ dependencies = [
  "async-trait",
  "bitflags 2.6.0",
  "bumpalo",
+ "bytes",
  "cc",
  "cfg-if",
  "cranelift-native",

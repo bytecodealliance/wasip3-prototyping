@@ -140,7 +140,7 @@ where
         mut offset: Filesize,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let (fd, fut) = store.with(|mut view| {
-            let data = data.into_reader(&mut view);
+            let data = data.into_reader::<Vec<u8>, _, _>(&mut view);
             let fut = data.read();
             let fd = get_descriptor(view.table(), &fd)?;
             anyhow::Ok((fd.clone(), fut))
@@ -185,7 +185,7 @@ where
         data: HostStream<u8>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let (fd, fut) = store.with(|mut view| {
-            let data = data.into_reader(&mut view);
+            let data = data.into_reader::<Vec<u8>, _, _>(&mut view);
             let fut = data.read();
             let fd = get_descriptor(view.table(), &fd)?;
             anyhow::Ok((fd.clone(), fut))

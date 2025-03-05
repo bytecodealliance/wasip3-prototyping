@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use tokio::fs;
 use wasmtime::component::{
     self, Component, ErrorContext, HostFuture, HostStream, Instance, Linker, Promise,
-    PromisesUnordered, ResourceTable, StreamReader, StreamWriter, Val,
+    PromisesUnordered, ResourceTable, Single, StreamReader, StreamWriter, Val,
 };
 use wasmtime::{AsContextMut, Config, Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;
@@ -212,17 +212,18 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
 
     let instance = Test::instantiate(&mut store, &component, &linker).await?;
 
+    #[allow(clippy::type_complexity)]
     enum Event<Test: TransmitTest> {
         Result(Test::Result),
-        ControlWriteA(Option<StreamWriter<Control>>),
-        ControlWriteB(Option<StreamWriter<Control>>),
-        ControlWriteC(Option<StreamWriter<Control>>),
+        ControlWriteA(Option<StreamWriter<Single<Control>>>),
+        ControlWriteB(Option<StreamWriter<Single<Control>>>),
+        ControlWriteC(Option<StreamWriter<Single<Control>>>),
         ControlWriteD,
         WriteA,
         WriteB(bool),
-        ReadC(Result<(StreamReader<String>, Vec<String>), Option<ErrorContext>>),
+        ReadC(Result<(StreamReader<Vec<String>>, Vec<String>), Option<ErrorContext>>),
         ReadD(Result<String, Option<ErrorContext>>),
-        ReadNone(Result<(StreamReader<String>, Vec<String>), Option<ErrorContext>>),
+        ReadNone(Result<(StreamReader<Vec<String>>, Vec<String>), Option<ErrorContext>>),
     }
 
     let (control_tx, control_rx) = component::stream(&mut store)?;
@@ -238,13 +239,13 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
 
     promises.push(
         control_tx
-            .write(vec![Control::ReadStream("a".into())])
+            .write(Single(Control::ReadStream("a".into())))
             .map(Event::ControlWriteA),
     );
 
     promises.push(
         caller_stream_tx
-            .write(vec!["a".into()])
+            .write(Single("a".into()))
             .map(|_| Event::WriteA),
     );
 
@@ -273,7 +274,7 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
             Event::ControlWriteA(tx) => {
                 promises.push(
                     tx.unwrap()
-                        .write(vec![Control::ReadFuture("b".into())])
+                        .write(Single(Control::ReadFuture("b".into())))
                         .map(Event::ControlWriteB),
                 );
             }
@@ -289,7 +290,7 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
             Event::ControlWriteB(tx) => {
                 promises.push(
                     tx.unwrap()
-                        .write(vec![Control::WriteStream("c".into())])
+                        .write(Single(Control::WriteStream("c".into())))
                         .map(Event::ControlWriteC),
                 );
             }
@@ -300,7 +301,7 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
             Event::ControlWriteC(tx) => {
                 promises.push(
                     tx.unwrap()
-                        .write(vec![Control::WriteFuture("d".into())])
+                        .write(Single(Control::WriteFuture("d".into())))
                         .map(|_| Event::ControlWriteD),
                 );
             }

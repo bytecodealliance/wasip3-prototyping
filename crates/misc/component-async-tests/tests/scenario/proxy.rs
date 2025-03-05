@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
+use bytes::Bytes;
 use component_async_tests::Ctx;
 use tokio::fs;
 use wasi_http_draft::wasi::http::types::{ErrorCode, Method, Scheme};
@@ -76,10 +77,10 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
     let body = b"And the mome raths outgrabe";
 
     enum Event {
-        RequestBodyWrite(Option<StreamWriter<u8>>),
+        RequestBodyWrite(Option<StreamWriter<Bytes>>),
         RequestTrailersWrite(bool),
         Response(Result<Resource<Response>, ErrorCode>),
-        ResponseBodyRead(Result<(StreamReader<u8>, Vec<u8>), Option<ErrorContext>>),
+        ResponseBodyRead(Result<(StreamReader<Bytes>, Bytes), Option<ErrorContext>>),
         ResponseTrailersRead(Result<Resource<Fields>, Option<ErrorContext>>),
     }
 
@@ -92,9 +93,9 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
             .write(if use_compression {
                 let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
                 encoder.write_all(body)?;
-                encoder.finish()?
+                Bytes::from(encoder.finish()?)
             } else {
-                body.to_vec()
+                Bytes::copy_from_slice(body)
             })
             .map(Event::RequestBodyWrite),
     );

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use wasmtime::component::{Accessor, AccessorTask, HostStream, Resource, StreamWriter};
+use wasmtime::component::{Accessor, AccessorTask, HostStream, Resource, Single, StreamWriter};
 use wasmtime_wasi::IoView;
 
 use super::Ctx;
@@ -40,7 +40,7 @@ impl bindings::local::local::resource_stream::Host for &mut Ctx {
         count: u32,
     ) -> wasmtime::Result<HostStream<Resource<ResourceStreamX>>> {
         struct Task {
-            tx: StreamWriter<Resource<ResourceStreamX>>,
+            tx: StreamWriter<Single<Resource<ResourceStreamX>>>,
             count: u32,
         }
 
@@ -52,7 +52,7 @@ impl bindings::local::local::resource_stream::Host for &mut Ctx {
                         .with(|mut view| {
                             let item = IoView::table(&mut *view).push(ResourceStreamX)?;
                             Ok::<_, anyhow::Error>(
-                                tx.take().unwrap().write(vec![item]).into_future(),
+                                tx.take().unwrap().write(Single(item)).into_future(),
                             )
                         })?
                         .await;

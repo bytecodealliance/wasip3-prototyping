@@ -13,7 +13,7 @@ use crate::p3::ResourceView as _;
 
 struct InputTask<T> {
     input: T,
-    tx: StreamWriter<u8>,
+    tx: StreamWriter<Vec<u8>>,
 }
 
 impl<T, U, V> AccessorTask<T, U, wasmtime::Result<()>> for InputTask<V>
@@ -45,7 +45,7 @@ where
 
 struct OutputTask<T> {
     output: T,
-    data: StreamReader<u8>,
+    data: StreamReader<Vec<u8>>,
 }
 
 impl<T, U, V> AccessorTask<T, U, wasmtime::Result<()>> for OutputTask<V>

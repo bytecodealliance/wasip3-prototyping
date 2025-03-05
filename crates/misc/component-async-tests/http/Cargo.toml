@@ -8,3 +8,4 @@ publish = false
 anyhow = { workspace = true }
 futures = { workspace = true }
 wasmtime = { workspace = true, features = ["component-model-async"] }
+bytes = { workspace = true }

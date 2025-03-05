@@ -19,6 +19,7 @@ use {
         AsContextMut, StoreContextMut, VMStoreRawPtr, ValRaw,
     },
     anyhow::{anyhow, bail, ensure, Context, Result},
+    bytes::Bytes,
     futures::{
         channel::{mpsc, oneshot},
         future::{self, FutureExt},
@@ -28,8 +29,10 @@ use {
         any::Any,
         boxed::Box,
         future::Future,
+        iter,
         marker::PhantomData,
         mem::{self, MaybeUninit},
+        ops::Deref,
         pin::Pin,
         ptr::NonNull,
         string::ToString,
@@ -61,9 +64,9 @@ enum PostWrite {
     Close(Option<TypeComponentGlobalErrorContextTableIndex>),
 }
 
-pub(crate) enum HostReadResult<T> {
-    /// Values sent during the stream
-    Values(Vec<T>),
+pub(crate) enum HostReadResult<B> {
+    /// Values sent to the stream
+    Values(B),
     /// When host streams end, they may have an attached error-context
     #[allow(unused)]
     EndOfStream(Option<ErrorContext>),
@@ -153,8 +156,8 @@ fn waitable_state(ty: TableIndex, state: StreamFutureState) -> WaitableState {
     }
 }
 
-fn accept<T: func::Lower + Send + Sync + 'static, U>(
-    values: Vec<T>,
+fn accept<T: func::Lower + Send + Sync + 'static, B: Buffer<T>, U>(
+    values: B,
     mut offset: usize,
     transmit_id: TableId<TransmitState>,
     tx: oneshot::Sender<()>,
@@ -198,7 +201,7 @@ fn accept<T: func::Lower + Send + Sync + 'static, U>(
                     assert!(matches!(&transmit.write, WriteState::Open));
 
                     transmit.write = WriteState::HostReady {
-                        accept: Box::new(accept::<T, U>(values, offset, transmit_id, tx)),
+                        accept: Box::new(accept::<T, B, U>(values, offset, transmit_id, tx)),
                         post_write: PostWrite::Continue,
                     };
                 } else {
@@ -229,10 +232,15 @@ fn accept<T: func::Lower + Send + Sync + 'static, U>(
 /// * `values` - List of values that should be written
 /// * `post_write` - Whether the transmit should be closed after write, possibly with an error context
 ///
-fn host_write<T: func::Lower + Send + Sync + 'static, U, S: AsContextMut<Data = U>>(
+fn host_write<
+    T: func::Lower + Send + Sync + 'static,
+    B: Buffer<T>,
+    U,
+    S: AsContextMut<Data = U>,
+>(
     mut store: S,
     transmit_rep: u32,
-    values: Vec<T>,
+    values: B,
     mut post_write: PostWrite,
     tx: oneshot::Sender<()>,
 ) -> Result<()> {
@@ -260,7 +268,7 @@ fn host_write<T: func::Lower + Send + Sync + 'static, U, S: AsContextMut<Data = 
                 assert!(matches!(&transmit.write, WriteState::Open));
 
                 transmit.write = WriteState::HostReady {
-                    accept: Box::new(accept::<T, U>(
+                    accept: Box::new(accept::<T, B, U>(
                         values,
                         offset,
                         transmit_id,
@@ -352,10 +360,15 @@ fn host_write<T: func::Lower + Send + Sync + 'static, U, S: AsContextMut<Data = 
     }
 }
 
-pub fn host_read<T: func::Lift + Sync + Send + 'static, U, S: AsContextMut<Data = U>>(
+pub fn host_read<
+    T: func::Lift + Sync + Send + 'static,
+    B: Buffer<T>,
+    U,
+    S: AsContextMut<Data = U>,
+>(
     mut store: S,
     rep: u32,
-    tx: oneshot::Sender<HostReadResult<T>>,
+    tx: oneshot::Sender<HostReadResult<B>>,
 ) -> Result<()> {
     let mut store = store.as_context_mut();
     let transmit_id = TableId::<TransmitState>::new(rep);
@@ -384,29 +397,34 @@ pub fn host_read<T: func::Lift + Sync + Send + 'static, U, S: AsContextMut<Data 
                             address,
                             count,
                         } => {
-                            _ = tx.send(HostReadResult::Values(
-                                ty.map(|ty| {
-                                    if address % usize::try_from(T::ALIGN32)? != 0 {
-                                        bail!("write pointer not aligned");
-                                    }
-                                    lift.memory()
-                                        .get(address..)
-                                        .and_then(|b| b.get(..T::SIZE32 * count))
-                                        .ok_or_else(|| {
-                                            anyhow::anyhow!("write pointer out of bounds of memory")
-                                        })?;
+                            _ = tx.send(HostReadResult::Values(if T::IS_RUST_UNIT_TYPE {
+                                B::from(
+                                    iter::repeat_with(|| unsafe {
+                                        MaybeUninit::uninit().assume_init()
+                                    })
+                                    .take(count)
+                                    .collect(),
+                                )
+                            } else {
+                                let ty = ty.unwrap();
+                                if address % usize::try_from(T::ALIGN32)? != 0 {
+                                    bail!("write pointer not aligned");
+                                }
+                                lift.memory()
+                                    .get(address..)
+                                    .and_then(|b| b.get(..T::SIZE32 * count))
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!("write pointer out of bounds of memory")
+                                    })?;
 
-                                    let list = &WasmList::new(address, count, lift, ty)?;
-                                    T::load_list(lift, list)
-                                })
-                                .transpose()?
-                                .unwrap_or_default(),
-                            ));
+                                let list = &WasmList::new(address, count, lift, ty)?;
+                                B::from(T::load_list(lift, list)?)
+                            }));
                             count
                         }
                         Writer::Host { values } => {
                             let values = *values
-                                .downcast::<Vec<T>>()
+                                .downcast::<B>()
                                 .map_err(|_| anyhow!("transmit type mismatch"))?;
                             let count = values.len();
                             _ = tx.send(HostReadResult::Values(values));
@@ -443,15 +461,17 @@ pub fn host_read<T: func::Lift + Sync + Send + 'static, U, S: AsContextMut<Data 
         } => unsafe {
             let types = (*instance.as_ptr()).component_types();
             let lift = &mut LiftContext::new(store.0, &options, types, instance.as_ptr());
-            _ = tx.send(HostReadResult::Values(
-                payload(ty, types)
-                    .map(|ty| {
-                        let list = &WasmList::new(address, count, lift, ty)?;
-                        T::load_list(lift, list)
-                    })
-                    .transpose()?
-                    .unwrap_or_default(),
-            ));
+            _ = tx.send(HostReadResult::Values(if T::IS_RUST_UNIT_TYPE {
+                B::from(
+                    iter::repeat_with(|| MaybeUninit::uninit().assume_init())
+                        .take(count)
+                        .collect(),
+                )
+            } else {
+                let ty = payload(ty, types).unwrap();
+                let list = &WasmList::new(address, count, lift, ty)?;
+                B::from(T::load_list(lift, list)?)
+            }));
 
             log::trace!(
                 "remove write child of {}: {}",
@@ -776,9 +796,9 @@ pub(super) struct FlatAbi {
     pub(super) align: u32,
 }
 
-enum StreamOrFutureEvent<T> {
+enum StreamOrFutureEvent<B> {
     Write {
-        values: Vec<T>,
+        values: B,
         post_write: PostWrite,
         tx: oneshot::Sender<()>,
     },
@@ -789,7 +809,7 @@ enum StreamOrFutureEvent<T> {
         tx: oneshot::Sender<()>,
     },
     Read {
-        tx: oneshot::Sender<HostReadResult<T>>,
+        tx: oneshot::Sender<HostReadResult<B>>,
     },
     CloseReader,
     WatchReader {
@@ -799,16 +819,17 @@ enum StreamOrFutureEvent<T> {
 
 fn start_event_loop<
     T: func::Lower + func::Lift + Sync + Send + 'static,
+    B: Buffer<T>,
     U,
     S: AsContextMut<Data = U>,
 >(
     mut store: S,
     rep: u32,
-) -> mpsc::Sender<StreamOrFutureEvent<T>> {
-    fn write<T: func::Lower + Sync + Send + 'static, U>(
+) -> mpsc::Sender<StreamOrFutureEvent<B>> {
+    fn write<T: func::Lower + Sync + Send + 'static, B: Buffer<T>, U>(
         store: VMStoreRawPtr,
         rep: u32,
-        values: Vec<T>,
+        values: B,
         post_write: PostWrite,
         tx: oneshot::Sender<()>,
     ) -> Result<()> {
@@ -841,13 +862,13 @@ fn start_event_loop<
         Ok(())
     }
 
-    fn read<T: func::Lift + Sync + Send + 'static, U>(
+    fn read<T: func::Lift + Sync + Send + 'static, B: Buffer<T>, U>(
         store: VMStoreRawPtr,
         rep: u32,
-        tx: oneshot::Sender<HostReadResult<T>>,
+        tx: oneshot::Sender<HostReadResult<B>>,
     ) -> Result<()> {
         let store = unsafe { StoreContextMut::<U>(&mut *store.0.as_ptr().cast()) };
-        host_read::<T, _, _>(store, rep, tx)
+        host_read::<T, B, _, _>(store, rep, tx)
     }
 
     fn close_reader<U>(store: VMStoreRawPtr, rep: u32) -> Result<()> {
@@ -879,14 +900,14 @@ fn start_event_loop<
                             values,
                             post_write,
                             tx,
-                        } => write::<_, U>(store, rep, values, post_write, tx)?,
+                        } => write::<T, B, U>(store, rep, values, post_write, tx)?,
                         StreamOrFutureEvent::CloseWriter { err_ctx } => {
                             close_writer::<U>(store, rep, err_ctx)?
                         }
                         StreamOrFutureEvent::WatchWriter { tx } => {
                             watch_writer::<U>(store, rep, tx)?
                         }
-                        StreamOrFutureEvent::Read { tx } => read::<_, U>(store, rep, tx)?,
+                        StreamOrFutureEvent::Read { tx } => read::<T, B, U>(store, rep, tx)?,
                         StreamOrFutureEvent::CloseReader => close_reader::<U>(store, rep)?,
                         StreamOrFutureEvent::WatchReader { tx } => {
                             watch_reader::<U>(store, rep, tx)?
@@ -915,6 +936,34 @@ fn send<T>(tx: &mut mpsc::Sender<T>, value: T) {
         }
     }
 }
+
+/// Trivial container type for sending exactly one element at a time to a
+/// `StringWriter`.
+pub struct Single<T>(pub T);
+
+impl<T> Deref for Single<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        // TODO: Is there a safe way to do this?
+        unsafe { std::slice::from_raw_parts(&self.0, 1) }
+    }
+}
+
+impl<T> From<Vec<T>> for Single<T> {
+    fn from(vec: Vec<T>) -> Self {
+        assert_eq!(vec.len(), 1);
+        Self(vec.into_iter().next().unwrap())
+    }
+}
+
+pub trait Buffer<T>: Deref<Target = [T]> + From<Vec<T>> + Send + Sync + 'static {}
+
+impl<T: Send + Sync + 'static> Buffer<T> for Vec<T> {}
+
+impl Buffer<u8> for Bytes {}
+
+impl<T: Send + Sync + 'static> Buffer<T> for Single<T> {}
 
 pub trait Ready {
     fn ready(&mut self) -> impl Future<Output = ()> + Send;
@@ -949,7 +998,7 @@ impl<T: Unpin> Future for Watch<T> {
 
 /// Represents the writable end of a Component Model `future`.
 pub struct FutureWriter<T> {
-    tx: Option<mpsc::Sender<StreamOrFutureEvent<T>>>,
+    tx: Option<mpsc::Sender<StreamOrFutureEvent<Single<T>>>>,
 }
 
 impl<T> FutureWriter<T> {
@@ -963,7 +1012,7 @@ impl<T> FutureWriter<T> {
         send(
             &mut self.tx.take().unwrap(),
             StreamOrFutureEvent::Write {
-                values: vec![value],
+                values: Single(value),
                 post_write: PostWrite::Close(None),
                 tx,
             },
@@ -1171,7 +1220,7 @@ impl<T> From<FutureReader<T>> for HostFuture<T> {
 /// [`HostFuture`] using the `into` method.
 pub struct FutureReader<T> {
     rep: u32,
-    tx: Option<mpsc::Sender<StreamOrFutureEvent<T>>>,
+    tx: Option<mpsc::Sender<StreamOrFutureEvent<Single<T>>>>,
 }
 
 impl<T> FutureReader<T> {
@@ -1189,7 +1238,7 @@ impl<T> FutureReader<T> {
             StreamOrFutureEvent::Read { tx },
         );
         Promise(Box::pin(rx.map(|v| match v {
-            Ok(HostReadResult::Values(v)) => Ok(v.into_iter().next().unwrap()),
+            Ok(HostReadResult::Values(v)) => Ok(v.0),
             Ok(HostReadResult::EndOfStream(None)) => unreachable!(),
             Err(_) => Err(None),
             Ok(HostReadResult::EndOfStream(s)) => Err(s),
@@ -1250,19 +1299,19 @@ pub fn future<T: func::Lower + func::Lift + Sync + Send + 'static, U, S: AsConte
 }
 
 /// Represents the writable end of a Component Model `stream`.
-pub struct StreamWriter<T> {
-    tx: Option<mpsc::Sender<StreamOrFutureEvent<T>>>,
+pub struct StreamWriter<B> {
+    tx: Option<mpsc::Sender<StreamOrFutureEvent<B>>>,
 }
 
-impl<T> StreamWriter<T> {
+impl<B> StreamWriter<B> {
     /// Write the specified values to the `stream`.
     ///
     /// The returned `Promise` will yield `None` if the read end has been closed
     /// before it could accept all of the values; otherwise it will yield
     /// `self`.
-    pub fn write(mut self, values: Vec<T>) -> Promise<Option<StreamWriter<T>>>
+    pub fn write(mut self, values: B) -> Promise<Option<StreamWriter<B>>>
     where
-        T: Send + 'static,
+        B: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
         send(
@@ -1348,9 +1397,10 @@ impl<T> HostStream<T> {
     }
 
     /// Convert this object into a [`StreamReader`].
-    pub fn into_reader<U, S: AsContextMut<Data = U>>(self, store: S) -> StreamReader<T>
+    pub fn into_reader<B, U, S: AsContextMut<Data = U>>(self, store: S) -> StreamReader<B>
     where
         T: func::Lower + func::Lift + Sync + Send + 'static,
+        B: Buffer<T>,
     {
         StreamReader {
             rep: self.rep,
@@ -1465,8 +1515,8 @@ unsafe impl<T> func::Lift for HostStream<T> {
     }
 }
 
-impl<T> From<StreamReader<T>> for HostStream<T> {
-    fn from(mut value: StreamReader<T>) -> Self {
+impl<T, B: Buffer<T>> From<StreamReader<B>> for HostStream<T> {
+    fn from(mut value: StreamReader<B>) -> Self {
         value.tx.take();
 
         Self {
@@ -1480,16 +1530,16 @@ impl<T> From<StreamReader<T>> for HostStream<T> {
 ///
 /// In order to pass this end to guest code, first convert it to a
 /// [`HostStream`] using the `into` method.
-pub struct StreamReader<T> {
+pub struct StreamReader<B> {
     rep: u32,
-    tx: Option<mpsc::Sender<StreamOrFutureEvent<T>>>,
+    tx: Option<mpsc::Sender<StreamOrFutureEvent<B>>>,
 }
 
-impl<T> StreamReader<T> {
+impl<B> StreamReader<B> {
     /// Read the value from this `stream`.
-    pub fn read(mut self) -> Promise<Result<(StreamReader<T>, Vec<T>), Option<ErrorContext>>>
+    pub fn read(mut self) -> Promise<Result<(StreamReader<B>, B), Option<ErrorContext>>>
     where
-        T: Send + 'static,
+        B: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
         send(self.tx.as_mut().unwrap(), StreamOrFutureEvent::Read { tx });
@@ -1521,13 +1571,13 @@ impl<T> StreamReader<T> {
     }
 }
 
-impl<T: Send> Ready for StreamReader<T> {
+impl<B: Send> Ready for StreamReader<B> {
     async fn ready(&mut self) {
         _ = future::poll_fn(|cx| self.tx.as_mut().unwrap().poll_ready(cx)).await;
     }
 }
 
-impl<T> Drop for StreamReader<T> {
+impl<B> Drop for StreamReader<B> {
     fn drop(&mut self) {
         if let Some(mut tx) = self.tx.take() {
             send(&mut tx, StreamOrFutureEvent::CloseReader);
@@ -1537,9 +1587,14 @@ impl<T> Drop for StreamReader<T> {
 
 /// Create a new Component Model `stream` as pair of writable and readable ends,
 /// the latter of which may be passed to guest code.
-pub fn stream<T: func::Lower + func::Lift + Sync + Send + 'static, U, S: AsContextMut<Data = U>>(
+pub fn stream<
+    T: func::Lower + func::Lift + Sync + Send + 'static,
+    B: Buffer<T>,
+    U,
+    S: AsContextMut<Data = U>,
+>(
     mut store: S,
-) -> Result<(StreamWriter<T>, StreamReader<T>)> {
+) -> Result<(StreamWriter<B>, StreamReader<B>)> {
     let mut store = store.as_context_mut();
     let transmit = store.concurrent_state().table.push(TransmitState {
         read: ReadState::Open,
