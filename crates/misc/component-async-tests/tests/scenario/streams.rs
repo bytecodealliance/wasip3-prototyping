@@ -26,24 +26,24 @@ pub async fn async_watch_streams() -> Result<()> {
     let mut store = Store::new(&engine, ());
 
     // Test watching and then dropping the read end of a stream.
-    let (tx, rx) = component::stream::<u8, _, _>(&mut store)?;
+    let (tx, rx) = component::stream::<u8, Vec<u8>, _, _>(&mut store)?;
     let watch = tx.watch_reader();
     drop(rx);
     component::get(&mut store, watch).await?;
 
     // Test dropping and then watching the read end of a stream.
-    let (tx, rx) = component::stream::<u8, _, _>(&mut store)?;
+    let (tx, rx) = component::stream::<u8, Vec<u8>, _, _>(&mut store)?;
     drop(rx);
     component::get(&mut store, tx.watch_reader()).await?;
 
     // Test watching and then dropping the write end of a stream.
-    let (tx, rx) = component::stream::<u8, _, _>(&mut store)?;
+    let (tx, rx) = component::stream::<u8, Vec<u8>, _, _>(&mut store)?;
     let watch = rx.watch_writer();
     drop(tx);
     component::get(&mut store, watch).await?;
 
     // Test dropping and then watching the write end of a stream.
-    let (tx, rx) = component::stream::<u8, _, _>(&mut store)?;
+    let (tx, rx) = component::stream::<u8, Vec<u8>, _, _>(&mut store)?;
     drop(tx);
     component::get(&mut store, rx.watch_writer()).await?;
 
@@ -69,15 +69,16 @@ pub async fn async_watch_streams() -> Result<()> {
     drop(tx);
     component::get(&mut store, rx.watch_writer()).await?;
 
+    #[allow(clippy::type_complexity)]
     enum Event {
-        Write(Option<StreamWriter<u8>>),
-        Read(Result<(StreamReader<u8>, Vec<u8>), Option<ErrorContext>>),
+        Write(Option<StreamWriter<Vec<u8>>>),
+        Read(Result<(StreamReader<Vec<u8>>, Vec<u8>), Option<ErrorContext>>),
     }
 
     // Test watching, then writing to, then dropping, then writing again to the
     // read end of a stream.
     let mut promises = PromisesUnordered::new();
-    let (tx, rx) = component::stream::<u8, _, _>(&mut store)?;
+    let (tx, rx) = component::stream::<u8, Vec<u8>, _, _>(&mut store)?;
     let watch = tx.watch_reader();
     promises.push(watch.into_inner().await.write(vec![42]).map(Event::Write));
     promises.push(rx.read().map(Event::Read));
@@ -151,10 +152,11 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
         closed_streams::bindings::ClosedStreams::instantiate_async(&mut store, &component, &linker)
             .await?;
 
+    #[allow(clippy::type_complexity)]
     enum StreamEvent {
-        FirstWrite(Option<StreamWriter<u8>>),
-        FirstRead(Result<(StreamReader<u8>, Vec<u8>), Option<ErrorContext>>),
-        SecondWrite(Option<StreamWriter<u8>>),
+        FirstWrite(Option<StreamWriter<Vec<u8>>>),
+        FirstRead(Result<(StreamReader<Vec<u8>>, Vec<u8>), Option<ErrorContext>>),
+        SecondWrite(Option<StreamWriter<Vec<u8>>>),
         GuestCompleted,
     }
 

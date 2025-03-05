@@ -28,3 +28,4 @@ wasmtime-wasi = { workspace = true }
 
 [dev-dependencies]
 test-programs-artifacts = { workspace = true }
+bytes = { workspace = true }

@@ -10,7 +10,7 @@ use rustix::io::Errno;
 use tokio::sync::mpsc;
 use wasmtime::component::{
     future, stream, Accessor, AccessorTask, HostFuture, HostStream, Resource, ResourceTable,
-    StreamWriter,
+    Single, StreamWriter,
 };
 
 use crate::p3::bindings::sockets::types::{
@@ -52,7 +52,7 @@ fn get_socket_mut<'a>(
 
 struct ListenTask {
     family: SocketAddressFamily,
-    tx: StreamWriter<Resource<TcpSocket>>,
+    tx: StreamWriter<Single<Resource<TcpSocket>>>,
     rx: mpsc::Receiver<std::io::Result<(tokio::net::TcpStream, SocketAddr)>>,
 
     // The socket options below are not automatically inherited from the listener
@@ -171,7 +171,7 @@ impl<T, U: WasiSocketsView> AccessorTask<T, U, wasmtime::Result<()>> for ListenT
                     .table()
                     .push(TcpSocket::from_state(state, self.family))
                     .context("failed to push socket to table")?;
-                Ok::<_, wasmtime::Error>(tx.write(vec![socket]))
+                Ok::<_, wasmtime::Error>(tx.write(Single(socket)))
             })?;
             let Some(tail) = fut.into_future().await else {
                 return Ok(());
@@ -371,7 +371,7 @@ where
         data: HostStream<u8>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let (stream, fut) = match store.with(|mut view| {
-            let data = data.into_reader(&mut view);
+            let data = data.into_reader::<Vec<u8>, _, _>(&mut view);
             let fut = data.read();
             let sock = get_socket(view.table(), &socket)?;
             if let TcpState::Connected { stream, .. } = &sock.tcp_state {

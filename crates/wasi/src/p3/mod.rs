@@ -152,7 +152,7 @@ where
 }
 
 pub struct IoTask<T, E> {
-    pub data: StreamWriter<T>,
+    pub data: StreamWriter<Vec<T>>,
     pub result: FutureWriter<Result<(), E>>,
     pub rx: mpsc::Receiver<Result<Vec<T>, E>>,
 }
