@@ -321,7 +321,7 @@ where
 
         let future = closure(cx.as_context_mut(), params);
 
-        let (ret, cx) = concurrent::poll_and_block(cx, future, caller_instance)?;
+        let ret = concurrent::poll_and_block(cx.as_context_mut(), future, caller_instance)?;
 
         flags.set_may_leave(false);
         let mut lower = LowerContext::new(cx, &options, types, instance);
@@ -574,7 +574,8 @@ where
         };
 
         let future = closure(store.as_context_mut(), args, result_tys.types.len());
-        let (result_vals, store) = concurrent::poll_and_block(store, future, caller_instance)?;
+        let result_vals =
+            concurrent::poll_and_block(store.as_context_mut(), future, caller_instance)?;
 
         flags.set_may_leave(false);
 

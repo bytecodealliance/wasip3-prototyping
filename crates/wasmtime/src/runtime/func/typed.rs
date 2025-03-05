@@ -148,7 +148,6 @@ where
                 unsafe { Self::call_raw(store, &self.ty, func, params) }
             })
             .await?
-            .0
         }
         #[cfg(not(feature = "component-model-async"))]
         {

@@ -727,12 +727,12 @@ pub(crate) mod concurrent {
     }
 
     pub(crate) fn poll_and_block<'a, T, R: Send + Sync + 'static>(
-        store: StoreContextMut<'a, T>,
+        _store: StoreContextMut<'a, T>,
         future: impl Future<Output = Result<R>> + Send + Sync + 'static,
         _caller_instance: RuntimeComponentInstanceIndex,
-    ) -> Result<(R, StoreContextMut<'a, T>)> {
+    ) -> Result<R> {
         match pin!(future).poll(&mut Context::from_waker(&dummy_waker())) {
-            Poll::Ready(result) => Ok((result?, store)),
+            Poll::Ready(result) => result,
             Poll::Pending => {
                 unreachable!()
             }

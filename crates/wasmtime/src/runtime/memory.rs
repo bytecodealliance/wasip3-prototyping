@@ -272,7 +272,6 @@ impl Memory {
                 Self::_new(store.0, ty)
             })
             .await?
-            .0
         }
         #[cfg(not(feature = "component-model-async"))]
         {
@@ -636,7 +635,6 @@ impl Memory {
                 self.grow(store, delta)
             })
             .await?
-            .0
         }
         #[cfg(not(feature = "component-model-async"))]
         {

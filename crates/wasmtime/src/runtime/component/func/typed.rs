@@ -203,7 +203,6 @@ where
                 self.call_impl(store, params)
             })
             .await?
-            .0
         }
         #[cfg(not(feature = "component-model-async"))]
         {
@@ -242,7 +241,6 @@ where
             self.start_call(store.as_context_mut(), params)
         })
         .await?
-        .0
     }
 
     #[cfg(feature = "component-model-async")]
@@ -255,7 +253,7 @@ where
         Params: Send + Sync + 'static,
         Return: Send + Sync + 'static,
     {
-        Ok(if store.0[self.func.0].options.async_() {
+        if store.0[self.func.0].options.async_() {
             #[cfg(feature = "component-model-async")]
             {
                 if Params::flatten_count() <= MAX_FLAT_PARAMS {
@@ -331,8 +329,7 @@ where
                     Self::lift_heap_result_raw,
                 )
             }
-        }?
-        .0)
+        }
     }
 
     fn call_impl<T: Send>(
@@ -348,7 +345,7 @@ where
         if store.0[self.func.0].options.async_() {
             #[cfg(feature = "component-model-async")]
             {
-                return Ok(if Params::flatten_count() <= MAX_FLAT_PARAMS {
+                return if Params::flatten_count() <= MAX_FLAT_PARAMS {
                     if Return::flatten_count() <= MAX_FLAT_PARAMS {
                         self.func.call_raw_async(
                             store,
@@ -380,8 +377,7 @@ where
                             Self::lift_heap_result_raw,
                         )
                     }
-                }?
-                .0);
+                };
             }
             #[cfg(not(feature = "component-model-async"))]
             {
