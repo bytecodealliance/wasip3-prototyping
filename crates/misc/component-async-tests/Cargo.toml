@@ -23,7 +23,10 @@ tokio = { workspace = true, features = [
 wasi-http-draft = { path = "http" }
 wasm-compose = { workspace = true }
 wasmparser = { workspace = true }
-wasmtime = { workspace = true, features = ["component-model-async"] }
+wasmtime = { workspace = true, features = [
+  "cranelift",
+  "component-model-async",
+] }
 wasmtime-wasi = { workspace = true }
 
 [dev-dependencies]
