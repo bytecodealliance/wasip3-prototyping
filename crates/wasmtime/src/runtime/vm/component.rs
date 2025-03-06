@@ -123,7 +123,8 @@ pub struct ComponentInstance {
 ///   which this function pointer was registered.
 /// * `ty` - the type index, relative to the tables in `vmctx`, that is the
 ///   type of the function being called.
-/// * `caller_instance` - The (sub)component instance of the caller.
+/// * `caller_instance` - the `RuntimeComponentInstanceIndex` representing the
+///   caller component instance, used to track the owner of an async host task.
 /// * `flags` - the component flags for may_enter/leave corresponding to the
 ///   component instance that the lowering happened within.
 /// * `opt_memory` - this nullable pointer represents the memory configuration
@@ -571,8 +572,8 @@ impl ComponentInstance {
         *self.vmctx_plus_offset_mut(self.offsets.magic()) = VMCOMPONENT_MAGIC;
         *self.vmctx_plus_offset_mut(self.offsets.builtins()) =
             VmPtr::from(NonNull::from(&libcalls::VMComponentBuiltins::INIT));
-        *self.vmctx_plus_offset_mut(self.offsets.limits()) =
-            VmPtr::from(self.store.0.as_ref().vmruntime_limits());
+        *self.vmctx_plus_offset_mut(self.offsets.vm_store_context()) =
+            VmPtr::from(self.store.0.as_ref().vm_store_context_ptr());
 
         for i in 0..self.offsets.num_runtime_component_instances {
             let i = RuntimeComponentInstanceIndex::from_u32(i);

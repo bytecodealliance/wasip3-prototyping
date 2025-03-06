@@ -15,7 +15,7 @@ mod bindings {
 }
 
 use bindings::wit_future;
-use wit_bindgen_rt::async_support::{self, error_context_new, FutureReader};
+use wit_bindgen_rt::async_support::{self, ErrorContext, FutureReader};
 
 struct Component;
 
@@ -23,7 +23,7 @@ impl bindings::exports::local::local::run_future::Guest for Component {
     async fn produce_then_error() -> FutureReader<()> {
         let (mut tx, rx) = wit_future::new();
         async_support::spawn(async move {
-            tx.close_with_error(error_context_new("error".into()));
+            tx.close_with_error(ErrorContext::new("error".into()));
         });
         rx
     }

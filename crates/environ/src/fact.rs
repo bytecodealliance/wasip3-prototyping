@@ -43,6 +43,19 @@ mod traps;
 /// callee is an async-lifted export.
 pub const EXIT_FLAG_ASYNC_CALLEE: i32 = 1 << 0;
 
+/// Fixed parameter types for the `sync-enter` built-in function.
+///
+/// Note that `sync-enter` also takes a variable number of parameters in
+/// addition to these, determined by the signature of the function for which
+/// we're generating an adapter.
+pub static SYNC_ENTER_FIXED_PARAMS: &[ValType] = &[
+    ValType::FUNCREF,
+    ValType::FUNCREF,
+    ValType::I32,
+    ValType::I32,
+    ValType::I32,
+];
+
 /// Representation of an adapter module.
 pub struct Module<'a> {
     /// Whether or not debug code is inserted into the adapters themselves.
@@ -97,8 +110,6 @@ pub struct Module<'a> {
     funcs: PrimaryMap<FunctionId, Function>,
     helper_funcs: HashMap<Helper, FunctionId>,
     helper_worklist: Vec<(FunctionId, Helper)>,
-
-    globals: Vec<ValType>,
 
     exports: Vec<(u32, String)>,
 }
@@ -225,7 +236,6 @@ impl<'a> Module<'a> {
             imported_error_context_transfer: None,
             imported_sync_enter_call: HashMap::new(),
             imported_sync_exit_call: HashMap::new(),
-            globals: Default::default(),
             exports: Vec::new(),
         }
     }
@@ -492,16 +502,11 @@ impl<'a> Module<'a> {
         self.import_simple_get_and_set(
             "sync",
             &format!("[enter-call]{suffix}"),
-            &[
-                ValType::FUNCREF,
-                ValType::FUNCREF,
-                ValType::I32,
-                ValType::I32,
-                ValType::I32,
-            ]
-            .into_iter()
-            .chain(params.iter().copied())
-            .collect::<Vec<_>>(),
+            &SYNC_ENTER_FIXED_PARAMS
+                .iter()
+                .copied()
+                .chain(params.iter().copied())
+                .collect::<Vec<_>>(),
             &[],
             Import::SyncEnterCall,
             |me| me.imported_sync_enter_call.get(suffix).copied(),
@@ -764,29 +769,10 @@ impl<'a> Module<'a> {
 
         let traps = traps.finish();
 
-        let mut globals = GlobalSection::new();
-        for ty in &self.globals {
-            globals.global(
-                GlobalType {
-                    val_type: *ty,
-                    mutable: true,
-                    shared: false,
-                },
-                &match ty {
-                    ValType::I32 => ConstExpr::i32_const(0),
-                    ValType::I64 => ConstExpr::i64_const(0),
-                    ValType::F32 => ConstExpr::f32_const(0_f32),
-                    ValType::F64 => ConstExpr::f64_const(0_f64),
-                    _ => unreachable!(),
-                },
-            );
-        }
-
         let mut result = wasm_encoder::Module::new();
         result.section(&self.core_types.section);
         result.section(&self.core_imports);
         result.section(&funcs);
-        result.section(&globals);
         result.section(&exports);
         result.section(&code);
         if self.debug {

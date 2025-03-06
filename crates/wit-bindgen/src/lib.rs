@@ -269,12 +269,10 @@ impl Opts {
         // TODO: Should we refine this test to inspect only types reachable from
         // the specified world?
         if !cfg!(feature = "component-model-async")
-            && resolve.types.iter().any(|(_, ty)| {
-                matches!(
-                    ty.kind,
-                    TypeDefKind::Future(_) | TypeDefKind::Stream(_) | TypeDefKind::ErrorContext
-                )
-            })
+            && resolve
+                .types
+                .iter()
+                .any(|(_, ty)| matches!(ty.kind, TypeDefKind::Future(_) | TypeDefKind::Stream(_)))
         {
             anyhow::bail!(
                 "must enable `component-model-async` feature when using WIT files \
@@ -770,13 +768,11 @@ fn _new(
                 let mut resource_methods = IndexMap::new();
 
                 for (_, func) in iface.functions.iter() {
-                    match func.kind {
-                        FunctionKind::Freestanding => {
+                    match func.kind.resource() {
+                        None => {
                             generator.define_rust_guest_export(resolve, Some(name), func);
                         }
-                        FunctionKind::Method(id)
-                        | FunctionKind::Constructor(id)
-                        | FunctionKind::Static(id) => {
+                        Some(id) => {
                             resource_methods.entry(id).or_insert(Vec::new()).push(func);
                         }
                     }
@@ -1791,7 +1787,6 @@ impl<'a> InterfaceGenerator<'a> {
             TypeDefKind::Type(t) => self.type_alias(id, name, t, &ty.docs),
             TypeDefKind::Future(t) => self.type_future(id, name, t.as_ref(), &ty.docs),
             TypeDefKind::Stream(t) => self.type_stream(id, name, t.as_ref(), &ty.docs),
-            TypeDefKind::ErrorContext => self.type_error_context(id, name, &ty.docs),
             TypeDefKind::Handle(handle) => self.type_handle(id, name, handle, &ty.docs),
             TypeDefKind::Resource => self.type_resource(id, name, ty, &ty.docs),
             TypeDefKind::Unknown => unreachable!(),
@@ -1857,12 +1852,7 @@ impl<'a> InterfaceGenerator<'a> {
                 }
             };
 
-            functions.retain(|func| match func.kind {
-                FunctionKind::Freestanding => false,
-                FunctionKind::Method(resource)
-                | FunctionKind::Static(resource)
-                | FunctionKind::Constructor(resource) => id == resource,
-            });
+            functions.retain(|func| func.kind.resource() == Some(id));
 
             if let CallStyle::Async | CallStyle::Concurrent = self.generator.opts.call_style() {
                 uwriteln!(
@@ -2488,15 +2478,6 @@ impl<'a> InterfaceGenerator<'a> {
         self.assert_type(id, &name);
     }
 
-    fn type_error_context(&mut self, id: TypeId, name: &str, docs: &Docs) {
-        self.rustdoc(docs);
-        self.push_str(&format!("pub type {name}"));
-        self.push_str(" = ");
-        self.print_error_context();
-        self.push_str(";\n");
-        self.assert_type(id, &name);
-    }
-
     fn print_result_ty(&mut self, result: Option<Type>, mode: TypeMode) {
         match result {
             Some(ty) => self.print_ty(&ty, mode),
@@ -2924,15 +2905,15 @@ impl<'a> InterfaceGenerator<'a> {
                 .push_str("let host = &mut host_getter(caller.data_mut());\n");
         }
         let func_name = rust_function_name(func);
-        let host_trait = match func.kind {
-            FunctionKind::Freestanding => match owner {
+        let host_trait = match func.kind.resource() {
+            None => match owner {
                 TypeOwner::World(id) => format!(
                     "{}Imports",
                     rust::to_rust_upper_camel_case(&self.resolve.worlds[id].name)
                 ),
                 _ => "Host".to_string(),
             },
-            FunctionKind::Method(id) | FunctionKind::Static(id) | FunctionKind::Constructor(id) => {
+            Some(id) => {
                 let resource = self.resolve.types[id]
                     .name
                     .as_ref()
@@ -3598,8 +3579,7 @@ fn type_contains_lists(ty: Type, resolve: &Resolve) -> bool {
             | TypeDefKind::Handle(_)
             | TypeDefKind::Enum(_)
             | TypeDefKind::Stream(_)
-            | TypeDefKind::Future(_)
-            | TypeDefKind::ErrorContext => false,
+            | TypeDefKind::Future(_) => false,
             TypeDefKind::Option(ty) => type_contains_lists(*ty, resolve),
             TypeDefKind::Result(Result_ { ok, err }) => {
                 option_type_contains_lists(*ok, resolve)
@@ -3648,21 +3628,25 @@ fn resolve_type_definition_id(resolve: &Resolve, mut id: TypeId) -> TypeId {
 
 fn rust_function_name(func: &Function) -> String {
     match func.kind {
-        FunctionKind::Method(_) | FunctionKind::Static(_) => to_rust_ident(func.item_name()),
         FunctionKind::Constructor(_) => "new".to_string(),
-        FunctionKind::Freestanding => to_rust_ident(&func.name),
+        FunctionKind::Method(_)
+        | FunctionKind::Static(_)
+        | FunctionKind::AsyncMethod(_)
+        | FunctionKind::AsyncStatic(_)
+        | FunctionKind::Freestanding
+        | FunctionKind::AsyncFreestanding => to_rust_ident(func.item_name()),
     }
 }
 
 fn func_field_name(resolve: &Resolve, func: &Function) -> String {
     let mut name = String::new();
     match func.kind {
-        FunctionKind::Method(id) => {
+        FunctionKind::Method(id) | FunctionKind::AsyncMethod(id) => {
             name.push_str("method-");
             name.push_str(resolve.types[id].name.as_ref().unwrap());
             name.push_str("-");
         }
-        FunctionKind::Static(id) => {
+        FunctionKind::Static(id) | FunctionKind::AsyncStatic(id) => {
             name.push_str("static-");
             name.push_str(resolve.types[id].name.as_ref().unwrap());
             name.push_str("-");
@@ -3672,7 +3656,7 @@ fn func_field_name(resolve: &Resolve, func: &Function) -> String {
             name.push_str(resolve.types[id].name.as_ref().unwrap());
             name.push_str("-");
         }
-        FunctionKind::Freestanding => {}
+        FunctionKind::Freestanding | FunctionKind::AsyncFreestanding => {}
     }
     name.push_str(func.item_name());
     name.to_snake_case()

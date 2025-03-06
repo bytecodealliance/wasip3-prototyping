@@ -15,7 +15,7 @@ mod bindings {
 }
 use bindings::wit_stream;
 use wit_bindgen_rt::async_support::futures::SinkExt;
-use wit_bindgen_rt::async_support::{self, error_context_new, StreamReader};
+use wit_bindgen_rt::async_support::{self, ErrorContext, StreamReader};
 
 struct Component;
 
@@ -26,7 +26,7 @@ impl bindings::exports::local::local::run_stream::Guest for Component {
             for _ in 0..times {
                 let _ = tx.send(vec![()]).await;
             }
-            tx.close_with_error(error_context_new("error".into()));
+            tx.close_with_error(ErrorContext::new("error".into()));
         });
         rx
     }

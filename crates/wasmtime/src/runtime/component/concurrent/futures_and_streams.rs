@@ -1961,11 +1961,15 @@ pub(super) fn guest_write<T>(
     realloc: *mut VMFuncRef,
     string_encoding: u8,
     ty: TableIndex,
+    err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
     flat_abi: Option<FlatAbi>,
     handle: u32,
     address: u32,
     count: u32,
 ) -> Result<u32> {
+    // TODO: handle errors sent via `{stream|future}.close-readable`:
+    _ = err_ctx_ty;
+
     let address = usize::try_from(address).unwrap();
     let count = usize::try_from(count).unwrap();
     let options = unsafe {
@@ -2452,8 +2456,15 @@ pub(super) fn guest_close_readable<T>(
     cx: StoreContextMut<T>,
     instance: &mut ComponentInstance,
     ty: TableIndex,
+    err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
     reader: u32,
+    error: u32,
 ) -> Result<()> {
+    if error != 0 {
+        _ = err_ctx_ty;
+        todo!();
+    }
+
     let (rep, WaitableState::Stream(_, state) | WaitableState::Future(_, state)) =
         state_table(instance, ty).remove_by_index(reader)?
     else {

@@ -14,13 +14,13 @@ mod bindings {
     use super::Component;
     export!(Component);
 }
-use wit_bindgen_rt::async_support::{error_context_new, ErrorContext};
+use wit_bindgen_rt::async_support::ErrorContext;
 
 struct Component;
 
 impl bindings::exports::local::local::run_result::Guest for Component {
     async fn run_fail() -> Result<(), ErrorContext> {
-        Err(error_context_new("error".into()))
+        Err(ErrorContext::new("error".into()))
     }
 
     async fn run_pass() -> Result<(), ErrorContext> {
