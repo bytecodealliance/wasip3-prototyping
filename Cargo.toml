@@ -570,8 +570,3 @@ opt-level = 's'
 inherits = "release"
 codegen-units = 1
 lto = true
-
-[patch."https://github.com/bytecodealliance/wit-bindgen"]
-wit-bindgen = { path = "../wit-bindgen/crates/guest-rust" }
-wit-bindgen-rt = { path = "../wit-bindgen/crates/guest-rust/rt" }
-wit-bindgen-rust-macro = { path = "../wit-bindgen/crates/guest-rust/macro" }
