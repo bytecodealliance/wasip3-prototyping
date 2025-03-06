@@ -1785,51 +1785,53 @@ pub(crate) fn poll_and_block<'a, T, R: Send + Sync + 'static>(
         }),
     })) as HostTaskFuture;
 
-    Ok(
-        match unsafe { AsyncCx::new(&mut store).poll(future.as_mut()) } {
-            Poll::Ready(output) => {
-                let HostTaskOutput::Call { fun, .. } = output else {
-                    unreachable!()
-                };
-                log::trace!("delete host task {} (already ready)", task.rep());
-                store.concurrent_state().table.delete(task)?;
-                fun(store.0.traitobj().as_ptr())?;
-                let result = *mem::replace(
-                    &mut store.concurrent_state().table.get_mut(caller)?.result,
-                    old_result,
-                )
-                .unwrap()
-                .downcast()
-                .unwrap();
-                result
-            }
-            Poll::Pending => {
-                store.concurrent_state().futures.get_mut().push(future);
+    let Some(cx) = AsyncCx::try_new(&mut store) else {
+        return Err(anyhow!("future dropped"));
+    };
 
-                poll_loop(store.as_context_mut(), |store| {
-                    Ok(store
-                        .concurrent_state()
-                        .table
-                        .get_mut(caller)?
-                        .result
-                        .is_none())
-                })?;
+    Ok(match unsafe { cx.poll(future.as_mut()) } {
+        Poll::Ready(output) => {
+            let HostTaskOutput::Call { fun, .. } = output else {
+                unreachable!()
+            };
+            log::trace!("delete host task {} (already ready)", task.rep());
+            store.concurrent_state().table.delete(task)?;
+            fun(store.0.traitobj().as_ptr())?;
+            let result = *mem::replace(
+                &mut store.concurrent_state().table.get_mut(caller)?.result,
+                old_result,
+            )
+            .unwrap()
+            .downcast()
+            .unwrap();
+            result
+        }
+        Poll::Pending => {
+            store.concurrent_state().futures.get_mut().push(future);
 
-                if let Some(result) = store
+            poll_loop(store.as_context_mut(), |store| {
+                Ok(store
                     .concurrent_state()
                     .table
                     .get_mut(caller)?
                     .result
-                    .take()
-                {
-                    store.concurrent_state().table.get_mut(caller)?.result = old_result;
-                    *result.downcast().unwrap()
-                } else {
-                    return Err(anyhow!(crate::Trap::NoAsyncResult));
-                }
+                    .is_none())
+            })?;
+
+            if let Some(result) = store
+                .concurrent_state()
+                .table
+                .get_mut(caller)?
+                .result
+                .take()
+            {
+                store.concurrent_state().table.get_mut(caller)?.result = old_result;
+                *result.downcast().unwrap()
+            } else {
+                return Err(anyhow!(crate::Trap::NoAsyncResult));
             }
-        },
-    )
+        }
+    })
 }
 
 pub(crate) async fn on_fiber<'a, R: Send + Sync + 'static, T: Send>(
@@ -2081,6 +2083,15 @@ fn resume_stackful<'a, T>(
                     ) {
                         if event == Event::Done {
                             log::trace!("resume_stackful will delete call {}", call.rep());
+                            _ = unsafe {
+                                &mut *store
+                                    .concurrent_state()
+                                    .component_instance
+                                    .unwrap()
+                                    .as_ptr()
+                            }
+                            .component_waitable_tables()[instance]
+                                .remove_by_rep(call.rep());
                             call.delete_all_from(store.as_context_mut())?;
                         }
                     }
@@ -2743,6 +2754,7 @@ fn do_start_call<'a, T>(
     post_return: Option<SendSyncPtr<VMFuncRef>>,
     callee_instance: RuntimeComponentInstanceIndex,
     result_count: usize,
+    use_fiber: bool,
 ) -> Result<u32> {
     let state = &mut store
         .concurrent_state()
@@ -2785,7 +2797,7 @@ fn do_start_call<'a, T>(
             };
         }
     } else {
-        let mut fiber = make_fiber(&mut store, Some(callee_instance), move |mut store| {
+        let do_call = move |mut store: StoreContextMut<T>| {
             let mut flags = unsafe { (*instance).instance_flags(callee_instance) };
 
             if !async_ {
@@ -2863,52 +2875,61 @@ fn do_start_call<'a, T>(
             }
 
             Ok(())
-        })?;
+        };
 
-        store
-            .concurrent_state()
-            .table
-            .get_mut(guest_task)?
-            .should_yield = true;
+        if use_fiber {
+            let mut fiber = make_fiber(&mut store, Some(callee_instance), do_call)?;
 
-        if ready {
-            maybe_push_call_context(&mut store, guest_task)?;
-            store = {
-                let mut store = Some(store);
-                loop {
-                    match resume_fiber(&mut fiber, store.take(), Ok(()))? {
-                        Ok((mut store, result)) => {
-                            async_finished = async_;
-                            result?;
-                            maybe_resume_next_task(store.as_context_mut(), callee_instance)?;
-                            break store;
-                        }
-                        Err(store) => {
-                            if let Some(mut store) = store {
-                                maybe_pop_call_context(&mut store, guest_task)?;
-                                store.concurrent_state().table.get_mut(guest_task)?.deferred =
-                                    Deferred::Stackful { fiber, async_ };
+            store
+                .concurrent_state()
+                .table
+                .get_mut(guest_task)?
+                .should_yield = true;
+
+            if ready {
+                maybe_push_call_context(&mut store, guest_task)?;
+                store = {
+                    let mut store = Some(store);
+                    loop {
+                        match resume_fiber(&mut fiber, store.take(), Ok(()))? {
+                            Ok((mut store, result)) => {
+                                result?;
+                                async_finished = async_;
+                                maybe_resume_next_task(store.as_context_mut(), callee_instance)?;
                                 break store;
-                            } else {
-                                unsafe {
-                                    suspend_fiber::<T>(fiber.suspend, fiber.stack_limit, None)?
-                                };
+                            }
+                            Err(store) => {
+                                if let Some(mut store) = store {
+                                    maybe_pop_call_context(&mut store, guest_task)?;
+                                    store.concurrent_state().table.get_mut(guest_task)?.deferred =
+                                        Deferred::Stackful { fiber, async_ };
+                                    break store;
+                                } else {
+                                    unsafe {
+                                        suspend_fiber::<T>(fiber.suspend, fiber.stack_limit, None)?;
+                                    };
+                                }
                             }
                         }
                     }
                 }
+            } else {
+                store
+                    .concurrent_state()
+                    .instance_states
+                    .get_mut(&callee_instance)
+                    .unwrap()
+                    .task_queue
+                    .push_back(guest_task);
+
+                store.concurrent_state().table.get_mut(guest_task)?.deferred =
+                    Deferred::Stackful { fiber, async_ };
             }
         } else {
-            store
-                .concurrent_state()
-                .instance_states
-                .get_mut(&callee_instance)
-                .unwrap()
-                .task_queue
-                .push_back(guest_task);
-
-            store.concurrent_state().table.get_mut(guest_task)?.deferred =
-                Deferred::Stackful { fiber, async_ };
+            maybe_push_call_context(&mut store, guest_task)?;
+            do_call(store.as_context_mut())?;
+            async_finished = async_;
+            maybe_pop_call_context(&mut store, guest_task)?;
         }
     };
 
@@ -3014,6 +3035,7 @@ pub(crate) fn start_call<'a, T: Send, LowerParams: Copy, R: 'static>(
         post_return.map(|f| SendSyncPtr::new(f.func_ref)),
         component_instance,
         1,
+        false,
     )?;
 
     store.concurrent_state().guest_task = None;
@@ -3322,6 +3344,7 @@ fn exit_call<T>(
         NonNull::new(post_return).map(SendSyncPtr::new),
         callee_instance,
         result_count,
+        true,
     )?;
 
     let task = store.concurrent_state().table.get(guest_task)?;
