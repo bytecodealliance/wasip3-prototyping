@@ -219,6 +219,22 @@ pub async fn test_round_trip(component: &[u8], inputs_and_outputs: &[(&str, &str
         while let Some((actual, expected)) = promises.next(&mut store).await? {
             assert_eq!(expected, actual);
         }
+
+        // Now do it again using `TypedFunc::call_async`-based bindings:
+        let round_trip = component_async_tests::round_trip::non_concurrent_export_bindings::RoundTrip::instantiate_async(
+            &mut store, &component, &linker,
+        )
+        .await?;
+
+        for (input, expected) in inputs_and_outputs {
+            assert_eq!(
+                *expected,
+                &round_trip
+                    .local_local_baz()
+                    .call_foo(&mut store, (*input).to_owned())
+                    .await?
+            );
+        }
     }
 
     // Now do it again using the dynamic API (except for WASI, where we stick with the static API):
@@ -269,6 +285,22 @@ pub async fn test_round_trip(component: &[u8], inputs_and_outputs: &[(&str, &str
                 unreachable!()
             };
             assert_eq!(expected, actual);
+        }
+
+        // Now do it again using `Func::call_async`:
+        for (input, expected) in inputs_and_outputs {
+            let mut results = [Val::Bool(false)];
+            foo_function
+                .call_async(
+                    &mut store,
+                    &[Val::String((*input).to_owned())],
+                    &mut results,
+                )
+                .await?;
+            let Val::String(actual) = &results[0] else {
+                unreachable!()
+            };
+            assert_eq!(*expected, actual);
         }
     }
 

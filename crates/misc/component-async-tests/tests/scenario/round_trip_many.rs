@@ -262,6 +262,47 @@ async fn test_round_trip_many(component: &[u8], inputs_and_outputs: &[(&str, &st
                 actual
             );
         }
+
+        // Now do it again using `TypedFunc::call_async`-based bindings:
+        let e = component_async_tests::round_trip_many::non_concurrent_export_bindings::exports::local::local::many::Stuff {
+        a: vec![42i32; 42],
+        b: true,
+        c: 424242,
+    };
+        let f = Some(e.clone());
+        let g = Err(());
+
+        let round_trip_many = component_async_tests::round_trip_many::non_concurrent_export_bindings::RoundTripMany::instantiate_async(
+            &mut store, &component, &linker,
+        )
+        .await?;
+
+        for (input, expected) in inputs_and_outputs {
+            assert_eq!(
+                (
+                    (*expected).to_owned(),
+                    b,
+                    c.clone(),
+                    d,
+                    e.clone(),
+                    f.clone(),
+                    g.clone()
+                ),
+                round_trip_many
+                    .local_local_many()
+                    .call_foo(
+                        &mut store,
+                        (*input).to_owned(),
+                        b,
+                        c.clone(),
+                        d,
+                        e.clone(),
+                        f.clone(),
+                        g.clone()
+                    )
+                    .await?
+            );
+        }
     }
 
     // Now do it again using the dynamic API (except for WASI, where we stick with the static API):
@@ -335,6 +376,18 @@ async fn test_round_trip_many(component: &[u8], inputs_and_outputs: &[(&str, &st
                 unreachable!()
             };
             assert_eq!(make(&expected), actual);
+        }
+
+        // Now do it again using `Func::call_async`:
+        for (input, expected) in inputs_and_outputs {
+            let mut results = [Val::Bool(false)];
+            foo_function
+                .call_async(&mut store, &make(input), &mut results)
+                .await?;
+            let Val::Tuple(actual) = &results[0] else {
+                unreachable!()
+            };
+            assert_eq!(&make(expected), actual);
         }
     }
 

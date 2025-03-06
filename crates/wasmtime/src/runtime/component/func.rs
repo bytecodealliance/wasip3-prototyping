@@ -330,8 +330,6 @@ impl Func {
         #[cfg(feature = "component-model-async")]
         {
             let instance = store.0[self.0].component_instance;
-            // TODO: do we need to return the store here due to the possible
-            // invalidation of the reference we were passed?
             concurrent::on_fiber(store, Some(instance), move |store| {
                 self.call_impl(store, params, results)
             })
@@ -364,8 +362,6 @@ impl Func {
             "cannot use `call_concurrent` when async support is not enabled on the config"
         );
         let instance = store.0[self.0].component_instance;
-        // TODO: do we need to return the store here due to the possible
-        // invalidation of the reference we were passed?
         concurrent::on_fiber(store, Some(instance), move |store| {
             self.start_call(store.as_context_mut(), params)
         })
@@ -425,46 +421,50 @@ impl Func {
             );
         }
 
-        if store.0[self.0].options.async_() {
-            #[cfg(feature = "component-model-async")]
+        #[cfg(feature = "component-model-async")]
+        if store.0.async_support() {
+            let lower = Self::lower_args as LowerFn<_, _, _>;
+            let lift = if store.0[self.0].options.async_() {
+                Self::lift_results_async as LiftFn<_>
+            } else {
+                Self::lift_results_sync as LiftFn<_>
+            };
+            for (result, slot) in self
+                .call_raw_async::<_, _, Vec<Val>, _>(
+                    store,
+                    params.iter().cloned().collect(),
+                    lower,
+                    lift,
+                )?
+                .into_iter()
+                .zip(results)
             {
-                for (result, slot) in self
-                    .call_raw_async(
-                        store,
-                        params.iter().cloned().collect(),
-                        Self::lower_args,
-                        Self::lift_results_async,
-                    )?
+                *slot = result;
+            }
+            return Ok(());
+        }
+
+        if store.0[self.0].options.async_() {
+            unreachable!(
+                "async-lifted exports should have failed validation \
+                     when `component-model-async` feature disabled"
+            );
+        }
+
+        self.call_raw(
+            store,
+            &params.iter().cloned().collect::<Vec<_>>(),
+            Self::lower_args,
+            |cx, results_ty, src: &[ValRaw; MAX_FLAT_RESULTS]| {
+                for (result, slot) in Self::lift_results_sync(cx, results_ty, src)?
                     .into_iter()
                     .zip(results)
                 {
                     *slot = result;
                 }
                 Ok(())
-            }
-            #[cfg(not(feature = "component-model-async"))]
-            {
-                unreachable!(
-                    "async-lifted exports should have failed validation \
-                     when `component-model-async` feature disabled"
-                );
-            }
-        } else {
-            self.call_raw(
-                store,
-                &params.iter().cloned().collect::<Vec<_>>(),
-                Self::lower_args,
-                |cx, results_ty, src: &[ValRaw; MAX_FLAT_RESULTS]| {
-                    for (result, slot) in Self::lift_results_sync(cx, results_ty, src)?
-                        .into_iter()
-                        .zip(results)
-                    {
-                        *slot = result;
-                    }
-                    Ok(())
-                },
-            )
-        }
+            },
+        )
     }
 
     #[cfg(feature = "component-model-async")]
@@ -731,6 +731,14 @@ impl Func {
 
     fn post_return_impl(&self, mut store: impl AsContextMut) -> Result<()> {
         let mut store = store.as_context_mut();
+
+        #[cfg(feature = "component-model-async")]
+        if store.0.async_support() {
+            // In this case, the post-return function will already have been
+            // called as part of `concurrent::call` or `concurrent::start_call`.
+            return Ok(());
+        }
+
         let data = &mut store.0[self.0];
         let instance = data.instance;
         let post_return = data.post_return;

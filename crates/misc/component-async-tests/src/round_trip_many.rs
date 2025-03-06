@@ -17,6 +17,17 @@ pub mod bindings {
     });
 }
 
+pub mod non_concurrent_export_bindings {
+    wasmtime::component::bindgen!({
+        trappable_imports: true,
+        path: "wit",
+        world: "round-trip-many",
+        concurrent_imports: true,
+        async: true,
+        additional_derives: [ Eq, PartialEq ],
+    });
+}
+
 use bindings::local::local::many::Stuff;
 
 impl bindings::local::local::many::Host for &mut Ctx {
