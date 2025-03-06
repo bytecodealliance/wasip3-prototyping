@@ -1766,6 +1766,19 @@ unsafe impl func::Lift for ErrorContext {
     }
 }
 
+/// Create a new error context
+pub fn error_context<U, S: AsContextMut<Data = U>>(
+    mut store: S,
+    debug_msg: &str,
+) -> Result<ErrorContext> {
+    let mut store = store.as_context_mut();
+    let entry = store.concurrent_state().table.push(ErrorContextState {
+        debug_msg: debug_msg.into(),
+    })?;
+    // TODO: increment the component-global count for error contexts?
+    Ok(ErrorContext::new(entry.rep()))
+}
+
 pub(super) struct TransmitState {
     write: WriteState,
     read: ReadState,
