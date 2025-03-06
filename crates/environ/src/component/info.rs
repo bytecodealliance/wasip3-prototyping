@@ -754,6 +754,10 @@ pub enum Trampoline {
     StreamWrite {
         /// The table index for the specific `stream` type and caller instance.
         ty: TypeStreamTableIndex,
+
+        /// The table index for the `error-context` type in the caller instance.
+        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
+
         /// Any options (e.g. string encoding) to use when storing values to
         /// memory.
         options: CanonicalOptions,
@@ -784,6 +788,9 @@ pub enum Trampoline {
     StreamCloseReadable {
         /// The table index for the specific `stream` type and caller instance.
         ty: TypeStreamTableIndex,
+
+        /// The table index for the `error-context` type in the caller instance.
+        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
     },
 
     /// A `stream.close-writable` intrinsic to close the writable end of a
@@ -820,6 +827,10 @@ pub enum Trampoline {
     FutureWrite {
         /// The table index for the specific `future` type and caller instance.
         ty: TypeFutureTableIndex,
+
+        /// The table index for the `error-context` type in the caller instance.
+        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
+
         /// Any options (e.g. string encoding) to use when storing values to
         /// memory.
         options: CanonicalOptions,
@@ -850,6 +861,9 @@ pub enum Trampoline {
     FutureCloseReadable {
         /// The table index for the specific `future` type and caller instance.
         ty: TypeFutureTableIndex,
+
+        /// The table index for the `error-context` type in the caller instance.
+        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
     },
 
     /// A `future.close-writable` intrinsic to close the writable end of a

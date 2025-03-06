@@ -77,8 +77,8 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
     let body = b"And the mome raths outgrabe";
 
     enum Event {
-        RequestBodyWrite(Option<StreamWriter<Bytes>>),
-        RequestTrailersWrite(bool),
+        RequestBodyWrite(Result<StreamWriter<Bytes>, ErrorContext>),
+        RequestTrailersWrite(Result<(), ErrorContext>),
         Response(Result<Resource<Response>, ErrorCode>),
         ResponseBodyRead(Result<(StreamReader<Bytes>, Bytes), Option<ErrorContext>>),
         ResponseTrailersRead(Result<Resource<Fields>, Option<ErrorContext>>),
@@ -154,9 +154,10 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
     let mut received_trailers = false;
     while let Some(event) = promises.next(&mut store).await? {
         match event {
-            Event::RequestBodyWrite(Some(_)) => {}
-            Event::RequestBodyWrite(None) => panic!("write should have been accepted"),
-            Event::RequestTrailersWrite(success) => assert!(success),
+            Event::RequestBodyWrite(Ok(_)) => {}
+            Event::RequestBodyWrite(Err(_)) => panic!("write should have been accepted"),
+            Event::RequestTrailersWrite(Ok(_)) => {}
+            Event::RequestTrailersWrite(Err(_)) => panic!("trailer write should have succeeded"),
             Event::Response(response) => {
                 let mut response = IoView::table(store.data_mut()).delete(response?)?;
 
