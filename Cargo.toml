@@ -301,9 +301,9 @@ io-lifetimes = { version = "2.0.3", default-features = false }
 io-extras = "0.18.1"
 rustix = "0.38.43"
 # TODO: switch back to released wit-bindgen
-wit-bindgen = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "e0d2b889411acf60738dcd976ed5373f7a81e651", default-features = false }
-wit-bindgen-rt = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "e0d2b889411acf60738dcd976ed5373f7a81e651", default-features = false }
-wit-bindgen-rust-macro = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "e0d2b889411acf60738dcd976ed5373f7a81e651", default-features = false }
+wit-bindgen = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "0b02121e3c728cf3b5b082d2a9a8ac9b554b7e39", default-features = false }
+wit-bindgen-rt = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "0b02121e3c728cf3b5b082d2a9a8ac9b554b7e39", default-features = false }
+wit-bindgen-rust-macro = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "0b02121e3c728cf3b5b082d2a9a8ac9b554b7e39", default-features = false }
 
 # wasm-tools family:
 wasmparser = { version = "0.226.0", default-features = false, features = ['simd'] }
