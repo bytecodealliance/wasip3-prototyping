@@ -388,11 +388,15 @@ pub enum Trampoline {
     ResourceTransferBorrow,
     ResourceEnterCall,
     ResourceExitCall,
-    SyncEnterCall,
+    SyncEnterCall {
+        memory: Option<MemoryId>,
+    },
     SyncExitCall {
         callback: Option<CallbackId>,
     },
-    AsyncEnterCall,
+    AsyncEnterCall {
+        memory: Option<MemoryId>,
+    },
     AsyncExitCall {
         callback: Option<CallbackId>,
         post_return: Option<PostReturnId>,
@@ -917,11 +921,15 @@ impl LinearizeDfg<'_> {
             Trampoline::ResourceTransferBorrow => info::Trampoline::ResourceTransferBorrow,
             Trampoline::ResourceEnterCall => info::Trampoline::ResourceEnterCall,
             Trampoline::ResourceExitCall => info::Trampoline::ResourceExitCall,
-            Trampoline::SyncEnterCall => info::Trampoline::SyncEnterCall,
+            Trampoline::SyncEnterCall { memory } => info::Trampoline::SyncEnterCall {
+                memory: memory.map(|v| self.runtime_memory(v)),
+            },
             Trampoline::SyncExitCall { callback } => info::Trampoline::SyncExitCall {
                 callback: callback.map(|v| self.runtime_callback(v)),
             },
-            Trampoline::AsyncEnterCall => info::Trampoline::AsyncEnterCall,
+            Trampoline::AsyncEnterCall { memory } => info::Trampoline::AsyncEnterCall {
+                memory: memory.map(|v| self.runtime_memory(v)),
+            },
             Trampoline::AsyncExitCall {
                 callback,
                 post_return,

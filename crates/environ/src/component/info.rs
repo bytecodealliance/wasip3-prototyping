@@ -945,7 +945,12 @@ pub enum Trampoline {
 
     /// An intrinsic used by FACT-generated modules to begin a call involving a
     /// sync-lowered import and async-lifted export.
-    SyncEnterCall,
+    SyncEnterCall {
+        /// The memory used to verify that the memory specified for the
+        /// `task.return` that is called at runtime matches the one specified in
+        /// the lifted export.
+        memory: Option<RuntimeMemoryIndex>,
+    },
 
     /// An intrinsic used by FACT-generated modules to complete a call involving
     /// a sync-lowered import and async-lifted export.
@@ -956,7 +961,12 @@ pub enum Trampoline {
 
     /// An intrinsic used by FACT-generated modules to begin a call involving an
     /// async-lowered import function.
-    AsyncEnterCall,
+    AsyncEnterCall {
+        /// The memory used to verify that the memory specified for the
+        /// `task.return` that is called at runtime (if any) matches the one
+        /// specified in the lifted export.
+        memory: Option<RuntimeMemoryIndex>,
+    },
 
     /// An intrinsic used by FACT-generated modules to complete a call involving
     /// an async-lowered import function.
@@ -1049,9 +1059,9 @@ impl Trampoline {
             ResourceTransferBorrow => format!("component-resource-transfer-borrow"),
             ResourceEnterCall => format!("component-resource-enter-call"),
             ResourceExitCall => format!("component-resource-exit-call"),
-            SyncEnterCall => format!("component-sync-enter-call"),
+            SyncEnterCall { .. } => format!("component-sync-enter-call"),
             SyncExitCall { .. } => format!("component-sync-exit-call"),
-            AsyncEnterCall => format!("component-async-enter-call"),
+            AsyncEnterCall { .. } => format!("component-async-enter-call"),
             AsyncExitCall { .. } => format!("component-async-exit-call"),
             FutureTransfer => format!("future-transfer"),
             StreamTransfer => format!("stream-transfer"),
