@@ -635,9 +635,9 @@ unsafe fn waitable_set_new(
 unsafe fn waitable_set_wait(
     vmctx: NonNull<VMComponentContext>,
     caller_instance: u32,
-    set: u32,
     async_: u8,
     memory: *mut u8,
+    set: u32,
     payload: u32,
 ) -> Result<u32> {
     ComponentInstance::from_vmctx(vmctx, |instance| {
@@ -648,9 +648,9 @@ unsafe fn waitable_set_wait(
                 wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(
                     caller_instance,
                 ),
-                set,
                 async_ != 0,
                 memory.cast::<crate::vm::VMMemoryDefinition>(),
+                set,
                 payload,
             )
     })
@@ -660,9 +660,9 @@ unsafe fn waitable_set_wait(
 unsafe fn waitable_set_poll(
     vmctx: NonNull<VMComponentContext>,
     caller_instance: u32,
-    set: u32,
     async_: u8,
     memory: *mut u8,
+    set: u32,
     payload: u32,
 ) -> Result<u32> {
     ComponentInstance::from_vmctx(vmctx, |instance| {
@@ -673,9 +673,9 @@ unsafe fn waitable_set_poll(
                 wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(
                     caller_instance,
                 ),
-                set,
                 async_ != 0,
                 memory.cast::<crate::vm::VMMemoryDefinition>(),
+                set,
                 payload,
             )
     })

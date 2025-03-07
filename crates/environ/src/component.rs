@@ -90,9 +90,9 @@ macro_rules! foreach_builtin_component_function {
             #[cfg(feature = "component-model-async")]
             waitable_set_new(vmctx: vmctx, caller_instance: u32) -> u64;
             #[cfg(feature = "component-model-async")]
-            waitable_set_wait(vmctx: vmctx, caller_instance: u32, set: u32, async_: u8, memory: ptr_u8, payload: u32) -> u64;
+            waitable_set_wait(vmctx: vmctx, caller_instance: u32, async_: u8, memory: ptr_u8, set: u32, payload: u32) -> u64;
             #[cfg(feature = "component-model-async")]
-            waitable_set_poll(vmctx: vmctx, caller_instance: u32, set: u32, async_: u8, memory: ptr_u8, payload: u32) -> u64;
+            waitable_set_poll(vmctx: vmctx, caller_instance: u32, async_: u8, memory: ptr_u8, set: u32, payload: u32) -> u64;
             #[cfg(feature = "component-model-async")]
             waitable_set_drop(vmctx: vmctx, caller_instance: u32, set: u32) -> bool;
             #[cfg(feature = "component-model-async")]

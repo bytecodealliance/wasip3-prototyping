@@ -5345,7 +5345,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen"
 version = "0.39.0"
-source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#b518c80c3707e5df8e890acb0444cf9f2588a8fc"
+source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#935948333b3858d1ec3324309ad40fc3dae73b50"
 dependencies = [
  "wit-bindgen-rt 0.39.0",
  "wit-bindgen-rust-macro",
@@ -5354,7 +5354,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-core"
 version = "0.39.0"
-source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#b518c80c3707e5df8e890acb0444cf9f2588a8fc"
+source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#935948333b3858d1ec3324309ad40fc3dae73b50"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5373,7 +5373,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rt"
 version = "0.39.0"
-source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#b518c80c3707e5df8e890acb0444cf9f2588a8fc"
+source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#935948333b3858d1ec3324309ad40fc3dae73b50"
 dependencies = [
  "bitflags 2.6.0",
  "futures",
@@ -5383,7 +5383,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rust"
 version = "0.39.0"
-source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#b518c80c3707e5df8e890acb0444cf9f2588a8fc"
+source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#935948333b3858d1ec3324309ad40fc3dae73b50"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5398,7 +5398,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rust-macro"
 version = "0.39.0"
-source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#b518c80c3707e5df8e890acb0444cf9f2588a8fc"
+source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#935948333b3858d1ec3324309ad40fc3dae73b50"
 dependencies = [
  "anyhow",
  "prettyplease",

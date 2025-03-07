@@ -416,9 +416,9 @@ pub unsafe trait VMComponentAsyncStore {
         &mut self,
         instance: &mut ComponentInstance,
         caller_instance: RuntimeComponentInstanceIndex,
-        set: u32,
         async_: bool,
         memory: *mut VMMemoryDefinition,
+        set: u32,
         payload: u32,
     ) -> Result<u32>;
 
@@ -427,9 +427,9 @@ pub unsafe trait VMComponentAsyncStore {
         &mut self,
         instance: &mut ComponentInstance,
         caller_instance: RuntimeComponentInstanceIndex,
-        set: u32,
         async_: bool,
         memory: *mut VMMemoryDefinition,
+        set: u32,
         payload: u32,
     ) -> Result<u32>;
 
@@ -810,9 +810,9 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         &mut self,
         instance: &mut ComponentInstance,
         caller_instance: RuntimeComponentInstanceIndex,
-        set: u32,
         async_: bool,
         memory: *mut VMMemoryDefinition,
+        set: u32,
         payload: u32,
     ) -> Result<u32> {
         // TODO: implement waitable sets
@@ -829,9 +829,9 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         &mut self,
         instance: &mut ComponentInstance,
         caller_instance: RuntimeComponentInstanceIndex,
-        set: u32,
         async_: bool,
         memory: *mut VMMemoryDefinition,
+        set: u32,
         payload: u32,
     ) -> Result<u32> {
         // TODO: implement waitable sets

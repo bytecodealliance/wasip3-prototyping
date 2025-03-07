@@ -1,12 +1,12 @@
 ;;! component_model_async = true
 
-;; task.backpressure
+;; backpressure.set
 (component
   (core module $m
-    (import "" "task.backpressure" (func $task-backpressure (param i32)))
+    (import "" "backpressure.set" (func $backpressure-set (param i32)))
   )
-  (core func $task-backpressure (canon task.backpressure))
-  (core instance $i (instantiate $m (with "" (instance (export "task.backpressure" (func $task-backpressure))))))
+  (core func $backpressure-set (canon backpressure.set))
+  (core instance $i (instantiate $m (with "" (instance (export "backpressure.set" (func $backpressure-set))))))
 )
 
 ;; task.return
@@ -18,35 +18,35 @@
   (core instance $i (instantiate $m (with "" (instance (export "task.return" (func $task-return))))))
 )
 
-;; task.wait
+;; waitable-set.wait
 (component
   (core module $libc (memory (export "memory") 1))
   (core instance $libc (instantiate $libc))
   (core module $m
-    (import "" "task.wait" (func $task-wait (param i32) (result i32)))
+    (import "" "waitable-set.wait" (func $waitable-set-wait (param i32 i32) (result i32)))
   )
-  (core func $task-wait (canon task.wait async (memory $libc "memory")))
-  (core instance $i (instantiate $m (with "" (instance (export "task.wait" (func $task-wait))))))
+  (core func $waitable-set-wait (canon waitable-set.wait async (memory $libc "memory")))
+  (core instance $i (instantiate $m (with "" (instance (export "waitable-set.wait" (func $waitable-set-wait))))))
 )
 
-;; task.poll
+;; waitable-set.poll
 (component
   (core module $libc (memory (export "memory") 1))
   (core instance $libc (instantiate $libc))
   (core module $m
-    (import "" "task.poll" (func $task-poll (param i32) (result i32)))
+    (import "" "waitable-set.poll" (func $waitable-set-poll (param i32 i32) (result i32)))
   )
-  (core func $task-poll (canon task.poll async (memory $libc "memory")))
-  (core instance $i (instantiate $m (with "" (instance (export "task.poll" (func $task-poll))))))
+  (core func $waitable-set-poll (canon waitable-set.poll async (memory $libc "memory")))
+  (core instance $i (instantiate $m (with "" (instance (export "waitable-set.poll" (func $waitable-set-poll))))))
 )
 
-;; task.yield
+;; yield
 (component
   (core module $m
-    (import "" "task.yield" (func $task-yield))
+    (import "" "yield" (func $yield))
   )
-  (core func $task-yield (canon task.yield async))
-  (core instance $i (instantiate $m (with "" (instance (export "task.yield" (func $task-yield))))))
+  (core func $yield (canon yield async))
+  (core instance $i (instantiate $m (with "" (instance (export "yield" (func $yield))))))
 )
 
 ;; subtask.drop

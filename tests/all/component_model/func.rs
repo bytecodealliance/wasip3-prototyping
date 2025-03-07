@@ -1066,20 +1066,30 @@ async fn test_many_parameters(dynamic: bool, concurrent: bool) -> Result<()> {
 
     let component = format!(
         r#"(component
-            (core module $m
-                (import "" "task.return" (func $task-return (param i32 i32 i32)))
+            (core module $libc
                 (memory (export "memory") 1)
+
+                {REALLOC_AND_FREE}
+            )
+            (core instance $libc (instantiate $libc))
+            (core module $m
+                (import "libc" "memory" (memory 1))
+                (import "libc" "realloc" (func $realloc (param i32 i32 i32 i32) (result i32)))
+                (import "" "task.return" (func $task-return (param i32 i32 i32)))
                 (func (export "foo") (param i32) (result i32)
                     {body}
                 )
                 (func (export "callback") (param i32 i32 i32 i32) (result i32) unreachable)
-
-                {REALLOC_AND_FREE}
             )
             (type $tuple (tuple (list u8) u32))
-            (core func $task-return (canon task.return (result $tuple)))
+            (core func $task-return (canon task.return
+                (result $tuple)
+                (memory $libc "memory")
+                (realloc (func $libc "realloc"))
+            ))
             (core instance $i (instantiate $m
                 (with "" (instance (export "task.return" (func $task-return))))
+                (with "libc" (instance $libc))
             ))
 
             (type $t (func
@@ -1102,8 +1112,8 @@ async fn test_many_parameters(dynamic: bool, concurrent: bool) -> Result<()> {
             (func (export "many-param") (type $t)
                 (canon lift
                     (core func $i "foo")
-                    (memory $i "memory")
-                    (realloc (func $i "realloc"))
+                    (memory $libc "memory")
+                    (realloc (func $libc "realloc"))
                     {async_opts}
                 )
             )
@@ -1299,9 +1309,16 @@ async fn test_many_results(dynamic: bool, concurrent: bool) -> Result<()> {
 
     let component = format!(
         r#"(component
-            (core module $m
-                (import "" "task.return" (func $task-return (param i32)))
+            (core module $libc
                 (memory (export "memory") 1)
+
+                {REALLOC_AND_FREE}
+            )
+            (core instance $libc (instantiate $libc))
+            (core module $m
+                (import "libc" "memory" (memory 1))
+                (import "libc" "realloc" (func $realloc (param i32 i32 i32 i32) (result i32)))
+                (import "" "task.return" (func $task-return (param i32)))
                 (func (export "foo") (result i32)
                     (local $base i32)
                     (local $string i32)
@@ -1515,8 +1532,6 @@ async fn test_many_results(dynamic: bool, concurrent: bool) -> Result<()> {
                     {ret}
                 )
                 (func (export "callback") (param i32 i32 i32 i32) (result i32) unreachable)
-
-                {REALLOC_AND_FREE}
             )
             (type $tuple (tuple
                 s8
@@ -1533,17 +1548,22 @@ async fn test_many_results(dynamic: bool, concurrent: bool) -> Result<()> {
                 (list char)
                 (list string)
             ))
-            (core func $task-return (canon task.return (result $tuple)))
+            (core func $task-return (canon task.return
+                (result $tuple)
+                (memory $libc "memory")
+                (realloc (func $libc "realloc"))
+            ))
             (core instance $i (instantiate $m
                 (with "" (instance (export "task.return" (func $task-return))))
+                (with "libc" (instance $libc))
             ))
 
             (type $t (func (result $tuple)))
             (func (export "many-results") (type $t)
                 (canon lift
                     (core func $i "foo")
-                    (memory $i "memory")
-                    (realloc (func $i "realloc"))
+                    (memory $libc "memory")
+                    (realloc (func $libc "realloc"))
                     {async_opts}
                 )
             )
