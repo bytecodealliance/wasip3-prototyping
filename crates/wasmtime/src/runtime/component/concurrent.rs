@@ -400,6 +400,8 @@ pub unsafe trait VMComponentAsyncStore {
         &mut self,
         instance: &mut ComponentInstance,
         ty: TypeTupleIndex,
+        memory: *mut VMMemoryDefinition,
+        string_encoding: u8,
         storage: *mut ValRaw,
         storage_len: usize,
     ) -> Result<()>;
@@ -465,10 +467,12 @@ pub unsafe trait VMComponentAsyncStore {
     /// caller is sync-lowered but the callee is async-lifted.
     fn sync_enter(
         &mut self,
+        memory: *mut VMMemoryDefinition,
         start: *mut VMFuncRef,
         return_: *mut VMFuncRef,
         caller_instance: RuntimeComponentInstanceIndex,
         task_return_type: TypeTupleIndex,
+        string_encoding: u8,
         result_count: u32,
         storage: *mut ValRaw,
         storage_len: usize,
@@ -492,10 +496,12 @@ pub unsafe trait VMComponentAsyncStore {
     /// caller is async-lowered.
     fn async_enter(
         &mut self,
+        memory: *mut VMMemoryDefinition,
         start: *mut VMFuncRef,
         return_: *mut VMFuncRef,
         caller_instance: RuntimeComponentInstanceIndex,
         task_return_type: TypeTupleIndex,
+        string_encoding: u8,
         params: u32,
         results: u32,
     ) -> Result<()>;
@@ -751,13 +757,15 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         &mut self,
         instance: &mut ComponentInstance,
         ty: TypeTupleIndex,
+        memory: *mut VMMemoryDefinition,
+        string_encoding: u8,
         storage: *mut ValRaw,
         storage_len: usize,
     ) -> Result<()> {
         let storage = unsafe { std::slice::from_raw_parts(storage, storage_len) };
         let mut store = StoreContextMut(self);
         let guest_task = store.concurrent_state().guest_task.unwrap();
-        let (lift, lift_ty) = store
+        let lift = store
             .concurrent_state()
             .table
             .get_mut(guest_task)?
@@ -765,8 +773,12 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
             .take()
             .ok_or_else(|| anyhow!("`task.return` called more than once"))?;
 
-        if ty != lift_ty {
-            bail!("invalid `task.return` signature for current task");
+        if ty != lift.ty
+            || (!memory.is_null()
+                && memory != lift.memory.map(|v| v.as_ptr()).unwrap_or(ptr::null_mut()))
+            || string_encoding != lift.string_encoding as u8
+        {
+            bail!("invalid `task.return` signature and/or options for current task");
         }
 
         assert!(store
@@ -778,7 +790,7 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
 
         log::trace!("task.return for {}", guest_task.rep());
 
-        let result = lift(store.0.traitobj().as_ptr(), storage)?;
+        let result = (lift.lift)(store.0.traitobj().as_ptr(), storage)?;
 
         let (calls, host_table, _) = store.0.component_resource_state();
         ResourceTables {
@@ -904,10 +916,12 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
 
     fn sync_enter(
         &mut self,
+        memory: *mut VMMemoryDefinition,
         start: *mut VMFuncRef,
         return_: *mut VMFuncRef,
         caller_instance: RuntimeComponentInstanceIndex,
         task_return_type: TypeTupleIndex,
+        string_encoding: u8,
         result_count: u32,
         storage: *mut ValRaw,
         storage_len: usize,
@@ -918,6 +932,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
             return_,
             caller_instance,
             task_return_type,
+            memory,
+            string_encoding,
             CallerInfo::Sync {
                 params: unsafe { std::slice::from_raw_parts(storage, storage_len) }.to_vec(),
                 result_count,
@@ -954,10 +970,12 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
 
     fn async_enter(
         &mut self,
+        memory: *mut VMMemoryDefinition,
         start: *mut VMFuncRef,
         return_: *mut VMFuncRef,
         caller_instance: RuntimeComponentInstanceIndex,
         task_return_type: TypeTupleIndex,
+        string_encoding: u8,
         params: u32,
         results: u32,
     ) -> Result<()> {
@@ -967,6 +985,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
             return_,
             caller_instance,
             task_return_type,
+            memory,
+            string_encoding,
             CallerInfo::Async { params, results },
         )
     }
@@ -1433,9 +1453,16 @@ enum Caller {
     },
 }
 
+struct LiftResult {
+    lift: RawLift,
+    ty: TypeTupleIndex,
+    memory: Option<SendSyncPtr<VMMemoryDefinition>>,
+    string_encoding: StringEncoding,
+}
+
 struct GuestTask {
     lower_params: Option<RawLower>,
-    lift_result: Option<(RawLift, TypeTupleIndex)>,
+    lift_result: Option<LiftResult>,
     result: Option<LiftedResult>,
     callback: Option<Callback>,
     events: VecDeque<(Event, AnyTask, u32)>,
@@ -2902,7 +2929,7 @@ fn do_start_call<'a, T>(
                     .unwrap()
                     .in_sync_call = false;
 
-                let (lift, _) = store
+                let lift = store
                     .concurrent_state()
                     .table
                     .get_mut(guest_task)?
@@ -2917,7 +2944,7 @@ fn do_start_call<'a, T>(
                     .result
                     .is_none());
 
-                let result = lift(store.0.traitobj().as_ptr(), unsafe {
+                let result = (lift.lift)(store.0.traitobj().as_ptr(), unsafe {
                     mem::transmute::<&[MaybeUninit<ValRaw>], &[ValRaw]>(&storage[..result_count])
                 })?;
 
@@ -3065,6 +3092,8 @@ pub(crate) fn start_call<'a, T: Send, LowerParams: Copy, R: 'static>(
     let callee = func_data.export.func_ref;
     let callback = func_data.options.callback;
     let post_return = func_data.post_return;
+    let memory = func_data.options.memory.map(SendSyncPtr::new);
+    let string_encoding = func_data.options.string_encoding();
 
     assert!(store.concurrent_state().guest_task.is_none());
 
@@ -3079,12 +3108,14 @@ pub(crate) fn start_call<'a, T: Send, LowerParams: Copy, R: 'static>(
         lower_params: Some(Box::new(for_any_lower(move |store, params| {
             lower_params(lower_context, store, params)
         })) as RawLower),
-        lift_result: Some((
-            Box::new(for_any_lift(move |store, result| {
+        lift_result: Some(LiftResult {
+            lift: Box::new(for_any_lift(move |store, result| {
                 lift_result(lift_context, store, result)
-            })) as RawLift,
-            task_return_type,
-        )),
+            })),
+            ty: task_return_type,
+            memory,
+            string_encoding,
+        }),
         caller: Caller::Host(Some(tx)),
         ..GuestTask::default()
     })?;
@@ -3253,6 +3284,8 @@ fn enter_call<T>(
     return_: *mut VMFuncRef,
     caller_instance: RuntimeComponentInstanceIndex,
     task_return_type: TypeTupleIndex,
+    memory: *mut VMMemoryDefinition,
+    string_encoding: u8,
     caller_info: CallerInfo,
 ) -> Result<()> {
     enum ResultInfo {
@@ -3317,8 +3350,8 @@ fn enter_call<T>(
             }
             Ok(())
         })),
-        lift_result: Some((
-            Box::new(move |store, src| {
+        lift_result: Some(LiftResult {
+            lift: Box::new(move |store, src| {
                 let mut store = unsafe { StoreContextMut::<T>(&mut *store.cast()) };
                 let mut my_src = src.to_owned(); // TODO: use stack to avoid allocation?
                 if let ResultInfo::Heap { results } = &result_info {
@@ -3353,8 +3386,10 @@ fn enter_call<T>(
                 }
                 Ok(Box::new(DummyResult) as Box<dyn std::any::Any + Send + Sync>)
             }),
-            task_return_type,
-        )),
+            ty: task_return_type,
+            memory: NonNull::new(memory).map(SendSyncPtr::new),
+            string_encoding: StringEncoding::from_u8(string_encoding).unwrap(),
+        }),
         result: None,
         callback: None,
         caller: Caller::Guest {

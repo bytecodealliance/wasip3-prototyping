@@ -31,7 +31,7 @@ pub struct Options {
     ///
     /// Note that this pointer cannot be safely dereferenced unless a store,
     /// verified with `self.store_id`, has the appropriate borrow available.
-    memory: Option<NonNull<VMMemoryDefinition>>,
+    pub(crate) memory: Option<NonNull<VMMemoryDefinition>>,
 
     /// Similar to `memory` but corresponds to the `canonical_abi_realloc`
     /// function.

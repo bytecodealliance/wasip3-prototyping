@@ -601,6 +601,8 @@ unsafe fn backpressure_set(
 unsafe fn task_return(
     vmctx: NonNull<VMComponentContext>,
     ty: u32,
+    memory: *mut u8,
+    string_encoding: u8,
     storage: *mut u8,
     storage_len: usize,
 ) -> Result<()> {
@@ -608,6 +610,8 @@ unsafe fn task_return(
         (*instance.store()).component_async_store().task_return(
             instance,
             wasmtime_environ::component::TypeTupleIndex::from_u32(ty),
+            memory.cast::<crate::vm::VMMemoryDefinition>(),
+            string_encoding,
             storage.cast::<crate::ValRaw>(),
             storage_len,
         )
@@ -744,20 +748,24 @@ unsafe fn subtask_drop(
 #[cfg(feature = "component-model-async")]
 unsafe fn sync_enter(
     vmctx: NonNull<VMComponentContext>,
+    memory: *mut u8,
     start: *mut u8,
     return_: *mut u8,
     caller_instance: u32,
     task_return_type: u32,
+    string_encoding: u32,
     result_count: u32,
     storage: *mut u8,
     storage_len: usize,
 ) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |instance| {
         (*instance.store()).component_async_store().sync_enter(
+            memory.cast::<crate::vm::VMMemoryDefinition>(),
             start.cast::<crate::vm::VMFuncRef>(),
             return_.cast::<crate::vm::VMFuncRef>(),
             wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
             wasmtime_environ::component::TypeTupleIndex::from_u32(task_return_type),
+            u8::try_from(string_encoding).unwrap(),
             result_count,
             storage.cast::<crate::ValRaw>(),
             storage_len,
@@ -793,19 +801,23 @@ unsafe fn sync_exit(
 #[cfg(feature = "component-model-async")]
 unsafe fn async_enter(
     vmctx: NonNull<VMComponentContext>,
+    memory: *mut u8,
     start: *mut u8,
     return_: *mut u8,
     caller_instance: u32,
     task_return_type: u32,
+    string_encoding: u32,
     params: u32,
     results: u32,
 ) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |instance| {
         (*instance.store()).component_async_store().async_enter(
+            memory.cast::<crate::vm::VMMemoryDefinition>(),
             start.cast::<crate::vm::VMFuncRef>(),
             return_.cast::<crate::vm::VMFuncRef>(),
             wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
             wasmtime_environ::component::TypeTupleIndex::from_u32(task_return_type),
+            u8::try_from(string_encoding).unwrap(),
             params,
             results,
         )
