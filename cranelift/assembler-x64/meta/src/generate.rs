@@ -52,19 +52,6 @@ pub fn isle_macro(f: &mut Formatter, insts: &[dsl::Inst]) {
 /// Generate the ISLE definitions that match the `isle_assembler_methods!` macro
 /// above.
 pub fn isle_definitions(f: &mut Formatter, insts: &[dsl::Inst]) {
-    f.line("(type AssemblerImm8 extern (enum))", None);
-    f.line("(type AssemblerSimm8 extern (enum))", None);
-    f.line("(type AssemblerImm16 extern (enum))", None);
-    f.line("(type AssemblerSimm16 extern (enum))", None);
-    f.line("(type AssemblerImm32 extern (enum))", None);
-    f.line("(type AssemblerSimm32 extern (enum))", None);
-    f.line("(type AssemblerReadGpr extern (enum))", None);
-    f.line("(type AssemblerReadWriteGpr extern (enum))", None);
-    f.line("(type AssemblerReadGprMem extern (enum))", None);
-    f.line("(type AssemblerReadWriteGprMem extern (enum))", None);
-    f.line("(type AssemblerInst extern (enum))", None);
-    f.empty_line();
-
     f.line("(type AssemblerOutputs (enum", None);
     f.line("    ;; Used for instructions that have ISLE `SideEffect`s (memory stores, traps,", None);
     f.line("    ;; etc.) and do not return a `Value`.", None);
@@ -72,6 +59,8 @@ pub fn isle_definitions(f: &mut Formatter, insts: &[dsl::Inst]) {
     f.line("    ;; Used for instructions that return a GPR (including `GprMem` variants with", None);
     f.line("    ;; a GPR as the first argument).", None);
     f.line("    (RetGpr (inst MInst) (gpr Gpr))", None);
+    f.line("    ;; Used for instructions that return an XMM register.", None);
+    f.line("    (RetXmm (inst MInst) (xmm Xmm))", None);
     f.line("    ;; TODO: eventually add more variants for multi-return, XMM, etc.; see", None);
     f.line("    ;; https://github.com/bytecodealliance/wasmtime/pull/10276", None);
     f.line("))", None);
@@ -81,6 +70,12 @@ pub fn isle_definitions(f: &mut Formatter, insts: &[dsl::Inst]) {
     f.line("(decl emit_ret_gpr (AssemblerOutputs) Gpr)", None);
     f.line("(rule (emit_ret_gpr (AssemblerOutputs.RetGpr inst gpr))", None);
     f.line("    (let ((_ Unit (emit inst))) gpr))", None);
+    f.empty_line();
+
+    f.line(";; Directly emit instructions that return an XMM register.", None);
+    f.line("(decl emit_ret_xmm (AssemblerOutputs) Xmm)", None);
+    f.line("(rule (emit_ret_xmm (AssemblerOutputs.RetXmm inst xmm))", None);
+    f.line("    (let ((_ Unit (emit inst))) xmm))", None);
     f.empty_line();
 
     f.line(";; Pass along the side-effecting instruction for later emission.", None);

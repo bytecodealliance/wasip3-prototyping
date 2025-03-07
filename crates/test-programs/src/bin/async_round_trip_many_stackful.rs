@@ -8,8 +8,8 @@
 //
 // Given the above, we write code directly against the component model ABI
 // rather than use `wit-bindgen`, and we carefully avoid use of the shadow stack
-// across yield points such as calls to `task.wait` in order to keep the code
-// reentrant.
+// across yield points such as calls to `waitable-set.wait` in order to keep the
+// code reentrant.
 
 use std::alloc::{self, Layout};
 
@@ -27,7 +27,7 @@ unsafe extern "C" fn task_return_foo(_ptr: *mut u8) {
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "local:local/many")]
 unsafe extern "C" {
-    #[link_name = "[async]foo"]
+    #[link_name = "[async-lower]foo"]
     fn import_foo(params: *mut u8, results: *mut u8) -> u32;
 }
 #[cfg(not(target_arch = "wasm32"))]
@@ -38,11 +38,11 @@ unsafe extern "C" fn import_foo(_params: *mut u8, _results: *mut u8) -> u32 {
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "$root")]
 unsafe extern "C" {
-    #[link_name = "[task-wait]"]
-    fn task_wait(results: *mut i32) -> i32;
+    #[link_name = "[waitable-set-wait]"]
+    fn waitable_set_wait(set: u32, results: *mut i32) -> i32;
 }
 #[cfg(not(target_arch = "wasm32"))]
-unsafe extern "C" fn task_wait(_results: *mut i32) -> i32 {
+unsafe extern "C" fn waitable_set_wait(_set: u32, _results: *mut i32) -> i32 {
     unreachable!()
 }
 
@@ -67,13 +67,13 @@ const _EVENT_CALL_STARTED: i32 = 1;
 const _EVENT_CALL_RETURNED: i32 = 2;
 const EVENT_CALL_DONE: i32 = 3;
 
-#[unsafe(export_name = "[async-stackful]local:local/many#foo")]
+#[unsafe(export_name = "[async-lift-stackful]local:local/many#foo")]
 unsafe extern "C" fn export_foo(args: *mut u8) {
     // Note that we're careful not to take the address of any stack-allocated
     // value here.  We need to avoid relying on the LLVM-generated shadow stack
     // in order to correctly support reentrancy.  It's okay to call functions
     // which use the shadow stack, as long as they pop everything off before we
-    // reach a yield point such as a call to `task.wait`.
+    // reach a yield point such as a call to `waitable-set.wait`.
 
     // type                               | size | align | offset
     // ----------------------------------------------------------
@@ -109,7 +109,8 @@ unsafe extern "C" fn export_foo(args: *mut u8) {
         // Note the use of `Box` here to avoid taking the address of a stack
         // allocation.
         let payload = Box::into_raw(Box::new([0i32; 2]));
-        let event = task_wait(payload.cast());
+        // TODO: provide a real waitable-set here:
+        let event = waitable_set_wait(0, payload.cast());
         let payload = Box::from_raw(payload);
         if event == EVENT_CALL_DONE {
             assert!(call == payload[0] as u32);

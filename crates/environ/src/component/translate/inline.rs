@@ -670,28 +670,43 @@ impl<'a> Inliner<'a> {
                     .push((*ty, dfg::Trampoline::ResourceDrop(id)));
                 frame.funcs.push(dfg::CoreDef::Trampoline(index));
             }
-            TaskBackpressure { func } => {
+            BackpressureSet { func } => {
                 let index = self.result.trampolines.push((
                     *func,
-                    dfg::Trampoline::TaskBackpressure {
+                    dfg::Trampoline::BackpressureSet {
                         instance: frame.instance,
                     },
                 ));
                 frame.funcs.push(dfg::CoreDef::Trampoline(index));
             }
-            TaskReturn { func, result } => {
+            TaskReturn {
+                func,
+                result,
+                options,
+            } => {
                 let results = result
                     .iter()
                     .map(|ty| types.valtype(frame.translation.types_ref(), ty))
                     .collect::<Result<_>>()?;
                 let results = types.new_tuple_type(results);
+                let options = self.adapter_options(frame, types, options);
+                let options = self.canonical_options(options);
                 let index = self
                     .result
                     .trampolines
-                    .push((*func, dfg::Trampoline::TaskReturn { results }));
+                    .push((*func, dfg::Trampoline::TaskReturn { results, options }));
                 frame.funcs.push(dfg::CoreDef::Trampoline(index));
             }
-            TaskWait {
+            WaitableSetNew { func } => {
+                let index = self.result.trampolines.push((
+                    *func,
+                    dfg::Trampoline::WaitableSetNew {
+                        instance: frame.instance,
+                    },
+                ));
+                frame.funcs.push(dfg::CoreDef::Trampoline(index));
+            }
+            WaitableSetWait {
                 func,
                 async_,
                 memory,
@@ -700,7 +715,7 @@ impl<'a> Inliner<'a> {
                 let memory = self.result.memories.push(memory);
                 let index = self.result.trampolines.push((
                     *func,
-                    dfg::Trampoline::TaskWait {
+                    dfg::Trampoline::WaitableSetWait {
                         instance: frame.instance,
                         async_: *async_,
                         memory,
@@ -708,7 +723,7 @@ impl<'a> Inliner<'a> {
                 ));
                 frame.funcs.push(dfg::CoreDef::Trampoline(index));
             }
-            TaskPoll {
+            WaitableSetPoll {
                 func,
                 async_,
                 memory,
@@ -717,7 +732,7 @@ impl<'a> Inliner<'a> {
                 let memory = self.result.memories.push(memory);
                 let index = self.result.trampolines.push((
                     *func,
-                    dfg::Trampoline::TaskPoll {
+                    dfg::Trampoline::WaitableSetPoll {
                         instance: frame.instance,
                         async_: *async_,
                         memory,
@@ -725,11 +740,29 @@ impl<'a> Inliner<'a> {
                 ));
                 frame.funcs.push(dfg::CoreDef::Trampoline(index));
             }
-            TaskYield { func, async_ } => {
+            WaitableSetDrop { func } => {
+                let index = self.result.trampolines.push((
+                    *func,
+                    dfg::Trampoline::WaitableSetDrop {
+                        instance: frame.instance,
+                    },
+                ));
+                frame.funcs.push(dfg::CoreDef::Trampoline(index));
+            }
+            WaitableJoin { func } => {
+                let index = self.result.trampolines.push((
+                    *func,
+                    dfg::Trampoline::WaitableJoin {
+                        instance: frame.instance,
+                    },
+                ));
+                frame.funcs.push(dfg::CoreDef::Trampoline(index));
+            }
+            Yield { func, async_ } => {
                 let index = self
                     .result
                     .trampolines
-                    .push((*func, dfg::Trampoline::TaskYield { async_: *async_ }));
+                    .push((*func, dfg::Trampoline::Yield { async_: *async_ }));
                 frame.funcs.push(dfg::CoreDef::Trampoline(index));
             }
             SubtaskDrop { func } => {
@@ -778,12 +811,17 @@ impl<'a> Inliner<'a> {
                 else {
                     unreachable!()
                 };
+                let err_ctx_ty = types.error_context_table_type()?;
                 let options = self.adapter_options(frame, types, options);
                 let options = self.canonical_options(options);
-                let index = self
-                    .result
-                    .trampolines
-                    .push((*func, dfg::Trampoline::StreamWrite { ty, options }));
+                let index = self.result.trampolines.push((
+                    *func,
+                    dfg::Trampoline::StreamWrite {
+                        ty,
+                        err_ctx_ty,
+                        options,
+                    },
+                ));
                 frame.funcs.push(dfg::CoreDef::Trampoline(index));
             }
             StreamCancelRead { ty, func, async_ } => {
@@ -822,10 +860,11 @@ impl<'a> Inliner<'a> {
                 else {
                     unreachable!()
                 };
-                let index = self
-                    .result
-                    .trampolines
-                    .push((*func, dfg::Trampoline::StreamCloseReadable { ty }));
+                let err_ctx_ty = types.error_context_table_type()?;
+                let index = self.result.trampolines.push((
+                    *func,
+                    dfg::Trampoline::StreamCloseReadable { ty, err_ctx_ty },
+                ));
                 frame.funcs.push(dfg::CoreDef::Trampoline(index));
             }
             StreamCloseWritable { ty, func } => {
@@ -878,12 +917,17 @@ impl<'a> Inliner<'a> {
                 else {
                     unreachable!()
                 };
+                let err_ctx_ty = types.error_context_table_type()?;
                 let options = self.adapter_options(frame, types, options);
                 let options = self.canonical_options(options);
-                let index = self
-                    .result
-                    .trampolines
-                    .push((*func, dfg::Trampoline::FutureWrite { ty, options }));
+                let index = self.result.trampolines.push((
+                    *func,
+                    dfg::Trampoline::FutureWrite {
+                        ty,
+                        err_ctx_ty,
+                        options,
+                    },
+                ));
                 frame.funcs.push(dfg::CoreDef::Trampoline(index));
             }
             FutureCancelRead { ty, func, async_ } => {
@@ -922,10 +966,11 @@ impl<'a> Inliner<'a> {
                 else {
                     unreachable!()
                 };
-                let index = self
-                    .result
-                    .trampolines
-                    .push((*func, dfg::Trampoline::FutureCloseReadable { ty }));
+                let err_ctx_ty = types.error_context_table_type()?;
+                let index = self.result.trampolines.push((
+                    *func,
+                    dfg::Trampoline::FutureCloseReadable { ty, err_ctx_ty },
+                ));
                 frame.funcs.push(dfg::CoreDef::Trampoline(index));
             }
             FutureCloseWritable { ty, func } => {

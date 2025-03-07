@@ -20,5 +20,5 @@ wit_bindgen::generate!({
              "wasi:cli/run@0.3.0#run",
          ],
     },
-    generate_all,
+    generate_all
 });

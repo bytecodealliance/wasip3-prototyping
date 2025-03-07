@@ -283,23 +283,33 @@ pub enum Trampoline {
     ResourceNew(TypeResourceTableIndex),
     ResourceRep(TypeResourceTableIndex),
     ResourceDrop(TypeResourceTableIndex),
-    TaskBackpressure {
+    BackpressureSet {
         instance: RuntimeComponentInstanceIndex,
     },
     TaskReturn {
         results: TypeTupleIndex,
+        options: CanonicalOptions,
     },
-    TaskWait {
+    WaitableSetNew {
+        instance: RuntimeComponentInstanceIndex,
+    },
+    WaitableSetWait {
         instance: RuntimeComponentInstanceIndex,
         async_: bool,
         memory: MemoryId,
     },
-    TaskPoll {
+    WaitableSetPoll {
         instance: RuntimeComponentInstanceIndex,
         async_: bool,
         memory: MemoryId,
     },
-    TaskYield {
+    WaitableSetDrop {
+        instance: RuntimeComponentInstanceIndex,
+    },
+    WaitableJoin {
+        instance: RuntimeComponentInstanceIndex,
+    },
+    Yield {
         async_: bool,
     },
     SubtaskDrop {
@@ -315,6 +325,7 @@ pub enum Trampoline {
     },
     StreamWrite {
         ty: TypeStreamTableIndex,
+        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         options: CanonicalOptions,
     },
     StreamCancelRead {
@@ -327,6 +338,7 @@ pub enum Trampoline {
     },
     StreamCloseReadable {
         ty: TypeStreamTableIndex,
+        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
     },
     StreamCloseWritable {
         ty: TypeStreamTableIndex,
@@ -342,6 +354,7 @@ pub enum Trampoline {
     },
     FutureWrite {
         ty: TypeFutureTableIndex,
+        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         options: CanonicalOptions,
     },
     FutureCancelRead {
@@ -354,6 +367,7 @@ pub enum Trampoline {
     },
     FutureCloseReadable {
         ty: TypeFutureTableIndex,
+        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
     },
     FutureCloseWritable {
         ty: TypeFutureTableIndex,
@@ -772,31 +786,41 @@ impl LinearizeDfg<'_> {
             Trampoline::ResourceNew(ty) => info::Trampoline::ResourceNew(*ty),
             Trampoline::ResourceDrop(ty) => info::Trampoline::ResourceDrop(*ty),
             Trampoline::ResourceRep(ty) => info::Trampoline::ResourceRep(*ty),
-            Trampoline::TaskBackpressure { instance } => info::Trampoline::TaskBackpressure {
+            Trampoline::BackpressureSet { instance } => info::Trampoline::BackpressureSet {
                 instance: *instance,
             },
-            Trampoline::TaskReturn { results } => {
-                info::Trampoline::TaskReturn { results: *results }
-            }
-            Trampoline::TaskWait {
+            Trampoline::TaskReturn { results, options } => info::Trampoline::TaskReturn {
+                results: *results,
+                options: self.options(options),
+            },
+            Trampoline::WaitableSetNew { instance } => info::Trampoline::WaitableSetNew {
+                instance: *instance,
+            },
+            Trampoline::WaitableSetWait {
                 instance,
                 async_,
                 memory,
-            } => info::Trampoline::TaskWait {
+            } => info::Trampoline::WaitableSetWait {
                 instance: *instance,
                 async_: *async_,
                 memory: self.runtime_memory(*memory),
             },
-            Trampoline::TaskPoll {
+            Trampoline::WaitableSetPoll {
                 instance,
                 async_,
                 memory,
-            } => info::Trampoline::TaskPoll {
+            } => info::Trampoline::WaitableSetPoll {
                 instance: *instance,
                 async_: *async_,
                 memory: self.runtime_memory(*memory),
             },
-            Trampoline::TaskYield { async_ } => info::Trampoline::TaskYield { async_: *async_ },
+            Trampoline::WaitableSetDrop { instance } => info::Trampoline::WaitableSetDrop {
+                instance: *instance,
+            },
+            Trampoline::WaitableJoin { instance } => info::Trampoline::WaitableJoin {
+                instance: *instance,
+            },
+            Trampoline::Yield { async_ } => info::Trampoline::Yield { async_: *async_ },
             Trampoline::SubtaskDrop { instance } => info::Trampoline::SubtaskDrop {
                 instance: *instance,
             },
@@ -810,8 +834,13 @@ impl LinearizeDfg<'_> {
                 err_ctx_ty: *err_ctx_ty,
                 options: self.options(options),
             },
-            Trampoline::StreamWrite { ty, options } => info::Trampoline::StreamWrite {
+            Trampoline::StreamWrite {
+                ty,
+                err_ctx_ty,
+                options,
+            } => info::Trampoline::StreamWrite {
                 ty: *ty,
+                err_ctx_ty: *err_ctx_ty,
                 options: self.options(options),
             },
             Trampoline::StreamCancelRead { ty, async_ } => info::Trampoline::StreamCancelRead {
@@ -822,8 +851,11 @@ impl LinearizeDfg<'_> {
                 ty: *ty,
                 async_: *async_,
             },
-            Trampoline::StreamCloseReadable { ty } => {
-                info::Trampoline::StreamCloseReadable { ty: *ty }
+            Trampoline::StreamCloseReadable { ty, err_ctx_ty } => {
+                info::Trampoline::StreamCloseReadable {
+                    ty: *ty,
+                    err_ctx_ty: *err_ctx_ty,
+                }
             }
             Trampoline::StreamCloseWritable { ty, err_ctx_ty } => {
                 info::Trampoline::StreamCloseWritable {
@@ -841,8 +873,13 @@ impl LinearizeDfg<'_> {
                 err_ctx_ty: *err_ctx_ty,
                 options: self.options(options),
             },
-            Trampoline::FutureWrite { ty, options } => info::Trampoline::FutureWrite {
+            Trampoline::FutureWrite {
+                ty,
+                err_ctx_ty,
+                options,
+            } => info::Trampoline::FutureWrite {
                 ty: *ty,
+                err_ctx_ty: *err_ctx_ty,
                 options: self.options(options),
             },
             Trampoline::FutureCancelRead { ty, async_ } => info::Trampoline::FutureCancelRead {
@@ -853,8 +890,11 @@ impl LinearizeDfg<'_> {
                 ty: *ty,
                 async_: *async_,
             },
-            Trampoline::FutureCloseReadable { ty } => {
-                info::Trampoline::FutureCloseReadable { ty: *ty }
+            Trampoline::FutureCloseReadable { ty, err_ctx_ty } => {
+                info::Trampoline::FutureCloseReadable {
+                    ty: *ty,
+                    err_ctx_ty: *err_ctx_ty,
+                }
             }
             Trampoline::FutureCloseWritable { ty, err_ctx_ty } => {
                 info::Trampoline::FutureCloseWritable {

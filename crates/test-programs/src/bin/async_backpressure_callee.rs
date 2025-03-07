@@ -28,7 +28,7 @@ impl Run for Component {
 
 impl Backpressure for Component {
     fn set_backpressure(enabled: bool) {
-        async_support::task_backpressure(enabled);
+        async_support::backpressure_set(enabled);
     }
 }
 

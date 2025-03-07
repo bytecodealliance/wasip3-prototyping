@@ -14,13 +14,13 @@ mod bindings {
 }
 use bindings::exports::local::local::run::Guest;
 
-use wit_bindgen_rt::async_support::error_context_new;
+use wit_bindgen_rt::async_support::ErrorContext;
 
 struct Component;
 
 impl Guest for Component {
     async fn run() {
-        let err_ctx = error_context_new("error".into());
+        let err_ctx = ErrorContext::new("error".into());
         _ = err_ctx.debug_message();
     }
 }
