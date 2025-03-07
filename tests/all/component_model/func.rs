@@ -1085,7 +1085,6 @@ async fn test_many_parameters(dynamic: bool, concurrent: bool) -> Result<()> {
             (core func $task-return (canon task.return
                 (result $tuple)
                 (memory $libc "memory")
-                (realloc (func $libc "realloc"))
             ))
             (core instance $i (instantiate $m
                 (with "" (instance (export "task.return" (func $task-return))))
@@ -1551,7 +1550,6 @@ async fn test_many_results(dynamic: bool, concurrent: bool) -> Result<()> {
             (core func $task-return (canon task.return
                 (result $tuple)
                 (memory $libc "memory")
-                (realloc (func $libc "realloc"))
             ))
             (core instance $i (instantiate $m
                 (with "" (instance (export "task.return" (func $task-return))))
