@@ -306,17 +306,17 @@ wit-bindgen-rt = { git = "https://github.com/bytecodealliance/wit-bindgen", rev 
 wit-bindgen-rust-macro = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "a2d6b0342c32cfe8dbb6b62f3e5393e0a7449da7", default-features = false }
 
 # wasm-tools family:
-wasmparser = { version = "0.227.0", default-features = false, features = ['simd'] }
-wat = "1.227.0"
-wast = "227.0.0"
-wasmprinter = "0.227.0"
-wasm-encoder = "0.227.0"
-wasm-smith = "0.227.0"
-wasm-mutate = "0.227.0"
-wit-parser = "0.227.0"
-wit-component = "0.227.0"
-wasm-wave = "0.227.0"
-wasm-compose = "0.227.0"
+wasmparser = { version = "0.227.1", default-features = false, features = ['simd'] }
+wat = "1.227.1"
+wast = "227.0.1"
+wasmprinter = "0.227.1"
+wasm-encoder = "0.227.1"
+wasm-smith = "0.227.1"
+wasm-mutate = "0.227.1"
+wit-parser = "0.227.1"
+wit-component = "0.227.1"
+wasm-wave = "0.227.1"
+wasm-compose = "0.227.1"
 
 # Non-Bytecode Alliance maintained dependencies:
 # --------------------------
@@ -575,8 +575,3 @@ lto = true
 wit-bindgen = { git = 'https://github.com/dicej/wit-bindgen', branch = 'fix-p3-support' }
 wit-bindgen-rt = { git = 'https://github.com/dicej/wit-bindgen', branch = 'fix-p3-support' }
 wit-bindgen-rust-macro = { git = 'https://github.com/dicej/wit-bindgen', branch = 'fix-p3-support' }
-
-[patch.crates-io]
-wit-component = { git = 'https://github.com/alexcrichton/wasm-tools', branch = 'fix-some-async-issues' }
-wit-parser = { git = 'https://github.com/alexcrichton/wasm-tools', branch = 'fix-some-async-issues' }
-wasm-metadata = { git = 'https://github.com/alexcrichton/wasm-tools', branch = 'fix-some-async-issues' }
