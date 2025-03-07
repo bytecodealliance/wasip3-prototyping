@@ -301,9 +301,9 @@ io-lifetimes = { version = "2.0.3", default-features = false }
 io-extras = "0.18.1"
 rustix = "0.38.43"
 # TODO: switch back to released wit-bindgen
-wit-bindgen = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "a2d6b0342c32cfe8dbb6b62f3e5393e0a7449da7", default-features = false }
-wit-bindgen-rt = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "a2d6b0342c32cfe8dbb6b62f3e5393e0a7449da7", default-features = false }
-wit-bindgen-rust-macro = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "a2d6b0342c32cfe8dbb6b62f3e5393e0a7449da7", default-features = false }
+wit-bindgen = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8", default-features = false }
+wit-bindgen-rt = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8", default-features = false }
+wit-bindgen-rust-macro = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8", default-features = false }
 
 # wasm-tools family:
 wasmparser = { version = "0.227.1", default-features = false, features = ['simd'] }
@@ -570,8 +570,3 @@ opt-level = 's'
 inherits = "release"
 codegen-units = 1
 lto = true
-
-[patch."https://github.com/bytecodealliance/wit-bindgen"]
-wit-bindgen = { git = 'https://github.com/dicej/wit-bindgen', branch = 'fix-p3-support' }
-wit-bindgen-rt = { git = 'https://github.com/dicej/wit-bindgen', branch = 'fix-p3-support' }
-wit-bindgen-rust-macro = { git = 'https://github.com/dicej/wit-bindgen', branch = 'fix-p3-support' }

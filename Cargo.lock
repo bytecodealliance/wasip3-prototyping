@@ -3531,7 +3531,7 @@ dependencies = [
  "wasi 0.14.0+wasi-0.2.3",
  "wasi-nn",
  "wit-bindgen",
- "wit-bindgen-rt 0.39.0",
+ "wit-bindgen-rt 0.40.0",
 ]
 
 [[package]]
@@ -5325,17 +5325,17 @@ dependencies = [
 
 [[package]]
 name = "wit-bindgen"
-version = "0.39.0"
-source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#935948333b3858d1ec3324309ad40fc3dae73b50"
+version = "0.40.0"
+source = "git+https://github.com/bytecodealliance/wit-bindgen?rev=1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8#1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8"
 dependencies = [
- "wit-bindgen-rt 0.39.0",
+ "wit-bindgen-rt 0.40.0",
  "wit-bindgen-rust-macro",
 ]
 
 [[package]]
 name = "wit-bindgen-core"
-version = "0.39.0"
-source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#935948333b3858d1ec3324309ad40fc3dae73b50"
+version = "0.40.0"
+source = "git+https://github.com/bytecodealliance/wit-bindgen?rev=1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8#1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5353,8 +5353,8 @@ dependencies = [
 
 [[package]]
 name = "wit-bindgen-rt"
-version = "0.39.0"
-source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#935948333b3858d1ec3324309ad40fc3dae73b50"
+version = "0.40.0"
+source = "git+https://github.com/bytecodealliance/wit-bindgen?rev=1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8#1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8"
 dependencies = [
  "bitflags 2.6.0",
  "futures",
@@ -5363,8 +5363,8 @@ dependencies = [
 
 [[package]]
 name = "wit-bindgen-rust"
-version = "0.39.0"
-source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#935948333b3858d1ec3324309ad40fc3dae73b50"
+version = "0.40.0"
+source = "git+https://github.com/bytecodealliance/wit-bindgen?rev=1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8#1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5378,8 +5378,8 @@ dependencies = [
 
 [[package]]
 name = "wit-bindgen-rust-macro"
-version = "0.39.0"
-source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#935948333b3858d1ec3324309ad40fc3dae73b50"
+version = "0.40.0"
+source = "git+https://github.com/bytecodealliance/wit-bindgen?rev=1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8#1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8"
 dependencies = [
  "anyhow",
  "prettyplease",
