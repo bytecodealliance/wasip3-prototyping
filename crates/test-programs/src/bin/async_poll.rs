@@ -20,11 +20,12 @@ fn task_poll() -> Option<(i32, i32, i32)> {
     {
         #[link(wasm_import_module = "$root")]
         unsafe extern "C" {
-            #[link_name = "[task-poll]"]
-            fn poll(_: *mut i32) -> i32;
+            #[link_name = "[waitable-set-poll]"]
+            fn poll(_: i32, _: *mut i32) -> i32;
         }
         let mut payload = [0i32; 3];
-        if unsafe { poll(payload.as_mut_ptr()) } != 0 {
+        // TODO: provide a real waitable-set here:
+        if unsafe { poll(0, payload.as_mut_ptr()) } != 0 {
             Some((payload[0], payload[1], payload[2]))
         } else {
             None
@@ -42,7 +43,7 @@ fn async_when_ready() -> i32 {
     {
         #[link(wasm_import_module = "local:local/ready")]
         unsafe extern "C" {
-            #[link_name = "[async]when-ready"]
+            #[link_name = "[async-lower]when-ready"]
             fn call_when_ready(_: *mut u8, _: *mut u8) -> i32;
         }
         unsafe { call_when_ready(std::ptr::null_mut(), std::ptr::null_mut()) }

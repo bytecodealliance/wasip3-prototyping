@@ -4158,7 +4158,7 @@ dependencies = [
 [[package]]
 name = "wasm-encoder"
 version = "0.227.0"
-source = "git+https://github.com/alexcrichton/wasm-tools?branch=fix-some-async-issues#311b6faa688f7416b20d698087e05ec775f14a99"
+source = "git+https://github.com/alexcrichton/wasm-tools?branch=fix-some-async-issues#6186dc535b866c236bf5c07981604140f0c4a391"
 dependencies = [
  "leb128fmt",
  "wasmparser 0.227.0 (git+https://github.com/alexcrichton/wasm-tools?branch=fix-some-async-issues)",
@@ -4167,7 +4167,7 @@ dependencies = [
 [[package]]
 name = "wasm-metadata"
 version = "0.227.0"
-source = "git+https://github.com/alexcrichton/wasm-tools?branch=fix-some-async-issues#311b6faa688f7416b20d698087e05ec775f14a99"
+source = "git+https://github.com/alexcrichton/wasm-tools?branch=fix-some-async-issues#6186dc535b866c236bf5c07981604140f0c4a391"
 dependencies = [
  "anyhow",
  "auditable-serde",
@@ -4288,7 +4288,7 @@ dependencies = [
 [[package]]
 name = "wasmparser"
 version = "0.227.0"
-source = "git+https://github.com/alexcrichton/wasm-tools?branch=fix-some-async-issues#311b6faa688f7416b20d698087e05ec775f14a99"
+source = "git+https://github.com/alexcrichton/wasm-tools?branch=fix-some-async-issues#6186dc535b866c236bf5c07981604140f0c4a391"
 dependencies = [
  "bitflags 2.6.0",
  "hashbrown 0.15.2",
@@ -5345,7 +5345,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen"
 version = "0.39.0"
-source = "git+https://github.com/alexcrichton/witx-bindgen?branch=fix-p3-support#7e8c6b12051f654c9edec73150a8d22c6c46c307"
+source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#b518c80c3707e5df8e890acb0444cf9f2588a8fc"
 dependencies = [
  "wit-bindgen-rt 0.39.0",
  "wit-bindgen-rust-macro",
@@ -5354,7 +5354,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-core"
 version = "0.39.0"
-source = "git+https://github.com/alexcrichton/witx-bindgen?branch=fix-p3-support#7e8c6b12051f654c9edec73150a8d22c6c46c307"
+source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#b518c80c3707e5df8e890acb0444cf9f2588a8fc"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5373,7 +5373,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rt"
 version = "0.39.0"
-source = "git+https://github.com/alexcrichton/witx-bindgen?branch=fix-p3-support#7e8c6b12051f654c9edec73150a8d22c6c46c307"
+source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#b518c80c3707e5df8e890acb0444cf9f2588a8fc"
 dependencies = [
  "bitflags 2.6.0",
  "futures",
@@ -5383,7 +5383,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rust"
 version = "0.39.0"
-source = "git+https://github.com/alexcrichton/witx-bindgen?branch=fix-p3-support#7e8c6b12051f654c9edec73150a8d22c6c46c307"
+source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#b518c80c3707e5df8e890acb0444cf9f2588a8fc"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5398,7 +5398,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rust-macro"
 version = "0.39.0"
-source = "git+https://github.com/alexcrichton/witx-bindgen?branch=fix-p3-support#7e8c6b12051f654c9edec73150a8d22c6c46c307"
+source = "git+https://github.com/dicej/wit-bindgen?branch=fix-p3-support#b518c80c3707e5df8e890acb0444cf9f2588a8fc"
 dependencies = [
  "anyhow",
  "prettyplease",
@@ -5412,7 +5412,7 @@ dependencies = [
 [[package]]
 name = "wit-component"
 version = "0.227.0"
-source = "git+https://github.com/alexcrichton/wasm-tools?branch=fix-some-async-issues#311b6faa688f7416b20d698087e05ec775f14a99"
+source = "git+https://github.com/alexcrichton/wasm-tools?branch=fix-some-async-issues#6186dc535b866c236bf5c07981604140f0c4a391"
 dependencies = [
  "anyhow",
  "bitflags 2.6.0",
@@ -5430,7 +5430,7 @@ dependencies = [
 [[package]]
 name = "wit-parser"
 version = "0.227.0"
-source = "git+https://github.com/alexcrichton/wasm-tools?branch=fix-some-async-issues#311b6faa688f7416b20d698087e05ec775f14a99"
+source = "git+https://github.com/alexcrichton/wasm-tools?branch=fix-some-async-issues#6186dc535b866c236bf5c07981604140f0c4a391"
 dependencies = [
  "anyhow",
  "id-arena",
