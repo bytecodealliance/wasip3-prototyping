@@ -419,10 +419,12 @@ impl<'a, 'b> Compiler<'a, 'b> {
         return_: FunctionId,
         param_count: i32,
     ) {
-        let enter = self.module.import_async_enter_call();
-        let exit = self
+        let enter = self
             .module
-            .import_async_exit_call(adapter.lift.options.callback, None);
+            .import_async_enter_call(&adapter.name, adapter.lift.options.memory);
+        let exit =
+            self.module
+                .import_async_exit_call(&adapter.name, adapter.lift.options.callback, None);
 
         self.flush_code();
         self.module.funcs[self.result]
@@ -437,6 +439,9 @@ impl<'a, 'b> Compiler<'a, 'b> {
         self.instruction(I32Const(
             i32::try_from(self.types[adapter.lift.ty].results.as_u32()).unwrap(),
         ));
+        self.instruction(I32Const(i32::from(
+            adapter.lift.options.string_encoding as u8,
+        )));
         // Async-lowered imports pass params and receive results via linear
         // memory, and those pointers are in the the first and second params to
         // this adapter.  We pass them on to the host so it can store them in
@@ -493,9 +498,11 @@ impl<'a, 'b> Compiler<'a, 'b> {
         lift_param_count: i32,
         lower_sig: &Signature,
     ) {
-        let enter = self
-            .module
-            .import_sync_enter_call(&adapter.name, &lower_sig.params);
+        let enter = self.module.import_sync_enter_call(
+            &adapter.name,
+            &lower_sig.params,
+            adapter.lift.options.memory,
+        );
         let exit = self.module.import_sync_exit_call(
             &adapter.name,
             adapter.lift.options.callback,
@@ -515,6 +522,9 @@ impl<'a, 'b> Compiler<'a, 'b> {
         self.instruction(I32Const(
             i32::try_from(self.types[adapter.lift.ty].results.as_u32()).unwrap(),
         ));
+        self.instruction(I32Const(i32::from(
+            adapter.lift.options.string_encoding as u8,
+        )));
         self.instruction(I32Const(
             i32::try_from(
                 self.types
@@ -581,10 +591,12 @@ impl<'a, 'b> Compiler<'a, 'b> {
         param_count: i32,
         result_count: i32,
     ) {
-        let enter = self.module.import_async_enter_call();
-        let exit = self
+        let enter = self
             .module
-            .import_async_exit_call(None, adapter.lift.post_return);
+            .import_async_enter_call(&adapter.name, adapter.lift.options.memory);
+        let exit =
+            self.module
+                .import_async_exit_call(&adapter.name, None, adapter.lift.post_return);
 
         self.flush_code();
         self.module.funcs[self.result]
@@ -599,6 +611,9 @@ impl<'a, 'b> Compiler<'a, 'b> {
         self.instruction(I32Const(
             i32::try_from(self.types[adapter.lift.ty].results.as_u32()).unwrap(),
         ));
+        self.instruction(I32Const(i32::from(
+            adapter.lift.options.string_encoding as u8,
+        )));
         self.instruction(LocalGet(0));
         self.instruction(LocalGet(1));
         self.instruction(Call(enter.as_u32()));

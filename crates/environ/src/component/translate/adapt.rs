@@ -258,6 +258,16 @@ fn fact_import_to_core_def(
     import: &fact::Import,
     ty: EntityType,
 ) -> dfg::CoreDef {
+    fn unwrap_memory(def: &dfg::CoreDef) -> dfg::CoreExport<MemoryIndex> {
+        match def {
+            dfg::CoreDef::Export(e) => e.clone().map_index(|i| match i {
+                EntityIndex::Memory(i) => i,
+                _ => unreachable!(),
+            }),
+            _ => unreachable!(),
+        }
+    }
+
     let mut simple_intrinsic = |trampoline: dfg::Trampoline| {
         let signature = ty.unwrap_func();
         let index = dfg
@@ -274,16 +284,6 @@ fn fact_import_to_core_def(
             to,
             to64,
         } => {
-            fn unwrap_memory(def: &dfg::CoreDef) -> dfg::CoreExport<MemoryIndex> {
-                match def {
-                    dfg::CoreDef::Export(e) => e.clone().map_index(|i| match i {
-                        EntityIndex::Memory(i) => i,
-                        _ => unreachable!(),
-                    }),
-                    _ => unreachable!(),
-                }
-            }
-
             let from = dfg.memories.push(unwrap_memory(from));
             let to = dfg.memories.push(unwrap_memory(to));
             let signature = ty.unwrap_func();
@@ -305,13 +305,21 @@ fn fact_import_to_core_def(
         }
         fact::Import::ResourceEnterCall => simple_intrinsic(dfg::Trampoline::ResourceEnterCall),
         fact::Import::ResourceExitCall => simple_intrinsic(dfg::Trampoline::ResourceExitCall),
-        fact::Import::SyncEnterCall => simple_intrinsic(dfg::Trampoline::SyncEnterCall),
+        fact::Import::SyncEnterCall { memory } => {
+            simple_intrinsic(dfg::Trampoline::SyncEnterCall {
+                memory: memory.as_ref().map(|v| dfg.memories.push(unwrap_memory(v))),
+            })
+        }
         fact::Import::SyncExitCall { callback } => {
             simple_intrinsic(dfg::Trampoline::SyncExitCall {
                 callback: callback.clone().map(|v| dfg.callbacks.push(v)),
             })
         }
-        fact::Import::AsyncEnterCall => simple_intrinsic(dfg::Trampoline::AsyncEnterCall),
+        fact::Import::AsyncEnterCall { memory } => {
+            simple_intrinsic(dfg::Trampoline::AsyncEnterCall {
+                memory: memory.as_ref().map(|v| dfg.memories.push(unwrap_memory(v))),
+            })
+        }
         fact::Import::AsyncExitCall {
             callback,
             post_return,

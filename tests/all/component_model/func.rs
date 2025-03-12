@@ -933,7 +933,8 @@ async fn async_reentrance() -> Result<()> {
 
 #[tokio::test]
 async fn missing_task_return_call_stackless() -> Result<()> {
-    test_missing_task_return_call(r#"(component
+    task_return_trap(
+        r#"(component
             (core module $m
                 (import "" "task.return" (func $task-return))
                 (func (export "foo") (result i32)
@@ -946,12 +947,15 @@ async fn missing_task_return_call_stackless() -> Result<()> {
                 (with "" (instance (export "task.return" (func $task-return))))
             ))
             (func (export "foo") (canon lift (core func $i "foo") async (callback (func $i "callback"))))
-        )"#).await
+        )"#,
+        "wasm trap: async-lifted export failed to produce a result",
+    )
+    .await
 }
 
 #[tokio::test]
 async fn missing_task_return_call_stackful() -> Result<()> {
-    test_missing_task_return_call(
+    task_return_trap(
         r#"(component
             (core module $m
                 (import "" "task.return" (func $task-return))
@@ -963,11 +967,71 @@ async fn missing_task_return_call_stackful() -> Result<()> {
             ))
             (func (export "foo") (canon lift (core func $i "foo") async))
         )"#,
+        "wasm trap: async-lifted export failed to produce a result",
     )
     .await
 }
 
-async fn test_missing_task_return_call(component: &str) -> Result<()> {
+#[tokio::test]
+async fn task_return_type_mismatch() -> Result<()> {
+    task_return_trap(
+        r#"(component
+            (core module $m
+                (import "" "task.return" (func $task-return (param i32)))
+                (func (export "foo") (call $task-return (i32.const 42)))
+            )
+            (core func $task-return (canon task.return (result u32)))
+            (core instance $i (instantiate $m
+                (with "" (instance (export "task.return" (func $task-return))))
+            ))
+            (func (export "foo") (canon lift (core func $i "foo") async))
+        )"#,
+        "invalid `task.return` signature and/or options for current task",
+    )
+    .await
+}
+
+#[tokio::test]
+async fn task_return_memory_mismatch() -> Result<()> {
+    task_return_trap(
+        r#"(component
+            (core module $libc (memory (export "memory") 1))
+            (core instance $libc (instantiate $libc))
+            (core module $m
+                (import "" "task.return" (func $task-return))
+                (func (export "foo") (call $task-return))
+            )
+            (core func $task-return (canon task.return (memory $libc "memory")))
+            (core instance $i (instantiate $m
+                (with "" (instance (export "task.return" (func $task-return))))
+            ))
+            (func (export "foo") (canon lift (core func $i "foo") async))
+        )"#,
+        "invalid `task.return` signature and/or options for current task",
+    )
+    .await
+}
+
+#[tokio::test]
+async fn task_return_string_encoding_mismatch() -> Result<()> {
+    task_return_trap(
+        r#"(component
+            (core module $m
+                (import "" "task.return" (func $task-return))
+                (func (export "foo") (call $task-return))
+            )
+            (core func $task-return (canon task.return string-encoding=utf16))
+            (core instance $i (instantiate $m
+                (with "" (instance (export "task.return" (func $task-return))))
+            ))
+            (func (export "foo") (canon lift (core func $i "foo") async))
+        )"#,
+        "invalid `task.return` signature and/or options for current task",
+    )
+    .await
+}
+
+async fn task_return_trap(component: &str, substring: &str) -> Result<()> {
     let mut config = Config::new();
     config.wasm_component_model_async(true);
     config.async_support(true);
@@ -984,8 +1048,10 @@ async fn test_missing_task_return_call(component: &str) -> Result<()> {
     match func.call_concurrent(&mut store, ()).await {
         Ok(_) => panic!(),
         Err(e) => {
-            assert!(format!("{e:?}")
-                .contains("wasm trap: async-lifted export failed to produce a result"))
+            assert!(
+                format!("{e:?}").contains(substring),
+                "could not find `{substring}` in `{e:?}`"
+            )
         }
     }
 
