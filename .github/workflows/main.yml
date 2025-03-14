@@ -1125,8 +1125,8 @@ jobs:
 
     # On one builder produce the source tarball since there's no need to produce
     # it everywhere
-    - run: ./ci/build-src-tarball.sh
-      if: matrix.build == 'x86_64-linux'
+    # - run: ./ci/build-src-tarball.sh
+    #   if: matrix.build == 'x86_64-linux'
 
     - uses: ./.github/actions/android-ndk
       if: contains(matrix.target, 'android')
