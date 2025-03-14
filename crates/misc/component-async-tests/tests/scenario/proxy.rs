@@ -1,4 +1,6 @@
+use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -7,13 +9,33 @@ use tokio::fs;
 use wasi_http_draft::wasi::http::types::{ErrorCode, Method, Scheme};
 use wasi_http_draft::{Body, Fields, Request, Response};
 use wasmtime::component::{
-    self, Component, ErrorContext, Linker, PromisesUnordered, Resource, ResourceTable,
+    self, Accessor, Component, ErrorContext, Linker, PromisesUnordered, Resource, ResourceTable,
     StreamReader, StreamWriter,
 };
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{IoView, WasiCtxBuilder};
 
-use component_async_tests::util::{compose, init_logger};
+use component_async_tests::util::{annotate, compose, init_logger};
+
+mod sleep {
+    wasmtime::component::bindgen!({
+        path: "wit",
+        world: "sleep-host",
+        concurrent_imports: true,
+        concurrent_exports: true,
+        async: {
+            only_imports: [
+                "local:local/sleep#sleep-millis",
+            ]
+        },
+    });
+}
+
+impl sleep::local::local::sleep::Host for &mut Ctx {
+    async fn sleep_millis<T>(_: &mut Accessor<T, Self>, time_in_millis: u64) {
+        tokio::time::sleep(Duration::from_millis(time_in_millis)).await;
+    }
+}
 
 #[tokio::test]
 pub async fn async_http_echo() -> Result<()> {
@@ -29,6 +51,64 @@ pub async fn async_http_middleware() -> Result<()> {
     let echo = &fs::read(test_programs_artifacts::ASYNC_HTTP_ECHO_COMPONENT).await?;
     let middleware = &fs::read(test_programs_artifacts::ASYNC_HTTP_MIDDLEWARE_COMPONENT).await?;
     test_http_echo(&compose(middleware, echo).await?, true).await
+}
+
+#[tokio::test]
+pub async fn async_http_middleware_with_chain() -> Result<()> {
+    use wasm_compose::{
+        composer::ComponentComposer,
+        config::{Config, Dependency, Instantiation, InstantiationArg},
+    };
+
+    let composed = &{
+        let dir = tempfile::tempdir()?;
+
+        fs::copy(
+            test_programs_artifacts::ASYNC_HTTP_ECHO_COMPONENT,
+            &dir.path().join("chain-http.wasm"),
+        )
+        .await?;
+
+        ComponentComposer::new(
+            Path::new(test_programs_artifacts::ASYNC_HTTP_MIDDLEWARE_WITH_CHAIN_COMPONENT),
+            &Config {
+                dir: dir.path().to_owned(),
+                definitions: Vec::new(),
+                search_paths: Vec::new(),
+                skip_validation: false,
+                import_components: false,
+                disallow_imports: false,
+                dependencies: [(
+                    "local:local/chain-http".to_owned(),
+                    Dependency {
+                        path: test_programs_artifacts::ASYNC_HTTP_ECHO_COMPONENT.into(),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                instantiations: [(
+                    "root".to_owned(),
+                    Instantiation {
+                        dependency: Some("local:local/chain-http".to_owned()),
+                        arguments: [(
+                            "local:local/chain-http".to_owned(),
+                            InstantiationArg {
+                                instance: "local:local/chain-http".into(),
+                                export: Some("wasi:http/handler@0.3.0-draft".into()),
+                            },
+                        )]
+                        .into_iter()
+                        .collect(),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            },
+        )
+        .compose()?
+    };
+
+    test_http_echo(composed, true).await
 }
 
 async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
@@ -56,6 +136,7 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
 
     wasmtime_wasi::add_to_linker_async(&mut linker)?;
     wasi_http_draft::add_to_linker(&mut linker)?;
+    sleep::local::local::sleep::add_to_linker_get_host(&mut linker, annotate(|ctx| ctx))?;
 
     let mut store = Store::new(
         &engine,

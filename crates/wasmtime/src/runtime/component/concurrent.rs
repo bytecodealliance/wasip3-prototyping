@@ -1410,6 +1410,7 @@ type HostTaskFuture = Pin<Box<dyn Future<Output = HostTaskOutput> + Send + Sync 
 
 struct HostTask {
     caller_instance: RuntimeComponentInstanceIndex,
+    has_suspended: bool,
 }
 
 enum Deferred {
@@ -1471,6 +1472,7 @@ struct GuestTask {
     should_yield: bool,
     call_context: Option<CallContext>,
     sync_result: Option<ValRaw>,
+    has_suspended: bool,
 }
 
 impl Default for GuestTask {
@@ -1486,6 +1488,7 @@ impl Default for GuestTask {
             should_yield: false,
             call_context: Some(CallContext::default()),
             sync_result: None,
+            has_suspended: false,
         }
     }
 }
@@ -1769,10 +1772,13 @@ pub(crate) fn first_poll<T, R: Send + Sync + 'static>(
     lower: impl FnOnce(StoreContextMut<T>, R) -> Result<()> + Send + Sync + 'static,
 ) -> Result<Option<u32>> {
     let caller = store.concurrent_state().guest_task.unwrap();
-    let task = store
-        .concurrent_state()
-        .table
-        .push_child(HostTask { caller_instance }, caller)?;
+    let task = store.concurrent_state().table.push_child(
+        HostTask {
+            caller_instance,
+            has_suspended: false,
+        },
+        caller,
+    )?;
 
     // Here we wrap the future in a `future::poll_fn` to ensure that we restore
     // and save the `CallContext` for this task before and after polling it,
@@ -1847,6 +1853,7 @@ pub(crate) fn first_poll<T, R: Send + Sync + 'static>(
                 None
             }
             Poll::Pending => {
+                store.concurrent_state().table.get_mut(task)?.has_suspended = true;
                 store.concurrent_state().futures.get_mut().push(future);
                 Some(
                     unsafe { &mut *instance }.component_waitable_tables()[caller_instance]
@@ -1877,10 +1884,13 @@ pub(crate) fn poll_and_block<'a, T, R: Send + Sync + 'static>(
         .with_context(|| format!("bad handle: {}", caller.rep()))?
         .result
         .take();
-    let task = store
-        .concurrent_state()
-        .table
-        .push_child(HostTask { caller_instance }, caller)?;
+    let task = store.concurrent_state().table.push_child(
+        HostTask {
+            caller_instance,
+            has_suspended: false,
+        },
+        caller,
+    )?;
     log::trace!("new child of {}: {}", caller.rep(), task.rep());
     let mut future = Box::pin(future.map(move |result| HostTaskOutput::Call {
         waitable: task.rep(),
@@ -2028,8 +2038,21 @@ fn maybe_send_event<'a, T>(
     result: u32,
 ) -> Result<()> {
     assert_ne!(guest_task.rep(), call.rep());
-    if let Some(callback) = store.concurrent_state().table.get(guest_task)?.callback {
-        let old_task = store.concurrent_state().guest_task.replace(guest_task);
+
+    // We can only send an event to a caller if the callee has suspended at
+    // least once; otherwise, we will not have had a chance to return a
+    // `waitable` handle to the caller yet, in which case we can only queue the
+    // event for later.
+    let may_send = match call {
+        AnyTask::Host(task) => store.concurrent_state().table.get(task)?.has_suspended,
+        AnyTask::Guest(task) => store.concurrent_state().table.get(task)?.has_suspended,
+        AnyTask::Transmit(_) => true,
+    };
+
+    if let (true, Some(callback)) = (
+        may_send,
+        store.concurrent_state().table.get(guest_task)?.callback,
+    ) {
         let Some((handle, _)) = unsafe {
             &mut *store
                 .concurrent_state()
@@ -2051,12 +2074,20 @@ fn maybe_send_event<'a, T>(
             }
             return Ok(());
         };
+
         log::trace!(
             "use callback to deliver event {event:?} to {} for {} (handle {handle}): {:?} {}",
             guest_task.rep(),
             call.rep(),
             callback.function,
             callback.context
+        );
+
+        let old_task = store.concurrent_state().guest_task.replace(guest_task);
+        log::trace!(
+            "maybe_send_event (callback): replaced {:?} with {} as current task",
+            old_task.map(|v| v.rep()),
+            guest_task.rep()
         );
 
         maybe_push_call_context(&mut store, guest_task)?;
@@ -2111,6 +2142,10 @@ fn maybe_send_event<'a, T>(
             }
         }
         store.concurrent_state().guest_task = old_task;
+        log::trace!(
+            "maybe_send_event (callback): restored {:?} as current task",
+            old_task.map(|v| v.rep())
+        );
     } else {
         store
             .concurrent_state()
@@ -2133,8 +2168,17 @@ fn maybe_send_event<'a, T>(
                     call.rep()
                 );
                 let old_task = store.concurrent_state().guest_task.replace(guest_task);
+                log::trace!(
+                    "maybe_send_event (fiber): replaced {:?} with {} as current task",
+                    old_task.map(|v| v.rep()),
+                    guest_task.rep()
+                );
                 resume_stackful(store.as_context_mut(), guest_task, fiber, async_)?;
                 store.concurrent_state().guest_task = old_task;
+                log::trace!(
+                    "maybe_send_event (fiber): restored {:?} as current task",
+                    old_task.map(|v| v.rep())
+                );
                 true
             } else {
                 false
@@ -2368,8 +2412,17 @@ fn unyield<'a, T>(mut store: StoreContextMut<'a, T>) -> Result<bool> {
         {
             resumed = true;
             let old_task = store.concurrent_state().guest_task.replace(guest_task);
+            log::trace!(
+                "unyield: replaced {:?} with {} as current task",
+                old_task.map(|v| v.rep()),
+                guest_task.rep()
+            );
             resume_stackful(store.as_context_mut(), guest_task, fiber, async_)?;
             store.concurrent_state().guest_task = old_task;
+            log::trace!(
+                "unyield: restored {:?} as current task",
+                old_task.map(|v| v.rep())
+            );
         }
     }
 
@@ -2432,6 +2485,11 @@ fn resume<'a, T>(mut store: StoreContextMut<'a, T>, task: TableId<GuestTask>) ->
     // TODO: Avoid calling `resume_stackful` or `resume_stackless` here, because it may call us, leading to
     // recursion limited only by the number of waiters.  Flatten this into an iteration instead.
     let old_task = store.concurrent_state().guest_task.replace(task);
+    log::trace!(
+        "resume: replaced {:?} with {} as current task",
+        old_task.map(|v| v.rep()),
+        task.rep()
+    );
     match mem::replace(
         &mut store.concurrent_state().table.get_mut(task)?.deferred,
         Deferred::None,
@@ -2447,6 +2505,10 @@ fn resume<'a, T>(mut store: StoreContextMut<'a, T>, task: TableId<GuestTask>) ->
         } => resume_stackless(store.as_context_mut(), task, call, instance, callback),
     }?;
     store.concurrent_state().guest_task = old_task;
+    log::trace!(
+        "resume: restored {:?} as current task",
+        old_task.map(|v| v.rep())
+    );
     Ok(())
 }
 
@@ -2898,8 +2960,17 @@ fn do_start_call<'a, T>(
                 call: Box::new(move |store| {
                     let mut store = unsafe { StoreContextMut(&mut *store.cast()) };
                     let old_task = store.concurrent_state().guest_task.replace(guest_task);
+                    log::trace!(
+                        "do_start_call: replaced {:?} with {} as current task",
+                        old_task.map(|v| v.rep()),
+                        guest_task.rep()
+                    );
                     let storage = call(store.as_context_mut())?;
                     store.concurrent_state().guest_task = old_task;
+                    log::trace!(
+                        "do_start_call: restored {:?} as current task",
+                        old_task.map(|v| v.rep())
+                    );
                     Ok(unsafe { storage[0].assume_init() }.get_i32() as u32)
                 }),
                 instance: callee_instance,
@@ -3053,6 +3124,11 @@ fn do_start_call<'a, T>(
         None
     };
     store.concurrent_state().guest_task = caller;
+    log::trace!(
+        "popped current task {}; new task is {:?}",
+        guest_task.rep(),
+        caller.map(|v| v.rep())
+    );
 
     let task = store.concurrent_state().table.get_mut(guest_task)?;
 
@@ -3138,6 +3214,10 @@ pub(crate) fn start_call<'a, T: Send, LowerParams: Copy, R: 'static>(
     );
 
     store.concurrent_state().guest_task = Some(guest_task);
+    log::trace!(
+        "pushed {} as current task; old task was None",
+        guest_task.rep()
+    );
 
     do_start_call(
         store.as_context_mut(),
@@ -3153,6 +3233,7 @@ pub(crate) fn start_call<'a, T: Send, LowerParams: Copy, R: 'static>(
     )?;
 
     store.concurrent_state().guest_task = None;
+    log::trace!("popped current task {}; new task is None", guest_task.rep());
 
     log::trace!("started call {}", guest_task.rep());
 
@@ -3401,6 +3482,7 @@ fn enter_call<T>(
         should_yield: false,
         call_context: Some(CallContext::default()),
         sync_result: None,
+        has_suspended: false,
     };
     let guest_task = if let Some(old_task) = old_task {
         let child = store
@@ -3414,6 +3496,11 @@ fn enter_call<T>(
     };
 
     store.concurrent_state().guest_task = Some(guest_task);
+    log::trace!(
+        "pushed {} as current task; old task was {:?}",
+        guest_task.rep(),
+        old_task.map(|v| v.rep())
+    );
 
     Ok(())
 }
@@ -3481,6 +3568,12 @@ fn exit_call<T>(
 
     let call = if status != Status::Done {
         if async_caller {
+            store
+                .concurrent_state()
+                .table
+                .get_mut(guest_task)?
+                .has_suspended = true;
+
             instance.component_waitable_tables()[caller_instance]
                 .insert(guest_task.rep(), WaitableState::Task)?
         } else {
