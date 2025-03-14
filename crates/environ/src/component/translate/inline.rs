@@ -1014,6 +1014,20 @@ impl<'a> Inliner<'a> {
                     .push((*func, dfg::Trampoline::ErrorContextDrop { ty }));
                 frame.funcs.push(dfg::CoreDef::Trampoline(index));
             }
+            ContextGet { func, i } => {
+                let index = self
+                    .result
+                    .trampolines
+                    .push((*func, dfg::Trampoline::ContextGet(*i)));
+                frame.funcs.push(dfg::CoreDef::Trampoline(index));
+            }
+            ContextSet { func, i } => {
+                let index = self
+                    .result
+                    .trampolines
+                    .push((*func, dfg::Trampoline::ContextSet(*i)));
+                frame.funcs.push(dfg::CoreDef::Trampoline(index));
+            }
 
             ModuleStatic(idx, ty) => {
                 frame.modules.push(ModuleDef::Static(*idx, *ty));

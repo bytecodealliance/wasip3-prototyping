@@ -297,6 +297,14 @@ enum LocalInitializer<'data> {
     ErrorContextDrop {
         func: ModuleInternedTypeIndex,
     },
+    ContextGet {
+        func: ModuleInternedTypeIndex,
+        i: u32,
+    },
+    ContextSet {
+        func: ModuleInternedTypeIndex,
+        i: u32,
+    },
 
     // core wasm modules
     ModuleStatic(StaticModuleIndex, ComponentCoreModuleTypeId),
@@ -812,6 +820,16 @@ impl<'a, 'data> Translator<'a, 'data> {
                             let func = self.core_func_signature(core_func_index)?;
                             core_func_index += 1;
                             LocalInitializer::ErrorContextDrop { func }
+                        }
+                        wasmparser::CanonicalFunction::ContextGet(i) => {
+                            let func = self.core_func_signature(core_func_index)?;
+                            core_func_index += 1;
+                            LocalInitializer::ContextGet { i, func }
+                        }
+                        wasmparser::CanonicalFunction::ContextSet(i) => {
+                            let func = self.core_func_signature(core_func_index)?;
+                            core_func_index += 1;
+                            LocalInitializer::ContextSet { i, func }
                         }
                     };
                     self.result.initializers.push(init);

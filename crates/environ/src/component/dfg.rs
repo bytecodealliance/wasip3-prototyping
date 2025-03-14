@@ -404,6 +404,8 @@ pub enum Trampoline {
     FutureTransfer,
     StreamTransfer,
     ErrorContextTransfer,
+    ContextGet(u32),
+    ContextSet(u32),
 }
 
 #[derive(Copy, Clone, Hash, Eq, PartialEq)]
@@ -940,6 +942,8 @@ impl LinearizeDfg<'_> {
             Trampoline::FutureTransfer => info::Trampoline::FutureTransfer,
             Trampoline::StreamTransfer => info::Trampoline::StreamTransfer,
             Trampoline::ErrorContextTransfer => info::Trampoline::ErrorContextTransfer,
+            Trampoline::ContextGet(i) => info::Trampoline::ContextGet(*i),
+            Trampoline::ContextSet(i) => info::Trampoline::ContextSet(*i),
         };
         let i1 = self.trampolines.push(*signature);
         let i2 = self.trampoline_defs.push(trampoline);

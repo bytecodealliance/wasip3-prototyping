@@ -1,4 +1,4 @@
-;;! component_model_async = true
+;;! cm_async = true
 
 ;; error-context.new
 (component

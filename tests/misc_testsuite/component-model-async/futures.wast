@@ -1,4 +1,5 @@
-;;! component_model_async = true
+;;! cm_async = true
+;;! cm_async_builtins = true
 
 ;; future.new
 (component
