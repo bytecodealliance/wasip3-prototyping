@@ -211,33 +211,22 @@
 //! }
 //! ```
 
-#![deny(missing_docs)]
-#![doc(test(attr(deny(warnings))))]
-#![doc(test(attr(allow(dead_code, unused_variables, unused_mut))))]
-#![expect(clippy::allow_attributes_without_reason, reason = "crate not migrated")]
-
-mod error;
-mod http_impl;
-mod types_impl;
-
-pub mod body;
-pub mod io;
-pub mod types;
-
 pub mod bindings;
+mod host;
+mod conv;
 
-#[cfg(feature = "p3")]
-pub mod p3;
+use core::time::Duration;
 
-pub use crate::error::{
-    http_request_error, hyper_request_error, hyper_response_error, HttpError, HttpResult,
-};
-#[doc(inline)]
-pub use crate::types::{
-    WasiHttpCtx, WasiHttpImpl, WasiHttpView, DEFAULT_OUTGOING_BODY_BUFFER_CHUNKS,
-    DEFAULT_OUTGOING_BODY_CHUNK_SIZE,
-};
-use wasmtime_wasi::IoImpl;
+use std::io::Cursor;
+
+use http::uri::{Authority, PathAndQuery, Scheme};
+use http::{HeaderMap, Method, StatusCode};
+use http_body_util::{combinators::BoxBody, BodyExt as _};
+use wasmtime_wasi::p3::{ResourceView, WithChildren};
+use wasmtime_wasi::ResourceTable;
+
+use crate::p3::bindings::http::types::ErrorCode;
+
 /// Add all of the `wasi:http/proxy` world's interfaces to a [`wasmtime::component::Linker`].
 ///
 /// This function will add the `async` variant of all interfaces into the
@@ -283,24 +272,25 @@ use wasmtime_wasi::IoImpl;
 ///     fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
 /// }
 /// ```
-pub fn add_to_linker_async<T>(l: &mut wasmtime::component::Linker<T>) -> anyhow::Result<()>
+pub fn add_to_linker<T>(l: &mut wasmtime::component::Linker<T>) -> anyhow::Result<()>
 where
-    T: WasiHttpView + wasmtime_wasi::WasiView,
+    T: WasiHttpView
+        + wasmtime_wasi::p3::clocks::WasiClocksView
+        + wasmtime_wasi::p3::random::WasiRandomView
+        + wasmtime_wasi::p3::cli::WasiCliView
+        + 'static,
 {
-    let io_closure = type_annotate_io::<T, _>(|t| wasmtime_wasi::IoImpl(t));
-    wasmtime_wasi::bindings::io::poll::add_to_linker_get_host(l, io_closure)?;
-    wasmtime_wasi::bindings::io::error::add_to_linker_get_host(l, io_closure)?;
-    wasmtime_wasi::bindings::io::streams::add_to_linker_get_host(l, io_closure)?;
+    let cli_closure = type_annotate_wasi_cli::<T, _>(|t| wasmtime_wasi::p3::cli::WasiCliImpl(t));
+    let random_closure =
+        type_annotate_wasi_random::<T, _>(|t| wasmtime_wasi::p3::random::WasiRandomImpl(t));
+    wasmtime_wasi::p3::clocks::add_to_linker(l)?;
 
-    let closure = type_annotate_wasi::<T, _>(|t| wasmtime_wasi::WasiImpl(wasmtime_wasi::IoImpl(t)));
-    wasmtime_wasi::bindings::clocks::wall_clock::add_to_linker_get_host(l, closure)?;
-    wasmtime_wasi::bindings::clocks::monotonic_clock::add_to_linker_get_host(l, closure)?;
-    wasmtime_wasi::bindings::cli::stdin::add_to_linker_get_host(l, closure)?;
-    wasmtime_wasi::bindings::cli::stdout::add_to_linker_get_host(l, closure)?;
-    wasmtime_wasi::bindings::cli::stderr::add_to_linker_get_host(l, closure)?;
-    wasmtime_wasi::bindings::random::random::add_to_linker_get_host(l, closure)?;
+    wasmtime_wasi::p3::bindings::cli::stdin::add_to_linker_get_host(l, cli_closure)?;
+    wasmtime_wasi::p3::bindings::cli::stdout::add_to_linker_get_host(l, cli_closure)?;
+    wasmtime_wasi::p3::bindings::cli::stderr::add_to_linker_get_host(l, cli_closure)?;
+    wasmtime_wasi::p3::bindings::random::random::add_to_linker_get_host(l, random_closure)?;
 
-    add_only_http_to_linker_async(l)
+    add_only_http_to_linker(l)
 }
 
 // NB: workaround some rustc inference - a future refactoring may make this
@@ -311,15 +301,15 @@ where
 {
     val
 }
-fn type_annotate_wasi<T, F>(val: F) -> F
+fn type_annotate_wasi_cli<T, F>(val: F) -> F
 where
-    F: Fn(&mut T) -> wasmtime_wasi::WasiImpl<&mut T>,
+    F: Fn(&mut T) -> wasmtime_wasi::p3::cli::WasiCliImpl<&mut T>,
 {
     val
 }
-fn type_annotate_io<T, F>(val: F) -> F
+fn type_annotate_wasi_random<T, F>(val: F) -> F
 where
-    F: Fn(&mut T) -> wasmtime_wasi::IoImpl<&mut T>,
+    F: Fn(&mut T) -> wasmtime_wasi::p3::random::WasiRandomImpl<&mut T>,
 {
     val
 }
@@ -329,98 +319,138 @@ where
 ///
 /// This is useful when using [`wasmtime_wasi::add_to_linker_async`] for
 /// example to avoid re-adding the same interfaces twice.
-pub fn add_only_http_to_linker_async<T>(
-    l: &mut wasmtime::component::Linker<T>,
-) -> anyhow::Result<()>
+pub fn add_only_http_to_linker<T>(l: &mut wasmtime::component::Linker<T>) -> anyhow::Result<()>
 where
-    T: WasiHttpView,
+    T: WasiHttpView + 'static,
 {
-    let closure = type_annotate_http::<T, _>(|t| WasiHttpImpl(IoImpl(t)));
-    crate::bindings::http::outgoing_handler::add_to_linker_get_host(l, closure)?;
-    crate::bindings::http::types::add_to_linker_get_host(l, closure)?;
+    let closure = type_annotate_http::<T, _>(|t| WasiHttpImpl(t));
+    crate::p3::bindings::http::handler::add_to_linker_get_host(l, closure)?;
+    crate::p3::bindings::http::types::add_to_linker_get_host(l, closure)?;
 
     Ok(())
 }
 
-/// Add all of the `wasi:http/proxy` world's interfaces to a [`wasmtime::component::Linker`].
+/// A concrete structure that all generated `Host` traits are implemented for.
 ///
-/// This function will add the `sync` variant of all interfaces into the
-/// `Linker` provided. For embeddings with async support see
-/// [`add_to_linker_async`] instead.
+/// This type serves as a small newtype wrapper to implement all of the `Host`
+/// traits for `wasi:http`. This type is internally used and is only needed if
+/// you're interacting with `add_to_linker` functions generated by bindings
+/// themselves (or `add_to_linker_get_host`).
 ///
-/// # Example
-///
-/// ```
-/// use wasmtime::{Engine, Result, Config};
-/// use wasmtime::component::{ResourceTable, Linker};
-/// use wasmtime_wasi::{IoView, WasiCtx, WasiView};
-/// use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
-///
-/// fn main() -> Result<()> {
-///     let config = Config::default();
-///     let engine = Engine::new(&config)?;
-///
-///     let mut linker = Linker::<MyState>::new(&engine);
-///     wasmtime_wasi_http::add_to_linker_sync(&mut linker)?;
-///     // ... add any further functionality to `linker` if desired ...
-///
-///     Ok(())
-/// }
-///
-/// struct MyState {
-///     ctx: WasiCtx,
-///     http_ctx: WasiHttpCtx,
-///     table: ResourceTable,
-/// }
-/// impl IoView for MyState {
-///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
-/// }
-/// impl WasiHttpView for MyState {
-///     fn ctx(&mut self) -> &mut WasiHttpCtx { &mut self.http_ctx }
-/// }
-/// impl WasiView for MyState {
-///     fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
-/// }
-/// ```
-pub fn add_to_linker_sync<T>(l: &mut wasmtime::component::Linker<T>) -> anyhow::Result<()>
-where
-    T: WasiHttpView + wasmtime_wasi::WasiView,
-{
-    let io_closure = type_annotate_io::<T, _>(|t| wasmtime_wasi::IoImpl(t));
-    // For the sync linker, use the definitions of poll and streams from the
-    // wasmtime_wasi::bindings::sync space because those are defined using in_tokio.
-    wasmtime_wasi::bindings::sync::io::poll::add_to_linker_get_host(l, io_closure)?;
-    wasmtime_wasi::bindings::sync::io::streams::add_to_linker_get_host(l, io_closure)?;
-    // The error interface in the wasmtime_wasi is synchronous
-    wasmtime_wasi::bindings::io::error::add_to_linker_get_host(l, io_closure)?;
+/// This type is automatically used when using
+/// [`add_to_linker`](crate::p3::add_to_linker)
+#[repr(transparent)]
+pub struct WasiHttpImpl<T>(pub T);
 
-    let closure = type_annotate_wasi::<T, _>(|t| wasmtime_wasi::WasiImpl(wasmtime_wasi::IoImpl(t)));
-
-    wasmtime_wasi::bindings::clocks::wall_clock::add_to_linker_get_host(l, closure)?;
-    wasmtime_wasi::bindings::clocks::monotonic_clock::add_to_linker_get_host(l, closure)?;
-    wasmtime_wasi::bindings::cli::stdin::add_to_linker_get_host(l, closure)?;
-    wasmtime_wasi::bindings::cli::stdout::add_to_linker_get_host(l, closure)?;
-    wasmtime_wasi::bindings::cli::stderr::add_to_linker_get_host(l, closure)?;
-    wasmtime_wasi::bindings::random::random::add_to_linker_get_host(l, closure)?;
-
-    add_only_http_to_linker_sync(l)?;
-
-    Ok(())
+impl<T: WasiHttpView> WasiHttpView for &mut T {
+    fn http(&mut self) -> &WasiHttpCtx {
+        (**self).http()
+    }
 }
 
-/// A slimmed down version of [`add_to_linker_sync`] which only adds
-/// `wasi:http` interfaces to the linker.
-///
-/// This is useful when using [`wasmtime_wasi::add_to_linker_sync`] for
-/// example to avoid re-adding the same interfaces twice.
-pub fn add_only_http_to_linker_sync<T>(l: &mut wasmtime::component::Linker<T>) -> anyhow::Result<()>
-where
-    T: WasiHttpView,
-{
-    let closure = type_annotate_http::<T, _>(|t| WasiHttpImpl(IoImpl(t)));
+impl<T: WasiHttpView> WasiHttpView for WasiHttpImpl<T> {
+    fn http(&mut self) -> &WasiHttpCtx {
+        self.0.http()
+    }
+}
 
-    crate::bindings::http::outgoing_handler::add_to_linker_get_host(l, closure)?;
-    crate::bindings::http::types::add_to_linker_get_host(l, closure)?;
+impl<T: ResourceView> ResourceView for WasiHttpImpl<T> {
+    fn table(&mut self) -> &mut ResourceTable {
+        self.0.table()
+    }
+}
 
-    Ok(())
+/// A trait which provides internal WASI HTTP state.
+pub trait WasiHttpView: ResourceView + Send {
+    /// Returns a reference to [WasiHttpCtx]
+    fn http(&mut self) -> &WasiHttpCtx;
+
+    /// Whether a given header should be considered forbidden and not allowed.
+    fn is_forbidden_header(&mut self, _name: &http::header::HeaderName) -> bool {
+        false
+    }
+}
+
+/// Capture the state necessary for use in the wasi-http API implementation.
+#[derive(Debug, Default)]
+pub struct WasiHttpCtx {}
+
+/// The concrete type behind a `wasi:http/types/request-options` resource.
+#[derive(Clone, Debug, Default)]
+pub struct RequestOptions {
+    /// How long to wait for a connection to be established.
+    pub connect_timeout: Option<Duration>,
+    /// How long to wait for the first byte of the response body.
+    pub first_byte_timeout: Option<Duration>,
+    /// How long to wait between frames of the response body.
+    pub between_bytes_timeout: Option<Duration>,
+}
+
+/// The concrete type behind a `wasi:http/types/body` resource.
+pub type Body = BoxBody<Cursor<Vec<u8>>, ErrorCode>;
+
+/// The concrete type behind a `wasi:http/types/request` resource.
+#[derive(Debug)]
+pub struct Request {
+    /// The method of the request.
+    pub method: Method,
+    /// The scheme of the request.
+    pub scheme: Option<Scheme>,
+    /// The authority of the request.
+    pub authority: Option<Authority>,
+    /// The path and query of the request.
+    pub path_with_query: Option<PathAndQuery>,
+    /// The request headers.
+    pub headers: WithChildren<HeaderMap>,
+    /// The request body.
+    pub body: Option<Body>,
+    /// Request options.
+    pub options: Option<WithChildren<RequestOptions>>,
+}
+
+impl Request {
+    /// Construct a new [Request]
+    pub fn new(headers: HeaderMap, body: Option<Body>, options: Option<RequestOptions>) -> Self {
+        let body = body.unwrap_or_else(|| {
+            http_body_util::Empty::default()
+                .map_err(|_| unreachable!("Infallible error"))
+                .boxed()
+        });
+        Self {
+            method: Method::GET,
+            scheme: None,
+            authority: None,
+            path_with_query: None,
+            headers: WithChildren::new(headers),
+            body: Some(body),
+            options: options.map(WithChildren::new),
+        }
+    }
+}
+
+/// The concrete type behind a `wasi:http/types/response` resource.
+#[derive(Debug)]
+pub struct Response {
+    /// The status of the response.
+    pub status: StatusCode,
+    /// The headers of the response.
+    pub headers: WithChildren<HeaderMap>,
+    /// The body of the response.
+    pub body: Option<Body>,
+}
+
+impl Response {
+    /// Construct a new [Response]
+    pub fn new(headers: HeaderMap, body: Option<Body>) -> Self {
+        let body = body.unwrap_or_else(|| {
+            http_body_util::Empty::default()
+                .map_err(|_| unreachable!("Infallible error"))
+                .boxed()
+        });
+        Self {
+            status: http::StatusCode::OK,
+            headers: WithChildren::new(headers),
+            body: Some(body),
+        }
+    }
 }
