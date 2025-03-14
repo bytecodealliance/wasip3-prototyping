@@ -138,7 +138,9 @@ impl Config {
             tail_call,
             extended_const,
             wide_arithmetic,
-            component_model_async,
+            cm_async,
+            cm_async_builtins,
+            cm_async_stackful,
             simd,
 
             hogs_memory: _,
@@ -150,7 +152,11 @@ impl Config {
         // but are configurable in Wasmtime.
         self.module_config.function_references_enabled =
             function_references.or(gc).unwrap_or(false);
-        self.module_config.component_model_async = component_model_async.unwrap_or(false);
+        self.module_config.cm_async_stackful = cm_async_stackful.unwrap_or(false);
+        self.module_config.cm_async_builtins = cm_async_builtins.unwrap_or(false);
+        self.module_config.cm_async = self.module_config.cm_async_stackful
+            || self.module_config.cm_async_builtins
+            || cm_async.unwrap_or(false);
 
         // Enable/disable proposals that wasm-smith has knobs for which will be
         // read when creating `wasmtime::Config`.
@@ -264,7 +270,8 @@ impl Config {
         ));
         cfg.wasm.async_stack_zeroing = Some(self.wasmtime.async_stack_zeroing);
         cfg.wasm.bulk_memory = Some(true);
-        cfg.wasm.component_model_async = Some(self.module_config.component_model_async);
+        cfg.wasm.component_model_async = Some(self.module_config.cm_async);
+        // TODO: handle cm_async_{builtins,stackful}
         cfg.wasm.custom_page_sizes = Some(self.module_config.config.custom_page_sizes_enabled);
         cfg.wasm.epoch_interruption = Some(self.wasmtime.epoch_interruption);
         cfg.wasm.extended_const = Some(self.module_config.config.extended_const_enabled);
