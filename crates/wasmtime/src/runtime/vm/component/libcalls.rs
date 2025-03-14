@@ -708,15 +708,15 @@ unsafe fn waitable_set_drop(
 unsafe fn waitable_join(
     vmctx: NonNull<VMComponentContext>,
     caller_instance: u32,
-    set: u32,
     waitable: u32,
+    set: u32,
 ) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |instance| {
         (*instance.store()).component_async_store().waitable_join(
             instance,
             wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
-            set,
             waitable,
+            set,
         )
     })
 }
@@ -858,10 +858,13 @@ unsafe fn future_transfer(
     src_table: u32,
     dst_table: u32,
 ) -> Result<u32> {
-    let src_table = wasmtime_environ::component::TypeFutureTableIndex::from_u32(src_table);
-    let dst_table = wasmtime_environ::component::TypeFutureTableIndex::from_u32(dst_table);
     ComponentInstance::from_vmctx(vmctx, |instance| {
-        instance.future_transfer(src_idx, src_table, dst_table)
+        (*instance.store()).component_async_store().future_transfer(
+            instance,
+            src_idx,
+            wasmtime_environ::component::TypeFutureTableIndex::from_u32(src_table),
+            wasmtime_environ::component::TypeFutureTableIndex::from_u32(dst_table),
+        )
     })
 }
 
@@ -872,10 +875,13 @@ unsafe fn stream_transfer(
     src_table: u32,
     dst_table: u32,
 ) -> Result<u32> {
-    let src_table = wasmtime_environ::component::TypeStreamTableIndex::from_u32(src_table);
-    let dst_table = wasmtime_environ::component::TypeStreamTableIndex::from_u32(dst_table);
     ComponentInstance::from_vmctx(vmctx, |instance| {
-        instance.stream_transfer(src_idx, src_table, dst_table)
+        (*instance.store()).component_async_store().stream_transfer(
+            instance,
+            src_idx,
+            wasmtime_environ::component::TypeStreamTableIndex::from_u32(src_table),
+            wasmtime_environ::component::TypeStreamTableIndex::from_u32(dst_table),
+        )
     })
 }
 
@@ -1329,19 +1335,19 @@ unsafe fn error_context_drop(
 }
 
 #[cfg(feature = "component-model-async")]
-unsafe fn context_get(vmctx: NonNull<VMComponentContext>, slot: u32) -> u32 {
+unsafe fn context_get(vmctx: NonNull<VMComponentContext>, slot: u32) -> Result<u32> {
     ComponentInstance::from_vmctx(vmctx, |instance| {
         (*instance.store())
             .component_async_store()
-            .context_get(instance, slot)
+            .context_get(slot)
     })
 }
 
 #[cfg(feature = "component-model-async")]
-unsafe fn context_set(vmctx: NonNull<VMComponentContext>, slot: u32, val: u32) {
+unsafe fn context_set(vmctx: NonNull<VMComponentContext>, slot: u32, val: u32) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |instance| {
         (*instance.store())
             .component_async_store()
-            .context_set(instance, slot, val)
+            .context_set(slot, val)
     })
 }

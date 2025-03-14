@@ -300,24 +300,24 @@ system-interface = { version = "0.27.1", features = ["cap_std_impls"] }
 io-lifetimes = { version = "2.0.3", default-features = false }
 io-extras = "0.18.1"
 rustix = "0.38.43"
-# TODO: switch back to released wit-bindgen
-wit-bindgen = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8", default-features = false }
-wit-bindgen-rt = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8", default-features = false }
-wit-bindgen-rust-macro = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8", default-features = false }
+# TODO: switch back to upstream release:
+wit-bindgen = { git = "https://github.com/dicej/wit-bindgen", branch = "spec-sync", default-features = false }
+wit-bindgen-rt = { git = "https://github.com/dicej/wit-bindgen", branch = "spec-sync", default-features = false }
+wit-bindgen-rust-macro = { git = "https://github.com/dicej/wit-bindgen", branch = "spec-sync", default-features = false }
 
 # wasm-tools family:
-# TODO: switch back to release
-wasmparser = { git = 'https://github.com/bytecodealliance/wasm-tools', default-features = false, features = ['simd'] }
-wat = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wast = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wasmprinter = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wasm-encoder = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wasm-smith = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wasm-mutate = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wit-parser = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wit-component = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wasm-wave = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wasm-compose = { git = 'https://github.com/bytecodealliance/wasm-tools' }
+# TODO: switch back to upstream release:
+wasmparser = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update", default-features = false, features = ['simd'] }
+wat = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wast = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wasmprinter = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wasm-encoder = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wasm-smith = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wasm-mutate = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wit-parser = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wit-component = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wasm-wave = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wasm-compose = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
 
 # Non-Bytecode Alliance maintained dependencies:
 # --------------------------
@@ -573,15 +573,15 @@ codegen-units = 1
 lto = true
 
 [patch.crates-io]
-wasmparser = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wat = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wast = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wasmprinter = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wasm-encoder = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wasm-smith = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wasm-mutate = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wit-parser = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wit-component = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wasm-wave = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wasm-compose = { git = 'https://github.com/bytecodealliance/wasm-tools' }
-wasm-metadata = { git = 'https://github.com/bytecodealliance/wasm-tools' }
+wasmparser = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wat = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wast = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wasmprinter = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wasm-encoder = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wasm-smith = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wasm-mutate = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wit-parser = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wit-component = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wasm-wave = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wasm-compose = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }
+wasm-metadata = { git = "https://github.com/dicej/wasm-tools", branch = "callback-sig-update" }

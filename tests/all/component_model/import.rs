@@ -646,7 +646,7 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
     (import "host" "task.return" (func $task-return))
     {body}
 
-    (func (export "callback") (param i32 i32 i32 i32) (result i32) unreachable)
+    (func (export "callback") (param i32 i32 i32) (result i32) unreachable)
 
     (func $allocate_empty_strings (result i32)
       (local $ret i32)

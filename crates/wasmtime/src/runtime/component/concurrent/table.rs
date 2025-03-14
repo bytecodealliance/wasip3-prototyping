@@ -6,11 +6,45 @@
 // `Resource<T>`.  I've also added a `Table::delete_any` function, useful for
 // implementing `subtask.drop`.
 
-use std::{any::Any, boxed::Box, collections::BTreeSet, marker::PhantomData, vec::Vec};
+use std::{
+    any::Any,
+    boxed::Box,
+    cmp::Ordering,
+    collections::BTreeSet,
+    hash::{Hash, Hasher},
+    marker::PhantomData,
+    vec::Vec,
+};
 
 pub struct TableId<T> {
     rep: u32,
     _marker: PhantomData<fn() -> T>,
+}
+
+impl<T> Hash for TableId<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.rep.hash(state)
+    }
+}
+
+impl<T> PartialEq for TableId<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.rep == other.rep
+    }
+}
+
+impl<T> Eq for TableId<T> {}
+
+impl<T> PartialOrd for TableId<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.rep.partial_cmp(&other.rep)
+    }
+}
+
+impl<T> Ord for TableId<T> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.rep.cmp(&other.rep)
+    }
 }
 
 impl<T> TableId<T> {
@@ -206,35 +240,6 @@ impl Table {
             .ok_or(TableError::NotPresent)
     }
 
-    /// Insert a entry at the next available index, and track that it has a
-    /// parent entry.
-    ///
-    /// The parent must exist to create a child. All child entrys must be
-    /// destroyed before a parent can be destroyed - otherwise [`Table::delete`]
-    /// will fail with [`TableError::HasChildren`].
-    ///
-    /// Parent-child relationships are tracked inside the table to ensure that a
-    /// parent is not deleted while it has live children. This allows children
-    /// to hold "references" to a parent by table index, to avoid needing
-    /// e.g. an `Arc<Mutex<parent>>` and the associated locking overhead and
-    /// design issues, such as child existence extending lifetime of parent
-    /// referent even after parent is destroyed, possibility for deadlocks.
-    ///
-    /// Parent-child relationships may not be modified once created. There is no
-    /// way to observe these relationships through the [`Table`] methods except
-    /// for erroring on deletion, or the [`std::fmt::Debug`] impl.
-    pub fn push_child<T: Send + Sync + 'static, U>(
-        &mut self,
-        entry: T,
-        parent: TableId<U>,
-    ) -> Result<TableId<T>, TableError> {
-        let parent = parent.rep();
-        self.occupied(parent)?;
-        let child = self.push_(TableEntry::new(Box::new(entry), Some(parent)))?;
-        self.occupied_mut(parent)?.add_child(child);
-        Ok(TableId::new(child))
-    }
-
     pub fn add_child<T, U>(
         &mut self,
         child: TableId<T>,
@@ -292,10 +297,6 @@ impl Table {
             .downcast()
             .map(|v| *v)
             .map_err(|_| TableError::WrongType)
-    }
-
-    pub fn delete_any(&mut self, key: u32) -> Result<Box<dyn Any + Send + Sync>, TableError> {
-        Ok(self.delete_entry(key)?.entry)
     }
 
     fn delete_entry(&mut self, key: u32) -> Result<TableEntry, TableError> {

@@ -333,15 +333,9 @@ impl<'a> Module<'a> {
             )
         });
         let callback = callback.as_ref().map(|func| {
-            let ptr = if *memory64 {
-                ValType::I64
-            } else {
-                ValType::I32
-            };
-            let ty = self.core_types.function(
-                &[ptr, ValType::I32, ValType::I32, ValType::I32],
-                &[ValType::I32],
-            );
+            let ty = self
+                .core_types
+                .function(&[ValType::I32, ValType::I32, ValType::I32], &[ValType::I32]);
             self.import_func(
                 "callback",
                 &format!("f{}", self.imported_funcs.len()),
