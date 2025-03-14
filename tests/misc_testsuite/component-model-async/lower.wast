@@ -1,4 +1,4 @@
-;;! component_model_async = true
+;;! cm_async = true
 
 ;; async lower
 (component

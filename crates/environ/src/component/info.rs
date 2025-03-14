@@ -1006,6 +1006,18 @@ pub enum Trampoline {
     /// are reference counted, meaning that sharing the handle with another
     /// component does not invalidate the handle in the original component.
     ErrorContextTransfer,
+
+    /// Intrinsic used to implement the `context.get` component model builtin.
+    ///
+    /// The payload here represents that this is accessing the Nth slot of local
+    /// storage.
+    ContextGet(u32),
+
+    /// Intrinsic used to implement the `context.set` component model builtin.
+    ///
+    /// The payload here represents that this is accessing the Nth slot of local
+    /// storage.
+    ContextSet(u32),
 }
 
 impl Trampoline {
@@ -1066,6 +1078,8 @@ impl Trampoline {
             FutureTransfer => format!("future-transfer"),
             StreamTransfer => format!("stream-transfer"),
             ErrorContextTransfer => format!("error-context-transfer"),
+            ContextGet(_) => format!("context-get"),
+            ContextSet(_) => format!("context-set"),
         }
     }
 }

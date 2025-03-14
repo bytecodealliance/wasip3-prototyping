@@ -294,6 +294,8 @@ impl<'a> TrampolineCompiler<'a> {
                     rets[0] = me.raise_if_negative_one(rets[0]);
                 })
             }
+            Trampoline::ContextGet(i) => self.translate_context_get(*i),
+            Trampoline::ContextSet(i) => self.translate_context_set(*i),
         }
     }
 
@@ -1485,6 +1487,23 @@ impl<'a> TrampolineCompiler<'a> {
         let host_fn = self.load_libcall(vmctx, index);
         self.compiler
             .call_indirect_host(&mut self.builder, index, host_sig, host_fn, args)
+    }
+
+    fn translate_context_get(&mut self, slot: u32) {
+        let args = self.builder.func.dfg.block_params(self.block0).to_vec();
+        let vmctx = args[0];
+        let slot = self.builder.ins().iconst(ir::types::I32, i64::from(slot));
+        let call = self.call_libcall(vmctx, host::context_get, &[vmctx, slot]);
+        let result = self.builder.func.dfg.inst_results(call)[0];
+        self.abi_store_results(&[result]);
+    }
+
+    fn translate_context_set(&mut self, slot: u32) {
+        let args = self.abi_load_params();
+        let vmctx = args[0];
+        let slot = self.builder.ins().iconst(ir::types::I32, i64::from(slot));
+        self.call_libcall(vmctx, host::context_set, &[vmctx, slot, args[2]]);
+        self.abi_store_results(&[]);
     }
 }
 

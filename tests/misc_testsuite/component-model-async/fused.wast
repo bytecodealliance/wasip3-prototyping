@@ -1,4 +1,5 @@
-;;! component_model_async = true
+;;! cm_async = true
+;;! cm_async_stackful = true
 ;;! reference_types = true
 ;;! gc_types = true
 ;;! multi_memory = true

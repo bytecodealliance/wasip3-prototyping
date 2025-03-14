@@ -184,9 +184,11 @@ macro_rules! foreach_config_option {
             wide_arithmetic
             hogs_memory
             nan_canonicalization
-            component_model_async
             simd
             gc_types
+            cm_async
+            cm_async_builtins
+            cm_async_stackful
         }
     };
 }

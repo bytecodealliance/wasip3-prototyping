@@ -168,6 +168,8 @@ pub async fn test_round_trip(component: &[u8], inputs_and_outputs: &[(&str, &str
     config.cranelift_debug_verifier(true);
     config.wasm_component_model(true);
     config.wasm_component_model_async(true);
+    config.wasm_component_model_async_builtins(true);
+    config.wasm_component_model_async_stackful(true);
     config.async_support(true);
 
     let engine = Engine::new(&config)?;

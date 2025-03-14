@@ -183,11 +183,9 @@ fn compile_component(wasm: &Path, adapter: &[u8]) -> PathBuf {
         .encode()
         .expect("module can be translated to a component");
 
-    Validator::new_with_features(
-        WasmFeatures::WASM2 | WasmFeatures::COMPONENT_MODEL | WasmFeatures::COMPONENT_MODEL_ASYNC,
-    )
-    .validate_all(&component)
-    .expect("component output should validate");
+    Validator::new_with_features(WasmFeatures::all())
+        .validate_all(&component)
+        .expect("component output should validate");
 
     let out_dir = wasm.parent().unwrap();
     let stem = wasm.file_stem().unwrap().to_str().unwrap();

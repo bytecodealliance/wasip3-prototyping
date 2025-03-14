@@ -570,3 +570,8 @@ opt-level = 's'
 inherits = "release"
 codegen-units = 1
 lto = true
+
+[patch.crates-io]
+wasmparser = { git = 'https://github.com/bytecodealliance/wasm-tools' }
+wasmprinter = { git = 'https://github.com/bytecodealliance/wasm-tools' }
+wasm-encoder = { git = 'https://github.com/bytecodealliance/wasm-tools' }

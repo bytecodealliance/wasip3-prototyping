@@ -728,6 +728,12 @@ pub unsafe trait VMComponentAsyncStore {
         ty: TypeComponentLocalErrorContextTableIndex,
         err_ctx_handle: u32,
     ) -> Result<()>;
+
+    /// The `context.get` intrinsic.
+    fn context_get(&mut self, instance: &mut ComponentInstance, slot: u32) -> u32;
+
+    /// The `context.get` intrinsic.
+    fn context_set(&mut self, instance: &mut ComponentInstance, slot: u32, val: u32);
 }
 
 unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
@@ -1389,6 +1395,16 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         err_ctx_handle: u32,
     ) -> Result<()> {
         futures_and_streams::error_context_drop(StoreContextMut(self), instance, ty, err_ctx_handle)
+    }
+
+    fn context_get(&mut self, instance: &mut ComponentInstance, slot: u32) -> u32 {
+        let _ = (instance, slot);
+        todo!()
+    }
+
+    fn context_set(&mut self, instance: &mut ComponentInstance, slot: u32, val: u32) {
+        let _ = (instance, slot, val);
+        todo!()
     }
 }
 
