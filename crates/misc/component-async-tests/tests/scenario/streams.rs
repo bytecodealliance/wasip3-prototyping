@@ -71,7 +71,7 @@ pub async fn async_watch_streams() -> Result<()> {
 
     #[allow(clippy::type_complexity)]
     enum Event {
-        Write(Option<StreamWriter<Vec<u8>>>),
+        Write(Result<StreamWriter<Vec<u8>>, ErrorContext>),
         Read(Result<(StreamReader<Vec<u8>>, Vec<u8>), Option<ErrorContext>>),
     }
 
@@ -86,8 +86,8 @@ pub async fn async_watch_streams() -> Result<()> {
     let mut tx = None;
     while let Some(event) = promises.next(&mut store).await? {
         match event {
-            Event::Write(None) => unreachable!(),
-            Event::Write(Some(new_tx)) => tx = Some(new_tx),
+            Event::Write(Err(_)) => unreachable!(),
+            Event::Write(Ok(new_tx)) => tx = Some(new_tx),
             Event::Read(Err(_)) => unreachable!(),
             Event::Read(Ok((new_rx, values))) => {
                 assert_eq!(values, vec![42]);
@@ -104,7 +104,7 @@ pub async fn async_watch_streams() -> Result<()> {
         .write(vec![42])
         .get(&mut store)
         .await?
-        .is_none());
+        .is_err());
 
     Ok(())
 }
@@ -154,16 +154,16 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
 
     #[allow(clippy::type_complexity)]
     enum StreamEvent {
-        FirstWrite(Option<StreamWriter<Vec<u8>>>),
+        FirstWrite(Result<StreamWriter<Vec<u8>>, ErrorContext>),
         FirstRead(Result<(StreamReader<Vec<u8>>, Vec<u8>), Option<ErrorContext>>),
-        SecondWrite(Option<StreamWriter<Vec<u8>>>),
+        SecondWrite(Result<StreamWriter<Vec<u8>>, ErrorContext>),
         GuestCompleted,
     }
 
     enum FutureEvent {
-        Write(bool),
+        Write(Result<(), ErrorContext>),
         Read(Result<u8, Option<ErrorContext>>),
-        WriteIgnored(bool),
+        WriteIgnored(Result<(), ErrorContext>),
         GuestCompleted,
     }
 
@@ -183,23 +183,28 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
         while let Some(event) = promises.next(&mut store).await? {
             count += 1;
             match event {
-                StreamEvent::FirstWrite(Some(tx)) => {
+                StreamEvent::FirstWrite(Ok(tx)) => {
                     if watch {
+                        let second_write_err = component::error_context(
+                            &mut store,
+                            "intentional second write failure",
+                        )
+                        .unwrap();
                         promises.push(
                             Promise::from(tx.watch_reader())
-                                .map(|()| StreamEvent::SecondWrite(None)),
+                                .map(|()| StreamEvent::SecondWrite(Err(second_write_err))),
                         );
                     } else {
                         promises.push(tx.write(values.clone()).map(StreamEvent::SecondWrite));
                     }
                 }
-                StreamEvent::FirstWrite(None) => panic!("first write should have been accepted"),
+                StreamEvent::FirstWrite(Err(_)) => panic!("first write should have been accepted"),
                 StreamEvent::FirstRead(Ok((_, results))) => {
                     assert_eq!(values, results);
                 }
                 StreamEvent::FirstRead(Err(_)) => unreachable!(),
-                StreamEvent::SecondWrite(None) => {}
-                StreamEvent::SecondWrite(Some(_)) => {
+                StreamEvent::SecondWrite(Err(_)) => {}
+                StreamEvent::SecondWrite(Ok(_)) => {
                     panic!("second write should _not_ have been accepted")
                 }
                 StreamEvent::GuestCompleted => unreachable!(),
@@ -218,8 +223,10 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
         promises.push(tx.write(value).map(FutureEvent::Write));
         promises.push(rx.read().map(FutureEvent::Read));
         if watch {
+            let err = component::error_context(&mut store, "intentional ignored write").unwrap();
             promises.push(
-                Promise::from(tx_ignored.watch_reader()).map(|()| FutureEvent::WriteIgnored(false)),
+                Promise::from(tx_ignored.watch_reader())
+                    .map(|()| FutureEvent::WriteIgnored(Err(err))),
             );
         } else {
             promises.push(tx_ignored.write(value).map(FutureEvent::WriteIgnored));
@@ -231,14 +238,14 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
             count += 1;
             match event {
                 FutureEvent::Write(delivered) => {
-                    assert!(delivered);
+                    assert!(delivered.is_ok());
                 }
                 FutureEvent::Read(Ok(result)) => {
                     assert_eq!(value, result);
                 }
                 FutureEvent::Read(Err(_)) => panic!("read should have succeeded"),
                 FutureEvent::WriteIgnored(delivered) => {
-                    assert!(!delivered);
+                    assert!(delivered.is_err());
                 }
                 FutureEvent::GuestCompleted => unreachable!(),
             }
@@ -265,20 +272,23 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
         while let Some(event) = promises.next(&mut store).await? {
             count += 1;
             match event {
-                StreamEvent::FirstWrite(Some(tx)) => {
+                StreamEvent::FirstWrite(Ok(tx)) => {
                     if watch {
+                        let err =
+                            component::error_context(&mut store, "intentional second write fail")
+                                .unwrap();
                         promises.push(
                             Promise::from(tx.watch_reader())
-                                .map(|()| StreamEvent::SecondWrite(None)),
+                                .map(|()| StreamEvent::SecondWrite(Err(err))),
                         );
                     } else {
                         promises.push(tx.write(values.clone()).map(StreamEvent::SecondWrite));
                     }
                 }
-                StreamEvent::FirstWrite(None) => panic!("first write should have been accepted"),
+                StreamEvent::FirstWrite(Err(_)) => panic!("first write should have been accepted"),
                 StreamEvent::FirstRead(_) => unreachable!(),
-                StreamEvent::SecondWrite(None) => {}
-                StreamEvent::SecondWrite(Some(_)) => {
+                StreamEvent::SecondWrite(Err(_)) => {}
+                StreamEvent::SecondWrite(Ok(_)) => {
                     panic!("second write should _not_ have been accepted")
                 }
                 StreamEvent::GuestCompleted => {}
@@ -303,8 +313,10 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
         );
         promises.push(tx.write(value).map(FutureEvent::Write));
         if watch {
+            let err = component::error_context(&mut store, "intentional ignored write").unwrap();
             promises.push(
-                Promise::from(tx_ignored.watch_reader()).map(|()| FutureEvent::WriteIgnored(false)),
+                Promise::from(tx_ignored.watch_reader())
+                    .map(|()| FutureEvent::WriteIgnored(Err(err))),
             );
         } else {
             promises.push(tx_ignored.write(value).map(FutureEvent::WriteIgnored));
@@ -315,11 +327,11 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
             count += 1;
             match event {
                 FutureEvent::Write(delivered) => {
-                    assert!(delivered);
+                    assert!(delivered.is_ok());
                 }
                 FutureEvent::Read(_) => unreachable!(),
                 FutureEvent::WriteIgnored(delivered) => {
-                    assert!(!delivered);
+                    assert!(delivered.is_err());
                 }
                 FutureEvent::GuestCompleted => {}
             }
