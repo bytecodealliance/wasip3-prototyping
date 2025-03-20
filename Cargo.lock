@@ -4881,6 +4881,7 @@ version = "32.0.0"
 dependencies = [
  "anyhow",
  "log",
+ "tokio",
  "wasmtime",
  "wast 227.0.1",
 ]
