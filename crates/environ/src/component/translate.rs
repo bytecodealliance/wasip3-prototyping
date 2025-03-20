@@ -646,7 +646,8 @@ impl<'a, 'data> Translator<'a, 'data> {
                             core_func_index += 1;
                             LocalInitializer::ResourceRep(resource, ty)
                         }
-                        wasmparser::CanonicalFunction::ThreadSpawn { .. }
+                        wasmparser::CanonicalFunction::ThreadSpawnRef { .. }
+                        | wasmparser::CanonicalFunction::ThreadSpawnIndirect { .. }
                         | wasmparser::CanonicalFunction::ThreadAvailableParallelism => {
                             bail!("unsupported intrinsic")
                         }

@@ -15,8 +15,13 @@ use component_async_tests::util::{compose, init_logger, test_run};
 use component_async_tests::{transmit, Ctx};
 
 #[tokio::test]
-pub async fn async_poll() -> Result<()> {
-    test_run(&fs::read(test_programs_artifacts::ASYNC_POLL_COMPONENT).await?).await
+pub async fn async_poll_synchronous() -> Result<()> {
+    test_run(&fs::read(test_programs_artifacts::ASYNC_POLL_SYNCHRONOUS_COMPONENT).await?).await
+}
+
+#[tokio::test]
+pub async fn async_poll_stackless() -> Result<()> {
+    test_run(&fs::read(test_programs_artifacts::ASYNC_POLL_STACKLESS_COMPONENT).await?).await
 }
 
 #[tokio::test]
