@@ -3531,7 +3531,7 @@ dependencies = [
  "wasi 0.14.0+wasi-0.2.3",
  "wasi-nn",
  "wit-bindgen",
- "wit-bindgen-rt 0.40.0",
+ "wit-bindgen-rt 0.41.0",
 ]
 
 [[package]]
@@ -4127,7 +4127,7 @@ checksum = "6ee99da9c5ba11bd675621338ef6fa52296b76b83305e9b6e5c77d4c286d6d49"
 [[package]]
 name = "wasm-compose"
 version = "0.227.1"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ad5726c3e42228c9088e00f4480ba1ac28069fb4"
+source = "git+https://github.com/dicej/wasm-tools?branch=callback-sig-update#280ac2472cc8370ec52eb4e4f9997b1da902dec4"
 dependencies = [
  "anyhow",
  "heck 0.4.1",
@@ -4147,7 +4147,7 @@ dependencies = [
 [[package]]
 name = "wasm-encoder"
 version = "0.227.1"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ad5726c3e42228c9088e00f4480ba1ac28069fb4"
+source = "git+https://github.com/dicej/wasm-tools?branch=callback-sig-update#280ac2472cc8370ec52eb4e4f9997b1da902dec4"
 dependencies = [
  "leb128fmt",
  "wasmparser",
@@ -4156,7 +4156,7 @@ dependencies = [
 [[package]]
 name = "wasm-metadata"
 version = "0.227.1"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ad5726c3e42228c9088e00f4480ba1ac28069fb4"
+source = "git+https://github.com/dicej/wasm-tools?branch=callback-sig-update#280ac2472cc8370ec52eb4e4f9997b1da902dec4"
 dependencies = [
  "anyhow",
  "auditable-serde",
@@ -4174,7 +4174,7 @@ dependencies = [
 [[package]]
 name = "wasm-mutate"
 version = "0.227.1"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ad5726c3e42228c9088e00f4480ba1ac28069fb4"
+source = "git+https://github.com/dicej/wasm-tools?branch=callback-sig-update#280ac2472cc8370ec52eb4e4f9997b1da902dec4"
 dependencies = [
  "egg",
  "log",
@@ -4187,7 +4187,7 @@ dependencies = [
 [[package]]
 name = "wasm-smith"
 version = "0.227.1"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ad5726c3e42228c9088e00f4480ba1ac28069fb4"
+source = "git+https://github.com/dicej/wasm-tools?branch=callback-sig-update#280ac2472cc8370ec52eb4e4f9997b1da902dec4"
 dependencies = [
  "anyhow",
  "arbitrary",
@@ -4206,7 +4206,7 @@ dependencies = [
 [[package]]
 name = "wasm-wave"
 version = "0.227.1"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ad5726c3e42228c9088e00f4480ba1ac28069fb4"
+source = "git+https://github.com/dicej/wasm-tools?branch=callback-sig-update#280ac2472cc8370ec52eb4e4f9997b1da902dec4"
 dependencies = [
  "indexmap 2.7.0",
  "logos",
@@ -4261,7 +4261,7 @@ dependencies = [
 [[package]]
 name = "wasmparser"
 version = "0.227.1"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ad5726c3e42228c9088e00f4480ba1ac28069fb4"
+source = "git+https://github.com/dicej/wasm-tools?branch=callback-sig-update#280ac2472cc8370ec52eb4e4f9997b1da902dec4"
 dependencies = [
  "bitflags 2.6.0",
  "hashbrown 0.15.2",
@@ -4282,7 +4282,7 @@ dependencies = [
 [[package]]
 name = "wasmprinter"
 version = "0.227.1"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ad5726c3e42228c9088e00f4480ba1ac28069fb4"
+source = "git+https://github.com/dicej/wasm-tools?branch=callback-sig-update#280ac2472cc8370ec52eb4e4f9997b1da902dec4"
 dependencies = [
  "anyhow",
  "termcolor",
@@ -4936,7 +4936,7 @@ dependencies = [
 [[package]]
 name = "wast"
 version = "227.0.1"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ad5726c3e42228c9088e00f4480ba1ac28069fb4"
+source = "git+https://github.com/dicej/wasm-tools?branch=callback-sig-update#280ac2472cc8370ec52eb4e4f9997b1da902dec4"
 dependencies = [
  "bumpalo",
  "leb128fmt",
@@ -4948,7 +4948,7 @@ dependencies = [
 [[package]]
 name = "wat"
 version = "1.227.1"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ad5726c3e42228c9088e00f4480ba1ac28069fb4"
+source = "git+https://github.com/dicej/wasm-tools?branch=callback-sig-update#280ac2472cc8370ec52eb4e4f9997b1da902dec4"
 dependencies = [
  "wast 227.0.1",
 ]
@@ -5315,17 +5315,17 @@ dependencies = [
 
 [[package]]
 name = "wit-bindgen"
-version = "0.40.0"
-source = "git+https://github.com/bytecodealliance/wit-bindgen?rev=1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8#1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8"
+version = "0.41.0"
+source = "git+https://github.com/dicej/wit-bindgen?branch=spec-sync#ca39aa6b1c362fe5e0a7d72b92ac906e23e1e4e6"
 dependencies = [
- "wit-bindgen-rt 0.40.0",
+ "wit-bindgen-rt 0.41.0",
  "wit-bindgen-rust-macro",
 ]
 
 [[package]]
 name = "wit-bindgen-core"
-version = "0.40.0"
-source = "git+https://github.com/bytecodealliance/wit-bindgen?rev=1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8#1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8"
+version = "0.41.0"
+source = "git+https://github.com/dicej/wit-bindgen?branch=spec-sync#ca39aa6b1c362fe5e0a7d72b92ac906e23e1e4e6"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5343,8 +5343,8 @@ dependencies = [
 
 [[package]]
 name = "wit-bindgen-rt"
-version = "0.40.0"
-source = "git+https://github.com/bytecodealliance/wit-bindgen?rev=1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8#1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8"
+version = "0.41.0"
+source = "git+https://github.com/dicej/wit-bindgen?branch=spec-sync#ca39aa6b1c362fe5e0a7d72b92ac906e23e1e4e6"
 dependencies = [
  "bitflags 2.6.0",
  "futures",
@@ -5353,8 +5353,8 @@ dependencies = [
 
 [[package]]
 name = "wit-bindgen-rust"
-version = "0.40.0"
-source = "git+https://github.com/bytecodealliance/wit-bindgen?rev=1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8#1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8"
+version = "0.41.0"
+source = "git+https://github.com/dicej/wit-bindgen?branch=spec-sync#ca39aa6b1c362fe5e0a7d72b92ac906e23e1e4e6"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5368,8 +5368,8 @@ dependencies = [
 
 [[package]]
 name = "wit-bindgen-rust-macro"
-version = "0.40.0"
-source = "git+https://github.com/bytecodealliance/wit-bindgen?rev=1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8#1d8cbb92b7aed06b6e762a7b49d3a4691b0280b8"
+version = "0.41.0"
+source = "git+https://github.com/dicej/wit-bindgen?branch=spec-sync#ca39aa6b1c362fe5e0a7d72b92ac906e23e1e4e6"
 dependencies = [
  "anyhow",
  "prettyplease",
@@ -5383,7 +5383,7 @@ dependencies = [
 [[package]]
 name = "wit-component"
 version = "0.227.1"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ad5726c3e42228c9088e00f4480ba1ac28069fb4"
+source = "git+https://github.com/dicej/wasm-tools?branch=callback-sig-update#280ac2472cc8370ec52eb4e4f9997b1da902dec4"
 dependencies = [
  "anyhow",
  "bitflags 2.6.0",
@@ -5401,7 +5401,7 @@ dependencies = [
 [[package]]
 name = "wit-parser"
 version = "0.227.1"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ad5726c3e42228c9088e00f4480ba1ac28069fb4"
+source = "git+https://github.com/dicej/wasm-tools?branch=callback-sig-update#280ac2472cc8370ec52eb4e4f9997b1da902dec4"
 dependencies = [
  "anyhow",
  "id-arena",

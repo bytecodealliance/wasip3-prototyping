@@ -10,9 +10,43 @@ mod bindings {
 
 use bindings::{exports::local::local::run::Guest, local::local::ready};
 
-fn task_poll() -> Option<(i32, i32, i32)> {
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "$root")]
+unsafe extern "C" {
+    #[link_name = "[waitable-set-new]"]
+    fn waitable_set_new() -> u32;
+}
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn waitable_set_new() -> u32 {
+    unreachable!()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "$root")]
+unsafe extern "C" {
+    #[link_name = "[waitable-join]"]
+    fn waitable_join(waitable: u32, set: u32);
+}
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn waitable_join(_: u32, _: u32) {
+    unreachable!()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "$root")]
+unsafe extern "C" {
+    #[link_name = "[waitable-set-drop]"]
+    fn waitable_set_drop(set: u32);
+}
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn waitable_set_drop(_: u32) {
+    unreachable!()
+}
+
+fn waitable_set_poll(set: u32) -> Option<(u32, u32, u32)> {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        _ = set;
         unreachable!();
     }
 
@@ -21,11 +55,10 @@ fn task_poll() -> Option<(i32, i32, i32)> {
         #[link(wasm_import_module = "$root")]
         unsafe extern "C" {
             #[link_name = "[waitable-set-poll]"]
-            fn poll(_: i32, _: *mut i32) -> i32;
+            fn poll(_: u32, _: *mut u32) -> u32;
         }
-        let mut payload = [0i32; 3];
-        // TODO: provide a real waitable-set here:
-        if unsafe { poll(0, payload.as_mut_ptr()) } != 0 {
+        let mut payload = [0u32; 3];
+        if unsafe { poll(set, payload.as_mut_ptr()) } != 0 {
             Some((payload[0], payload[1], payload[2]))
         } else {
             None
@@ -33,7 +66,7 @@ fn task_poll() -> Option<(i32, i32, i32)> {
     }
 }
 
-fn async_when_ready() -> i32 {
+fn async_when_ready() -> u32 {
     #[cfg(not(target_arch = "wasm32"))]
     {
         unreachable!()
@@ -44,7 +77,7 @@ fn async_when_ready() -> i32 {
         #[link(wasm_import_module = "local:local/ready")]
         unsafe extern "C" {
             #[link_name = "[async-lower]when-ready"]
-            fn call_when_ready(_: *mut u8, _: *mut u8) -> i32;
+            fn call_when_ready(_: *mut u8, _: *mut u8) -> u32;
         }
         unsafe { call_when_ready(std::ptr::null_mut(), std::ptr::null_mut()) }
     }
@@ -71,31 +104,45 @@ fn subtask_drop(subtask: u32) {
     }
 }
 
+const STATUS_RETURNED: u32 = 3;
+
+const EVENT_CALL_RETURNED: u32 = 3;
+
 struct Component;
 
 impl Guest for Component {
     fn run() {
-        ready::set_ready(false);
+        unsafe {
+            ready::set_ready(false);
 
-        assert!(task_poll().is_none());
+            let set = waitable_set_new();
 
-        async_when_ready();
+            assert!(waitable_set_poll(set).is_none());
 
-        assert!(task_poll().is_none());
+            let result = async_when_ready();
+            let status = result >> 30;
+            let call = result & !(0b11 << 30);
+            assert!(status != STATUS_RETURNED);
+            waitable_join(call, set);
 
-        ready::set_ready(true);
+            assert!(waitable_set_poll(set).is_none());
 
-        let Some((3, task, _)) = task_poll() else {
-            panic!()
-        };
+            ready::set_ready(true);
 
-        subtask_drop(task as u32);
+            let Some((EVENT_CALL_RETURNED, task, _)) = waitable_set_poll(set) else {
+                panic!()
+            };
 
-        assert!(task_poll().is_none());
+            subtask_drop(task);
 
-        assert!(async_when_ready() == 3 << 30); // STATUS_DONE
+            assert!(waitable_set_poll(set).is_none());
 
-        assert!(task_poll().is_none());
+            assert!(async_when_ready() == STATUS_RETURNED << 30);
+
+            assert!(waitable_set_poll(set).is_none());
+
+            waitable_set_drop(set);
+        }
     }
 }
 

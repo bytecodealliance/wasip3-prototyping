@@ -212,12 +212,16 @@ pub enum StreamFutureState {
 /// Represents the state of a waitable handle.
 #[derive(Debug)]
 pub enum WaitableState {
-    /// Represents a task handle.
-    Task,
+    /// Represents a host task handle.
+    HostTask,
+    /// Represents a guest task handle.
+    GuestTask,
     /// Represents a stream handle.
     Stream(TypeStreamTableIndex, StreamFutureState),
     /// Represents a future handle.
     Future(TypeFutureTableIndex, StreamFutureState),
+    /// Represents a waitable-set handle
+    Set,
 }
 
 /// Represents the state associated with an error context
@@ -794,98 +798,6 @@ impl ComponentInstance {
 
     pub(crate) fn resource_exit_call(&mut self) -> Result<()> {
         self.resource_tables().exit_call()
-    }
-
-    #[cfg(feature = "component-model-async")]
-    pub(crate) fn future_transfer(
-        &mut self,
-        src_idx: u32,
-        src: TypeFutureTableIndex,
-        dst: TypeFutureTableIndex,
-    ) -> Result<u32> {
-        let src_instance = self.component_types()[src].instance;
-        let dst_instance = self.component_types()[dst].instance;
-        let [src_table, dst_table] = self
-            .component_waitable_tables
-            .get_many_mut([src_instance, dst_instance])
-            .unwrap();
-        let (rep, WaitableState::Future(src_ty, src_state)) =
-            src_table.get_mut_by_index(src_idx)?
-        else {
-            bail!("invalid future handle");
-        };
-        if *src_ty != src {
-            bail!("invalid future handle");
-        }
-        match src_state {
-            StreamFutureState::Local => {
-                *src_state = StreamFutureState::Write;
-                assert!(dst_table.get_mut_by_rep(rep).is_none());
-                dst_table.insert(rep, WaitableState::Future(dst, StreamFutureState::Read))
-            }
-            StreamFutureState::Read => {
-                src_table.remove_by_index(src_idx)?;
-                if let Some((dst_idx, dst_state)) = dst_table.get_mut_by_rep(rep) {
-                    let WaitableState::Future(dst_ty, dst_state) = dst_state else {
-                        unreachable!();
-                    };
-                    assert_eq!(*dst_ty, dst);
-                    assert_eq!(*dst_state, StreamFutureState::Write);
-                    *dst_state = StreamFutureState::Local;
-                    Ok(dst_idx)
-                } else {
-                    dst_table.insert(rep, WaitableState::Future(dst, StreamFutureState::Read))
-                }
-            }
-            StreamFutureState::Write => bail!("cannot transfer write end of future"),
-            StreamFutureState::Busy => bail!("cannot transfer busy future"),
-        }
-    }
-
-    #[cfg(feature = "component-model-async")]
-    pub(crate) fn stream_transfer(
-        &mut self,
-        src_idx: u32,
-        src: TypeStreamTableIndex,
-        dst: TypeStreamTableIndex,
-    ) -> Result<u32> {
-        let src_instance = self.component_types()[src].instance;
-        let dst_instance = self.component_types()[dst].instance;
-        let [src_table, dst_table] = self
-            .component_waitable_tables
-            .get_many_mut([src_instance, dst_instance])
-            .unwrap();
-        let (rep, WaitableState::Stream(src_ty, src_state)) =
-            src_table.get_mut_by_index(src_idx)?
-        else {
-            bail!("invalid stream handle");
-        };
-        if *src_ty != src {
-            bail!("invalid stream handle");
-        }
-        match src_state {
-            StreamFutureState::Local => {
-                *src_state = StreamFutureState::Write;
-                assert!(dst_table.get_mut_by_rep(rep).is_none());
-                dst_table.insert(rep, WaitableState::Stream(dst, StreamFutureState::Read))
-            }
-            StreamFutureState::Read => {
-                src_table.remove_by_index(src_idx)?;
-                if let Some((dst_idx, dst_state)) = dst_table.get_mut_by_rep(rep) {
-                    let WaitableState::Stream(dst_ty, dst_state) = dst_state else {
-                        unreachable!();
-                    };
-                    assert_eq!(*dst_ty, dst);
-                    assert_eq!(*dst_state, StreamFutureState::Write);
-                    *dst_state = StreamFutureState::Local;
-                    Ok(dst_idx)
-                } else {
-                    dst_table.insert(rep, WaitableState::Stream(dst, StreamFutureState::Read))
-                }
-            }
-            StreamFutureState::Write => bail!("cannot transfer write end of stream"),
-            StreamFutureState::Busy => bail!("cannot transfer busy stream"),
-        }
     }
 
     /// Transfer the state of a given error context from one component to another

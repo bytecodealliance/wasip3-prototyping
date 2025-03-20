@@ -829,7 +829,7 @@ async fn async_reentrance() -> Result<()> {
                 (func (export "export") (param i32) (result i32)
                     (call_indirect (i32.const 0) (local.get 0))
                 )
-                (func (export "callback") (param i32 i32 i32 i32) (result i32) unreachable)
+                (func (export "callback") (param i32 i32 i32) (result i32) unreachable)
             )
             (core func $task-return (canon task.return (result u32)))
             (core instance $shim (instantiate $shim
@@ -856,7 +856,7 @@ async fn async_reentrance() -> Result<()> {
                         (call $task-return (i32.load offset=0 (i32.const 1204)))
                         i32.const 0
                     )
-                    (func (export "callback") (param i32 i32 i32 i32) (result i32) unreachable)
+                    (func (export "callback") (param i32 i32 i32) (result i32) unreachable)
                 )
                 (core type $task-return-type (func (param i32)))
                 (core func $task-return (canon task.return (result u32)))
@@ -890,7 +890,7 @@ async fn async_reentrance() -> Result<()> {
                     i32.const 0
                 )
                 (func $guest-export (export "guest-export") (param i32) (result i32) unreachable)
-                (func (export "callback") (param i32 i32 i32 i32) (result i32) unreachable)
+                (func (export "callback") (param i32 i32 i32) (result i32) unreachable)
                 (func $start
                     (table.set (i32.const 0) (ref.func $guest-export))
                 )
@@ -940,7 +940,7 @@ async fn missing_task_return_call_stackless() -> Result<()> {
                 (func (export "foo") (result i32)
                     i32.const 0
                 )
-                (func (export "callback") (param i32 i32 i32 i32) (result i32) unreachable)
+                (func (export "callback") (param i32 i32 i32) (result i32) unreachable)
             )
             (core func $task-return (canon task.return))
             (core instance $i (instantiate $m
@@ -1146,7 +1146,7 @@ async fn test_many_parameters(dynamic: bool, concurrent: bool) -> Result<()> {
                 (func (export "foo") (param i32) (result i32)
                     {body}
                 )
-                (func (export "callback") (param i32 i32 i32 i32) (result i32) unreachable)
+                (func (export "callback") (param i32 i32 i32) (result i32) unreachable)
             )
             (type $tuple (tuple (list u8) u32))
             (core func $task-return (canon task.return
@@ -1597,7 +1597,7 @@ async fn test_many_results(dynamic: bool, concurrent: bool) -> Result<()> {
 
                     {ret}
                 )
-                (func (export "callback") (param i32 i32 i32 i32) (result i32) unreachable)
+                (func (export "callback") (param i32 i32 i32) (result i32) unreachable)
             )
             (type $tuple (tuple
                 s8

@@ -57,15 +57,42 @@ unsafe extern "C" fn subtask_drop(_task: u32) {
     unreachable!()
 }
 
-const _STATUS_STARTING: u32 = 0;
-const _STATUS_STARTED: u32 = 1;
-const _STATUS_RETURNED: u32 = 2;
-const STATUS_DONE: u32 = 3;
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "$root")]
+unsafe extern "C" {
+    #[link_name = "[waitable-set-new]"]
+    fn waitable_set_new() -> u32;
+}
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn waitable_set_new() -> u32 {
+    unreachable!()
+}
 
-const _EVENT_CALL_STARTING: i32 = 0;
-const _EVENT_CALL_STARTED: i32 = 1;
-const _EVENT_CALL_RETURNED: i32 = 2;
-const EVENT_CALL_DONE: i32 = 3;
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "$root")]
+unsafe extern "C" {
+    #[link_name = "[waitable-join]"]
+    fn waitable_join(waitable: u32, set: u32);
+}
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn waitable_join(_: u32, _: u32) {
+    unreachable!()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "$root")]
+unsafe extern "C" {
+    #[link_name = "[waitable-set-drop]"]
+    fn waitable_set_drop(set: u32);
+}
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn waitable_set_drop(_: u32) {
+    unreachable!()
+}
+
+const STATUS_RETURNED: u32 = 3;
+
+const EVENT_CALL_RETURNED: i32 = 3;
 
 #[unsafe(export_name = "[async-lift-stackful]local:local/many#foo")]
 unsafe extern "C" fn export_foo(args: *mut u8) {
@@ -105,17 +132,21 @@ unsafe extern "C" fn export_foo(args: *mut u8) {
     let result = import_foo(params, results);
     let mut status = result >> 30;
     let call = result & !(0b11 << 30);
-    while status != STATUS_DONE {
+    let set = waitable_set_new();
+    if call != 0 {
+        waitable_join(call, set);
+    }
+    while status != STATUS_RETURNED {
         // Note the use of `Box` here to avoid taking the address of a stack
         // allocation.
         let payload = Box::into_raw(Box::new([0i32; 2]));
-        // TODO: provide a real waitable-set here:
-        let event = waitable_set_wait(0, payload.cast());
+        let event = waitable_set_wait(set, payload.cast());
         let payload = Box::from_raw(payload);
-        if event == EVENT_CALL_DONE {
+        if event == EVENT_CALL_RETURNED {
             assert!(call == payload[0] as u32);
             subtask_drop(call);
-            status = STATUS_DONE;
+            waitable_set_drop(set);
+            status = STATUS_RETURNED;
         }
     }
     alloc::dealloc(params, layout);

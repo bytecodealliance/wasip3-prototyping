@@ -1493,17 +1493,26 @@ impl<'a> TrampolineCompiler<'a> {
         let args = self.builder.func.dfg.block_params(self.block0).to_vec();
         let vmctx = args[0];
         let slot = self.builder.ins().iconst(ir::types::I32, i64::from(slot));
-        let call = self.call_libcall(vmctx, host::context_get, &[vmctx, slot]);
-        let result = self.builder.func.dfg.inst_results(call)[0];
-        self.abi_store_results(&[result]);
+
+        self.translate_intrinsic_libcall(
+            vmctx,
+            host::context_get,
+            &[vmctx, slot],
+            TrapSentinel::NegativeOne,
+        );
     }
 
     fn translate_context_set(&mut self, slot: u32) {
         let args = self.abi_load_params();
         let vmctx = args[0];
         let slot = self.builder.ins().iconst(ir::types::I32, i64::from(slot));
-        self.call_libcall(vmctx, host::context_set, &[vmctx, slot, args[2]]);
-        self.abi_store_results(&[]);
+
+        self.translate_intrinsic_libcall(
+            vmctx,
+            host::context_set,
+            &[vmctx, slot, args[2]],
+            TrapSentinel::Falsy,
+        );
     }
 }
 

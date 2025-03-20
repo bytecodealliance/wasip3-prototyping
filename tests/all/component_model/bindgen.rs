@@ -95,7 +95,7 @@ mod no_imports_concurrent {
                             call $task-return
                             i32.const 0
                         )
-                        (func (export "callback") (param i32 i32 i32 i32) (result i32) unreachable)
+                        (func (export "callback") (param i32 i32 i32) (result i32) unreachable)
                     )
                     (core func $task-return (canon task.return))
                     (core instance $i (instantiate $m
@@ -236,7 +236,7 @@ mod one_import_concurrent {
                             call $task-return
                             i32.const 0
                         )
-                        (func (export "callback") (param i32 i32 i32 i32) (result i32) unreachable)
+                        (func (export "callback") (param i32 i32 i32) (result i32) unreachable)
                     )
                     (core func $foo (canon lower (func $foo-instance "foo") async (memory $libc-instance "memory")))
                     (core func $task-return (canon task.return))
