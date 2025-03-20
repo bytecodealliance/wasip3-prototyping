@@ -11,7 +11,20 @@
 // across yield points such as calls to `waitable-set.wait` in order to keep the
 // code reentrant.
 
-use std::alloc::{self, Layout};
+mod bindings {
+    wit_bindgen::generate!({
+        path: "../misc/component-async-tests/wit",
+        world: "round-trip-many",
+    });
+}
+
+use {
+    std::alloc::{self, Layout},
+    test_programs::async_::{
+        subtask_drop, waitable_join, waitable_set_drop, waitable_set_new, waitable_set_wait,
+        EVENT_CALL_RETURNED, STATUS_RETURNED,
+    },
+};
 
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "[export]local:local/many")]
@@ -34,65 +47,6 @@ unsafe extern "C" {
 unsafe extern "C" fn import_foo(_params: *mut u8, _results: *mut u8) -> u32 {
     unreachable!()
 }
-
-#[cfg(target_arch = "wasm32")]
-#[link(wasm_import_module = "$root")]
-unsafe extern "C" {
-    #[link_name = "[waitable-set-wait]"]
-    fn waitable_set_wait(set: u32, results: *mut i32) -> i32;
-}
-#[cfg(not(target_arch = "wasm32"))]
-unsafe extern "C" fn waitable_set_wait(_set: u32, _results: *mut i32) -> i32 {
-    unreachable!()
-}
-
-#[cfg(target_arch = "wasm32")]
-#[link(wasm_import_module = "$root")]
-unsafe extern "C" {
-    #[link_name = "[subtask-drop]"]
-    fn subtask_drop(task: u32);
-}
-#[cfg(not(target_arch = "wasm32"))]
-unsafe extern "C" fn subtask_drop(_task: u32) {
-    unreachable!()
-}
-
-#[cfg(target_arch = "wasm32")]
-#[link(wasm_import_module = "$root")]
-unsafe extern "C" {
-    #[link_name = "[waitable-set-new]"]
-    fn waitable_set_new() -> u32;
-}
-#[cfg(not(target_arch = "wasm32"))]
-unsafe fn waitable_set_new() -> u32 {
-    unreachable!()
-}
-
-#[cfg(target_arch = "wasm32")]
-#[link(wasm_import_module = "$root")]
-unsafe extern "C" {
-    #[link_name = "[waitable-join]"]
-    fn waitable_join(waitable: u32, set: u32);
-}
-#[cfg(not(target_arch = "wasm32"))]
-unsafe fn waitable_join(_: u32, _: u32) {
-    unreachable!()
-}
-
-#[cfg(target_arch = "wasm32")]
-#[link(wasm_import_module = "$root")]
-unsafe extern "C" {
-    #[link_name = "[waitable-set-drop]"]
-    fn waitable_set_drop(set: u32);
-}
-#[cfg(not(target_arch = "wasm32"))]
-unsafe fn waitable_set_drop(_: u32) {
-    unreachable!()
-}
-
-const STATUS_RETURNED: u32 = 3;
-
-const EVENT_CALL_RETURNED: i32 = 3;
 
 #[unsafe(export_name = "[async-lift-stackful]local:local/many#foo")]
 unsafe extern "C" fn export_foo(args: *mut u8) {
@@ -160,41 +114,6 @@ unsafe extern "C" fn export_foo(args: *mut u8) {
     *results.add(4).cast::<usize>() = s.len();
 
     task_return_foo(results);
-}
-
-// Copied from `wit-bindgen`-generated output
-#[cfg(target_arch = "wasm32")]
-#[unsafe(link_section = "component-type:wit-bindgen:0.35.0:local:local:round-trip:encoded world")]
-#[doc(hidden)]
-#[allow(
-    clippy::octal_escapes,
-    reason = "this is a machine-generated binary blob"
-)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 392] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x82\x02\x01A\x02\x01\
-A\x04\x01B\x0a\x01pz\x01r\x03\x01a\0\x01b\x7f\x01cw\x04\0\x05stuff\x03\0\x01\x01\
-p}\x01o\x02ww\x01k\x02\x01j\x01\x02\0\x01o\x07sy\x03\x04\x02\x05\x06\x01@\x07\x01\
-as\x01by\x01c\x03\x01d\x04\x01e\x02\x01f\x05\x01g\x06\0\x07\x04\0\x03foo\x01\x08\
-\x03\0\x10local:local/many\x05\0\x01B\x0a\x01pz\x01r\x03\x01a\0\x01b\x7f\x01cw\x04\
-\0\x05stuff\x03\0\x01\x01p}\x01o\x02ww\x01k\x02\x01j\x01\x02\0\x01o\x07sy\x03\x04\
-\x02\x05\x06\x01@\x07\x01as\x01by\x01c\x03\x01d\x04\x01e\x02\x01f\x05\x01g\x06\0\
-\x07\x04\0\x03foo\x01\x08\x04\0\x10local:local/many\x05\x01\x04\0\x1blocal:local\
-/round-trip-many\x04\0\x0b\x15\x01\0\x0fround-trip-many\x03\0\0\0G\x09producers\x01\
-\x0cprocessed-by\x02\x0dwit-component\x070.224.0\x10wit-bindgen-rust\x060.38.0";
-
-/// # Safety
-/// TODO
-#[unsafe(export_name = "cabi_realloc")]
-pub unsafe extern "C" fn cabi_realloc(
-    old_ptr: *mut u8,
-    old_len: usize,
-    align: usize,
-    new_size: usize,
-) -> *mut u8 {
-    assert!(old_ptr.is_null());
-    assert!(old_len == 0);
-
-    alloc::alloc(Layout::from_size_align(new_size, align).unwrap())
 }
 
 // Unused function; required since this file is built as a `bin`:

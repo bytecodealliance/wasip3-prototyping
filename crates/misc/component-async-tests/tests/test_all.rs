@@ -31,6 +31,10 @@ use scenario::round_trip_many::{
     async_round_trip_many_synchronous, async_round_trip_many_wait,
 };
 use scenario::streams::async_closed_streams;
-use scenario::transmit::{async_poll, async_transmit_callee, async_transmit_caller};
+use scenario::transmit::{
+    async_poll_stackless, async_poll_synchronous, async_transmit_callee, async_transmit_caller,
+};
 use scenario::unit_stream::{async_unit_stream_callee, async_unit_stream_caller};
-use scenario::yield_::{async_yield_callee, async_yield_caller};
+use scenario::yield_::{
+    async_yield_callee_stackless, async_yield_callee_synchronous, async_yield_caller,
+};

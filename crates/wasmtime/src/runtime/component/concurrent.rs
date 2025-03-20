@@ -2780,6 +2780,8 @@ fn unyield<'a, T>(mut store: StoreContextMut<'a, T>) -> Result<bool> {
             .callback
             .is_some()
         {
+            resumed = true;
+
             let (waitable, event, result) = if let Some(set) = set {
                 if let Some(waitable) = store
                     .concurrent_state()
