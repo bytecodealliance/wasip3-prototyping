@@ -212,16 +212,23 @@
 //! ```
 
 pub mod bindings;
-mod host;
 mod conv;
+mod host;
 
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{ready, Context, Poll};
 use core::time::Duration;
+use std::sync::Arc;
 
-use std::io::Cursor;
-
+use bytes::Bytes;
 use http::uri::{Authority, PathAndQuery, Scheme};
 use http::{HeaderMap, Method, StatusCode};
-use http_body_util::{combinators::BoxBody, BodyExt as _};
+use http_body_util::combinators::BoxBody;
+use tokio::sync::oneshot;
+use wasmtime::component::{
+    AbortOnDropHandle, ErrorContext, FutureWriter, HostFuture, Resource, StreamReader,
+};
 use wasmtime_wasi::p3::{ResourceView, WithChildren};
 use wasmtime_wasi::ResourceTable;
 
@@ -369,6 +376,23 @@ pub trait WasiHttpView: ResourceView + Send {
     fn is_forbidden_header(&mut self, _name: &http::header::HeaderName) -> bool {
         false
     }
+
+    /// Send an outgoing request.
+    fn send_request(
+        &mut self,
+        request: http::Request<
+            impl http_body::Body<Data = Bytes, Error = Option<ErrorCode>> + Send + Sync + 'static,
+        >,
+        options: Option<RequestOptions>,
+    ) -> impl Future<
+        Output = wasmtime::Result<
+            Result<http::Response<impl http_body::Body<Error = impl Into<ErrorCode>>>, ErrorCode>,
+        >,
+    > + Send
+           + Sync
+           + 'static {
+        async move { Ok(default_send_request(request, options).await) }
+    }
 }
 
 /// Capture the state necessary for use in the wasi-http API implementation.
@@ -387,10 +411,90 @@ pub struct RequestOptions {
 }
 
 /// The concrete type behind a `wasi:http/types/body` resource.
-pub type Body = BoxBody<Cursor<Vec<u8>>, ErrorCode>;
+pub enum Body {
+    /// Body constructed by the guest
+    Outgoing {
+        /// The body stream
+        contents: Pin<
+            Box<
+                dyn Future<Output = Result<(StreamReader<Bytes>, Bytes), Option<ErrorContext>>>
+                    + Send
+                    + Sync
+                    + 'static,
+            >,
+        >,
+        /// Future, on which guest will write result and optional trailers
+        trailers: HostFuture<Result<Option<Resource<WithChildren<http::HeaderMap>>>, ErrorCode>>,
+        /// Future, on which transmission result will be written
+        tx: FutureWriter<Result<(), ErrorCode>>,
+    },
+    /// Body constructed by the host
+    Incoming(BoxBody<Bytes, ErrorCode>),
+    /// Body has been fully consumed
+    Consumed,
+}
+
+/// Body constructed by the guest
+pub struct GuestBody {
+    stream: Option<
+        Pin<
+            Box<
+                dyn Future<Output = Result<(StreamReader<Bytes>, Bytes), Option<ErrorContext>>>
+                    + Send
+                    + Sync
+                    + 'static,
+            >,
+        >,
+    >,
+    trailers: Option<oneshot::Receiver<Result<Option<http::HeaderMap>, ErrorCode>>>,
+    trailer_task: AbortOnDropHandle,
+}
+
+impl GuestBody {
+    fn poll_trailers<T>(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<T>, Option<ErrorCode>>>> {
+        let Some(trailers) = &mut self.trailers else {
+            return Poll::Ready(None);
+        };
+        let trailers = ready!(Pin::new(trailers).poll(cx));
+        self.trailers = None;
+        match trailers {
+            Ok(Ok(Some(trailers))) => Poll::Ready(Some(Ok(http_body::Frame::trailers(trailers)))),
+            Ok(Ok(None)) => Poll::Ready(None),
+            Ok(Err(err)) => Poll::Ready(Some(Err(Some(err)))),
+            Err(..) => Poll::Ready(Some(Err(None))), // future was dropped without writing a result
+        }
+    }
+}
+
+impl http_body::Body for GuestBody {
+    type Data = Bytes;
+    type Error = Option<ErrorCode>;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        let Some(stream) = &mut self.stream else {
+            return self.poll_trailers(cx);
+        };
+        match ready!(Pin::new(stream).poll(cx)) {
+            Ok((tail, buf)) => {
+                self.stream = Some(tail.read().into_future());
+                Poll::Ready(Some(Ok(http_body::Frame::data(buf))))
+            }
+            //Err(Some(err)) => Poll::Ready(Some(Err(err))),
+            Err(..) => {
+                self.stream = None;
+                self.poll_trailers(cx)
+            }
+        }
+    }
+}
 
 /// The concrete type behind a `wasi:http/types/request` resource.
-#[derive(Debug)]
 pub struct Request {
     /// The method of the request.
     pub method: Method,
@@ -403,54 +507,61 @@ pub struct Request {
     /// The request headers.
     pub headers: WithChildren<HeaderMap>,
     /// The request body.
-    pub body: Option<Body>,
+    pub body: Arc<std::sync::Mutex<Body>>,
     /// Request options.
     pub options: Option<WithChildren<RequestOptions>>,
+    /// Body stream task handle
+    task: Option<AbortOnDropHandle>,
 }
 
 impl Request {
     /// Construct a new [Request]
-    pub fn new(headers: HeaderMap, body: Option<Body>, options: Option<RequestOptions>) -> Self {
-        let body = body.unwrap_or_else(|| {
-            http_body_util::Empty::default()
-                .map_err(|_| unreachable!("Infallible error"))
-                .boxed()
-        });
+    pub fn new(headers: HeaderMap, body: Body, options: Option<RequestOptions>) -> Self {
         Self {
             method: Method::GET,
             scheme: None,
             authority: None,
             path_with_query: None,
             headers: WithChildren::new(headers),
-            body: Some(body),
+            body: Arc::new(std::sync::Mutex::new(body)),
             options: options.map(WithChildren::new),
+            task: None,
         }
     }
 }
 
 /// The concrete type behind a `wasi:http/types/response` resource.
-#[derive(Debug)]
 pub struct Response {
     /// The status of the response.
     pub status: StatusCode,
     /// The headers of the response.
     pub headers: WithChildren<HeaderMap>,
     /// The body of the response.
-    pub body: Option<Body>,
+    pub body: Arc<std::sync::Mutex<Body>>,
+    /// Body stream task handle
+    task: Option<AbortOnDropHandle>,
 }
 
 impl Response {
     /// Construct a new [Response]
-    pub fn new(headers: HeaderMap, body: Option<Body>) -> Self {
-        let body = body.unwrap_or_else(|| {
-            http_body_util::Empty::default()
-                .map_err(|_| unreachable!("Infallible error"))
-                .boxed()
-        });
+    pub fn new(headers: HeaderMap, body: Body) -> Self {
         Self {
             status: http::StatusCode::OK,
             headers: WithChildren::new(headers),
-            body: Some(body),
+            body: Arc::new(std::sync::Mutex::new(body)),
+            task: None,
         }
     }
+}
+
+/// The default implementation of how an outgoing request is sent.
+///
+/// This implementation is used by the `wasi:http/outgoing-handler` interface
+/// default implementation.
+pub async fn default_send_request(
+    request: http::Request<impl http_body::Body<Data = Bytes, Error = Option<ErrorCode>>>,
+    options: Option<RequestOptions>,
+) -> Result<http::Response<impl http_body::Body<Error = impl Into<ErrorCode>>>, ErrorCode> {
+    // TODO: impl
+    Ok(http::Response::new(http_body_util::Empty::<Bytes>::new()))
 }

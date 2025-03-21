@@ -1,206 +1,148 @@
-use core::ops::{Deref, DerefMut};
+use core::future::{poll_fn, Future as _};
+use core::mem;
+use core::pin::Pin;
+use core::task::Poll;
 
-use anyhow::Context as _;
-use wasmtime::component::{Accessor, HostFuture, HostStream, Resource};
+use std::sync::Arc;
+
+use anyhow::{bail, Context as _};
+use bytes::Bytes;
+use http_body::Body as _;
+use wasmtime::component::{
+    future, stream, Accessor, AccessorTask, FutureWriter, HostFuture, HostStream, Resource,
+    StreamWriter,
+};
 use wasmtime_wasi::p3::bindings::clocks::monotonic_clock::Duration;
 use wasmtime_wasi::p3::{ResourceView as _, WithChildren};
-use wasmtime_wasi::ResourceTable;
 
 use crate::p3::bindings::http::types::{
-    ErrorCode, FieldName, FieldValue, HeaderError, Method, RequestOptionsError, Scheme, StatusCode,
-    Trailers,
+    ErrorCode, FieldName, FieldValue, HeaderError, Host, HostFields, HostRequest,
+    HostRequestOptions, HostResponse, Method, RequestOptionsError, Scheme, StatusCode, Trailers,
 };
-use crate::p3::bindings::http::{handler, types};
+use crate::p3::host::{
+    delete_fields, delete_request_options, delete_response, get_fields, get_fields_inner,
+    get_fields_inner_mut, get_request, get_request_mut, get_request_options_inner,
+    get_request_options_inner_mut, get_response, get_response_mut, is_forbidden_header,
+    push_fields, push_fields_child, push_request, push_request_options, push_response,
+};
 use crate::p3::{Body, Request, RequestOptions, Response, WasiHttpImpl, WasiHttpView};
 
-fn get_fields<'a>(
-    table: &'a ResourceTable,
-    fields: &Resource<WithChildren<http::HeaderMap>>,
-) -> wasmtime::Result<&'a WithChildren<http::HeaderMap>> {
-    table
-        .get(&fields)
-        .context("failed to get fields from table")
+use super::get_request_options;
+
+type TrailerFuture = HostFuture<Result<Option<Resource<Trailers>>, ErrorCode>>;
+
+struct BodyTask {
+    body: Arc<std::sync::Mutex<Body>>,
+    contents_tx: StreamWriter<Bytes>,
+    trailers_tx: FutureWriter<Result<Option<Resource<Trailers>>, ErrorCode>>,
 }
 
-fn get_fields_inner<'a>(
-    table: &'a ResourceTable,
-    fields: &Resource<WithChildren<http::HeaderMap>>,
-) -> wasmtime::Result<impl Deref<Target = http::HeaderMap> + use<'a>> {
-    let fields = get_fields(table, fields)?;
-    fields.get()
+impl<T, U> AccessorTask<T, U, wasmtime::Result<()>> for BodyTask {
+    async fn run(self, store: &mut Accessor<T, U>) -> wasmtime::Result<()> {
+        let body = {
+            let Ok(mut body) = self.body.lock() else {
+                bail!("lock poisoned");
+            };
+            mem::replace(&mut *body, Body::Consumed)
+        };
+        let mut contents_tx = self.contents_tx.watch_reader();
+        match body {
+            Body::Outgoing {
+                contents: mut contents_rx,
+                trailers: trailers_rx,
+                tx,
+            } => {
+                loop {
+                    let Some(rx) = poll_fn(|cx| match Pin::new(&mut contents_tx).poll(cx) {
+                        Poll::Ready(()) => return Poll::Ready(None),
+                        Poll::Pending => contents_rx.as_mut().poll(cx).map(Some),
+                    })
+                    .await
+                    else {
+                        // read handle dropped
+                        let Ok(mut body) = self.body.lock() else {
+                            bail!("lock poisoned");
+                        };
+                        *body = Body::Outgoing {
+                            contents: contents_rx,
+                            trailers: trailers_rx,
+                            tx,
+                        };
+                        return Ok(());
+                    };
+                    let Ok((rx_tail, buf)) = rx else {
+                        break;
+                    };
+                    contents_rx = rx_tail.read().into_future();
+                    let tx_tail = contents_tx.into_inner().await;
+                    let Some(tx_tail) = tx_tail.write(buf).into_future().await else {
+                        let Ok(mut body) = self.body.lock() else {
+                            bail!("lock poisoned");
+                        };
+                        *body = Body::Outgoing {
+                            contents: contents_rx,
+                            trailers: trailers_rx,
+                            tx,
+                        };
+                        return Ok(());
+                    };
+                    contents_tx = tx_tail.watch_reader();
+                }
+
+                let mut trailers_tx = self.trailers_tx.watch_reader();
+                let trailers_rx = store.with(|view| trailers_rx.into_reader(view));
+                let mut trailers_rx = trailers_rx.read().into_future();
+                let Some(Ok(res)) = poll_fn(|cx| match Pin::new(&mut trailers_tx).poll(cx) {
+                    Poll::Ready(()) => return Poll::Ready(None),
+                    Poll::Pending => trailers_rx.as_mut().poll(cx).map(Some),
+                })
+                .await
+                else {
+                    return Ok(());
+                };
+                let trailers_tx = trailers_tx.into_inner().await;
+                trailers_tx.write(res);
+                Ok(())
+            }
+            Body::Incoming(mut stream) => {
+                loop {
+                    match poll_fn(|cx| match Pin::new(&mut contents_tx).poll(cx) {
+                        Poll::Ready(()) => return Poll::Ready(None),
+                        Poll::Pending => Pin::new(&mut stream).poll_frame(cx).map(Some),
+                    })
+                    .await
+                    {
+                        None => {
+                            // read handle dropped
+                            let Ok(mut body) = self.body.lock() else {
+                                bail!("lock poisoned");
+                            };
+                            *body = Body::Incoming(stream);
+                            return Ok(());
+                        }
+                        Some(None) => {
+                            self.trailers_tx.write(Ok(None));
+                            return Ok(());
+                        }
+                        Some(Some(Ok(frame))) => {
+                            // TODO: Handle frame
+                            //contents_tx = tx_tail.watch_reader();
+                        }
+                        Some(Some(Err(err))) => {
+                            self.trailers_tx.write(Err(err));
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            Body::Consumed => bail!("body is consumed"),
+        }
+    }
 }
 
-fn get_fields_mut<'a>(
-    table: &'a mut ResourceTable,
-    fields: &Resource<WithChildren<http::HeaderMap>>,
-) -> wasmtime::Result<&'a mut WithChildren<http::HeaderMap>> {
-    table
-        .get_mut(&fields)
-        .context("failed to get fields from table")
-}
+impl<T> Host for WasiHttpImpl<T> where T: WasiHttpView {}
 
-fn get_fields_inner_mut<'a>(
-    table: &'a mut ResourceTable,
-    fields: &Resource<WithChildren<http::HeaderMap>>,
-) -> wasmtime::Result<Option<impl DerefMut<Target = http::HeaderMap> + use<'a>>> {
-    let fields = get_fields_mut(table, fields)?;
-    fields.get_mut()
-}
-
-fn push_fields(
-    table: &mut ResourceTable,
-    fields: WithChildren<http::HeaderMap>,
-) -> wasmtime::Result<Resource<WithChildren<http::HeaderMap>>> {
-    table.push(fields).context("failed to push fields to table")
-}
-
-fn delete_fields(
-    table: &mut ResourceTable,
-    fields: Resource<WithChildren<http::HeaderMap>>,
-) -> wasmtime::Result<WithChildren<http::HeaderMap>> {
-    table
-        .delete(fields)
-        .context("failed to delete fields from table")
-}
-
-fn get_request_options<'a>(
-    table: &'a ResourceTable,
-    opts: &Resource<WithChildren<RequestOptions>>,
-) -> wasmtime::Result<&'a WithChildren<RequestOptions>> {
-    table
-        .get(opts)
-        .context("failed to get request options from table")
-}
-
-fn get_request_options_inner<'a>(
-    table: &'a ResourceTable,
-    opts: &Resource<WithChildren<RequestOptions>>,
-) -> wasmtime::Result<impl Deref<Target = RequestOptions> + use<'a>> {
-    let opts = get_request_options(table, opts)?;
-    opts.get()
-}
-
-fn get_request_options_mut<'a>(
-    table: &'a mut ResourceTable,
-    opts: &Resource<WithChildren<RequestOptions>>,
-) -> wasmtime::Result<&'a mut WithChildren<RequestOptions>> {
-    table
-        .get_mut(opts)
-        .context("failed to get request options from table")
-}
-
-fn get_request_options_inner_mut<'a>(
-    table: &'a mut ResourceTable,
-    opts: &Resource<WithChildren<RequestOptions>>,
-) -> wasmtime::Result<Option<impl DerefMut<Target = RequestOptions> + use<'a>>> {
-    let opts = get_request_options_mut(table, opts)?;
-    opts.get_mut()
-}
-
-fn push_request_options(
-    table: &mut ResourceTable,
-    fields: WithChildren<RequestOptions>,
-) -> wasmtime::Result<Resource<WithChildren<RequestOptions>>> {
-    table
-        .push(fields)
-        .context("failed to push request options to table")
-}
-
-fn delete_request_options(
-    table: &mut ResourceTable,
-    opts: Resource<WithChildren<RequestOptions>>,
-) -> wasmtime::Result<WithChildren<RequestOptions>> {
-    table
-        .delete(opts)
-        .context("failed to delete request options from table")
-}
-
-fn get_request<'a>(
-    table: &'a ResourceTable,
-    req: &Resource<Request>,
-) -> wasmtime::Result<&'a Request> {
-    table.get(req).context("failed to get request from table")
-}
-
-fn get_request_mut<'a>(
-    table: &'a mut ResourceTable,
-    req: &Resource<Request>,
-) -> wasmtime::Result<&'a mut Request> {
-    table
-        .get_mut(req)
-        .context("failed to get request from table")
-}
-
-fn push_request(table: &mut ResourceTable, req: Request) -> wasmtime::Result<Resource<Request>> {
-    table.push(req).context("failed to push request to table")
-}
-
-fn delete_request(table: &mut ResourceTable, req: Resource<Request>) -> wasmtime::Result<Request> {
-    table
-        .delete(req)
-        .context("failed to delete request from table")
-}
-
-fn get_response<'a>(
-    table: &'a ResourceTable,
-    res: &Resource<Response>,
-) -> wasmtime::Result<&'a Response> {
-    table.get(res).context("failed to get response from table")
-}
-
-fn get_response_mut<'a>(
-    table: &'a mut ResourceTable,
-    res: &Resource<Response>,
-) -> wasmtime::Result<&'a mut Response> {
-    table
-        .get_mut(res)
-        .context("failed to get response from table")
-}
-
-fn push_response(table: &mut ResourceTable, res: Response) -> wasmtime::Result<Resource<Response>> {
-    table.push(res).context("failed to push response to table")
-}
-
-fn delete_response(
-    table: &mut ResourceTable,
-    res: Resource<Response>,
-) -> wasmtime::Result<Response> {
-    table
-        .delete(res)
-        .context("failed to delete response from table")
-}
-
-fn push_body(table: &mut ResourceTable, body: Body) -> wasmtime::Result<Resource<Body>> {
-    table.push(body).context("failed to push body to table")
-}
-
-fn delete_body(table: &mut ResourceTable, body: Resource<Body>) -> wasmtime::Result<Body> {
-    table
-        .delete(body)
-        .context("failed to delete body from table")
-}
-
-/// Returns `true` when the header is forbidden according to this [`WasiHttpView`] implementation.
-fn is_forbidden_header(view: &mut impl WasiHttpView, name: &http::header::HeaderName) -> bool {
-    static FORBIDDEN_HEADERS: [http::header::HeaderName; 10] = [
-        http::header::CONNECTION,
-        http::header::HeaderName::from_static("keep-alive"),
-        http::header::PROXY_AUTHENTICATE,
-        http::header::PROXY_AUTHORIZATION,
-        http::header::HeaderName::from_static("proxy-connection"),
-        http::header::TE,
-        http::header::TRANSFER_ENCODING,
-        http::header::UPGRADE,
-        http::header::HOST,
-        http::header::HeaderName::from_static("http2-settings"),
-    ];
-
-    FORBIDDEN_HEADERS.contains(name) || view.is_forbidden_header(name)
-}
-
-impl<T> types::Host for WasiHttpImpl<T> where T: WasiHttpView {}
-
-impl<T> types::HostFields for WasiHttpImpl<T>
+impl<T> HostFields for WasiHttpImpl<T>
 where
     T: WasiHttpView,
 {
@@ -289,10 +231,10 @@ where
     ) -> wasmtime::Result<Result<(), HeaderError>> {
         let header = match http::header::HeaderName::from_bytes(name.as_bytes()) {
             Ok(header) => header,
-            Err(_) => return Ok(Err(types::HeaderError::InvalidSyntax)),
+            Err(_) => return Ok(Err(HeaderError::InvalidSyntax)),
         };
         if is_forbidden_header(self, &header) {
-            return Ok(Err(types::HeaderError::Forbidden));
+            return Ok(Err(HeaderError::Forbidden));
         }
         let Some(mut fields) = get_fields_inner_mut(self.table(), &fields)? else {
             return Ok(Err(HeaderError::Immutable));
@@ -307,10 +249,10 @@ where
         name: FieldName,
     ) -> wasmtime::Result<Result<Vec<FieldValue>, HeaderError>> {
         let Ok(header) = http::header::HeaderName::from_bytes(name.as_bytes()) else {
-            return Ok(Err(types::HeaderError::InvalidSyntax));
+            return Ok(Err(HeaderError::InvalidSyntax));
         };
         if is_forbidden_header(self, &header) {
-            return Ok(Err(types::HeaderError::Forbidden));
+            return Ok(Err(HeaderError::Forbidden));
         }
         let Some(mut fields) = get_fields_inner_mut(self.table(), &fields)? else {
             return Ok(Err(HeaderError::Immutable));
@@ -330,14 +272,14 @@ where
     ) -> wasmtime::Result<Result<(), HeaderError>> {
         let header = match http::header::HeaderName::from_bytes(name.as_bytes()) {
             Ok(header) => header,
-            Err(_) => return Ok(Err(types::HeaderError::InvalidSyntax)),
+            Err(_) => return Ok(Err(HeaderError::InvalidSyntax)),
         };
         if is_forbidden_header(self, &header) {
-            return Ok(Err(types::HeaderError::Forbidden));
+            return Ok(Err(HeaderError::Forbidden));
         }
         let value = match http::header::HeaderValue::from_bytes(&value) {
             Ok(value) => value,
-            Err(_) => return Ok(Err(types::HeaderError::InvalidSyntax)),
+            Err(_) => return Ok(Err(HeaderError::InvalidSyntax)),
         };
         let Some(mut fields) = get_fields_inner_mut(self.table(), &fields)? else {
             return Ok(Err(HeaderError::Immutable));
@@ -374,72 +316,37 @@ where
     }
 }
 
-impl<T> types::HostBody for WasiHttpImpl<T>
+impl<T> HostRequest for WasiHttpImpl<T>
 where
     T: WasiHttpView,
 {
-    #[allow(unused)] // TODO: implement
     async fn new<U>(
-        accessor: &mut Accessor<U, Self>,
-        stream: HostStream<u8>,
-    ) -> wasmtime::Result<(Resource<Body>, HostFuture<Result<(), ErrorCode>>)> {
-        anyhow::bail!("TODO")
-    }
-
-    #[allow(unused)] // TODO: implement
-    async fn new_with_trailers<U>(
-        accessor: &mut Accessor<U, Self>,
-        stream: HostStream<u8>,
-        trailers: HostFuture<Resource<Trailers>>,
-    ) -> wasmtime::Result<(Resource<Body>, HostFuture<Result<(), ErrorCode>>)> {
-        anyhow::bail!("TODO")
-    }
-
-    #[allow(unused)] // TODO: implement
-    fn stream(
-        &mut self,
-        body: Resource<Body>,
-    ) -> wasmtime::Result<Result<(HostStream<u8>, HostFuture<Result<(), ErrorCode>>), ()>> {
-        anyhow::bail!("TODO")
-    }
-
-    #[allow(unused)] // TODO: implement
-    async fn finish<U: 'static>(
-        accessor: &mut Accessor<U, Self>,
-        this: Resource<Body>,
-    ) -> wasmtime::Result<HostFuture<Result<Option<Resource<Trailers>>, ErrorCode>>> {
-        anyhow::bail!("TODO")
-    }
-
-    fn drop(&mut self, body: Resource<Body>) -> wasmtime::Result<()> {
-        self.table()
-            .delete(body)
-            .context("failed to delete body from table")?;
-        Ok(())
-    }
-}
-
-impl<T> types::HostRequest for WasiHttpImpl<T>
-where
-    T: WasiHttpView,
-{
-    fn new(
-        &mut self,
+        store: &mut Accessor<U, Self>,
         headers: Resource<WithChildren<http::HeaderMap>>,
-        body: Option<Resource<Body>>,
+        contents: HostStream<u8>,
+        trailers: TrailerFuture,
         options: Option<Resource<WithChildren<RequestOptions>>>,
-    ) -> wasmtime::Result<Resource<Request>> {
-        let table = self.table();
-        let headers = delete_fields(table, headers)?;
-        let headers = headers.unwrap_or_clone()?;
-        let body = body.map(|body| delete_body(table, body)).transpose()?;
-        let options = options
-            .map(|options| {
-                let options = delete_request_options(table, options)?;
-                options.unwrap_or_clone()
-            })
-            .transpose()?;
-        push_request(table, Request::new(headers, body, options))
+    ) -> wasmtime::Result<(Resource<Request>, HostFuture<Result<(), ErrorCode>>)> {
+        store.with(|mut view| {
+            let (res_tx, res_rx) = future(&mut view).context("failed to create future")?;
+            let contents = contents.into_reader(&mut view).read().into_future();
+            let table = view.table();
+            let headers = delete_fields(table, headers)?;
+            let headers = headers.unwrap_or_clone()?;
+            let options = options
+                .map(|options| {
+                    let options = delete_request_options(table, options)?;
+                    options.unwrap_or_clone()
+                })
+                .transpose()?;
+            let body = Body::Outgoing {
+                contents,
+                trailers,
+                tx: res_tx,
+            };
+            let req = push_request(table, Request::new(headers, body, options))?;
+            Ok((req, res_rx.into()))
+        })
     }
 
     fn method(&mut self, req: Resource<Request>) -> wasmtime::Result<Method> {
@@ -548,34 +455,40 @@ where
     ) -> wasmtime::Result<Resource<WithChildren<http::HeaderMap>>> {
         let table = self.table();
         let Request { headers, .. } = get_request(table, &req)?;
-        push_fields(table, headers.child())
+        push_fields_child(table, headers.child(), &req)
     }
 
-    fn into_parts(
-        &mut self,
+    async fn body<U: 'static>(
+        store: &mut Accessor<U, Self>,
         req: Resource<Request>,
-    ) -> wasmtime::Result<(
-        Resource<WithChildren<http::HeaderMap>>,
-        Option<Resource<Body>>,
-        Option<Resource<WithChildren<RequestOptions>>>,
-    )> {
-        let table = self.table();
-        let Request {
-            headers,
-            body,
-            options,
-            ..
-        } = delete_request(table, req)?;
-        let headers = headers.unwrap_or_clone()?;
-        let headers = push_fields(table, WithChildren::new(headers))?;
-        let body = body.map(|body| push_body(table, body)).transpose()?;
-        let options = options
-            .map(|options| {
-                let options = options.unwrap_or_clone()?;
-                push_request_options(table, WithChildren::new(options))
-            })
-            .transpose()?;
-        Ok((headers, body, options))
+    ) -> wasmtime::Result<Result<(HostStream<u8>, TrailerFuture), ()>> {
+        store.with(|mut view| {
+            let (contents_tx, contents_rx) =
+                stream(&mut view).context("failed to create stream")?;
+            let (trailers_tx, trailers_rx) =
+                future(&mut view).context("failed to create future")?;
+            let Request { body, .. } = get_request_mut(view.table(), &req)?;
+            {
+                let Some(body) = Arc::get_mut(body) else {
+                    return Ok(Err(()));
+                };
+                let Ok(body) = body.get_mut() else {
+                    bail!("lock poisoned");
+                };
+                if matches!(body, Body::Consumed) {
+                    return Ok(Err(()));
+                }
+            }
+            let body = Arc::clone(&body);
+            let task = view.spawn(BodyTask {
+                body,
+                contents_tx,
+                trailers_tx,
+            });
+            let req = get_request_mut(view.table(), &req)?;
+            req.task = Some(task.abort_handle());
+            Ok(Ok((contents_rx.into(), trailers_rx.into())))
+        })
     }
 
     fn drop(&mut self, req: Resource<Request>) -> wasmtime::Result<()> {
@@ -586,7 +499,7 @@ where
     }
 }
 
-impl<T> types::HostRequestOptions for WasiHttpImpl<T>
+impl<T> HostRequestOptions for WasiHttpImpl<T>
 where
     T: WasiHttpView,
 {
@@ -688,22 +601,42 @@ where
         delete_request_options(self.table(), opts)?;
         Ok(())
     }
+
+    fn clone(
+        &mut self,
+        opts: Resource<WithChildren<RequestOptions>>,
+    ) -> wasmtime::Result<Resource<WithChildren<RequestOptions>>> {
+        let table = self.table();
+        let opts = get_request_options(table, &opts)?;
+        let opts = opts.clone()?;
+        push_request_options(table, opts)
+    }
 }
 
-impl<T> types::HostResponse for WasiHttpImpl<T>
+impl<T> HostResponse for WasiHttpImpl<T>
 where
     T: WasiHttpView,
 {
-    fn new(
-        &mut self,
+    async fn new<U>(
+        store: &mut Accessor<U, Self>,
         headers: Resource<WithChildren<http::HeaderMap>>,
-        body: Option<Resource<Body>>,
-    ) -> wasmtime::Result<Resource<Response>> {
-        let table = self.table();
-        let headers = delete_fields(table, headers)?;
-        let headers = headers.unwrap_or_clone()?;
-        let body = body.map(|body| delete_body(table, body)).transpose()?;
-        push_response(table, Response::new(headers, body))
+        contents: HostStream<u8>,
+        trailers: TrailerFuture,
+    ) -> wasmtime::Result<(Resource<Response>, HostFuture<Result<(), ErrorCode>>)> {
+        store.with(|mut view| {
+            let (res_tx, res_rx) = future(&mut view).context("failed to create future")?;
+            let contents = contents.into_reader(&mut view).read().into_future();
+            let table = view.table();
+            let headers = delete_fields(table, headers)?;
+            let headers = headers.unwrap_or_clone()?;
+            let body = Body::Outgoing {
+                contents,
+                trailers,
+                tx: res_tx,
+            };
+            let res = push_response(table, Response::new(headers, body))?;
+            Ok((res, res_rx.into()))
+        })
     }
 
     fn status_code(&mut self, res: Resource<Response>) -> wasmtime::Result<StatusCode> {
@@ -730,39 +663,44 @@ where
     ) -> wasmtime::Result<Resource<WithChildren<http::HeaderMap>>> {
         let table = self.table();
         let Response { headers, .. } = get_response(table, &res)?;
-        push_fields(table, headers.child())
+        push_fields_child(table, headers.child(), &res)
     }
 
-    fn into_parts(
-        &mut self,
+    async fn body<U: 'static>(
+        store: &mut Accessor<U, Self>,
         res: Resource<Response>,
-    ) -> wasmtime::Result<(
-        Resource<WithChildren<http::HeaderMap>>,
-        Option<Resource<Body>>,
-    )> {
-        let table = self.table();
-        let Response { headers, body, .. } = delete_response(table, res)?;
-        let headers = headers.unwrap_or_clone()?;
-        let headers = push_fields(table, WithChildren::new(headers))?;
-        let body = body.map(|body| push_body(table, body)).transpose()?;
-        Ok((headers, body))
+    ) -> wasmtime::Result<Result<(HostStream<u8>, TrailerFuture), ()>> {
+        store.with(|mut view| {
+            let (contents_tx, contents_rx) =
+                stream(&mut view).context("failed to create stream")?;
+            let (trailers_tx, trailers_rx) =
+                future(&mut view).context("failed to create future")?;
+            let Response { body, .. } = get_response_mut(view.table(), &res)?;
+            {
+                let Some(body) = Arc::get_mut(body) else {
+                    return Ok(Err(()));
+                };
+                let Ok(body) = body.get_mut() else {
+                    bail!("lock poisoned");
+                };
+                if matches!(body, Body::Consumed) {
+                    return Ok(Err(()));
+                }
+            }
+            let body = Arc::clone(&body);
+            let task = view.spawn(BodyTask {
+                body,
+                contents_tx,
+                trailers_tx,
+            });
+            let res = get_response_mut(view.table(), &res)?;
+            res.task = Some(task.abort_handle());
+            Ok(Ok((contents_rx.into(), trailers_rx.into())))
+        })
     }
 
     fn drop(&mut self, res: Resource<Response>) -> wasmtime::Result<()> {
         delete_response(self.table(), res)?;
         Ok(())
-    }
-}
-
-impl<T> handler::Host for WasiHttpImpl<T>
-where
-    T: WasiHttpView,
-{
-    #[allow(unused)] // TODO: implement
-    async fn handle<U: 'static>(
-        store: &mut Accessor<U, Self>,
-        request: Resource<Request>,
-    ) -> wasmtime::Result<Result<Resource<Response>, ErrorCode>> {
-        anyhow::bail!("TODO")
     }
 }

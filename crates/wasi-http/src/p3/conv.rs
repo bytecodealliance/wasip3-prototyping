@@ -1,4 +1,12 @@
-use crate::p3::bindings::http::types::{Method, Scheme};
+use core::convert::Infallible;
+
+use crate::p3::bindings::http::types::{ErrorCode, Method, Scheme};
+
+impl From<Infallible> for ErrorCode {
+    fn from(_: Infallible) -> Self {
+        unreachable!()
+    }
+}
 
 impl From<http::Method> for Method {
     fn from(method: http::Method) -> Self {

@@ -10,14 +10,14 @@ mod generated {
         concurrent_imports: true,
         async: {
             only_imports: [
-                "wasi:http/types@0.3.0-draft#[static]body.new",
-                "wasi:http/types@0.3.0-draft#[static]body.new-with-trailers",
-                "wasi:http/types@0.3.0-draft#[static]body.finish",
                 "wasi:http/handler@0.3.0-draft#handle",
+                "wasi:http/types@0.3.0-draft#[method]request.body",
+                "wasi:http/types@0.3.0-draft#[method]response.body",
+                "wasi:http/types@0.3.0-draft#[static]request.new",
+                "wasi:http/types@0.3.0-draft#[static]response.new",
             ],
         },
         with: {
-            "wasi:http/types/body": crate::p3::Body,
             "wasi:http/types/fields": with::Fields,
             "wasi:http/types/request": crate::p3::Request,
             "wasi:http/types/request-options": with::RequestOptions,

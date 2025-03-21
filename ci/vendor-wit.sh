@@ -77,7 +77,7 @@ make_vendor "wasi-http/src/p3" "
     filesystem@740cd76@wit-0.3.0-draft
     random@9499404@wit-0.3.0-draft
     sockets@41d7079@wit-0.3.0-draft
-    http@80fe02b@wit-0.3.0-draft
+    http@c3517c6@wit-0.3.0-draft
 "
 
 rm -rf $cache_dir
