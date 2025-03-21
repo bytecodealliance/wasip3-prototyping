@@ -1,7 +1,10 @@
 use core::future::Future;
+use core::ops::{Deref, DerefMut};
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use anyhow::{anyhow, bail};
 use tokio::sync::mpsc;
 use wasmtime::component::{
     AbortOnDropHandle, Accessor, AccessorTask, FutureWriter, Linker, Lower, ResourceTable,
@@ -214,5 +217,89 @@ impl TaskTable {
         let handle = self.tasks.remove(&id)?;
         self.free_task_ids.push(id);
         Some(handle)
+    }
+}
+
+#[derive(Debug)]
+pub enum WithChildren<T> {
+    Parent(Arc<std::sync::RwLock<T>>),
+    Child(Arc<std::sync::RwLock<T>>),
+}
+
+impl<T: Default> Default for WithChildren<T> {
+    fn default() -> Self {
+        Self::Parent(Arc::default())
+    }
+}
+
+impl<T> WithChildren<T> {
+    pub fn new(v: T) -> Self {
+        Self::Parent(Arc::new(std::sync::RwLock::new(v)))
+    }
+
+    fn as_arc(&self) -> &Arc<std::sync::RwLock<T>> {
+        match self {
+            Self::Parent(v) | Self::Child(v) => v,
+        }
+    }
+
+    fn into_arc(self) -> Arc<std::sync::RwLock<T>> {
+        match self {
+            Self::Parent(v) | Self::Child(v) => v,
+        }
+    }
+
+    /// Returns a new child referencing the same value as `self`.
+    pub fn child(&self) -> Self {
+        Self::Child(Arc::clone(self.as_arc()))
+    }
+
+    /// Clone `T` and return the clone as a parent reference.
+    /// Fails if the inner lock is poisoned.
+    pub fn clone(&self) -> wasmtime::Result<Self>
+    where
+        T: Clone,
+    {
+        if let Ok(v) = self.as_arc().read() {
+            Ok(Self::Parent(Arc::new(std::sync::RwLock::new(v.clone()))))
+        } else {
+            bail!("lock poisoned")
+        }
+    }
+
+    /// If this is the only reference to `T` then unwrap it.
+    /// Otherwise, clone `T` and return the clone.
+    /// Fails if the inner lock is poisoned.
+    pub fn unwrap_or_clone(self) -> wasmtime::Result<T>
+    where
+        T: Clone,
+    {
+        match Arc::try_unwrap(self.into_arc()) {
+            Ok(v) => v.into_inner().map_err(|_| anyhow!("lock poisoned")),
+            Err(v) => {
+                if let Ok(v) = v.read() {
+                    Ok(v.clone())
+                } else {
+                    bail!("lock poisoned")
+                }
+            }
+        }
+    }
+
+    pub fn get(&self) -> wasmtime::Result<impl Deref<Target = T> + '_> {
+        self.as_arc().read().map_err(|_| anyhow!("lock poisoned"))
+    }
+
+    pub fn get_mut(&mut self) -> wasmtime::Result<Option<impl DerefMut<Target = T> + '_>> {
+        match self {
+            Self::Parent(v) => {
+                if let Ok(v) = v.write() {
+                    Ok(Some(v))
+                } else {
+                    bail!("lock poisoned")
+                }
+            }
+            Self::Child(..) => Ok(None),
+        }
     }
 }
