@@ -12,7 +12,6 @@ use crate::runtime::vm::{
     VMOpaqueContext, VMStore, VMStoreRawPtr, VMWasmCallFunction, ValRaw, VmPtr, VmSafe,
 };
 use alloc::alloc::Layout;
-use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::any::Any;
 use core::marker;
@@ -28,17 +27,17 @@ use wasmtime_environ::{HostPtr, PrimaryMap, VMSharedTypeIndex};
                                            // 32-bit platforms
 const INVALID_PTR: usize = 0xdead_dead_beef_beef_u64 as usize;
 
-mod error_contexts;
 mod libcalls;
 mod resources;
-mod states;
 
-pub use self::error_contexts::{GlobalErrorContextRefCount, LocalErrorContextRefCount};
 pub use self::resources::{CallContexts, ResourceTable, ResourceTables};
-pub use self::states::StateTable;
 
 #[cfg(feature = "component-model-async")]
 pub use self::resources::CallContext;
+#[cfg(feature = "component-model-async")]
+use crate::component::concurrent;
+#[cfg(feature = "component-model-async")]
+use crate::component::Instance;
 
 /// Runtime representation of a component instance and all state necessary for
 /// the instance itself.
@@ -66,34 +65,8 @@ pub struct ComponentInstance {
     /// is how this field is manipulated.
     component_resource_tables: PrimaryMap<TypeResourceTableIndex, ResourceTable>,
 
-    component_waitable_tables: PrimaryMap<RuntimeComponentInstanceIndex, StateTable<WaitableState>>,
-
-    /// (Sub)Component specific error context tracking
-    ///
-    /// At the component level, only the number of references (`usize`) to a given error context is tracked,
-    /// with state related to the error context being held at the component model level, in concurrent
-    /// state.
-    ///
-    /// The state tables in the (sub)component local tracking must contain a pointer into the global
-    /// error context lookups in order to ensure that in contexts where only the local reference is present
-    /// the global state can still be maintained/updated.
-    component_error_context_tables:
-        PrimaryMap<TypeComponentLocalErrorContextTableIndex, StateTable<LocalErrorContextRefCount>>,
-
-    /// Reference counts for all component error contexts
-    ///
-    /// NOTE: it is possible the global ref count to be *greater* than the sum of
-    /// (sub)component ref counts as tracked by `component_error_context_tables`, for
-    /// example when the host holds one or more references to error contexts.
-    ///
-    /// The key of this primary map is often referred to as the "rep" (i.e. host-side
-    /// component-wide representation) of the index into concurrent state for a given
-    /// stored `ErrorContext`.
-    ///
-    /// Stated another way, `TypeComponentGlobalErrorContextTableIndex` is essentially the same
-    /// as a `TableId<ErrorContextState>`.
-    component_global_error_context_ref_counts:
-        BTreeMap<TypeComponentGlobalErrorContextTableIndex, GlobalErrorContextRefCount>,
+    #[cfg(feature = "component-model-async")]
+    pub(crate) concurrent_state: concurrent::ConcurrentState,
 
     /// Storage for the type information about resources within this component
     /// instance.
@@ -105,6 +78,9 @@ pub struct ComponentInstance {
 
     /// Self-pointer back to `Store<T>` and its functions.
     store: VMStoreRawPtr,
+
+    #[cfg(feature = "component-model-async")]
+    pub(crate) instance: Option<Instance>,
 
     /// A zero-sized field which represents the end of the struct for the actual
     /// `VMComponentContext` to be allocated behind.
@@ -196,41 +172,6 @@ pub struct VMComponentContext {
     _marker: marker::PhantomPinned,
 }
 
-/// Represents the state of a stream or future handle.
-#[derive(Debug, Eq, PartialEq)]
-pub enum StreamFutureState {
-    /// Both the read and write ends are owned by the same component instance.
-    Local,
-    /// Only the write end is owned by this component instance.
-    Write,
-    /// Only the read end is owned by this component instance.
-    Read,
-    /// A read or write is in progress.
-    Busy,
-}
-
-/// Represents the state of a waitable handle.
-#[derive(Debug)]
-pub enum WaitableState {
-    /// Represents a host task handle.
-    HostTask,
-    /// Represents a guest task handle.
-    GuestTask,
-    /// Represents a stream handle.
-    Stream(TypeStreamTableIndex, StreamFutureState),
-    /// Represents a future handle.
-    Future(TypeFutureTableIndex, StreamFutureState),
-    /// Represents a waitable-set handle
-    Set,
-}
-
-/// Represents the state associated with an error context
-#[derive(Debug, PartialEq, Eq, PartialOrd)]
-pub struct ErrorContextState {
-    /// Debug message associated with the error context
-    pub(crate) debug_msg: String,
-}
-
 impl ComponentInstance {
     /// Converts the `vmctx` provided into a `ComponentInstance` and runs the
     /// provided closure with that instance.
@@ -286,23 +227,11 @@ impl ComponentInstance {
             component_resource_tables.push(ResourceTable::default());
         }
 
-        let num_waitable_tables = runtime_info.component().num_runtime_component_instances;
-        let mut component_waitable_tables =
-            PrimaryMap::with_capacity(usize::try_from(num_waitable_tables).unwrap());
-        for _ in 0..num_waitable_tables {
-            component_waitable_tables.push(StateTable::default());
-        }
-
-        let num_error_context_tables = runtime_info.component().num_error_context_tables;
-        let mut component_error_context_tables = PrimaryMap::<
-            TypeComponentLocalErrorContextTableIndex,
-            StateTable<LocalErrorContextRefCount>,
-        >::with_capacity(num_error_context_tables);
-        for _ in 0..num_error_context_tables {
-            component_error_context_tables.push(StateTable::default());
-        }
-
-        let component_global_error_context_ref_counts = BTreeMap::new();
+        #[cfg(feature = "component-model-async")]
+        let concurrent_state = concurrent::ConcurrentState::new(
+            runtime_info.component().num_runtime_component_instances,
+            runtime_info.component().num_error_context_tables,
+        );
 
         ptr::write(
             ptr.as_ptr(),
@@ -317,15 +246,16 @@ impl ComponentInstance {
                     .unwrap(),
                 ),
                 component_resource_tables,
-                component_waitable_tables,
-                component_error_context_tables,
-                component_global_error_context_ref_counts,
                 runtime_info,
                 resource_types,
                 store: VMStoreRawPtr(store),
                 vmctx: VMComponentContext {
                     _marker: marker::PhantomPinned,
                 },
+                #[cfg(feature = "component-model-async")]
+                instance: None,
+                #[cfg(feature = "component-model-async")]
+                concurrent_state,
             },
         );
 
@@ -712,33 +642,6 @@ impl ComponentInstance {
         &mut self.component_resource_tables
     }
 
-    /// Retrieves the tables for tracking waitable handles and their states with respect
-    /// to the components which own them.
-    pub fn component_waitable_tables(
-        &mut self,
-    ) -> &mut PrimaryMap<RuntimeComponentInstanceIndex, StateTable<WaitableState>> {
-        &mut self.component_waitable_tables
-    }
-
-    /// Retrieves the tables for tracking error-context handles and their reference
-    /// counts with respect to the components which own them.
-    pub fn component_error_context_tables(
-        &mut self,
-    ) -> &mut PrimaryMap<
-        TypeComponentLocalErrorContextTableIndex,
-        StateTable<LocalErrorContextRefCount>,
-    > {
-        &mut self.component_error_context_tables
-    }
-
-    /// Retrieves the tables for tracking component-global error-context handles
-    /// and their reference counts with respect to the components which own them.
-    pub fn component_global_error_context_ref_counts(
-        &mut self,
-    ) -> &mut BTreeMap<TypeComponentGlobalErrorContextTableIndex, GlobalErrorContextRefCount> {
-        &mut self.component_global_error_context_ref_counts
-    }
-
     /// Returns the destructor and instance flags for the specified resource
     /// table type.
     ///
@@ -798,47 +701,6 @@ impl ComponentInstance {
 
     pub(crate) fn resource_exit_call(&mut self) -> Result<()> {
         self.resource_tables().exit_call()
-    }
-
-    /// Transfer the state of a given error context from one component to another
-    #[cfg(feature = "component-model-async")]
-    pub(crate) fn error_context_transfer(
-        &mut self,
-        src_idx: u32,
-        src: TypeComponentLocalErrorContextTableIndex,
-        dst: TypeComponentLocalErrorContextTableIndex,
-    ) -> Result<u32> {
-        let (rep, _) = {
-            let rep = self
-                .component_error_context_tables
-                .get_mut(src)
-                .context("error context table index present in (sub)component lookup")?
-                .get_mut_by_index(src_idx)?;
-            rep
-        };
-        let dst = self
-            .component_error_context_tables
-            .get_mut(dst)
-            .context("error context table index present in (sub)component lookup")?;
-
-        // Update the component local for the destination
-        let updated_count = if let Some((dst_idx, count)) = dst.get_mut_by_rep(rep) {
-            (*count).0 += 1;
-            dst_idx
-        } else {
-            dst.insert(rep, LocalErrorContextRefCount(1))?
-        };
-
-        // Update the global (cross-subcomponent) count for error contexts
-        // as the new component has essentially created a new reference that will
-        // be dropped/handled independently
-        let global_ref_count = self
-            .component_global_error_context_ref_counts
-            .get_mut(&TypeComponentGlobalErrorContextTableIndex::from_u32(rep))
-            .context("global ref count present for existing (sub)component error context")?;
-        global_ref_count.0 += 1;
-
-        Ok(updated_count)
     }
 }
 

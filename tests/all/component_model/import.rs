@@ -736,11 +736,11 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
             .root()
             .func_wrap_concurrent("f1", |_, (x,): (u32,)| {
                 assert_eq!(x, 1);
-                async { Ok((2u32,)) }
+                Box::pin(async { Ok((2u32,)) })
             })?;
         linker.root().func_wrap_concurrent(
             "f2",
-            |cx: StoreContextMut<'_, ()>,
+            |accessor,
              (arg,): ((
                 WasmStr,
                 WasmStr,
@@ -752,19 +752,19 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
                 WasmStr,
                 WasmStr,
             ),)| {
-                assert_eq!(arg.0.to_str(&cx).unwrap(), "abc");
-                async { Ok((3u32,)) }
+                accessor.with(|v| assert_eq!(arg.0.to_str(&v).unwrap(), "abc"));
+                Box::pin(async { Ok((3u32,)) })
             },
         )?;
         linker
             .root()
             .func_wrap_concurrent("f3", |_, (arg,): (u32,)| {
                 assert_eq!(arg, 8);
-                async { Ok(("xyz".to_string(),)) }
+                Box::pin(async { Ok(("xyz".to_string(),)) })
             })?;
         linker.root().func_wrap_concurrent(
             "f4",
-            |cx: StoreContextMut<'_, ()>,
+            |accessor,
              (arg,): ((
                 WasmStr,
                 WasmStr,
@@ -776,8 +776,8 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
                 WasmStr,
                 WasmStr,
             ),)| {
-                assert_eq!(arg.0.to_str(&cx).unwrap(), "abc");
-                async { Ok(("xyz".to_string(),)) }
+                accessor.with(|v| assert_eq!(arg.0.to_str(&v).unwrap(), "abc"));
+                Box::pin(async { Ok(("xyz".to_string(),)) })
             },
         )?;
     } else {
@@ -850,7 +850,7 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
         linker.root().func_new_concurrent("f1", |_, args| {
             if let Val::U32(x) = &args[0] {
                 assert_eq!(*x, 1);
-                async { Ok(vec![Val::U32(2)]) }
+                Box::pin(async { Ok(vec![Val::U32(2)]) })
             } else {
                 panic!()
             }
@@ -859,7 +859,7 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
             if let Val::Tuple(tuple) = &args[0] {
                 if let Val::String(s) = &tuple[0] {
                     assert_eq!(s.deref(), "abc");
-                    async { Ok(vec![Val::U32(3)]) }
+                    Box::pin(async { Ok(vec![Val::U32(3)]) })
                 } else {
                     panic!()
                 }
@@ -870,7 +870,7 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
         linker.root().func_new_concurrent("f3", |_, args| {
             if let Val::U32(x) = &args[0] {
                 assert_eq!(*x, 8);
-                async { Ok(vec![Val::String("xyz".into())]) }
+                Box::pin(async { Ok(vec![Val::String("xyz".into())]) })
             } else {
                 panic!();
             }
@@ -879,7 +879,7 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
             if let Val::Tuple(tuple) = &args[0] {
                 if let Val::String(s) = &tuple[0] {
                     assert_eq!(s.deref(), "abc");
-                    async { Ok(vec![Val::String("xyz".into())]) }
+                    Box::pin(async { Ok(vec![Val::String("xyz".into())]) })
                 } else {
                     panic!()
                 }

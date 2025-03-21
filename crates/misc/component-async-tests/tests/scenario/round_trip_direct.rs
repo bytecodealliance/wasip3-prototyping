@@ -97,9 +97,8 @@ async fn test_round_trip_direct(
         let mut linker = Linker::new(&engine);
 
         wasmtime_wasi::add_to_linker_async(&mut linker)?;
-        linker
-            .root()
-            .func_new_concurrent("foo", |_, params| async move {
+        linker.root().func_new_concurrent("foo", |_, params| {
+            Box::pin(async move {
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 let Some(Val::String(s)) = params.into_iter().next() else {
                     unreachable!()
@@ -107,7 +106,8 @@ async fn test_round_trip_direct(
                 Ok(vec![Val::String(format!(
                     "{s} - entered host - exited host"
                 ))])
-            })?;
+            })
+        })?;
 
         let mut store = make_store();
 

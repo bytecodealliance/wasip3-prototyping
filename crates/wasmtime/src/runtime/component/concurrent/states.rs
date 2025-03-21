@@ -131,17 +131,4 @@ impl<T> StateTable<T> {
         }
         Ok((rep, state))
     }
-
-    pub fn remove_by_rep(&mut self, rep: u32) -> Option<T> {
-        let index = *self
-            .reps_to_indexes
-            .get(usize::try_from(rep).unwrap())
-            .unwrap_or(&0);
-
-        if index > 0 {
-            Some(self.remove_by_index(index).unwrap().1)
-        } else {
-            None
-        }
-    }
 }

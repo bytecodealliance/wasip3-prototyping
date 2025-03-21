@@ -143,10 +143,10 @@ pub struct AccessorTaskFn<F>(pub F);
 
 impl<T, U, R, F, Fut> AccessorTask<T, U, R> for AccessorTaskFn<F>
 where
-    F: FnOnce(&mut Accessor<T, U>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = R> + Send + Sync,
+    F: FnOnce(&mut Accessor<T, U>) -> Fut + Send + 'static,
+    Fut: Future<Output = R> + Send,
 {
-    fn run(self, accessor: &mut Accessor<T, U>) -> impl Future<Output = R> + Send + Sync {
+    fn run(self, accessor: &mut Accessor<T, U>) -> impl Future<Output = R> + Send {
         self.0(accessor)
     }
 }

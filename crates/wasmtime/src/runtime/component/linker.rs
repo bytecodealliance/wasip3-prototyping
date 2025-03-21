@@ -1,3 +1,5 @@
+#[cfg(feature = "component-model-async")]
+use crate::component::concurrent::Accessor;
 use crate::component::func::HostFunc;
 use crate::component::instance::RuntimeImport;
 use crate::component::matching::{InstanceType, TypeChecker};
@@ -404,7 +406,7 @@ impl<T> LinkerInstance<'_, T> {
     pub fn func_wrap<F, Params, Return>(&mut self, name: &str, func: F) -> Result<()>
     where
         F: Fn(StoreContextMut<T>, Params) -> Result<Return> + Send + Sync + 'static,
-        Params: ComponentNamedList + Lift + 'static,
+        Params: ComponentNamedList + Lift + Send + Sync + 'static,
         Return: ComponentNamedList + Lower + Send + Sync + 'static,
     {
         self.insert(name, Definition::Func(HostFunc::from_closure(func)))?;
@@ -425,7 +427,7 @@ impl<T> LinkerInstance<'_, T> {
             + Send
             + Sync
             + 'static,
-        Params: ComponentNamedList + Lift + 'static,
+        Params: ComponentNamedList + Lift + Send + Sync + 'static,
         Return: ComponentNamedList + Lower + Send + Sync + 'static,
     {
         assert!(
@@ -436,9 +438,9 @@ impl<T> LinkerInstance<'_, T> {
         let ff = move |mut store: StoreContextMut<'_, T>, params: Params| -> Result<Return> {
             #[cfg(feature = "component-model-async")]
             {
-                let async_cx = crate::component::concurrent::AsyncCx::new(&mut store);
+                let async_cx = crate::component::concurrent::AsyncCx::new(&mut store.0);
                 let mut future = Pin::from(f(store.as_context_mut(), params));
-                unsafe { async_cx.block_on::<T, _>(future.as_mut(), None) }?.0
+                unsafe { async_cx.block_on(future.as_mut(), None) }?.0
             }
             #[cfg(not(feature = "component-model-async"))]
             {
@@ -459,11 +461,16 @@ impl<T> LinkerInstance<'_, T> {
     /// unique reference to the Store, meaning the Store can't be used for
     /// anything else until the future resolves.
     #[cfg(feature = "component-model-async")]
-    pub fn func_wrap_concurrent<Params, Return, F, Fut>(&mut self, name: &str, f: F) -> Result<()>
+    pub fn func_wrap_concurrent<Params, Return, F>(&mut self, name: &str, f: F) -> Result<()>
     where
-        Fut: Future<Output = Result<Return>> + Send + Sync + 'static,
-        F: Fn(StoreContextMut<T>, Params) -> Fut + Send + Sync + 'static,
-        Params: ComponentNamedList + Lift + 'static,
+        F: for<'a> Fn(
+                &'a mut Accessor<T, T>,
+                Params,
+            ) -> Pin<Box<dyn Future<Output = Result<Return>> + Send + 'a>>
+            + Send
+            + Sync
+            + 'static,
+        Params: ComponentNamedList + Lift + Send + Sync + 'static,
         Return: ComponentNamedList + Lower + Send + Sync + 'static,
     {
         assert!(
@@ -605,9 +612,9 @@ impl<T> LinkerInstance<'_, T> {
         let ff = move |mut store: StoreContextMut<'_, T>, params: &[Val], results: &mut [Val]| {
             #[cfg(feature = "component-model-async")]
             {
-                let async_cx = crate::component::concurrent::AsyncCx::new(&mut store);
+                let async_cx = crate::component::concurrent::AsyncCx::new(&mut store.0);
                 let mut future = Pin::from(f(store.as_context_mut(), params, results));
-                unsafe { async_cx.block_on::<T, _>(future.as_mut(), None) }?.0
+                unsafe { async_cx.block_on(future.as_mut(), None) }?.0
             }
             #[cfg(not(feature = "component-model-async"))]
             {
@@ -627,32 +634,22 @@ impl<T> LinkerInstance<'_, T> {
     /// method because it takes a function which returns a future that owns a
     /// unique reference to the Store, meaning the Store can't be used for
     /// anything else until the future resolves.
-    ///
-    /// Ideally, we'd have a way to thread a `StoreContextMut<T>` through an
-    /// arbitrary `Future` such that it has access to the `Store` only while
-    /// being polled (i.e. between, but not across, await points). However,
-    /// there's currently no way to express that in async Rust, so we make do
-    /// with a more awkward scheme: each function registered using
-    /// `func_wrap_concurrent` gets access to the `Store` twice: once before
-    /// doing any concurrent operations (i.e. before awaiting) and once
-    /// afterward. This allows multiple calls to proceed concurrently without
-    /// any one of them monopolizing the store.
     #[cfg(feature = "component-model-async")]
-    pub fn func_new_concurrent<F, Fut>(&mut self, name: &str, f: F) -> Result<()>
+    pub fn func_new_concurrent<F>(&mut self, name: &str, f: F) -> Result<()>
     where
-        Fut: Future<Output = Result<Vec<Val>>> + Send + Sync + 'static,
-        F: Fn(StoreContextMut<T>, Vec<Val>) -> Fut + Send + Sync + 'static,
+        F: for<'a> Fn(
+                &'a mut Accessor<T, T>,
+                Vec<Val>,
+            ) -> Pin<Box<dyn Future<Output = Result<Vec<Val>>> + Send + 'a>>
+            + Send
+            + Sync
+            + 'static,
     {
         assert!(
             self.engine.config().async_support,
             "cannot use `func_wrap_concurrent` without enabling async support in the config"
         );
-        self.insert(
-            name,
-            Definition::Func(HostFunc::new_dynamic_concurrent(move |store, params, _| {
-                f(store, params)
-            })),
-        )?;
+        self.insert(name, Definition::Func(HostFunc::new_dynamic_concurrent(f)))?;
         Ok(())
     }
 
@@ -724,9 +721,9 @@ impl<T> LinkerInstance<'_, T> {
                 #[cfg(feature = "component-model-async")]
                 {
                     let async_cx =
-                        crate::component::concurrent::AsyncCx::new(&mut cx.as_context_mut());
+                        crate::component::concurrent::AsyncCx::new(&mut cx.as_context_mut().0);
                     let mut future = Pin::from(dtor(cx.as_context_mut(), param));
-                    unsafe { async_cx.block_on(future.as_mut(), None::<StoreContextMut<'_, T>>) }?.0
+                    unsafe { async_cx.block_on(future.as_mut(), None) }?.0
                 }
                 #[cfg(not(feature = "component-model-async"))]
                 {

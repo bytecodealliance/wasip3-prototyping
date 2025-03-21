@@ -9,7 +9,7 @@ use tokio::fs;
 use wasi_http_draft::wasi::http::types::{ErrorCode, Method, Scheme};
 use wasi_http_draft::{Body, Fields, Request, Response};
 use wasmtime::component::{
-    self, Accessor, Component, ErrorContext, Linker, PromisesUnordered, Resource, ResourceTable,
+    Accessor, Component, ErrorContext, Linker, PromisesUnordered, Resource, ResourceTable,
     StreamReader, StreamWriter,
 };
 use wasmtime::{Config, Engine, Store};
@@ -148,10 +148,9 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
         },
     );
 
-    let proxy = component_async_tests::proxy::bindings::Proxy::instantiate_async(
-        &mut store, &component, &linker,
-    )
-    .await?;
+    let instance = linker.instantiate_async(&mut store, &component).await?;
+
+    let proxy = component_async_tests::proxy::bindings::Proxy::new(&mut store, &instance)?;
 
     let headers = [("foo".into(), b"bar".into())];
 
@@ -167,7 +166,7 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
 
     let mut promises = PromisesUnordered::new();
 
-    let (request_body_tx, request_body_rx) = component::stream(&mut store)?;
+    let (request_body_tx, request_body_rx) = instance.stream(&mut store)?;
 
     promises.push(
         request_body_tx
@@ -183,7 +182,7 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
 
     let trailers = vec![("fizz".into(), b"buzz".into())];
 
-    let (request_trailers_tx, request_trailers_rx) = component::future(&mut store)?;
+    let (request_trailers_tx, request_trailers_rx) = instance.future(&mut store)?;
 
     let request_trailers = IoView::table(store.data_mut()).push(Fields(trailers.clone()))?;
 

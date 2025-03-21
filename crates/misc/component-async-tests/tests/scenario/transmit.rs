@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, Result};
 use tokio::fs;
 use wasmtime::component::{
-    self, Component, ErrorContext, HostFuture, HostStream, Instance, Linker, Promise,
-    PromisesUnordered, ResourceTable, Single, StreamReader, StreamWriter, Val,
+    Component, ErrorContext, HostFuture, HostStream, Instance, Linker, Promise, PromisesUnordered,
+    ResourceTable, Single, StreamReader, StreamWriter, Val,
 };
 use wasmtime::{AsContextMut, Config, Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;
@@ -45,7 +45,7 @@ pub trait TransmitTest {
         store: impl AsContextMut<Data = Ctx>,
         component: &Component,
         linker: &Linker<Ctx>,
-    ) -> impl Future<Output = Result<Self::Instance>>;
+    ) -> impl Future<Output = Result<(Self::Instance, Instance)>>;
 
     fn call(
         store: impl AsContextMut<Data = Ctx>,
@@ -62,6 +62,7 @@ pub trait TransmitTest {
 
     fn from_result(
         store: impl AsContextMut<Data = Ctx>,
+        instance: Instance,
         result: Self::Result,
     ) -> Result<(HostStream<String>, HostFuture<String>, HostFuture<String>)>;
 }
@@ -79,11 +80,13 @@ impl TransmitTest for StaticTransmitTest {
     type Result = (HostStream<String>, HostFuture<String>, HostFuture<String>);
 
     async fn instantiate(
-        store: impl AsContextMut<Data = Ctx>,
+        mut store: impl AsContextMut<Data = Ctx>,
         component: &Component,
         linker: &Linker<Ctx>,
-    ) -> Result<Self::Instance> {
-        transmit::bindings::TransmitCallee::instantiate_async(store, component, linker).await
+    ) -> Result<(Self::Instance, Instance)> {
+        let instance = linker.instantiate_async(&mut store, component).await?;
+        let callee = transmit::bindings::TransmitCallee::new(store, &instance)?;
+        Ok((callee, instance))
     }
 
     async fn call(
@@ -108,6 +111,7 @@ impl TransmitTest for StaticTransmitTest {
 
     fn from_result(
         _: impl AsContextMut<Data = Ctx>,
+        _: Instance,
         result: Self::Result,
     ) -> Result<(HostStream<String>, HostFuture<String>, HostFuture<String>)> {
         Ok(result)
@@ -125,8 +129,9 @@ impl TransmitTest for DynamicTransmitTest {
         store: impl AsContextMut<Data = Ctx>,
         component: &Component,
         linker: &Linker<Ctx>,
-    ) -> Result<Self::Instance> {
-        linker.instantiate_async(store, component).await
+    ) -> Result<(Self::Instance, Instance)> {
+        let instance = linker.instantiate_async(store, component).await?;
+        Ok((instance, instance))
     }
 
     async fn call(
@@ -166,14 +171,15 @@ impl TransmitTest for DynamicTransmitTest {
 
     fn from_result(
         mut store: impl AsContextMut<Data = Ctx>,
+        instance: Instance,
         result: Self::Result,
     ) -> Result<(HostStream<String>, HostFuture<String>, HostFuture<String>)> {
         let Val::Tuple(fields) = result else {
             unreachable!()
         };
-        let stream = HostStream::from_val(store.as_context_mut(), &fields[0])?;
-        let future1 = HostFuture::from_val(store.as_context_mut(), &fields[1])?;
-        let future2 = HostFuture::from_val(store.as_context_mut(), &fields[2])?;
+        let stream = HostStream::from_val(store.as_context_mut(), instance, &fields[0])?;
+        let future1 = HostFuture::from_val(store.as_context_mut(), instance, &fields[1])?;
+        let future2 = HostFuture::from_val(store.as_context_mut(), instance, &fields[2])?;
         Ok((stream, future1, future2))
     }
 }
@@ -215,7 +221,7 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
 
     let mut store = make_store();
 
-    let instance = Test::instantiate(&mut store, &component, &linker).await?;
+    let (test, instance) = Test::instantiate(&mut store, &component, &linker).await?;
 
     #[allow(clippy::type_complexity)]
     enum Event<Test: TransmitTest> {
@@ -231,10 +237,10 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
         ReadNone(Result<(StreamReader<Vec<String>>, Vec<String>), Option<ErrorContext>>),
     }
 
-    let (control_tx, control_rx) = component::stream(&mut store)?;
-    let (caller_stream_tx, caller_stream_rx) = component::stream(&mut store)?;
-    let (caller_future1_tx, caller_future1_rx) = component::future(&mut store)?;
-    let (_caller_future2_tx, caller_future2_rx) = component::future(&mut store)?;
+    let (control_tx, control_rx) = instance.stream(&mut store)?;
+    let (caller_stream_tx, caller_stream_rx) = instance.stream(&mut store)?;
+    let (caller_future1_tx, caller_future1_rx) = instance.future(&mut store)?;
+    let (_caller_future2_tx, caller_future2_rx) = instance.future(&mut store)?;
 
     let mut promises = PromisesUnordered::<Event<Test>>::new();
     let mut caller_future1_tx = Some(caller_future1_tx);
@@ -257,7 +263,7 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
     promises.push(
         Test::call(
             &mut store,
-            &instance,
+            &test,
             Test::into_params(
                 control_rx.into(),
                 caller_stream_rx.into(),
@@ -272,7 +278,7 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
     while let Some(event) = promises.next(&mut store).await? {
         match event {
             Event::Result(result) => {
-                let results = Test::from_result(&mut store, result)?;
+                let results = Test::from_result(&mut store, instance, result)?;
                 callee_stream_rx = Some(results.0.into_reader(&mut store));
                 callee_future1_rx = Some(results.1.into_reader(&mut store));
             }

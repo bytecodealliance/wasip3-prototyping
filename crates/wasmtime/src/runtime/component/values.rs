@@ -1,4 +1,4 @@
-use crate::component::concurrent::{ErrorContext, HostFuture, HostStream};
+use crate::component::concurrent::{self, ErrorContext, HostFuture, HostStream};
 use crate::component::func::{desc, Lift, LiftContext, Lower, LowerContext};
 use crate::component::ResourceAny;
 use crate::prelude::*;
@@ -440,15 +440,27 @@ impl Val {
             }
             (InterfaceType::Flags(_), _) => unexpected(ty, self),
             (InterfaceType::Future(_), Val::Future(FutureAny(rep))) => {
-                HostFuture::<()>::new(*rep).lower(cx, ty, next_mut(dst))
+                concurrent::lower_future_to_index(*rep, cx, ty)?.lower(
+                    cx,
+                    InterfaceType::U32,
+                    next_mut(dst),
+                )
             }
             (InterfaceType::Future(_), _) => unexpected(ty, self),
             (InterfaceType::Stream(_), Val::Stream(StreamAny(rep))) => {
-                HostStream::<()>::new(*rep).lower(cx, ty, next_mut(dst))
+                concurrent::lower_stream_to_index(*rep, cx, ty)?.lower(
+                    cx,
+                    InterfaceType::U32,
+                    next_mut(dst),
+                )
             }
             (InterfaceType::Stream(_), _) => unexpected(ty, self),
             (InterfaceType::ErrorContext(_), Val::ErrorContext(ErrorContextAny(rep))) => {
-                ErrorContext::new(*rep).lower(cx, ty, next_mut(dst))
+                concurrent::lower_error_context_to_index(*rep, cx, ty)?.lower(
+                    cx,
+                    InterfaceType::U32,
+                    next_mut(dst),
+                )
             }
             (InterfaceType::ErrorContext(_), _) => unexpected(ty, self),
         }
@@ -587,15 +599,27 @@ impl Val {
             }
             (InterfaceType::Flags(_), _) => unexpected(ty, self),
             (InterfaceType::Future(_), Val::Future(FutureAny(rep))) => {
-                HostFuture::<()>::new(*rep).store(cx, ty, offset)
+                concurrent::lower_future_to_index::<T>(*rep, cx, ty)?.store(
+                    cx,
+                    InterfaceType::U32,
+                    offset,
+                )
             }
             (InterfaceType::Future(_), _) => unexpected(ty, self),
             (InterfaceType::Stream(_), Val::Stream(StreamAny(rep))) => {
-                HostStream::<()>::new(*rep).store(cx, ty, offset)
+                concurrent::lower_stream_to_index::<T>(*rep, cx, ty)?.store(
+                    cx,
+                    InterfaceType::U32,
+                    offset,
+                )
             }
             (InterfaceType::Stream(_), _) => unexpected(ty, self),
             (InterfaceType::ErrorContext(_), Val::ErrorContext(ErrorContextAny(rep))) => {
-                ErrorContext::new(*rep).store(cx, ty, offset)
+                concurrent::lower_error_context_to_index(*rep, cx, ty)?.store(
+                    cx,
+                    InterfaceType::U32,
+                    offset,
+                )
             }
             (InterfaceType::ErrorContext(_), _) => unexpected(ty, self),
         }

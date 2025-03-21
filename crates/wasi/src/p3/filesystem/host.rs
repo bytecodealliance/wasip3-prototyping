@@ -4,7 +4,7 @@ use anyhow::{anyhow, Context as _};
 use system_interface::fs::FileIoExt as _;
 use tokio::sync::mpsc;
 use wasmtime::component::{
-    future, stream, Accessor, AccessorTask, HostFuture, HostStream, Lower, Resource, ResourceTable,
+    Accessor, AccessorTask, HostFuture, HostStream, Lower, Resource, ResourceTable,
 };
 
 use crate::p3::bindings::filesystem::types::{
@@ -56,8 +56,13 @@ where
         mut offset: Filesize,
     ) -> wasmtime::Result<(HostStream<u8>, HostFuture<Result<(), ErrorCode>>)> {
         store.with(|mut view| {
-            let (data_tx, data_rx) = stream(&mut view).context("failed to create stream")?;
-            let (res_tx, res_rx) = future(&mut view).context("failed to create future")?;
+            let instance = view.instance();
+            let (data_tx, data_rx) = instance
+                .stream(&mut view)
+                .context("failed to create stream")?;
+            let (res_tx, res_rx) = instance
+                .future(&mut view)
+                .context("failed to create future")?;
             let fd = get_descriptor(view.table(), &fd)?;
             match fd.file() {
                 Ok(f) => {
@@ -295,8 +300,13 @@ where
         HostFuture<Result<(), ErrorCode>>,
     )> {
         store.with(|mut view| {
-            let (data_tx, data_rx) = stream(&mut view).context("failed to create stream")?;
-            let (res_tx, res_rx) = future(&mut view).context("failed to create future")?;
+            let instance = view.instance();
+            let (data_tx, data_rx) = instance
+                .stream(&mut view)
+                .context("failed to create stream")?;
+            let (res_tx, res_rx) = instance
+                .future(&mut view)
+                .context("failed to create future")?;
             let fd = get_descriptor(view.table(), &fd)?;
             match fd.dir().and_then(|d| {
                 if !d.perms.contains(DirPerms::READ) {

@@ -9,8 +9,7 @@ use io_lifetimes::AsSocketlike as _;
 use rustix::io::Errno;
 use tokio::sync::mpsc;
 use wasmtime::component::{
-    future, stream, Accessor, AccessorTask, HostFuture, HostStream, Resource, ResourceTable,
-    Single, StreamWriter,
+    Accessor, AccessorTask, HostFuture, HostStream, Resource, ResourceTable, Single, StreamWriter,
 };
 
 use crate::p3::bindings::sockets::types::{
@@ -284,7 +283,10 @@ where
                     }
                 }
             };
-            let (tx, rx) = stream(&mut view).context("failed to create stream")?;
+            let instance = view.instance();
+            let (tx, rx) = instance
+                .stream(&mut view)
+                .context("failed to create stream")?;
             let &TcpSocket {
                 listen_backlog_size,
                 ..
@@ -427,8 +429,13 @@ where
         socket: Resource<TcpSocket>,
     ) -> wasmtime::Result<(HostStream<u8>, HostFuture<Result<(), ErrorCode>>)> {
         store.with(|mut view| {
-            let (data_tx, data_rx) = stream(&mut view).context("failed to create stream")?;
-            let (res_tx, res_rx) = future(&mut view).context("failed to create future")?;
+            let instance = view.instance();
+            let (data_tx, data_rx) = instance
+                .stream(&mut view)
+                .context("failed to create stream")?;
+            let (res_tx, res_rx) = instance
+                .future(&mut view)
+                .context("failed to create future")?;
             let sock = get_socket(view.table(), &socket)?;
             match &sock.tcp_state {
                 TcpState::Connected {
