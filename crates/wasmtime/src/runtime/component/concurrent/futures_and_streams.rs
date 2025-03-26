@@ -1381,7 +1381,8 @@ impl ComponentInstance {
         fn get_state_rep(instance: SendSyncPtr<ComponentInstance>, rep: u32) -> Result<u32> {
             let instance = unsafe { &mut *instance.as_ptr() };
             Ok(instance
-                .get(TableId::<TransmitHandle>::new(rep))?
+                .get(TableId::<TransmitHandle>::new(rep))
+                .with_context(|| format!("stream or future rep {rep} not found"))?
                 .state
                 .rep())
         }
@@ -1391,8 +1392,12 @@ impl ComponentInstance {
             {
                 let instance = SendSyncPtr::new(NonNull::new(self).unwrap());
                 async move {
-                    let rep = get_state_rep(instance, rep)?;
+                    let mut my_rep = None;
                     while let Some(event) = rx.next().await {
+                        if my_rep.is_none() {
+                            my_rep = Some(get_state_rep(instance, rep)?);
+                        }
+                        let rep = my_rep.unwrap();
                         match event {
                             StreamOrFutureEvent::Write {
                                 values,
