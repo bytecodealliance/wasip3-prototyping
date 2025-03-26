@@ -6,7 +6,7 @@ use core::task::{ready, Context, Poll};
 use anyhow::Context as _;
 use bytes::Bytes;
 use http::HeaderMap;
-use http_body_util::{combinators::BoxBody, BodyExt as _};
+use http_body_util::{combinators::UnsyncBoxBody, BodyExt as _};
 use tokio::sync::oneshot;
 use wasmtime::{
     component::{AbortOnDropHandle, ErrorContext, FutureWriter, Resource, StreamReader},
@@ -20,7 +20,6 @@ pub(crate) type OutgoingContentsStreamFuture = Pin<
     Box<
         dyn Future<Output = Result<(StreamReader<Bytes>, Bytes), Option<ErrorContext>>>
             + Send
-            + Sync
             + 'static,
     >,
 >;
@@ -33,7 +32,6 @@ pub(crate) type OutgoingTrailerFuture = Pin<
                     Option<ErrorContext>,
                 >,
             > + Send
-            + Sync
             + 'static,
     >,
 >;
@@ -45,7 +43,6 @@ pub(crate) type OutgoingTrailerFutureMut<'a> = Pin<
             Option<ErrorContext>,
         >,
     > + Send
-                 + Sync
                  + 'static),
 >;
 
@@ -77,7 +74,7 @@ pub enum Body {
     /// Body constructed by the host
     Host {
         /// Underlying body stream
-        stream: Option<BoxBody<Bytes, ErrorCode>>,
+        stream: Option<UnsyncBoxBody<Bytes, ErrorCode>>,
         /// Buffered frame, if any
         buffer: Option<BodyFrame>,
     },
@@ -89,11 +86,11 @@ impl Body {
     /// Construct a new [Body]
     pub fn new<T>(body: T) -> Self
     where
-        T: http_body::Body<Data = Bytes> + Send + Sync + 'static,
+        T: http_body::Body<Data = Bytes> + Send + 'static,
         T::Error: Into<ErrorCode>,
     {
         Self::Host {
-            stream: Some(body.map_err(Into::into).boxed()),
+            stream: Some(body.map_err(Into::into).boxed_unsync()),
             buffer: None,
         }
     }
@@ -101,7 +98,11 @@ impl Body {
     /// Construct a new empty [Body]
     pub fn empty() -> Self {
         Self::Host {
-            stream: Some(http_body_util::Empty::new().map_err(Into::into).boxed()),
+            stream: Some(
+                http_body_util::Empty::new()
+                    .map_err(Into::into)
+                    .boxed_unsync(),
+            ),
             buffer: None,
         }
     }

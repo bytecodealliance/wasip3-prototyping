@@ -119,7 +119,7 @@ impl Client for TestClient {
     async fn send_request(
         &mut self,
         request: http::Request<
-            impl http_body::Body<Data = Bytes, Error = Option<ErrorCode>> + Send + Sync + 'static,
+            impl http_body::Body<Data = Bytes, Error = Option<ErrorCode>> + Send + 'static,
         >,
         options: Option<RequestOptions>,
     ) -> wasmtime::Result<
