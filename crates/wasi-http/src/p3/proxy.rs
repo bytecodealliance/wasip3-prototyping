@@ -1,6 +1,6 @@
 use anyhow::Context as _;
 use bytes::Bytes;
-use http_body_util::combinators::BoxBody;
+use http_body_util::combinators::UnsyncBoxBody;
 use wasmtime::component::{FutureWriter, Promise, Resource};
 use wasmtime::AsContextMut;
 use wasmtime_wasi::p3::ResourceView;
@@ -35,7 +35,7 @@ impl Proxy {
     ) -> wasmtime::Result<
         Result<
             (
-                http::Response<BoxBody<Bytes, Option<ErrorCode>>>,
+                http::Response<UnsyncBoxBody<Bytes, Option<ErrorCode>>>,
                 Option<FutureWriter<Result<(), ErrorCode>>>,
             ),
             ErrorCode,

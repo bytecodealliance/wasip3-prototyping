@@ -1,4 +1,4 @@
-use core::future::{poll_fn, Future as _};
+use core::future::poll_fn;
 use core::mem;
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
@@ -10,8 +10,7 @@ use anyhow::{bail, Context as _};
 use bytes::Bytes;
 use http_body::Body as _;
 use wasmtime::component::{
-    future, stream, Accessor, AccessorTask, FutureWriter, HostFuture, HostStream, Resource,
-    StreamWriter,
+    Accessor, AccessorTask, FutureWriter, HostFuture, HostStream, Resource, StreamWriter,
 };
 use wasmtime_wasi::p3::bindings::clocks::monotonic_clock::Duration;
 use wasmtime_wasi::p3::{ResourceView as _, WithChildren};
@@ -135,8 +134,9 @@ where
                 tx,
             } => {
                 drop(self.contents_tx);
-                let mut trailers_tx = self.trailers_tx.watch_reader();
-                let Some(Ok(res)) = poll_fn(|cx| match Pin::new(&mut trailers_tx).poll(cx) {
+                let (watch_reader, trailers_tx) = self.trailers_tx.watch_reader();
+                let mut watch_reader = watch_reader.into_future();
+                let Some(Ok(res)) = poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
                     Poll::Ready(()) => return Poll::Ready(None),
                     Poll::Pending => trailers_rx.as_mut().poll(cx).map(Some),
                 })
@@ -153,7 +153,7 @@ where
                     };
                     return Ok(());
                 };
-                let trailers_tx = trailers_tx.into_inner().await;
+                let trailers_tx = trailers_tx.into_inner();
                 if !trailers_tx
                     .write(clone_trailer_result(&res))
                     .into_future()
@@ -227,9 +227,10 @@ where
                     Some(BodyFrame::Trailers(..)) => bail!("corrupted guest body state"),
                     None => {}
                 }
-                let mut contents_tx = contents_tx.watch_reader();
+                let (watch_reader, mut contents_tx) = contents_tx.watch_reader();
+                let mut watch_reader = watch_reader.into_future();
                 loop {
-                    let Some(rx) = poll_fn(|cx| match Pin::new(&mut contents_tx).poll(cx) {
+                    let Some(rx) = poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
                         Poll::Ready(()) => return Poll::Ready(None),
                         Poll::Pending => contents_rx.as_mut().poll(cx).map(Some),
                     })
@@ -251,7 +252,7 @@ where
                         break;
                     };
                     contents_rx = rx_tail.read().into_future();
-                    let tx_tail = contents_tx.into_inner().await;
+                    let tx_tail = contents_tx.into_inner();
                     let Some(tx_tail) = tx_tail.write(buf.clone()).into_future().await else {
                         let Ok(mut body) = self.body.lock() else {
                             bail!("lock poisoned");
@@ -264,12 +265,15 @@ where
                         };
                         return Ok(());
                     };
-                    contents_tx = tx_tail.watch_reader();
+                    let (new_watch_reader, new_contents_tx) = tx_tail.watch_reader();
+                    contents_tx = new_contents_tx;
+                    watch_reader = new_watch_reader.into_future();
                 }
                 drop(contents_tx);
 
-                let mut trailers_tx = self.trailers_tx.watch_reader();
-                let Some(Ok(res)) = poll_fn(|cx| match Pin::new(&mut trailers_tx).poll(cx) {
+                let (watch_reader, trailers_tx) = self.trailers_tx.watch_reader();
+                let mut watch_reader = watch_reader.into_future();
+                let Some(Ok(res)) = poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
                     Poll::Ready(()) => return Poll::Ready(None),
                     Poll::Pending => trailers_rx.as_mut().poll(cx).map(Some),
                 })
@@ -286,7 +290,7 @@ where
                     };
                     return Ok(());
                 };
-                let trailers_tx = trailers_tx.into_inner().await;
+                let trailers_tx = trailers_tx.into_inner();
                 if !trailers_tx
                     .write(clone_trailer_result(&res))
                     .into_future()
@@ -330,9 +334,10 @@ where
                     Some(BodyFrame::Trailers(..)) => bail!("corrupted guest body state"),
                     None => {}
                 }
-                let mut contents_tx = contents_tx.watch_reader();
+                let (watch_reader, mut contents_tx) = contents_tx.watch_reader();
+                let mut watch_reader = watch_reader.into_future();
                 loop {
-                    match poll_fn(|cx| match Pin::new(&mut contents_tx).poll(cx) {
+                    match poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
                         Poll::Ready(()) => return Poll::Ready(None),
                         Poll::Pending => Pin::new(&mut stream).poll_frame(cx).map(Some),
                     })
@@ -365,7 +370,7 @@ where
                         Some(Some(Ok(frame))) => {
                             match frame.into_data().map_err(http_body::Frame::into_trailers) {
                                 Ok(buf) => {
-                                    let tx_tail = contents_tx.into_inner().await;
+                                    let tx_tail = contents_tx.into_inner();
                                     let Some(tx_tail) =
                                         tx_tail.write(buf.clone()).into_future().await
                                     else {
@@ -378,7 +383,10 @@ where
                                         };
                                         return Ok(());
                                     };
-                                    contents_tx = tx_tail.watch_reader();
+                                    let (new_watch_reader, new_contents_tx) =
+                                        tx_tail.watch_reader();
+                                    contents_tx = new_contents_tx;
+                                    watch_reader = new_watch_reader.into_future();
                                 }
                                 Err(Ok(trailers)) => {
                                     drop(contents_tx);
@@ -654,7 +662,10 @@ where
         options: Option<Resource<WithChildren<RequestOptions>>>,
     ) -> wasmtime::Result<(Resource<Request>, HostFuture<Result<(), ErrorCode>>)> {
         store.with(|mut view| {
-            let (res_tx, res_rx) = future(&mut view).context("failed to create future")?;
+            let instance = view.instance();
+            let (res_tx, res_rx) = instance
+                .future(&mut view)
+                .context("failed to create future")?;
             let contents =
                 contents.map(|contents| contents.into_reader(&mut view).read().into_future());
             let trailers = trailers.into_reader(&mut view).read().into_future();
@@ -799,10 +810,13 @@ where
         req: Resource<Request>,
     ) -> wasmtime::Result<Result<(HostStream<u8>, TrailerFuture), ()>> {
         store.with(|mut view| {
-            let (contents_tx, contents_rx) =
-                stream(&mut view).context("failed to create stream")?;
-            let (trailers_tx, trailers_rx) =
-                future(&mut view).context("failed to create future")?;
+            let instance = view.instance();
+            let (contents_tx, contents_rx) = instance
+                .stream(&mut view)
+                .context("failed to create stream")?;
+            let (trailers_tx, trailers_rx) = instance
+                .future(&mut view)
+                .context("failed to create future")?;
             let Request { body, .. } = get_request_mut(view.table(), &req)?;
             {
                 let Some(body) = Arc::get_mut(body) else {
@@ -960,7 +974,10 @@ where
         trailers: TrailerFuture,
     ) -> wasmtime::Result<(Resource<Response>, HostFuture<Result<(), ErrorCode>>)> {
         store.with(|mut view| {
-            let (res_tx, res_rx) = future(&mut view).context("failed to create future")?;
+            let instance = view.instance();
+            let (res_tx, res_rx) = instance
+                .future(&mut view)
+                .context("failed to create future")?;
             let contents =
                 contents.map(|contents| contents.into_reader(&mut view).read().into_future());
             let trailers = trailers.into_reader(&mut view).read().into_future();
@@ -1010,10 +1027,13 @@ where
         res: Resource<Response>,
     ) -> wasmtime::Result<Result<(HostStream<u8>, TrailerFuture), ()>> {
         store.with(|mut view| {
-            let (contents_tx, contents_rx) =
-                stream(&mut view).context("failed to create stream")?;
-            let (trailers_tx, trailers_rx) =
-                future(&mut view).context("failed to create future")?;
+            let instance = view.instance();
+            let (contents_tx, contents_rx) = instance
+                .stream(&mut view)
+                .context("failed to create stream")?;
+            let (trailers_tx, trailers_rx) = instance
+                .future(&mut view)
+                .context("failed to create future")?;
             let Response { body, .. } = get_response_mut(view.table(), &res)?;
             {
                 let Some(body) = Arc::get_mut(body) else {

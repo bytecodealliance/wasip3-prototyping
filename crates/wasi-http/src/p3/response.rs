@@ -6,7 +6,7 @@ use anyhow::{bail, Context as _};
 use bytes::Bytes;
 use futures::StreamExt as _;
 use http::{HeaderMap, StatusCode};
-use http_body_util::combinators::BoxBody;
+use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::{BodyExt, BodyStream, StreamBody};
 use wasmtime::component::{AbortOnDropHandle, FutureWriter};
 use wasmtime::AsContextMut;
@@ -63,7 +63,7 @@ impl Response {
         self,
         mut store: impl AsContextMut<Data = T> + Send + 'static,
     ) -> anyhow::Result<(
-        http::Response<BoxBody<Bytes, Option<ErrorCode>>>,
+        http::Response<UnsyncBoxBody<Bytes, Option<ErrorCode>>>,
         Option<FutureWriter<Result<(), ErrorCode>>>,
     )> {
         let headers = self.headers.unwrap_or_clone()?;
@@ -83,7 +83,7 @@ impl Response {
                 trailers: None,
                 buffer: Some(BodyFrame::Trailers(Ok(None))),
                 tx,
-            } => (empty_body().boxed(), Some(tx)),
+            } => (empty_body().boxed_unsync(), Some(tx)),
             Body::Guest {
                 contents: None,
                 trailers: None,
@@ -99,7 +99,7 @@ impl Response {
                 (
                     empty_body()
                         .with_trailers(async move { Some(Ok(trailers)) })
-                        .boxed(),
+                        .boxed_unsync(),
                     Some(tx),
                 )
             }
@@ -111,7 +111,7 @@ impl Response {
             } => (
                 empty_body()
                     .with_trailers(async move { Some(Err(Some(err))) })
-                    .boxed(),
+                    .boxed_unsync(),
                 Some(tx),
             ),
             Body::Guest {
@@ -122,7 +122,7 @@ impl Response {
             } => {
                 let body = empty_body()
                     .with_trailers(guest_response_trailers(store, trailers))
-                    .boxed();
+                    .boxed_unsync();
                 (body, Some(tx))
             }
             Body::Guest {
@@ -138,7 +138,7 @@ impl Response {
                 };
                 let body = GuestBody::new(contents, buffer)
                     .with_trailers(guest_response_trailers(store, trailers))
-                    .boxed();
+                    .boxed_unsync();
                 (body, Some(tx))
             }
             Body::Guest { .. } => bail!("guest body is corrupted"),
@@ -146,7 +146,7 @@ impl Response {
             | Body::Host {
                 stream: None,
                 buffer: Some(BodyFrame::Trailers(Ok(None))),
-            } => (empty_body().boxed(), None),
+            } => (empty_body().boxed_unsync(), None),
             Body::Host {
                 stream: None,
                 buffer: Some(BodyFrame::Trailers(Ok(Some(trailers)))),
@@ -160,7 +160,7 @@ impl Response {
                 (
                     empty_body()
                         .with_trailers(async move { Some(Ok(trailers)) })
-                        .boxed(),
+                        .boxed_unsync(),
                     None,
                 )
             }
@@ -170,20 +170,20 @@ impl Response {
             } => (
                 empty_body()
                     .with_trailers(async move { Some(Err(Some(err))) })
-                    .boxed(),
+                    .boxed_unsync(),
                 None,
             ),
             Body::Host {
                 stream: Some(stream),
                 buffer: None,
-            } => (stream.map_err(Some).boxed(), None),
+            } => (stream.map_err(Some).boxed_unsync(), None),
             Body::Host {
                 stream: Some(stream),
                 buffer: Some(BodyFrame::Data(buffer)),
             } => {
                 let buffer = futures::stream::iter(iter::once(Ok(http_body::Frame::data(buffer))));
                 (
-                    BodyExt::boxed(StreamBody::new(
+                    BodyExt::boxed_unsync(StreamBody::new(
                         buffer.chain(BodyStream::new(stream.map_err(Some))),
                     )),
                     None,

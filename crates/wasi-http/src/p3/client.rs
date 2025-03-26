@@ -82,7 +82,7 @@ pub trait Client: Clone + Send + Sync {
     fn send_request(
         &mut self,
         request: http::Request<
-            impl http_body::Body<Data = Bytes, Error = Option<ErrorCode>> + Send + Sync + 'static,
+            impl http_body::Body<Data = Bytes, Error = Option<ErrorCode>> + Send + 'static,
         >,
         options: Option<RequestOptions>,
     ) -> impl Future<
@@ -94,20 +94,17 @@ pub trait Client: Clone + Send + Sync {
                                 http::Response<
                                     impl http_body::Body<Data = Bytes, Error = Self::Error>
                                         + Send
-                                        + Sync
                                         + 'static,
                                 >,
                                 ErrorCode,
                             >,
-                        > + Send
-                        + Sync,
-                    impl Future<Output = Result<(), Self::Error>> + Send + Sync + 'static,
+                        > + Send,
+                    impl Future<Output = Result<(), Self::Error>> + Send + 'static,
                 ),
                 ErrorCode,
             >,
         >,
-    > + Send
-           + Sync;
+    > + Send;
 }
 
 /// Default HTTP client
@@ -120,7 +117,7 @@ impl Client for DefaultClient {
     async fn send_request(
         &mut self,
         request: http::Request<
-            impl http_body::Body<Data = Bytes, Error = Option<ErrorCode>> + Send + Sync + 'static,
+            impl http_body::Body<Data = Bytes, Error = Option<ErrorCode>> + Send + 'static,
         >,
         options: Option<RequestOptions>,
     ) -> wasmtime::Result<
@@ -177,7 +174,7 @@ impl http_body::Body for IncomingBody {
 /// default implementation.
 pub async fn default_send_request(
     mut request: http::Request<
-        impl http_body::Body<Data = Bytes, Error = Option<ErrorCode>> + Send + Sync + 'static,
+        impl http_body::Body<Data = Bytes, Error = Option<ErrorCode>> + Send + 'static,
     >,
     options: Option<RequestOptions>,
 ) -> Result<
