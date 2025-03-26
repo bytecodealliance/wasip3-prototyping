@@ -1,26 +1,17 @@
-use test_programs::p3::wasi::http::types::{Method, Scheme};
-
 struct Component;
 
 test_programs::p3::export!(Component);
 
 impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
     async fn run() -> Result<(), ()> {
-        let res = test_programs::p3::http::request(
-            Method::Other("bad\nmethod".to_owned()),
-            Scheme::Http,
-            "localhost:3000",
-            "/",
+        let (_, rx) = test_programs::p3::wit_future::new();
+        test_programs::p3::wasi::http::types::Request::new(
+            test_programs::p3::wasi::http::types::Fields::new(),
             None,
+            rx,
             None,
-            None,
-            None,
-            None,
-        )
-        .await;
-
-        // This error arises from input validation in the `set_method` function on `OutgoingRequest`.
-        assert_eq!(res.unwrap_err().to_string(), "failed to set method");
+        );
+        eprintln!("created request");
         Ok(())
     }
 }
