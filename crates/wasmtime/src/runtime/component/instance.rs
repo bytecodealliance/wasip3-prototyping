@@ -321,6 +321,22 @@ impl Instance {
             index,
         ))
     }
+
+    #[cfg(feature = "component-model-async")]
+    #[doc(hidden)]
+    pub fn spawn(
+        &self,
+        mut store: impl AsContextMut,
+        task: impl std::future::Future<Output = Result<()>> + Send + 'static,
+    ) {
+        let instance = unsafe {
+            &mut *store.as_context_mut().0[self.0]
+                .as_ref()
+                .unwrap()
+                .instance_ptr()
+        };
+        instance.spawn(task)
+    }
 }
 
 /// Trait used to lookup the export of a component instance.
@@ -868,6 +884,11 @@ impl<T> InstancePre<T> {
         let data = Box::new(instantiator.data);
         let instance = Instance(store.0.store_data_mut().insert(Some(data)));
         store.0.push_component_instance(instance);
+        #[cfg(feature = "component-model-async")]
+        {
+            let reference = unsafe { &mut *store.0[instance.0].as_ref().unwrap().instance_ptr() };
+            reference.instance = Some(instance);
+        }
         Ok(instance)
     }
 }

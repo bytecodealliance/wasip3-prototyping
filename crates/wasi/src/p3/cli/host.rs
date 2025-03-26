@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context as _};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use wasmtime::component::{
-    stream, Accessor, AccessorTask, HostStream, Resource, StreamReader, StreamWriter,
+    Accessor, AccessorTask, HostStream, Resource, StreamReader, StreamWriter,
 };
 
 use crate::p3::bindings::cli::{
@@ -166,7 +166,10 @@ where
         store: &mut Accessor<U, Self>,
     ) -> wasmtime::Result<HostStream<u8>> {
         store.with(|mut view| {
-            let (tx, rx) = stream(&mut view).context("failed to create stream")?;
+            let instance = view.instance();
+            let (tx, rx) = instance
+                .stream(&mut view)
+                .context("failed to create stream")?;
             let stdin = view.cli().stdin.reader();
             view.spawn(InputTask { input: stdin, tx });
             Ok(rx.into())

@@ -99,7 +99,7 @@ pub struct Host_ {}
 pub trait Host_Imports: Send {
     fn foo<T: 'static>(
         accessor: &mut wasmtime::component::Accessor<T, Self>,
-    ) -> impl ::core::future::Future<Output = ()> + Send + Sync
+    ) -> impl ::core::future::Future<Output = ()> + Send
     where
         Self: Sized;
 }
@@ -136,6 +136,7 @@ fn poll_with_state<
 >(
     getter: G,
     store: wasmtime::VMStoreRawPtr,
+    instance: Option<wasmtime::component::Instance>,
     cx: &mut wasmtime::component::__internal::Context,
     future: wasmtime::component::__internal::Pin<&mut F>,
 ) -> wasmtime::component::__internal::Poll<F::Output> {
@@ -160,8 +161,10 @@ fn poll_with_state<
         (future.poll(cx), STATE.with(|v| v.take()).unwrap().spawned)
     };
     for spawned in spawned {
-        store_cx
+        instance
+            .unwrap()
             .spawn(
+                &mut store_cx,
                 wasmtime::component::__internal::poll_fn(move |cx| {
                     let mut spawned = spawned.try_lock().unwrap();
                     let inner = mem::replace(
@@ -170,7 +173,13 @@ fn poll_with_state<
                     );
                     if let SpawnedInner::Unpolled(mut future)
                     | SpawnedInner::Polled { mut future, .. } = inner {
-                        let result = poll_with_state(getter, store, cx, future.as_mut());
+                        let result = poll_with_state(
+                            getter,
+                            store,
+                            instance,
+                            cx,
+                            future.as_mut(),
+                        );
                         *DerefMut::deref_mut(&mut spawned) = SpawnedInner::Polled {
                             future,
                             waker: cx.waker().clone(),
@@ -293,25 +302,38 @@ const _: () = {
             linker
                 .func_wrap_concurrent(
                     "foo",
-                    move |caller: wasmtime::StoreContextMut<'_, T>, (): ()| {
+                    move |caller: &mut wasmtime::component::Accessor<T, T>, (): ()| {
                         let mut accessor = unsafe {
                             wasmtime::component::Accessor::<
                                 T,
                                 _,
-                            >::new(get_host_and_store, spawn_task)
+                            >::new(
+                                get_host_and_store,
+                                spawn_task,
+                                caller.maybe_instance(),
+                            )
                         };
                         let mut future = wasmtime::component::__internal::Box::pin(async move {
                             let r = <G::Host as Host_Imports>::foo(&mut accessor).await;
                             Ok(r)
                         });
-                        let store = wasmtime::VMStoreRawPtr(caller.traitobj());
+                        let store = wasmtime::VMStoreRawPtr(
+                            caller
+                                .with(|mut v| {
+                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
+                                }),
+                        );
+                        let instance = caller.maybe_instance();
                         wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| poll_with_state(
-                                host_getter,
-                                store,
-                                cx,
-                                future.as_mut(),
-                            )),
+                            wasmtime::component::__internal::poll_fn(move |cx| {
+                                poll_with_state(
+                                    host_getter,
+                                    store,
+                                    instance,
+                                    cx,
+                                    future.as_mut(),
+                                )
+                            }),
                         )
                     },
                 )?;

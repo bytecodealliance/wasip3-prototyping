@@ -1,11 +1,12 @@
 use {
     crate::{
-        component::func::{self, Func, Lower as _, LowerContext, Options},
-        store::StoreInner,
+        component::{
+            func::{self, Func, Options},
+            Instance, Lift, Lower, Val,
+        },
+        store::{StoreId, StoreInner, StoreOpaque},
         vm::{
-            component::{
-                CallContext, ComponentInstance, InstanceFlags, ResourceTables, WaitableState,
-            },
+            component::{CallContext, ComponentInstance, InstanceFlags, ResourceTables},
             mpk::{self, ProtectionMask},
             AsyncWasmCallState, PreviousAsyncWasmCallState, SendSyncPtr, VMFuncRef,
             VMMemoryDefinition, VMStore, VMStoreRawPtr,
@@ -13,20 +14,22 @@ use {
         AsContext, AsContextMut, Engine, StoreContext, StoreContextMut, ValRaw,
     },
     anyhow::{anyhow, bail, Context as _, Result},
+    error_contexts::{GlobalErrorContextRefCount, LocalErrorContextRefCount},
     futures::{
         channel::oneshot,
         future::{self, FutureExt},
         stream::{FuturesUnordered, StreamExt},
     },
-    futures_and_streams::{FlatAbi, TableIndex, TransmitHandle},
+    futures_and_streams::{FlatAbi, StreamFutureState, TableIndex, TransmitHandle},
     once_cell::sync::Lazy,
     ready_chunks::ReadyChunks,
+    states::StateTable,
     std::{
         any::Any,
         borrow::ToOwned,
         boxed::Box,
-        cell::UnsafeCell,
-        collections::{BTreeSet, HashMap, HashSet, VecDeque},
+        cell::{RefCell, UnsafeCell},
+        collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
         future::Future,
         marker::PhantomData,
         mem::{self, MaybeUninit},
@@ -37,25 +40,31 @@ use {
         task::{Context, Poll, Wake, Waker},
         vec::Vec,
     },
-    table::{Table, TableId},
+    table::{Table, TableError, TableId},
     wasmtime_environ::{
         component::{
-            InterfaceType, RuntimeComponentInstanceIndex, StringEncoding,
-            TypeComponentLocalErrorContextTableIndex, TypeFutureTableIndex, TypeStreamTableIndex,
-            TypeTupleIndex, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS,
+            RuntimeComponentInstanceIndex, StringEncoding,
+            TypeComponentGlobalErrorContextTableIndex, TypeComponentLocalErrorContextTableIndex,
+            TypeFutureTableIndex, TypeStreamTableIndex, TypeTupleIndex, MAX_FLAT_PARAMS,
+            MAX_FLAT_RESULTS,
         },
-        fact,
+        fact, PrimaryMap,
     },
     wasmtime_fiber::{Fiber, Suspend},
 };
 
+pub(crate) use futures_and_streams::{
+    lower_error_context_to_index, lower_future_to_index, lower_stream_to_index,
+};
 pub use futures_and_streams::{
-    future, stream, ErrorContext, FutureReader, FutureWriter, HostFuture, HostStream, Single,
-    StreamReader, StreamWriter,
+    ErrorContext, FutureReader, FutureWriter, HostFuture, HostStream, Single, StreamReader,
+    StreamWriter, Watch,
 };
 
+mod error_contexts;
 mod futures_and_streams;
 mod ready_chunks;
+mod states;
 mod table;
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
@@ -95,12 +104,20 @@ const EXIT_FLAG_ASYNC_CALLEE: u32 = fact::EXIT_FLAG_ASYNC_CALLEE as u32;
 /// operation which requires exclusive access to a store in order to make
 /// progress -- without monopolizing that store for the lifetime of the
 /// operation.
-pub struct Promise<T>(Pin<Box<dyn Future<Output = T> + Send + Sync + 'static>>);
+pub struct Promise<T> {
+    inner: Pin<Box<dyn Future<Output = T> + Send + 'static>>,
+    instance: SendSyncPtr<ComponentInstance>,
+    id: StoreId,
+}
 
 impl<T: Send + Sync + 'static> Promise<T> {
     /// Map the result of this `Promise` from one value to another.
     pub fn map<U>(self, fun: impl FnOnce(T) -> U + Send + Sync + 'static) -> Promise<U> {
-        Promise(Box::pin(self.0.map(fun)))
+        Promise {
+            inner: Box::pin(self.inner.map(fun)),
+            instance: self.instance,
+            id: self.id,
+        }
     }
 
     /// Convert this `Promise` to a future which may be `await`ed for its
@@ -110,7 +127,11 @@ impl<T: Send + Sync + 'static> Promise<T> {
     /// completes.  If you need to await more than one `Promise` concurrently,
     /// use [`PromisesUnordered`].
     pub async fn get<U: Send>(self, mut store: impl AsContextMut<Data = U>) -> Result<T> {
-        poll_until(store.as_context_mut(), self.0).await
+        let store = store.as_context_mut();
+        assert_eq!(store.0.id(), self.id);
+        unsafe { &mut *self.instance.as_ptr() }
+            .poll_until(store, self.inner)
+            .await
     }
 
     /// Convert this `Promise` to a future which may be `await`ed for its
@@ -121,45 +142,52 @@ impl<T: Send + Sync + 'static> Promise<T> {
     /// loop for the store it came from is polled.  Thus, this method should
     /// only be used from within host functions and not from top-level embedder
     /// code.
-    pub fn into_future(self) -> Pin<Box<dyn Future<Output = T> + Send + Sync + 'static>> {
-        self.0
-    }
-
-    /// Wrap the specified `Future` in a `Promise`.
-    pub fn from(fut: impl Future<Output = T> + Send + Sync + 'static) -> Self {
-        Self(Box::pin(fut))
+    pub fn into_future(self) -> Pin<Box<dyn Future<Output = T> + Send + 'static>> {
+        self.inner
     }
 }
 
-/// Poll the specified future until it yields a result _or_ there are no more
-/// tasks to run in the `Store`.
-///
-/// This is a more concise form of `Promise::from(fut).get(&mut store)`, plus it
-/// supports non-`'static` and/or non-`Sync` `Future`s.
-pub async fn get<U: Send, V: Send + Sync + 'static>(
-    mut store: impl AsContextMut<Data = U>,
-    fut: impl Future<Output = V> + Send,
-) -> Result<V> {
-    poll_until(store.as_context_mut(), Box::pin(fut)).await
+impl Instance {
+    /// Poll the specified future until it yields a result _or_ there are no more
+    /// tasks to run in the `Store`.
+    pub async fn get<U: Send, V: Send + Sync + 'static>(
+        &self,
+        mut store: impl AsContextMut<Data = U>,
+        fut: impl Future<Output = V> + Send,
+    ) -> Result<V> {
+        let store = store.as_context_mut();
+        let instance = unsafe { &mut *store.0[self.0].as_ref().unwrap().instance_ptr() };
+        instance.poll_until(store, Box::pin(fut)).await
+    }
 }
 
 /// Represents a collection of zero or more concurrent operations.
 ///
 /// Similar to [`futures::stream::FuturesUnordered`], this type supports
 /// `await`ing more than one [`Promise`]s concurrently.
-pub struct PromisesUnordered<T>(
-    FuturesUnordered<Pin<Box<dyn Future<Output = T> + Send + Sync + 'static>>>,
-);
+pub struct PromisesUnordered<T> {
+    inner: FuturesUnordered<Pin<Box<dyn Future<Output = T> + Send + 'static>>>,
+    instance: Option<(SendSyncPtr<ComponentInstance>, StoreId)>,
+}
 
 impl<T: Send + Sync + 'static> PromisesUnordered<T> {
     /// Create a new `PromisesUnordered` with no entries.
     pub fn new() -> Self {
-        Self(FuturesUnordered::new())
+        Self {
+            inner: FuturesUnordered::new(),
+            instance: None,
+        }
     }
 
     /// Add the specified [`Promise`] to this collection.
     pub fn push(&mut self, promise: Promise<T>) {
-        self.0.push(promise.0)
+        if let Some((instance, id)) = self.instance {
+            assert_eq!(instance, promise.instance);
+            assert_eq!(id, promise.id);
+        } else {
+            self.instance = Some((promise.instance, promise.id));
+        }
+        self.inner.push(promise.inner)
     }
 
     /// Get the next result from this collection, if any.
@@ -167,11 +195,19 @@ impl<T: Send + Sync + 'static> PromisesUnordered<T> {
         &mut self,
         mut store: impl AsContextMut<Data = U>,
     ) -> Result<Option<T>> {
-        poll_until(
-            store.as_context_mut(),
-            Box::pin(self.0.next()) as Pin<Box<dyn Future<Output = Option<T>> + Send + Sync + '_>>,
-        )
-        .await
+        if let Some((instance, id)) = self.instance {
+            let store = store.as_context_mut();
+            assert_eq!(store.0.id(), id);
+            unsafe { &mut *instance.as_ptr() }
+                .poll_until(
+                    store,
+                    Box::pin(self.inner.next())
+                        as Pin<Box<dyn Future<Output = Option<T>> + Send + '_>>,
+                )
+                .await
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -195,6 +231,11 @@ impl<'a, T, U> Access<'a, T, U> {
         T: 'static,
     {
         self.0.spawn(task)
+    }
+
+    /// Retrieve the component instance of the caller.
+    pub fn instance(&self) -> Instance {
+        self.0.instance()
     }
 }
 
@@ -234,6 +275,7 @@ impl<'a, T, U> AsContextMut for Access<'a, T, U> {
 pub struct Accessor<T, U> {
     get: Arc<dyn Fn() -> (*mut u8, *mut u8)>,
     spawn: fn(Spawned),
+    instance: Option<Instance>,
     _phantom: PhantomData<fn() -> (*mut U, *mut StoreInner<T>)>,
 }
 
@@ -242,10 +284,15 @@ unsafe impl<T, U> Sync for Accessor<T, U> {}
 
 impl<T, U> Accessor<T, U> {
     #[doc(hidden)]
-    pub unsafe fn new(get: fn() -> (*mut u8, *mut u8), spawn: fn(Spawned)) -> Self {
+    pub unsafe fn new(
+        get: fn() -> (*mut u8, *mut u8),
+        spawn: fn(Spawned),
+        instance: Option<Instance>,
+    ) -> Self {
         Self {
             get: Arc::new(get),
             spawn,
+            instance,
             _phantom: PhantomData,
         }
     }
@@ -278,6 +325,7 @@ impl<T, U> Accessor<T, U> {
                 unsafe { ((fun(&mut *host.cast()) as *mut V).cast(), store) }
             }),
             spawn: self.spawn,
+            instance: self.instance,
             _phantom: PhantomData,
         };
         task.run(&mut accessor).await
@@ -297,6 +345,7 @@ impl<T, U> Accessor<T, U> {
         let mut accessor = Self {
             get: self.get.clone(),
             spawn: self.spawn,
+            instance: self.instance,
             _phantom: PhantomData,
         };
         let future = Arc::new(Mutex::new(SpawnedInner::Unpolled(unsafe {
@@ -309,17 +358,27 @@ impl<T, U> Accessor<T, U> {
             // no lifetime issues there.  We have no way to explain any of that
             // to the compiler, though, so we resort to a transmute here.
             mem::transmute::<
-                Pin<Box<dyn Future<Output = Result<()>> + Send + Sync>>,
-                Pin<Box<dyn Future<Output = Result<()>> + Send + Sync + 'static>>,
+                Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+                Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>,
             >(Box::pin(async move { task.run(&mut accessor).await }))
         })));
         let handle = SpawnHandle(future.clone());
         (self.spawn)(future);
         handle
     }
+
+    /// Retrieve the component instance of the caller.
+    pub fn instance(&self) -> Instance {
+        self.instance.unwrap()
+    }
+
+    #[doc(hidden)]
+    pub fn maybe_instance(&self) -> Option<Instance> {
+        self.instance
+    }
 }
 
-type SpawnedFuture = Pin<Box<dyn Future<Output = Result<()>> + Send + Sync + 'static>>;
+type SpawnedFuture = Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>;
 
 #[doc(hidden)]
 pub enum SpawnedInner {
@@ -382,93 +441,1879 @@ impl Drop for AbortOnDropHandle {
 // FN: FnOnce(&mut Accessor<T>) -> F + Send + Sync + 'static` fails with a type
 // mismatch error when we try to pass it an async closure (e.g. `async move |_|
 // { ... }`).  So this seems to be the best we can do for the time being.
-pub trait AccessorTask<T, U, R>: Send + Sync + 'static {
+pub trait AccessorTask<T, U, R>: Send + 'static {
     /// Run the task.
-    fn run(self, accessor: &mut Accessor<T, U>) -> impl Future<Output = R> + Send + Sync;
+    fn run(self, accessor: &mut Accessor<T, U>) -> impl Future<Output = R> + Send;
 }
 
-/// Trait representing component model ABI async intrinsics and fused adapter
-/// helper functions.
-pub unsafe trait VMComponentAsyncStore {
-    /// The `backpressure.set` intrinsic.
-    fn backpressure_set(
-        &mut self,
-        caller_instance: RuntimeComponentInstanceIndex,
-        enabled: u32,
-    ) -> Result<()>;
+struct State {
+    host: *mut u8,
+    store: *mut u8,
+    spawned: Vec<Spawned>,
+}
 
-    /// The `task.return` intrinsic.
-    fn task_return(
+thread_local! {
+    #[cfg(feature = "component-model-async")]
+    static STATE: RefCell<Option<State>> = RefCell::new(None);
+}
+
+struct ResetState(Option<State>);
+
+impl Drop for ResetState {
+    fn drop(&mut self) {
+        STATE.with(|v| {
+            *v.borrow_mut() = self.0.take();
+        })
+    }
+}
+
+fn get_host_and_store() -> (*mut u8, *mut u8) {
+    STATE
+        .with(|v| {
+            v.borrow()
+                .as_ref()
+                .map(|State { host, store, .. }| (*host, *store))
+        })
+        .unwrap()
+}
+
+fn spawn_task(task: Spawned) {
+    STATE.with(|v| v.borrow_mut().as_mut().unwrap().spawned.push(task));
+}
+
+fn poll_with_state<T, F: Future + ?Sized>(
+    store: VMStoreRawPtr,
+    instance: SendSyncPtr<ComponentInstance>,
+    cx: &mut Context,
+    future: Pin<&mut F>,
+) -> Poll<F::Output> {
+    let mut store_cx = unsafe { StoreContextMut::new(&mut *store.0.as_ptr().cast()) };
+
+    let (result, spawned) = {
+        let host = store_cx.data_mut();
+        let old = STATE.with(|v| {
+            v.replace(Some(State {
+                host: (host as *mut T).cast(),
+                store: store.0.as_ptr().cast(),
+                spawned: Vec::new(),
+            }))
+        });
+        let _reset = ResetState(old);
+        (future.poll(cx), STATE.with(|v| v.take()).unwrap().spawned)
+    };
+
+    let instance_ref = unsafe { &mut *instance.as_ptr() };
+    for spawned in spawned {
+        instance_ref.spawn(future::poll_fn(move |cx| {
+            let mut spawned = spawned.try_lock().unwrap();
+            let inner = mem::replace(DerefMut::deref_mut(&mut spawned), SpawnedInner::Aborted);
+            if let SpawnedInner::Unpolled(mut future) | SpawnedInner::Polled { mut future, .. } =
+                inner
+            {
+                let result = poll_with_state::<T, _>(store, instance, cx, future.as_mut());
+                *DerefMut::deref_mut(&mut spawned) = SpawnedInner::Polled {
+                    future,
+                    waker: cx.waker().clone(),
+                };
+                result
+            } else {
+                Poll::Ready(Ok(()))
+            }
+        }))
+    }
+
+    result
+}
+
+/// Represents the state of a waitable handle.
+#[derive(Debug)]
+enum WaitableState {
+    /// Represents a host task handle.
+    HostTask,
+    /// Represents a guest task handle.
+    GuestTask,
+    /// Represents a stream handle.
+    Stream(TypeStreamTableIndex, StreamFutureState),
+    /// Represents a future handle.
+    Future(TypeFutureTableIndex, StreamFutureState),
+    /// Represents a waitable-set handle
+    Set,
+}
+
+enum CallerInfo {
+    Async {
+        params: u32,
+        results: u32,
+    },
+    Sync {
+        params: Vec<ValRaw>,
+        result_count: u32,
+    },
+}
+
+impl ComponentInstance {
+    pub(crate) fn instance(&self) -> Option<Instance> {
+        self.instance
+    }
+
+    fn instance_states(&mut self) -> &mut HashMap<RuntimeComponentInstanceIndex, InstanceState> {
+        &mut self.concurrent_state.instance_states
+    }
+
+    fn unblocked(&mut self) -> &mut HashSet<RuntimeComponentInstanceIndex> {
+        &mut self.concurrent_state.unblocked
+    }
+
+    fn guest_task(&mut self) -> &mut Option<TableId<GuestTask>> {
+        &mut self.concurrent_state.guest_task
+    }
+
+    fn push<V: Send + Sync + 'static>(&mut self, value: V) -> Result<TableId<V>, TableError> {
+        self.concurrent_state.table.push(value)
+    }
+
+    fn get<V: 'static>(&self, id: TableId<V>) -> Result<&V, TableError> {
+        self.concurrent_state.table.get(id)
+    }
+
+    fn get_mut<V: 'static>(&mut self, id: TableId<V>) -> Result<&mut V, TableError> {
+        self.concurrent_state.table.get_mut(id)
+    }
+
+    pub fn add_child<T, U>(
         &mut self,
-        instance: &mut ComponentInstance,
+        child: TableId<T>,
+        parent: TableId<U>,
+    ) -> Result<(), TableError> {
+        self.concurrent_state.table.add_child(child, parent)
+    }
+
+    pub fn remove_child<T, U>(
+        &mut self,
+        child: TableId<T>,
+        parent: TableId<U>,
+    ) -> Result<(), TableError> {
+        self.concurrent_state.table.remove_child(child, parent)
+    }
+
+    fn delete<V: 'static>(&mut self, id: TableId<V>) -> Result<V, TableError> {
+        self.concurrent_state.table.delete(id)
+    }
+
+    fn push_future(&mut self, future: HostTaskFuture) {
+        self.concurrent_state
+            .futures
+            .get_mut()
+            .unwrap()
+            .get_mut()
+            .push(future);
+    }
+
+    pub(crate) fn spawn(&mut self, task: impl Future<Output = Result<()>> + Send + 'static) {
+        self.push_future(Box::pin(
+            async move { HostTaskOutput::Background(task.await) },
+        ))
+    }
+
+    fn yielding(&mut self) -> &mut HashMap<TableId<GuestTask>, Option<TableId<WaitableSet>>> {
+        &mut self.concurrent_state.yielding
+    }
+
+    fn waitable_tables(
+        &mut self,
+    ) -> &mut PrimaryMap<RuntimeComponentInstanceIndex, StateTable<WaitableState>> {
+        &mut self.concurrent_state.waitable_tables
+    }
+
+    fn error_context_tables(
+        &mut self,
+    ) -> &mut PrimaryMap<
+        TypeComponentLocalErrorContextTableIndex,
+        StateTable<LocalErrorContextRefCount>,
+    > {
+        &mut self.concurrent_state.error_context_tables
+    }
+
+    fn global_error_context_ref_counts(
+        &mut self,
+    ) -> &mut BTreeMap<TypeComponentGlobalErrorContextTableIndex, GlobalErrorContextRefCount> {
+        &mut self.concurrent_state.global_error_context_ref_counts
+    }
+
+    fn maybe_push_call_context(&mut self, guest_task: TableId<GuestTask>) -> Result<()> {
+        let task = self.get_mut(guest_task)?;
+        if task.lift_result.is_some() {
+            log::trace!("push call context for {}", guest_task.rep());
+            let call_context = task.call_context.take().unwrap();
+            unsafe { &mut (*self.store()) }
+                .store_opaque_mut()
+                .component_resource_state()
+                .0
+                .push(call_context);
+        }
+        Ok(())
+    }
+
+    fn maybe_pop_call_context(&mut self, guest_task: TableId<GuestTask>) -> Result<()> {
+        if self.get_mut(guest_task)?.lift_result.is_some() {
+            log::trace!("pop call context for {}", guest_task.rep());
+            let call_context = Some(
+                unsafe { &mut (*self.store()) }
+                    .component_resource_state()
+                    .0
+                    .pop()
+                    .unwrap(),
+            );
+            self.get_mut(guest_task)?.call_context = call_context;
+        }
+        Ok(())
+    }
+
+    fn may_enter(
+        &mut self,
+        mut guest_task: TableId<GuestTask>,
+        guest_instance: RuntimeComponentInstanceIndex,
+    ) -> bool {
+        // Walk the task tree back to the root, looking for potential reentrance.
+        //
+        // TODO: This could be optimized by maintaining a per-`GuestTask` bitset
+        // such that each bit represents and instance which has been entered by that
+        // task or an ancestor of that task, in which case this would be a constant
+        // time check.
+        loop {
+            match &self.get_mut(guest_task).unwrap().caller {
+                Caller::Host(_) => break true,
+                Caller::Guest { task, instance } => {
+                    if *instance == guest_instance {
+                        break false;
+                    } else {
+                        guest_task = *task;
+                    }
+                }
+            }
+        }
+    }
+
+    fn maybe_send_event(
+        &mut self,
+        guest_task: TableId<GuestTask>,
+        event: Event,
+        waitable: Option<Waitable>,
+        result: u32,
+    ) -> Result<()> {
+        assert_ne!(Some(guest_task.rep()), waitable.map(|v| v.rep()));
+
+        // We can only send an event to a caller if the callee has suspended at
+        // least once; otherwise, we will not have had a chance to return a
+        // `waitable` handle to the caller yet, in which case we can only queue the
+        // event for later.
+        let may_send = waitable
+            .map(|v| v.has_suspended(self))
+            .unwrap_or(Ok(true))?;
+
+        if let (true, Some(callback)) = (may_send, self.get(guest_task)?.callback) {
+            let handle = if let Some(waitable) = waitable {
+                let Some((
+                    handle,
+                    WaitableState::HostTask
+                    | WaitableState::GuestTask
+                    | WaitableState::Stream(..)
+                    | WaitableState::Future(..),
+                )) = self.waitable_tables()[callback.instance].get_mut_by_rep(waitable.rep())
+                else {
+                    // If there's no handle found for the subtask, that means either the
+                    // subtask was closed by the caller already or the caller called the
+                    // callee via a sync-lowered import.  Either way, we can skip this
+                    // event.
+                    if let Event::CallReturned = event {
+                        // Since this is a `CallReturned` event which will never be
+                        // delivered to the caller, we must handle deleting the subtask
+                        // here.
+                        waitable.delete_from(self)?;
+                    }
+                    return Ok(());
+                };
+                handle
+            } else {
+                0
+            };
+
+            log::trace!(
+                "use callback to deliver event {event:?} to {} for {:?} (handle {handle}): {:?}",
+                guest_task.rep(),
+                waitable.map(|v| v.rep()),
+                callback.function,
+            );
+
+            let old_task = self.guest_task().replace(guest_task);
+            log::trace!(
+                "maybe_send_event (callback): replaced {:?} with {} as current task",
+                old_task.map(|v| v.rep()),
+                guest_task.rep()
+            );
+
+            self.maybe_push_call_context(guest_task)?;
+
+            let code = (callback.caller)(
+                self,
+                callback.instance,
+                callback.function,
+                event,
+                handle,
+                result,
+            )?;
+
+            self.maybe_pop_call_context(guest_task)?;
+
+            self.handle_callback_code(callback.instance, guest_task, code, Event::None)?;
+
+            *self.guest_task() = old_task;
+            log::trace!(
+                "maybe_send_event (callback): restored {:?} as current task",
+                old_task.map(|v| v.rep())
+            );
+        } else if let Some(waitable) = waitable {
+            waitable.common(self)?.event = Some((event, result));
+            waitable.mark_ready(self)?;
+
+            let resumed = if event == Event::CallReturned {
+                if let Some((fiber, async_)) = self.get_mut(guest_task)?.deferred.take_stackful() {
+                    log::trace!(
+                        "use fiber to deliver event {event:?} to {} for {}",
+                        guest_task.rep(),
+                        waitable.rep()
+                    );
+                    let old_task = self.guest_task().replace(guest_task);
+                    log::trace!(
+                        "maybe_send_event (fiber): replaced {:?} with {} as current task",
+                        old_task.map(|v| v.rep()),
+                        guest_task.rep()
+                    );
+                    self.resume_stackful(guest_task, fiber, async_)?;
+                    *self.guest_task() = old_task;
+                    log::trace!(
+                        "maybe_send_event (fiber): restored {:?} as current task",
+                        old_task.map(|v| v.rep())
+                    );
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if !resumed {
+                log::trace!(
+                    "queue event {event:?} to {} for {}",
+                    guest_task.rep(),
+                    waitable.rep()
+                );
+            }
+        } else {
+            unreachable!("can't send waitable-less event to non-callback task");
+        }
+
+        Ok(())
+    }
+
+    fn resume_stackful(
+        &mut self,
+        guest_task: TableId<GuestTask>,
+        mut fiber: StoreFiber<'static>,
+        async_: bool,
+    ) -> Result<()> {
+        self.maybe_push_call_context(guest_task)?;
+
+        let async_cx = AsyncCx::new(unsafe { (*self.store()).store_opaque_mut() });
+
+        let mut store = Some(self.store());
+        loop {
+            break match resume_fiber(&mut fiber, store.take(), Ok(()))? {
+                Ok((_, result)) => {
+                    result?;
+                    if async_ {
+                        if self.get(guest_task)?.lift_result.is_some() {
+                            return Err(anyhow!(crate::Trap::NoAsyncResult));
+                        }
+                    }
+                    if let Some(instance) = fiber.instance {
+                        self.maybe_resume_next_task(instance)?;
+                        match &self.get(guest_task)?.caller {
+                            Caller::Host(_) => {
+                                log::trace!(
+                                    "resume_stackful will delete task {}",
+                                    guest_task.rep()
+                                );
+                                Waitable::Guest(guest_task).delete_from(self)?;
+                            }
+                            Caller::Guest { .. } => {
+                                let waitable = Waitable::Guest(guest_task);
+                                waitable.common(self)?.event = Some((Event::CallReturned, 0));
+                                waitable.send_or_mark_ready(self)?;
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+                Err(new_store) => {
+                    if new_store.is_some() {
+                        self.maybe_pop_call_context(guest_task)?;
+                        self.get_mut(guest_task)?.deferred = Deferred::Stackful { fiber, async_ };
+                        Ok(())
+                    } else {
+                        // In this case, the fiber suspended while holding on to its
+                        // `*mut dyn VMStoret` instead of returning it to us.  That
+                        // means we can't do anything else with the store (or self)
+                        // for now; the only thing we can do is suspend _our_ fiber
+                        // back up to the top level executor, which will resume us
+                        // when we can make more progress, at which point we'll loop
+                        // around and restore the child fiber again.
+                        unsafe { async_cx.suspend(None) }?;
+                        continue;
+                    }
+                }
+            };
+        }
+    }
+
+    fn handle_callback_code(
+        &mut self,
+        runtime_instance: RuntimeComponentInstanceIndex,
+        guest_task: TableId<GuestTask>,
+        code: u32,
+        pending_event: Event,
+    ) -> Result<()> {
+        let (code, set) = unpack_callback_code(code);
+
+        log::trace!(
+            "received callback code from {}: {code} (set: {set})",
+            guest_task.rep()
+        );
+
+        let task = self.get_mut(guest_task)?;
+        let event = if task.lift_result.is_some() {
+            if code == callback_code::EXIT {
+                return Err(anyhow!(crate::Trap::NoAsyncResult));
+            }
+            pending_event
+        } else {
+            Event::CallReturned
+        };
+
+        let get_set = |instance: &mut Self, handle| {
+            if handle == 0 {
+                bail!("invalid waitable-set handle");
+            }
+
+            let (set, WaitableState::Set) =
+                instance.waitable_tables()[runtime_instance].get_mut_by_index(handle)?
+            else {
+                bail!("invalid waitable-set handle");
+            };
+
+            Ok(TableId::<WaitableSet>::new(set))
+        };
+
+        if event != Event::None {
+            let waitable = Waitable::Guest(guest_task);
+            waitable.common(self)?.event = Some((event, 0));
+            waitable.send_or_mark_ready(self)?;
+        }
+
+        match code {
+            callback_code::EXIT => match &self.get(guest_task)?.caller {
+                Caller::Host(_) => {
+                    log::trace!("handle_callback_code will delete task {}", guest_task.rep());
+                    Waitable::Guest(guest_task).delete_from(self)?;
+                }
+                Caller::Guest { .. } => {
+                    self.get_mut(guest_task)?.callback = None;
+                }
+            },
+            callback_code::YIELD => {
+                self.yielding().insert(guest_task, None);
+            }
+            callback_code::WAIT => {
+                let set = get_set(self, set)?;
+                let set = self.get_mut(set)?;
+
+                if let Some(waitable) = set.ready.pop_first() {
+                    let (event, result) = waitable.common(self)?.event.take().unwrap();
+                    self.maybe_send_event(guest_task, event, Some(waitable), result)?;
+                } else {
+                    set.waiting.insert(guest_task);
+                }
+            }
+            callback_code::POLL => {
+                let set = get_set(self, set)?;
+                self.get(set)?; // Just to make sure it exists
+                self.yielding().insert(guest_task, Some(set));
+            }
+            _ => bail!("unsupported callback code: {code}"),
+        }
+
+        Ok(())
+    }
+
+    fn resume_stackless(
+        &mut self,
+        guest_task: TableId<GuestTask>,
+        call: Box<dyn FnOnce(&mut ComponentInstance) -> Result<u32>>,
+        runtime_instance: RuntimeComponentInstanceIndex,
+    ) -> Result<()> {
+        self.maybe_push_call_context(guest_task)?;
+
+        let code = call(self)?;
+
+        self.maybe_pop_call_context(guest_task)?;
+
+        self.handle_callback_code(runtime_instance, guest_task, code, Event::CallStarted)?;
+
+        self.maybe_resume_next_task(runtime_instance)
+    }
+
+    fn poll_for_result(&mut self) -> Result<()> {
+        let task = *self.guest_task();
+        self.poll_loop(move |instance| {
+            task.map(|task| Ok::<_, anyhow::Error>(instance.get(task)?.result.is_none()))
+                .unwrap_or(Ok(true))
+        })
+    }
+
+    fn handle_ready(&mut self, ready: Vec<HostTaskOutput>) -> Result<()> {
+        for output in ready {
+            match output {
+                HostTaskOutput::Background(result) => {
+                    result?;
+                }
+                HostTaskOutput::Call { waitable, fun } => {
+                    let result = fun(self)?;
+                    log::trace!("handle_ready event {:?} for {waitable}", result.event);
+                    let waitable = match result.event {
+                        Event::CallReturned => Waitable::Host(TableId::<HostTask>::new(waitable)),
+                        Event::StreamRead
+                        | Event::FutureRead
+                        | Event::StreamWrite
+                        | Event::FutureWrite => {
+                            Waitable::Transmit(TableId::<TransmitHandle>::new(waitable))
+                        }
+                        _ => unreachable!(),
+                    };
+                    waitable.common(self)?.event = Some((result.event, result.param));
+                    waitable.send_or_mark_ready(self)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn maybe_yield(&mut self) -> Result<()> {
+        let guest_task = self.guest_task().unwrap();
+
+        if self.get(guest_task)?.should_yield {
+            log::trace!("maybe_yield suspend {}", guest_task.rep());
+
+            self.yielding().insert(guest_task, None);
+            unsafe {
+                let cx = AsyncCx::new((*self.store()).store_opaque_mut());
+                cx.suspend(Some(self.store()))
+            }?
+            .unwrap();
+
+            log::trace!("maybe_yield resume {}", guest_task.rep());
+        } else {
+            log::trace!("maybe_yield skip {}", guest_task.rep());
+        }
+
+        Ok(())
+    }
+
+    fn unyield(&mut self) -> Result<bool> {
+        let mut resumed = false;
+        for (guest_task, set) in mem::take(self.yielding()) {
+            if self.get(guest_task)?.callback.is_some() {
+                resumed = true;
+
+                let (waitable, event, result) = if let Some(set) = set {
+                    if let Some(waitable) = self.get_mut(set)?.ready.pop_first() {
+                        waitable
+                            .common(self)?
+                            .event
+                            .take()
+                            .map(|(e, v)| (Some(waitable), e, v))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+                .unwrap_or((None, Event::None, 0));
+
+                self.maybe_send_event(guest_task, event, waitable, result)?;
+            } else {
+                assert!(set.is_none());
+
+                if let Some((fiber, async_)) = self
+                    .get_mut(guest_task)
+                    .with_context(|| format!("guest task {}", guest_task.rep()))?
+                    .deferred
+                    .take_stackful()
+                {
+                    resumed = true;
+                    let old_task = self.guest_task().replace(guest_task);
+                    log::trace!(
+                        "unyield: replaced {:?} with {} as current task",
+                        old_task.map(|v| v.rep()),
+                        guest_task.rep()
+                    );
+                    self.resume_stackful(guest_task, fiber, async_)?;
+                    *self.guest_task() = old_task;
+                    log::trace!(
+                        "unyield: restored {:?} as current task",
+                        old_task.map(|v| v.rep())
+                    );
+                }
+            }
+        }
+
+        for instance in mem::take(self.unblocked()) {
+            let entry = self.instance_states().entry(instance).or_default();
+
+            if !(entry.backpressure || entry.in_sync_call) {
+                if let Some(task) = entry.task_queue.pop_front() {
+                    resumed = true;
+                    self.resume(task)?;
+                }
+            }
+        }
+
+        Ok(resumed)
+    }
+
+    fn poll_loop(&mut self, mut continue_: impl FnMut(&mut Self) -> Result<bool>) -> Result<()> {
+        loop {
+            let ready = {
+                let store = self.store();
+                let futures = self.concurrent_state.futures.get_mut().unwrap();
+                let mut future = pin!(futures.next());
+                unsafe {
+                    let cx = AsyncCx::new((*store).store_opaque_mut());
+                    cx.poll(future.as_mut())
+                }
+            };
+
+            match ready {
+                Poll::Ready(Some(ready)) => {
+                    self.handle_ready(ready)?;
+                }
+                Poll::Ready(None) => {
+                    let resumed = self.unyield()?;
+                    if !resumed {
+                        log::trace!("exhausted future queue; exiting poll_loop");
+                        break;
+                    }
+                }
+                Poll::Pending => {
+                    let resumed = self.unyield()?;
+                    if continue_(self)? {
+                        unsafe {
+                            let cx = AsyncCx::new((*self.store()).store_opaque_mut());
+                            cx.suspend(Some(self.store()))
+                        }?
+                        .unwrap();
+                    } else if !resumed {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn resume(&mut self, task: TableId<GuestTask>) -> Result<()> {
+        log::trace!("resume {}", task.rep());
+
+        // TODO: Avoid calling `resume_stackful` or `resume_stackless` here, because it may call us, leading to
+        // recursion limited only by the number of waiters.  Flatten this into an iteration instead.
+        let old_task = self.guest_task().replace(task);
+        log::trace!(
+            "resume: replaced {:?} with {} as current task",
+            old_task.map(|v| v.rep()),
+            task.rep()
+        );
+        match mem::replace(&mut self.get_mut(task)?.deferred, Deferred::None) {
+            Deferred::None => unreachable!(),
+            Deferred::Stackful { fiber, async_ } => self.resume_stackful(task, fiber, async_),
+            Deferred::Stackless { call, instance } => self.resume_stackless(task, call, instance),
+        }?;
+        *self.guest_task() = old_task;
+        log::trace!(
+            "resume: restored {:?} as current task",
+            old_task.map(|v| v.rep())
+        );
+        Ok(())
+    }
+
+    fn maybe_resume_next_task(&mut self, instance: RuntimeComponentInstanceIndex) -> Result<()> {
+        let state = self.instance_states().get_mut(&instance).unwrap();
+
+        if state.backpressure || state.in_sync_call {
+            Ok(())
+        } else {
+            if let Some(next) = state.task_queue.pop_front() {
+                self.resume(next)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn loop_until<R>(
+        &mut self,
+        mut future: Pin<Box<dyn Future<Output = R> + Send + '_>>,
+    ) -> Result<R> {
+        let result = Arc::new(Mutex::new(None));
+        let poll = &mut {
+            let result = result.clone();
+            move |instance: &mut ComponentInstance| {
+                let ready = unsafe {
+                    let cx = AsyncCx::new((*instance.store()).store_opaque_mut());
+                    cx.poll(future.as_mut())
+                };
+                Ok(match ready {
+                    Poll::Ready(value) => {
+                        *result.lock().unwrap() = Some(value);
+                        false
+                    }
+                    Poll::Pending => true,
+                })
+            }
+        };
+        self.poll_loop(|instance| poll(instance))?;
+
+        // Poll once more to get the result if necessary:
+        if result.lock().unwrap().is_none() {
+            poll(self)?;
+        }
+
+        let result = result
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| anyhow!(crate::Trap::NoAsyncResult));
+
+        result
+    }
+
+    fn do_start_call<T>(
+        &mut self,
+        mut store: StoreContextMut<T>,
+        guest_task: TableId<GuestTask>,
+        async_: bool,
+        call: impl FnOnce(
+                StoreContextMut<T>,
+                &mut ComponentInstance,
+            ) -> Result<[MaybeUninit<ValRaw>; MAX_FLAT_PARAMS]>
+            + Send
+            + Sync
+            + 'static,
+        callback: Option<SendSyncPtr<VMFuncRef>>,
+        post_return: Option<SendSyncPtr<VMFuncRef>>,
+        callee_instance: RuntimeComponentInstanceIndex,
+        result_count: usize,
+        use_fiber: bool,
+    ) -> Result<()> {
+        let state = &mut self.instance_states().entry(callee_instance).or_default();
+        let ready = state.task_queue.is_empty() && !(state.backpressure || state.in_sync_call);
+
+        let mut code = callback_code::EXIT;
+        let mut async_finished = false;
+
+        if callback.is_some() {
+            assert!(async_);
+
+            if ready {
+                self.maybe_push_call_context(guest_task)?;
+                let storage = call(store.as_context_mut(), self)?;
+                code = unsafe { storage[0].assume_init() }.get_i32() as u32;
+                async_finished = code == callback_code::EXIT;
+                self.maybe_pop_call_context(guest_task)?;
+            } else {
+                self.instance_states()
+                    .get_mut(&callee_instance)
+                    .unwrap()
+                    .task_queue
+                    .push_back(guest_task);
+
+                self.get_mut(guest_task)?.deferred = Deferred::Stackless {
+                    call: Box::new(move |instance| {
+                        let mut store = unsafe { StoreContextMut(&mut *instance.store().cast()) };
+                        let old_task = instance.guest_task().replace(guest_task);
+                        log::trace!(
+                            "do_start_call: replaced {:?} with {} as current task",
+                            old_task.map(|v| v.rep()),
+                            guest_task.rep()
+                        );
+                        let storage = call(store.as_context_mut(), instance)?;
+                        *instance.guest_task() = old_task;
+                        log::trace!(
+                            "do_start_call: restored {:?} as current task",
+                            old_task.map(|v| v.rep())
+                        );
+                        Ok(unsafe { storage[0].assume_init() }.get_i32() as u32)
+                    }),
+                    instance: callee_instance,
+                };
+            }
+        } else {
+            let do_call = move |mut store: StoreContextMut<T>, instance: &mut ComponentInstance| {
+                let mut flags = instance.instance_flags(callee_instance);
+
+                if !async_ {
+                    instance
+                        .instance_states()
+                        .get_mut(&callee_instance)
+                        .unwrap()
+                        .in_sync_call = true;
+                }
+
+                let storage = call(store.as_context_mut(), instance)?;
+
+                if !async_ {
+                    instance
+                        .instance_states()
+                        .get_mut(&callee_instance)
+                        .unwrap()
+                        .in_sync_call = false;
+
+                    let lift = instance.get_mut(guest_task)?.lift_result.take().unwrap();
+
+                    assert!(instance.get(guest_task)?.result.is_none());
+
+                    let result = (lift.lift)(instance, unsafe {
+                        mem::transmute::<&[MaybeUninit<ValRaw>], &[ValRaw]>(
+                            &storage[..result_count],
+                        )
+                    })?;
+
+                    unsafe { flags.set_needs_post_return(false) }
+
+                    if let Some(func) = post_return {
+                        let arg = match result_count {
+                            0 => ValRaw::i32(0),
+                            1 => unsafe { storage[0].assume_init() },
+                            _ => unreachable!(),
+                        };
+                        unsafe {
+                            crate::Func::call_unchecked_raw(
+                                &mut store,
+                                func.as_non_null(),
+                                NonNull::new(ptr::slice_from_raw_parts(&arg, 1).cast_mut())
+                                    .unwrap(),
+                            )?;
+                        }
+                    }
+
+                    unsafe { flags.set_may_enter(true) }
+
+                    let (calls, host_table, _) = store.0.component_resource_state();
+                    ResourceTables {
+                        calls,
+                        host_table: Some(host_table),
+                        tables: Some(instance.component_resource_tables()),
+                    }
+                    .exit_call()?;
+
+                    if let Caller::Host(tx) = &mut instance.get_mut(guest_task)?.caller {
+                        if let Some(tx) = tx.take() {
+                            _ = tx.send(result);
+                        }
+                    } else {
+                        instance.get_mut(guest_task)?.result = Some(result);
+                    }
+                }
+
+                Ok(())
+            };
+
+            if use_fiber {
+                let mut fiber = unsafe {
+                    make_fiber(store.traitobj().as_ptr(), Some(callee_instance), {
+                        let instance = self as *mut ComponentInstance;
+                        move |store| {
+                            let store = StoreContextMut::<T>(&mut *store.cast());
+                            let instance = &mut *instance;
+                            do_call(store, instance)
+                        }
+                    })
+                }?;
+
+                self.get_mut(guest_task)?.should_yield = true;
+
+                if ready {
+                    self.maybe_push_call_context(guest_task)?;
+                    let mut store = Some(store.traitobj().as_ptr());
+                    loop {
+                        match resume_fiber(&mut fiber, store.take(), Ok(()))? {
+                            Ok((_, result)) => {
+                                result?;
+                                async_finished = async_;
+                                self.maybe_resume_next_task(callee_instance)?;
+                                break;
+                            }
+                            Err(store) => {
+                                if store.is_some() {
+                                    self.maybe_pop_call_context(guest_task)?;
+                                    self.get_mut(guest_task)?.deferred =
+                                        Deferred::Stackful { fiber, async_ };
+                                    break;
+                                } else {
+                                    unsafe {
+                                        suspend_fiber(fiber.suspend, fiber.stack_limit, None)?;
+                                    };
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    self.instance_states()
+                        .get_mut(&callee_instance)
+                        .unwrap()
+                        .task_queue
+                        .push_back(guest_task);
+
+                    self.get_mut(guest_task)?.deferred = Deferred::Stackful { fiber, async_ };
+                }
+            } else {
+                self.maybe_push_call_context(guest_task)?;
+                do_call(store.as_context_mut(), self)?;
+                async_finished = async_;
+                self.maybe_pop_call_context(guest_task)?;
+            }
+        };
+
+        let guest_task = self.guest_task().take().unwrap();
+
+        let caller = if let Caller::Guest { task, .. } = &self.get(guest_task)?.caller {
+            Some(*task)
+        } else {
+            None
+        };
+        *self.guest_task() = caller;
+        log::trace!(
+            "popped current task {}; new task is {:?}",
+            guest_task.rep(),
+            caller.map(|v| v.rep())
+        );
+
+        let task = self.get_mut(guest_task)?;
+
+        if code == callback_code::EXIT
+            && async_finished
+            && !(matches!(&task.caller, Caller::Guest {..} if task.result.is_some())
+                || matches!(&task.caller, Caller::Host(tx) if tx.is_none()))
+        {
+            Err(anyhow!(crate::Trap::NoAsyncResult))
+        } else {
+            if ready && callback.is_some() {
+                self.handle_callback_code(callee_instance, guest_task, code, Event::CallStarted)?;
+            }
+
+            Ok(())
+        }
+    }
+
+    fn enter_call<T>(
+        &mut self,
+        start: *mut VMFuncRef,
+        return_: *mut VMFuncRef,
+        caller_instance: RuntimeComponentInstanceIndex,
+        task_return_type: TypeTupleIndex,
+        memory: *mut VMMemoryDefinition,
+        string_encoding: u8,
+        caller_info: CallerInfo,
+    ) -> Result<()> {
+        enum ResultInfo {
+            Heap { results: u32 },
+            Stack { result_count: u32 },
+        }
+
+        let result_info = match &caller_info {
+            CallerInfo::Async { results, .. } => ResultInfo::Heap { results: *results },
+            CallerInfo::Sync {
+                result_count,
+                params,
+            } if *result_count > u32::try_from(MAX_FLAT_RESULTS).unwrap() => ResultInfo::Heap {
+                results: params.last().unwrap().get_u32(),
+            },
+            CallerInfo::Sync { result_count, .. } => ResultInfo::Stack {
+                result_count: *result_count,
+            },
+        };
+
+        let start = SendSyncPtr::new(NonNull::new(start).unwrap());
+        let return_ = SendSyncPtr::new(NonNull::new(return_).unwrap());
+        let old_task = self.guest_task().take();
+        let old_task_rep = old_task.map(|v| v.rep());
+        let new_task = GuestTask::new(
+            self,
+            Box::new(move |instance, dst| {
+                let mut store = unsafe { StoreContextMut::<T>(&mut *instance.store().cast()) };
+                assert!(dst.len() <= MAX_FLAT_PARAMS);
+                let mut src = [MaybeUninit::uninit(); MAX_FLAT_PARAMS];
+                let count = match caller_info {
+                    CallerInfo::Async { params, .. } => {
+                        src[0] = MaybeUninit::new(ValRaw::u32(params));
+                        1
+                    }
+                    CallerInfo::Sync { params, .. } => {
+                        src[..params.len()].copy_from_slice(unsafe {
+                            mem::transmute::<&[ValRaw], &[MaybeUninit<ValRaw>]>(&params)
+                        });
+                        params.len()
+                    }
+                };
+                unsafe {
+                    crate::Func::call_unchecked_raw(
+                        &mut store,
+                        start.as_non_null(),
+                        NonNull::new(
+                            &mut src[..count.max(dst.len())] as *mut [MaybeUninit<ValRaw>] as _,
+                        )
+                        .unwrap(),
+                    )?;
+                }
+                dst.copy_from_slice(&src[..dst.len()]);
+                let task = instance.guest_task().unwrap();
+                if old_task_rep.is_some() {
+                    let waitable = Waitable::Guest(task);
+                    waitable.common(instance)?.event = Some((Event::CallStarted, 0));
+                    waitable.send_or_mark_ready(instance)?;
+                }
+                Ok(())
+            }),
+            LiftResult {
+                lift: Box::new(move |instance, src| {
+                    let mut store = unsafe { StoreContextMut::<T>(&mut *instance.store().cast()) };
+                    let mut my_src = src.to_owned(); // TODO: use stack to avoid allocation?
+                    if let ResultInfo::Heap { results } = &result_info {
+                        my_src.push(ValRaw::u32(*results));
+                    }
+                    unsafe {
+                        crate::Func::call_unchecked_raw(
+                            &mut store,
+                            return_.as_non_null(),
+                            my_src.as_mut_slice().into(),
+                        )?;
+                    }
+                    let task = instance.guest_task().unwrap();
+                    if let ResultInfo::Stack { result_count } = &result_info {
+                        match result_count {
+                            0 => {}
+                            1 => {
+                                instance.get_mut(task)?.sync_result = Some(my_src[0]);
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    if old_task_rep.is_some() {
+                        let waitable = Waitable::Guest(task);
+                        waitable.common(instance)?.event = Some((Event::CallReturned, 0));
+                        waitable.send_or_mark_ready(instance)?;
+                    }
+                    Ok(Box::new(DummyResult) as Box<dyn std::any::Any + Send + Sync>)
+                }),
+                ty: task_return_type,
+                memory: NonNull::new(memory).map(SendSyncPtr::new),
+                string_encoding: StringEncoding::from_u8(string_encoding).unwrap(),
+            },
+            Caller::Guest {
+                task: old_task.unwrap(),
+                instance: caller_instance,
+            },
+            None,
+        )?;
+        let guest_task = if let Some(old_task) = old_task {
+            let child = self.push(new_task)?;
+            self.get_mut(old_task)?.subtasks.insert(child);
+            log::trace!(
+                "new guest task child of {}: {}",
+                old_task.rep(),
+                child.rep()
+            );
+            child
+        } else {
+            self.push(new_task)?
+        };
+
+        *self.guest_task() = Some(guest_task);
+        log::trace!(
+            "pushed {} as current task; old task was {:?}",
+            guest_task.rep(),
+            old_task.map(|v| v.rep())
+        );
+
+        Ok(())
+    }
+
+    fn call_callback<T>(
+        &mut self,
+        callee_instance: RuntimeComponentInstanceIndex,
+        function: SendSyncPtr<VMFuncRef>,
+        event: Event,
+        handle: u32,
+        result: u32,
+    ) -> Result<u32> {
+        let mut store = unsafe { StoreContextMut::<T>(&mut *self.store().cast()) };
+        let mut flags = self.instance_flags(callee_instance);
+
+        let params = &mut [
+            ValRaw::u32(event as u32),
+            ValRaw::u32(handle),
+            ValRaw::u32(result),
+        ];
+        unsafe {
+            flags.set_may_enter(false);
+            crate::Func::call_unchecked_raw(
+                &mut store,
+                function.as_non_null(),
+                params.as_mut_slice().into(),
+            )?;
+            flags.set_may_enter(true);
+        }
+        Ok(params[0].get_u32())
+    }
+
+    fn exit_call<T>(
+        &mut self,
+        mut store: StoreContextMut<T>,
+        callback: *mut VMFuncRef,
+        post_return: *mut VMFuncRef,
+        caller_instance: RuntimeComponentInstanceIndex,
+        callee: *mut VMFuncRef,
+        callee_instance: RuntimeComponentInstanceIndex,
+        param_count: u32,
+        result_count: u32,
+        flags: u32,
+        storage: Option<&mut [MaybeUninit<ValRaw>]>,
+    ) -> Result<u32> {
+        let async_caller = storage.is_none();
+        let guest_task = self.guest_task().unwrap();
+        let callee = SendSyncPtr::new(NonNull::new(callee).unwrap());
+        let param_count = usize::try_from(param_count).unwrap();
+        assert!(param_count <= MAX_FLAT_PARAMS);
+        let result_count = usize::try_from(result_count).unwrap();
+        assert!(result_count <= MAX_FLAT_RESULTS);
+
+        if !callback.is_null() {
+            self.get_mut(guest_task)?.callback = Some(Callback {
+                function: SendSyncPtr::new(NonNull::new(callback).unwrap()),
+                caller: Self::call_callback::<T>,
+                instance: callee_instance,
+            });
+        }
+
+        let call = make_call(
+            guest_task,
+            callee,
+            callee_instance,
+            param_count,
+            result_count,
+            if callback.is_null() {
+                None
+            } else {
+                Some(self.instance_flags(callee_instance))
+            },
+        );
+
+        self.do_start_call(
+            store.as_context_mut(),
+            guest_task,
+            (flags & EXIT_FLAG_ASYNC_CALLEE) != 0,
+            call,
+            NonNull::new(callback).map(SendSyncPtr::new),
+            NonNull::new(post_return).map(SendSyncPtr::new),
+            callee_instance,
+            result_count,
+            true,
+        )?;
+
+        let task = self.get(guest_task)?;
+
+        let mut status = if task.lower_params.is_some() {
+            Status::Starting
+        } else if task.lift_result.is_some() {
+            Status::Started
+        } else {
+            Status::Returned
+        };
+
+        log::trace!("status {status:?} for {}", guest_task.rep());
+
+        let call = if status != Status::Returned {
+            if async_caller {
+                self.get_mut(guest_task)?.has_suspended = true;
+
+                self.waitable_tables()[caller_instance]
+                    .insert(guest_task.rep(), WaitableState::GuestTask)?
+            } else {
+                let caller = if let Caller::Guest { task, .. } = &task.caller {
+                    *task
+                } else {
+                    unreachable!()
+                };
+
+                let set = self.get_mut(caller)?.sync_call_set;
+                self.get_mut(set)?.waiting.insert(caller);
+                Waitable::Guest(guest_task).join(self, Some(set))?;
+
+                self.poll_for_result()?;
+                status = Status::Returned;
+                0
+            }
+        } else {
+            0
+        };
+
+        if let Some(storage) = storage {
+            if let Some(result) = self.get_mut(guest_task)?.sync_result.take() {
+                storage[0] = MaybeUninit::new(result);
+            }
+            Ok(0)
+        } else {
+            Ok(((status as u32) << 30) | call)
+        }
+    }
+
+    pub(crate) fn wrap_call<T, F, P, R>(
+        &mut self,
+        store: StoreContextMut<T>,
+        closure: Arc<F>,
+        params: P,
+    ) -> Pin<Box<dyn Future<Output = Result<R>> + Send + 'static>>
+    where
+        F: for<'a> Fn(
+                &'a mut Accessor<T, T>,
+                P,
+            ) -> Pin<Box<dyn Future<Output = Result<R>> + Send + 'a>>
+            + Send
+            + Sync
+            + 'static,
+        P: Lift + Send + Sync + 'static,
+        R: Lower + Send + Sync + 'static,
+    {
+        let mut accessor =
+            unsafe { Accessor::new(get_host_and_store, spawn_task, self.instance()) };
+        let mut future = Box::pin(async move { closure(&mut accessor, params).await });
+        let store = VMStoreRawPtr(store.traitobj());
+        let instance = SendSyncPtr::new(NonNull::new(self).unwrap());
+        let future = future::poll_fn(move |cx| {
+            poll_with_state::<T, _>(store, instance, cx, future.as_mut())
+        });
+
+        unsafe {
+            mem::transmute::<
+                Pin<Box<dyn Future<Output = Result<R>> + Send>>,
+                Pin<Box<dyn Future<Output = Result<R>> + Send + 'static>>,
+            >(Box::pin(future))
+        }
+    }
+
+    pub(crate) fn wrap_dynamic_call<T, F>(
+        &mut self,
+        store: StoreContextMut<T>,
+        closure: Arc<F>,
+        params: Vec<Val>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Val>>> + Send + 'static>>
+    where
+        F: for<'a> Fn(
+                &'a mut Accessor<T, T>,
+                Vec<Val>,
+            ) -> Pin<Box<dyn Future<Output = Result<Vec<Val>>> + Send + 'a>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let mut accessor =
+            unsafe { Accessor::new(get_host_and_store, spawn_task, self.instance()) };
+        let mut future = Box::pin(async move { closure(&mut accessor, params).await });
+        let store = VMStoreRawPtr(store.traitobj());
+        let instance = SendSyncPtr::new(NonNull::new(self).unwrap());
+        let future = future::poll_fn(move |cx| {
+            poll_with_state::<T, _>(store, instance, cx, future.as_mut())
+        });
+
+        unsafe {
+            mem::transmute::<
+                Pin<Box<dyn Future<Output = Result<Vec<Val>>> + Send>>,
+                Pin<Box<dyn Future<Output = Result<Vec<Val>>> + Send + 'static>>,
+            >(Box::pin(future))
+        }
+    }
+
+    pub(crate) fn first_poll<T, R: Send + Sync + 'static>(
+        &mut self,
+        store: StoreContextMut<T>,
+        future: impl Future<Output = Result<R>> + Send + 'static,
+        caller_instance: RuntimeComponentInstanceIndex,
+        lower: impl FnOnce(StoreContextMut<T>, R) -> Result<()> + Send + 'static,
+    ) -> Result<Option<u32>> {
+        let caller = self.guest_task().unwrap();
+        let task = self.push(HostTask::new(caller_instance))?;
+
+        // Here we wrap the future in a `future::poll_fn` to ensure that we restore
+        // and save the `CallContext` for this task before and after polling it,
+        // respectively.  This involves unsafe shenanigans in order to smuggle the
+        // store pointer into the wrapping future, alas.
+
+        fn maybe_push<T>(
+            store: VMStoreRawPtr,
+            call_context: &mut Option<CallContext>,
+            task: TableId<HostTask>,
+        ) {
+            let store = unsafe { StoreContextMut::<T>(&mut *store.0.as_ptr().cast()) };
+            if let Some(call_context) = call_context.take() {
+                log::trace!("push call context for {}", task.rep());
+                store.0.component_resource_state().0.push(call_context);
+            }
+        }
+
+        fn pop<T>(
+            store: VMStoreRawPtr,
+            call_context: &mut Option<CallContext>,
+            task: TableId<HostTask>,
+        ) {
+            log::trace!("pop call context for {}", task.rep());
+            let store = unsafe { StoreContextMut::<T>(&mut *store.0.as_ptr().cast()) };
+            *call_context = Some(store.0.component_resource_state().0.pop().unwrap());
+        }
+
+        let future = future::poll_fn({
+            let mut future = Box::pin(future);
+            let store = VMStoreRawPtr(store.0.traitobj());
+            let mut call_context = None;
+            move |cx| {
+                maybe_push::<T>(store, &mut call_context, task);
+
+                match future.as_mut().poll(cx) {
+                    Poll::Ready(output) => Poll::Ready(output),
+                    Poll::Pending => {
+                        pop::<T>(store, &mut call_context, task);
+                        Poll::Pending
+                    }
+                }
+            }
+        });
+
+        log::trace!("new host task child of {}: {}", caller.rep(), task.rep());
+        let mut future = Box::pin(future.map(move |result| HostTaskOutput::Call {
+            waitable: task.rep(),
+            fun: Box::new(move |instance| {
+                let store = unsafe { StoreContextMut(&mut *instance.store().cast()) };
+                lower(store, result?)?;
+                Ok(HostTaskResult {
+                    event: Event::CallReturned,
+                    param: 0u32,
+                })
+            }),
+        })) as HostTaskFuture;
+
+        Ok(
+            match future
+                .as_mut()
+                .poll(&mut Context::from_waker(&dummy_waker()))
+            {
+                Poll::Ready(output) => {
+                    let HostTaskOutput::Call { fun, .. } = output else {
+                        unreachable!()
+                    };
+                    log::trace!("delete host task {} (already ready)", task.rep());
+                    self.delete(task)?;
+                    fun(self)?;
+                    None
+                }
+                Poll::Pending => {
+                    self.get_mut(task)?.has_suspended = true;
+                    self.push_future(future);
+                    Some(
+                        self.waitable_tables()[caller_instance]
+                            .insert(task.rep(), WaitableState::HostTask)?,
+                    )
+                }
+            },
+        )
+    }
+
+    pub(crate) fn poll_and_block<T, R: Send + Sync + 'static>(
+        &mut self,
+        mut store: StoreContextMut<T>,
+        future: impl Future<Output = Result<R>> + Send + 'static,
+        caller_instance: RuntimeComponentInstanceIndex,
+    ) -> Result<R> {
+        let Some(caller) = *self.guest_task() else {
+            return match pin!(future).poll(&mut Context::from_waker(&dummy_waker())) {
+                Poll::Ready(result) => result,
+                Poll::Pending => {
+                    unreachable!()
+                }
+            };
+        };
+        let old_result = self
+            .get_mut(caller)
+            .with_context(|| format!("bad handle: {}", caller.rep()))?
+            .result
+            .take();
+        let task = self.push(HostTask::new(caller_instance))?;
+        log::trace!("new host task child of {}: {}", caller.rep(), task.rep());
+        let mut future = Box::pin(future.map(move |result| HostTaskOutput::Call {
+            waitable: task.rep(),
+            fun: Box::new(move |instance| {
+                instance.get_mut(caller)?.result = Some(Box::new(result?) as _);
+                Ok(HostTaskResult {
+                    event: Event::CallReturned,
+                    param: 0u32,
+                })
+            }),
+        })) as HostTaskFuture;
+
+        let Some(cx) = AsyncCx::try_new(&mut store.0) else {
+            return Err(anyhow!("future dropped"));
+        };
+
+        Ok(match unsafe { cx.poll(future.as_mut()) } {
+            Poll::Ready(output) => {
+                let HostTaskOutput::Call { fun, .. } = output else {
+                    unreachable!()
+                };
+                log::trace!("delete host task {} (already ready)", task.rep());
+                self.delete(task)?;
+                fun(self)?;
+                let result = *mem::replace(&mut self.get_mut(caller)?.result, old_result)
+                    .unwrap()
+                    .downcast()
+                    .unwrap();
+                result
+            }
+            Poll::Pending => {
+                self.push_future(future);
+
+                let set = self.get_mut(caller)?.sync_call_set;
+                self.get_mut(set)?.waiting.insert(caller);
+                Waitable::Host(task).join(self, Some(set))?;
+
+                self.poll_loop(|instance| Ok(instance.get_mut(caller)?.result.is_none()))?;
+
+                if let Some(result) = self.get_mut(caller)?.result.take() {
+                    self.get_mut(caller)?.result = old_result;
+                    *result.downcast().unwrap()
+                } else {
+                    return Err(anyhow!(crate::Trap::NoAsyncResult));
+                }
+            }
+        })
+    }
+
+    async fn poll_until<T: Send, R: Send + Sync + 'static>(
+        &mut self,
+        store: StoreContextMut<'_, T>,
+        future: Pin<Box<dyn Future<Output = R> + Send + '_>>,
+    ) -> Result<R> {
+        unsafe {
+            on_fiber_raw(VMStoreRawPtr(store.traitobj()), None, move |_| {
+                self.loop_until(future)
+            })
+        }
+        .await?
+    }
+
+    pub(crate) fn task_return(
+        &mut self,
         ty: TypeTupleIndex,
         memory: *mut VMMemoryDefinition,
         string_encoding: u8,
         storage: *mut ValRaw,
         storage_len: usize,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let storage = unsafe { std::slice::from_raw_parts(storage, storage_len) };
+        let guest_task = self.guest_task().unwrap();
+        let lift = self
+            .get_mut(guest_task)?
+            .lift_result
+            .take()
+            .ok_or_else(|| anyhow!("`task.return` called more than once for current task"))?;
 
-    /// The `waitable-set.new` intrinsic.
-    fn waitable_set_new(
+        if ty != lift.ty
+            || (!memory.is_null()
+                && memory != lift.memory.map(|v| v.as_ptr()).unwrap_or(ptr::null_mut()))
+            || string_encoding != lift.string_encoding as u8
+        {
+            bail!("invalid `task.return` signature and/or options for current task");
+        }
+
+        assert!(self.get(guest_task)?.result.is_none());
+
+        log::trace!("task.return for {}", guest_task.rep());
+
+        let result = (lift.lift)(self, storage)?;
+
+        let (calls, host_table, _) = unsafe { &mut *self.store() }
+            .store_opaque_mut()
+            .component_resource_state();
+        ResourceTables {
+            calls,
+            host_table: Some(host_table),
+            tables: Some(self.component_resource_tables()),
+        }
+        .exit_call()?;
+
+        if let Caller::Host(tx) = &mut self.get_mut(guest_task)?.caller {
+            if let Some(tx) = tx.take() {
+                _ = tx.send(result);
+            }
+        } else {
+            self.get_mut(guest_task)?.result = Some(result);
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn backpressure_set(
         &mut self,
-        instance: &mut ComponentInstance,
         caller_instance: RuntimeComponentInstanceIndex,
-    ) -> Result<u32>;
+        enabled: u32,
+    ) -> Result<()> {
+        let entry = self.instance_states().entry(caller_instance).or_default();
+        let old = entry.backpressure;
+        let new = enabled != 0;
+        entry.backpressure = new;
 
-    /// The `waitable-set.wait` intrinsic.
-    fn waitable_set_wait(
+        if old && !new && !entry.task_queue.is_empty() {
+            self.unblocked().insert(caller_instance);
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn waitable_set_new(
         &mut self,
-        instance: &mut ComponentInstance,
+        caller_instance: RuntimeComponentInstanceIndex,
+    ) -> Result<u32> {
+        let set = self.push(WaitableSet::default())?;
+        let handle =
+            self.waitable_tables()[caller_instance].insert(set.rep(), WaitableState::Set)?;
+        log::trace!("new waitable set {} (handle {handle})", set.rep());
+        Ok(handle)
+    }
+
+    pub(crate) fn waitable_set_wait(
+        &mut self,
         caller_instance: RuntimeComponentInstanceIndex,
         async_: bool,
         memory: *mut VMMemoryDefinition,
         set: u32,
         payload: u32,
-    ) -> Result<u32>;
+    ) -> Result<u32> {
+        let (rep, WaitableState::Set) =
+            self.waitable_tables()[caller_instance].get_mut_by_index(set)?
+        else {
+            bail!("invalid waitable-set handle");
+        };
 
-    /// The `waitable-set.poll` intrinsic.
-    fn waitable_set_poll(
+        self.waitable_check(
+            async_,
+            WaitableCheck::Wait(WaitableCheckParams {
+                set: TableId::new(rep),
+                memory,
+                payload,
+                caller_instance,
+            }),
+        )
+    }
+
+    pub(crate) fn waitable_set_poll(
         &mut self,
-        instance: &mut ComponentInstance,
         caller_instance: RuntimeComponentInstanceIndex,
         async_: bool,
         memory: *mut VMMemoryDefinition,
         set: u32,
         payload: u32,
-    ) -> Result<u32>;
+    ) -> Result<u32> {
+        let (rep, WaitableState::Set) =
+            self.waitable_tables()[caller_instance].get_mut_by_index(set)?
+        else {
+            bail!("invalid waitable-set handle");
+        };
 
-    /// The `waitable-set.drop` intrinsic.
-    fn waitable_set_drop(
+        self.waitable_check(
+            async_,
+            WaitableCheck::Poll(WaitableCheckParams {
+                set: TableId::new(rep),
+                memory,
+                payload,
+                caller_instance,
+            }),
+        )
+    }
+
+    pub(crate) fn yield_(&mut self, async_: bool) -> Result<()> {
+        self.waitable_check(async_, WaitableCheck::Yield).map(drop)
+    }
+
+    pub(crate) fn waitable_check(&mut self, async_: bool, check: WaitableCheck) -> Result<u32> {
+        if async_ {
+            bail!(
+                "todo: async `waitable-set.wait`, `waitable-set.poll`, and `yield` not yet implemented"
+            );
+        }
+
+        let guest_task = self.guest_task().unwrap();
+
+        let (wait, set) = match &check {
+            WaitableCheck::Wait(params) => {
+                self.get_mut(params.set)?.waiting.insert(guest_task);
+                (true, Some(params.set))
+            }
+            WaitableCheck::Poll(params) => (false, Some(params.set)),
+            WaitableCheck::Yield => (false, None),
+        };
+
+        log::trace!(
+            "waitable check for {}; set {:?}",
+            guest_task.rep(),
+            set.map(|v| v.rep())
+        );
+
+        if wait && self.get(guest_task)?.callback.is_some() {
+            bail!("cannot call `task.wait` from async-lifted export with callback");
+        }
+
+        let set_is_empty = |instance: &mut Self| {
+            Ok::<_, anyhow::Error>(
+                set.map(|set| Ok::<_, anyhow::Error>(instance.get(set)?.ready.is_empty()))
+                    .transpose()?
+                    .unwrap_or(true),
+            )
+        };
+
+        if matches!(check, WaitableCheck::Yield) || set_is_empty(self)? {
+            self.maybe_yield()?;
+
+            if set_is_empty(self)? {
+                self.poll_loop(move |instance| {
+                    Ok::<_, anyhow::Error>(wait && set_is_empty(instance)?)
+                })?;
+            }
+        }
+
+        log::trace!(
+            "waitable check for {}; set {:?}, part two",
+            guest_task.rep(),
+            set.map(|v| v.rep())
+        );
+
+        let result = match check {
+            WaitableCheck::Wait(params) => {
+                self.get_mut(params.set)?.waiting.remove(&guest_task);
+
+                let waitable = self
+                    .get_mut(params.set)?
+                    .ready
+                    .pop_first()
+                    .ok_or_else(|| anyhow!("no waitables to wait for"))?;
+
+                let (event, result) = waitable.common(self)?.event.take().unwrap();
+
+                log::trace!(
+                    "deliver event {event:?} via waitable-set.wait to {} for {}; set {}",
+                    guest_task.rep(),
+                    waitable.rep(),
+                    params.set.rep()
+                );
+
+                let entry =
+                    self.waitable_tables()[params.caller_instance].get_mut_by_rep(waitable.rep());
+                let Some((
+                    handle,
+                    WaitableState::HostTask
+                    | WaitableState::GuestTask
+                    | WaitableState::Stream(..)
+                    | WaitableState::Future(..),
+                )) = entry
+                else {
+                    bail!("handle not found for waitable rep {}", waitable.rep());
+                };
+
+                let store = unsafe { (*self.store()).store_opaque_mut() };
+                let options = unsafe {
+                    Options::new(
+                        store.id(),
+                        NonNull::new(params.memory),
+                        None,
+                        StringEncoding::Utf8,
+                        true,
+                        None,
+                    )
+                };
+                let ptr = func::validate_inbounds::<(u32, u32)>(
+                    options.memory_mut(store),
+                    &ValRaw::u32(params.payload),
+                )?;
+                options.memory_mut(store)[ptr + 0..][..4].copy_from_slice(&handle.to_le_bytes());
+                options.memory_mut(store)[ptr + 4..][..4].copy_from_slice(&result.to_le_bytes());
+
+                Ok(event as u32)
+            }
+            WaitableCheck::Poll(params) => {
+                if let Some(waitable) = self.get_mut(params.set)?.ready.pop_first() {
+                    let (event, result) = waitable.common(self)?.event.take().unwrap();
+
+                    let entry = self.waitable_tables()[params.caller_instance]
+                        .get_mut_by_rep(waitable.rep());
+                    let Some((
+                        handle,
+                        WaitableState::HostTask
+                        | WaitableState::GuestTask
+                        | WaitableState::Stream(..)
+                        | WaitableState::Future(..),
+                    )) = entry
+                    else {
+                        bail!("handle not found for waitable rep {}", waitable.rep());
+                    };
+
+                    let store = unsafe { (*self.store()).store_opaque_mut() };
+                    let options = unsafe {
+                        Options::new(
+                            store.id(),
+                            NonNull::new(params.memory),
+                            None,
+                            StringEncoding::Utf8,
+                            true,
+                            None,
+                        )
+                    };
+                    let ptr = func::validate_inbounds::<(u32, u32, u32)>(
+                        options.memory_mut(store),
+                        &ValRaw::u32(params.payload),
+                    )?;
+                    options.memory_mut(store)[ptr + 0..][..4]
+                        .copy_from_slice(&(event as u32).to_le_bytes());
+                    options.memory_mut(store)[ptr + 4..][..4]
+                        .copy_from_slice(&handle.to_le_bytes());
+                    options.memory_mut(store)[ptr + 8..][..4]
+                        .copy_from_slice(&result.to_le_bytes());
+
+                    Ok(1)
+                } else {
+                    log::trace!(
+                        "no events ready to deliver via waitable-set.poll to {}; set {}",
+                        guest_task.rep(),
+                        params.set.rep()
+                    );
+
+                    Ok(0)
+                }
+            }
+            WaitableCheck::Yield => Ok(0),
+        };
+
+        result
+    }
+
+    pub(crate) fn waitable_set_drop(
         &mut self,
-        instance: &mut ComponentInstance,
         caller_instance: RuntimeComponentInstanceIndex,
         set: u32,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let (rep, WaitableState::Set) =
+            self.waitable_tables()[caller_instance].remove_by_index(set)?
+        else {
+            bail!("invalid waitable-set handle");
+        };
 
-    /// The `waitable.join` intrinsic.
-    fn waitable_join(
+        log::trace!("drop waitable set {rep} (handle {set})");
+
+        self.delete(TableId::<WaitableSet>::new(rep))?;
+
+        Ok(())
+    }
+
+    pub(crate) fn waitable_join(
         &mut self,
-        instance: &mut ComponentInstance,
         caller_instance: RuntimeComponentInstanceIndex,
-        waitable: u32,
-        set: u32,
-    ) -> Result<()>;
+        waitable_handle: u32,
+        set_handle: u32,
+    ) -> Result<()> {
+        let waitable = Waitable::from_instance(self, caller_instance, waitable_handle)?;
 
-    /// The `yield` intrinsic.
-    fn yield_(&mut self, instance: &mut ComponentInstance, async_: bool) -> Result<()>;
+        let set = if set_handle == 0 {
+            None
+        } else {
+            let (set, WaitableState::Set) =
+                self.waitable_tables()[caller_instance].get_mut_by_index(set_handle)?
+            else {
+                bail!("invalid waitable-set handle");
+            };
 
-    /// The `subtask.drop` intrinsic.
-    fn subtask_drop(
+            Some(TableId::<WaitableSet>::new(set))
+        };
+
+        log::trace!(
+            "waitable {} (handle {waitable_handle}) join set {:?} (handle {set_handle})",
+            waitable.rep(),
+            set.map(|v| v.rep())
+        );
+
+        waitable.join(self, set)
+    }
+
+    pub(crate) fn subtask_drop(
         &mut self,
-        instance: &mut ComponentInstance,
         caller_instance: RuntimeComponentInstanceIndex,
         task_id: u32,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        self.waitable_join(caller_instance, task_id, 0)?;
 
+        let (rep, state) = self.waitable_tables()[caller_instance].remove_by_index(task_id)?;
+        log::trace!("subtask_drop {rep} (handle {task_id})");
+        let expected_caller_instance = match state {
+            WaitableState::HostTask => self.get(TableId::<HostTask>::new(rep))?.caller_instance,
+            WaitableState::GuestTask => {
+                if let Caller::Guest { instance, .. } =
+                    &self.get(TableId::<GuestTask>::new(rep))?.caller
+                {
+                    *instance
+                } else {
+                    unreachable!()
+                }
+            }
+            _ => bail!("invalid task handle: {task_id}"),
+        };
+        assert_eq!(expected_caller_instance, caller_instance);
+        Ok(())
+    }
+
+    pub(crate) fn context_get(&mut self, slot: u32) -> Result<u32> {
+        let task = self.guest_task().unwrap();
+        Ok(self.get(task)?.context[usize::try_from(slot).unwrap()])
+    }
+
+    pub(crate) fn context_set(&mut self, slot: u32, val: u32) -> Result<()> {
+        let task = self.guest_task().unwrap();
+        self.get_mut(task)?.context[usize::try_from(slot).unwrap()] = val;
+        Ok(())
+    }
+}
+
+/// Trait representing component model ABI async intrinsics and fused adapter
+/// helper functions.
+pub unsafe trait VMComponentAsyncStore {
     /// A helper function for fused adapter modules involving calls where the
     /// caller is sync-lowered but the callee is async-lifted.
     fn sync_enter(
         &mut self,
+        instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
         start: *mut VMFuncRef,
         return_: *mut VMFuncRef,
@@ -498,6 +2343,7 @@ pub unsafe trait VMComponentAsyncStore {
     /// caller is async-lowered.
     fn async_enter(
         &mut self,
+        instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
         start: *mut VMFuncRef,
         return_: *mut VMFuncRef,
@@ -521,13 +2367,6 @@ pub unsafe trait VMComponentAsyncStore {
         param_count: u32,
         result_count: u32,
         flags: u32,
-    ) -> Result<u32>;
-
-    /// The `future.new` intrinsic.
-    fn future_new(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeFutureTableIndex,
     ) -> Result<u32>;
 
     /// The `future.write` intrinsic.
@@ -554,51 +2393,6 @@ pub unsafe trait VMComponentAsyncStore {
         err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         future: u32,
         address: u32,
-    ) -> Result<u32>;
-
-    /// The `future.cancel-write` intrinsic.
-    fn future_cancel_write(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeFutureTableIndex,
-        async_: bool,
-        writer: u32,
-    ) -> Result<u32>;
-
-    /// The `future.cancel-read` intrinsic.
-    fn future_cancel_read(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeFutureTableIndex,
-        async_: bool,
-        reader: u32,
-    ) -> Result<u32>;
-
-    /// The `future.close-writable` intrinsic.
-    fn future_close_writable(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeFutureTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
-        writer: u32,
-        error: u32,
-    ) -> Result<()>;
-
-    /// The `future.close-readable` intrinsic.
-    fn future_close_readable(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeFutureTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
-        reader: u32,
-        error: u32,
-    ) -> Result<()>;
-
-    /// The `stream.new` intrinsic.
-    fn stream_new(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeStreamTableIndex,
     ) -> Result<u32>;
 
     /// The `stream.write` intrinsic.
@@ -628,44 +2422,6 @@ pub unsafe trait VMComponentAsyncStore {
         address: u32,
         count: u32,
     ) -> Result<u32>;
-
-    /// The `stream.cancel-write` intrinsic.
-    fn stream_cancel_write(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeStreamTableIndex,
-        async_: bool,
-        writer: u32,
-    ) -> Result<u32>;
-
-    /// The `stream.cancel-read` intrinsic.
-    fn stream_cancel_read(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeStreamTableIndex,
-        async_: bool,
-        reader: u32,
-    ) -> Result<u32>;
-
-    /// The `stream.close-writable` intrinsic.
-    fn stream_close_writable(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeStreamTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
-        writer: u32,
-        error: u32,
-    ) -> Result<()>;
-
-    /// The `stream.close-readable` intrinsic.
-    fn stream_close_readable(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeStreamTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
-        reader: u32,
-        error: u32,
-    ) -> Result<()>;
 
     /// The "fast-path" implementation of the `stream.write` intrinsic for
     /// "flat" (i.e. memcpy-able) payloads.
@@ -699,18 +2455,6 @@ pub unsafe trait VMComponentAsyncStore {
         count: u32,
     ) -> Result<u32>;
 
-    /// The `error-context.new` intrinsic.
-    fn error_context_new(
-        &mut self,
-        instance: &mut ComponentInstance,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        string_encoding: u8,
-        ty: TypeComponentLocalErrorContextTableIndex,
-        debug_msg_address: u32,
-        debug_msg_len: u32,
-    ) -> Result<u32>;
-
     /// The `error-context.debug-message` intrinsic.
     fn error_context_debug_message(
         &mut self,
@@ -722,289 +2466,12 @@ pub unsafe trait VMComponentAsyncStore {
         err_ctx_handle: u32,
         debug_msg_address: u32,
     ) -> Result<()>;
-
-    /// The `error-context.drop` intrinsic.
-    fn error_context_drop(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeComponentLocalErrorContextTableIndex,
-        err_ctx_handle: u32,
-    ) -> Result<()>;
-
-    /// The `context.get` intrinsic.
-    fn context_get(&mut self, slot: u32) -> Result<u32>;
-
-    /// The `context.get` intrinsic.
-    fn context_set(&mut self, slot: u32, val: u32) -> Result<()>;
-
-    /// Helper function for fused adapter modules which need to transfer futures
-    /// from one component to another.
-    fn future_transfer(
-        &mut self,
-        instance: &mut ComponentInstance,
-        src_idx: u32,
-        src: TypeFutureTableIndex,
-        dst: TypeFutureTableIndex,
-    ) -> Result<u32>;
-
-    /// Helper function for fused adapter modules which need to transfer streams
-    /// from one component to another.
-    fn stream_transfer(
-        &mut self,
-        instance: &mut ComponentInstance,
-        src_idx: u32,
-        src: TypeStreamTableIndex,
-        dst: TypeStreamTableIndex,
-    ) -> Result<u32>;
 }
 
 unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
-    fn backpressure_set(
-        &mut self,
-        caller_instance: RuntimeComponentInstanceIndex,
-        enabled: u32,
-    ) -> Result<()> {
-        let mut store = StoreContextMut(self);
-        let entry = store
-            .concurrent_state()
-            .instance_states
-            .entry(caller_instance)
-            .or_default();
-        let old = entry.backpressure;
-        let new = enabled != 0;
-        entry.backpressure = new;
-
-        if old && !new && !entry.task_queue.is_empty() {
-            store.concurrent_state().unblocked.insert(caller_instance);
-        }
-
-        Ok(())
-    }
-
-    fn task_return(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeTupleIndex,
-        memory: *mut VMMemoryDefinition,
-        string_encoding: u8,
-        storage: *mut ValRaw,
-        storage_len: usize,
-    ) -> Result<()> {
-        let storage = unsafe { std::slice::from_raw_parts(storage, storage_len) };
-        let mut store = StoreContextMut(self);
-        let guest_task = store.concurrent_state().guest_task.unwrap();
-        let lift = store
-            .concurrent_state()
-            .table
-            .get_mut(guest_task)?
-            .lift_result
-            .take()
-            .ok_or_else(|| anyhow!("`task.return` called more than once for current task"))?;
-
-        if ty != lift.ty
-            || (!memory.is_null()
-                && memory != lift.memory.map(|v| v.as_ptr()).unwrap_or(ptr::null_mut()))
-            || string_encoding != lift.string_encoding as u8
-        {
-            bail!("invalid `task.return` signature and/or options for current task");
-        }
-
-        assert!(store
-            .concurrent_state()
-            .table
-            .get(guest_task)?
-            .result
-            .is_none());
-
-        log::trace!("task.return for {}", guest_task.rep());
-
-        let result = (lift.lift)(store.0.traitobj().as_ptr(), storage)?;
-
-        let (calls, host_table, _) = store.0.component_resource_state();
-        ResourceTables {
-            calls,
-            host_table: Some(host_table),
-            tables: Some((*instance).component_resource_tables()),
-        }
-        .exit_call()?;
-
-        if let Caller::Host(tx) = &mut store.concurrent_state().table.get_mut(guest_task)?.caller {
-            if let Some(tx) = tx.take() {
-                _ = tx.send(result);
-            }
-        } else {
-            store.concurrent_state().table.get_mut(guest_task)?.result = Some(result);
-        }
-
-        Ok(())
-    }
-
-    fn waitable_set_new(
-        &mut self,
-        instance: &mut ComponentInstance,
-        caller_instance: RuntimeComponentInstanceIndex,
-    ) -> Result<u32> {
-        let mut store = StoreContextMut(self);
-        let set = store
-            .concurrent_state()
-            .table
-            .push(WaitableSet::default())?;
-        let handle = instance.component_waitable_tables()[caller_instance]
-            .insert(set.rep(), WaitableState::Set)?;
-        log::trace!("new waitable set {} (handle {handle})", set.rep());
-        Ok(handle)
-    }
-
-    fn waitable_set_wait(
-        &mut self,
-        instance: &mut ComponentInstance,
-        caller_instance: RuntimeComponentInstanceIndex,
-        async_: bool,
-        memory: *mut VMMemoryDefinition,
-        set: u32,
-        payload: u32,
-    ) -> Result<u32> {
-        let (rep, WaitableState::Set) =
-            instance.component_waitable_tables()[caller_instance].get_mut_by_index(set)?
-        else {
-            bail!("invalid waitable-set handle");
-        };
-
-        waitable_check(
-            StoreContextMut(self),
-            instance,
-            async_,
-            WaitableCheck::Wait(WaitableCheckParams {
-                set: TableId::new(rep),
-                memory,
-                payload,
-                caller_instance,
-            }),
-        )
-    }
-
-    fn waitable_set_poll(
-        &mut self,
-        instance: &mut ComponentInstance,
-        caller_instance: RuntimeComponentInstanceIndex,
-        async_: bool,
-        memory: *mut VMMemoryDefinition,
-        set: u32,
-        payload: u32,
-    ) -> Result<u32> {
-        let (rep, WaitableState::Set) =
-            instance.component_waitable_tables()[caller_instance].get_mut_by_index(set)?
-        else {
-            bail!("invalid waitable-set handle");
-        };
-
-        waitable_check(
-            StoreContextMut(self),
-            instance,
-            async_,
-            WaitableCheck::Poll(WaitableCheckParams {
-                set: TableId::new(rep),
-                memory,
-                payload,
-                caller_instance,
-            }),
-        )
-    }
-
-    fn waitable_set_drop(
-        &mut self,
-        instance: &mut ComponentInstance,
-        caller_instance: RuntimeComponentInstanceIndex,
-        set: u32,
-    ) -> Result<()> {
-        let (rep, WaitableState::Set) =
-            instance.component_waitable_tables()[caller_instance].remove_by_index(set)?
-        else {
-            bail!("invalid waitable-set handle");
-        };
-
-        log::trace!("drop waitable set {rep} (handle {set})");
-
-        StoreContextMut(self)
-            .concurrent_state()
-            .table
-            .delete(TableId::<WaitableSet>::new(rep))?;
-
-        Ok(())
-    }
-
-    fn waitable_join(
-        &mut self,
-        instance: &mut ComponentInstance,
-        caller_instance: RuntimeComponentInstanceIndex,
-        waitable_handle: u32,
-        set_handle: u32,
-    ) -> Result<()> {
-        let waitable = Waitable::from_instance(instance, caller_instance, waitable_handle)?;
-
-        let set = if set_handle == 0 {
-            None
-        } else {
-            let (set, WaitableState::Set) = instance.component_waitable_tables()[caller_instance]
-                .get_mut_by_index(set_handle)?
-            else {
-                bail!("invalid waitable-set handle");
-            };
-
-            Some(TableId::<WaitableSet>::new(set))
-        };
-
-        log::trace!(
-            "waitable {} (handle {waitable_handle}) join set {:?} (handle {set_handle})",
-            waitable.rep(),
-            set.map(|v| v.rep())
-        );
-
-        waitable.join(StoreContextMut(self), set)
-    }
-
-    fn yield_(&mut self, instance: &mut ComponentInstance, async_: bool) -> Result<()> {
-        waitable_check(
-            StoreContextMut(self),
-            instance,
-            async_,
-            WaitableCheck::Yield,
-        )
-        .map(drop)
-    }
-
-    fn subtask_drop(
-        &mut self,
-        instance: &mut ComponentInstance,
-        caller_instance: RuntimeComponentInstanceIndex,
-        task_id: u32,
-    ) -> Result<()> {
-        self.waitable_join(instance, caller_instance, task_id, 0)?;
-
-        let mut store = StoreContextMut(self);
-        let (rep, state) =
-            instance.component_waitable_tables()[caller_instance].remove_by_index(task_id)?;
-        log::trace!("subtask_drop {rep} (handle {task_id})");
-        let table = &mut store.concurrent_state().table;
-        let expected_caller_instance = match state {
-            WaitableState::HostTask => table.get(TableId::<HostTask>::new(rep))?.caller_instance,
-            WaitableState::GuestTask => {
-                if let Caller::Guest { instance, .. } =
-                    &table.get(TableId::<GuestTask>::new(rep))?.caller
-                {
-                    *instance
-                } else {
-                    unreachable!()
-                }
-            }
-            _ => bail!("invalid task handle: {task_id}"),
-        };
-        assert_eq!(expected_caller_instance, caller_instance);
-        Ok(())
-    }
-
     fn sync_enter(
         &mut self,
+        instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
         start: *mut VMFuncRef,
         return_: *mut VMFuncRef,
@@ -1015,8 +2482,7 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         storage: *mut ValRaw,
         storage_len: usize,
     ) -> Result<()> {
-        enter_call(
-            StoreContextMut(self),
+        instance.enter_call::<T>(
             start,
             return_,
             caller_instance,
@@ -1041,24 +2507,25 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         storage: *mut MaybeUninit<ValRaw>,
         storage_len: usize,
     ) -> Result<()> {
-        exit_call(
-            StoreContextMut(self),
-            instance,
-            callback,
-            ptr::null_mut(),
-            caller_instance,
-            callee,
-            callee_instance,
-            param_count,
-            1,
-            EXIT_FLAG_ASYNC_CALLEE,
-            Some(unsafe { std::slice::from_raw_parts_mut(storage, storage_len) }),
-        )
-        .map(drop)
+        instance
+            .exit_call(
+                StoreContextMut(self),
+                callback,
+                ptr::null_mut(),
+                caller_instance,
+                callee,
+                callee_instance,
+                param_count,
+                1,
+                EXIT_FLAG_ASYNC_CALLEE,
+                Some(unsafe { std::slice::from_raw_parts_mut(storage, storage_len) }),
+            )
+            .map(drop)
     }
 
     fn async_enter(
         &mut self,
+        instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
         start: *mut VMFuncRef,
         return_: *mut VMFuncRef,
@@ -1068,8 +2535,7 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         params: u32,
         results: u32,
     ) -> Result<()> {
-        enter_call(
-            StoreContextMut(self),
+        instance.enter_call::<T>(
             start,
             return_,
             caller_instance,
@@ -1092,9 +2558,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         result_count: u32,
         flags: u32,
     ) -> Result<u32> {
-        exit_call(
+        instance.exit_call(
             StoreContextMut(self),
-            instance,
             callback,
             post_return,
             caller_instance,
@@ -1105,14 +2570,6 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
             flags,
             None,
         )
-    }
-
-    fn future_new(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeFutureTableIndex,
-    ) -> Result<u32> {
-        futures_and_streams::guest_new(StoreContextMut(self), instance, TableIndex::Future(ty))
     }
 
     fn future_write(
@@ -1126,9 +2583,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         future: u32,
         address: u32,
     ) -> Result<u32> {
-        futures_and_streams::guest_write(
+        instance.guest_write(
             StoreContextMut(self),
-            instance,
             memory,
             realloc,
             string_encoding,
@@ -1152,9 +2608,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         future: u32,
         address: u32,
     ) -> Result<u32> {
-        futures_and_streams::guest_read(
+        instance.guest_read(
             StoreContextMut(self),
-            instance,
             memory,
             realloc,
             string_encoding,
@@ -1165,82 +2620,6 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
             address,
             1,
         )
-    }
-
-    fn future_cancel_write(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeFutureTableIndex,
-        async_: bool,
-        writer: u32,
-    ) -> Result<u32> {
-        futures_and_streams::guest_cancel_write(
-            StoreContextMut(self),
-            instance,
-            TableIndex::Future(ty),
-            writer,
-            async_,
-        )
-    }
-
-    fn future_cancel_read(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeFutureTableIndex,
-        async_: bool,
-        reader: u32,
-    ) -> Result<u32> {
-        futures_and_streams::guest_cancel_read(
-            StoreContextMut(self),
-            instance,
-            TableIndex::Future(ty),
-            reader,
-            async_,
-        )
-    }
-
-    fn future_close_writable(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeFutureTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
-        writer: u32,
-        error: u32,
-    ) -> Result<()> {
-        futures_and_streams::guest_close_writable(
-            StoreContextMut(self),
-            instance,
-            TableIndex::Future(ty),
-            err_ctx_ty,
-            writer,
-            error,
-        )
-    }
-
-    fn future_close_readable(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeFutureTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
-        reader: u32,
-        error: u32,
-    ) -> Result<()> {
-        futures_and_streams::guest_close_readable(
-            StoreContextMut(self),
-            instance,
-            TableIndex::Future(ty),
-            err_ctx_ty,
-            reader,
-            error,
-        )
-    }
-
-    fn stream_new(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeStreamTableIndex,
-    ) -> Result<u32> {
-        futures_and_streams::guest_new(StoreContextMut(self), instance, TableIndex::Stream(ty))
     }
 
     fn stream_write(
@@ -1255,9 +2634,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         address: u32,
         count: u32,
     ) -> Result<u32> {
-        futures_and_streams::guest_write(
+        instance.guest_write(
             StoreContextMut(self),
-            instance,
             memory,
             realloc,
             string_encoding,
@@ -1282,9 +2660,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         address: u32,
         count: u32,
     ) -> Result<u32> {
-        futures_and_streams::guest_read(
+        instance.guest_read(
             StoreContextMut(self),
-            instance,
             memory,
             realloc,
             string_encoding,
@@ -1294,74 +2671,6 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
             stream,
             address,
             count,
-        )
-    }
-
-    fn stream_cancel_write(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeStreamTableIndex,
-        async_: bool,
-        writer: u32,
-    ) -> Result<u32> {
-        futures_and_streams::guest_cancel_write(
-            StoreContextMut(self),
-            instance,
-            TableIndex::Stream(ty),
-            writer,
-            async_,
-        )
-    }
-
-    fn stream_cancel_read(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeStreamTableIndex,
-        async_: bool,
-        reader: u32,
-    ) -> Result<u32> {
-        futures_and_streams::guest_cancel_read(
-            StoreContextMut(self),
-            instance,
-            TableIndex::Stream(ty),
-            reader,
-            async_,
-        )
-    }
-
-    fn stream_close_writable(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeStreamTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
-        writer: u32,
-        error: u32,
-    ) -> Result<()> {
-        futures_and_streams::guest_close_writable(
-            StoreContextMut(self),
-            instance,
-            TableIndex::Stream(ty),
-            err_ctx_ty,
-            writer,
-            error,
-        )
-    }
-
-    fn stream_close_readable(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeStreamTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
-        reader: u32,
-        error: u32,
-    ) -> Result<()> {
-        futures_and_streams::guest_close_readable(
-            StoreContextMut(self),
-            instance,
-            TableIndex::Stream(ty),
-            err_ctx_ty,
-            reader,
-            error,
         )
     }
 
@@ -1378,9 +2687,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         address: u32,
         count: u32,
     ) -> Result<u32> {
-        futures_and_streams::guest_write(
+        instance.guest_write(
             StoreContextMut(self),
-            instance,
             memory,
             realloc,
             StringEncoding::Utf8 as u8,
@@ -1409,9 +2717,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         address: u32,
         count: u32,
     ) -> Result<u32> {
-        futures_and_streams::guest_read(
+        instance.guest_read(
             StoreContextMut(self),
-            instance,
             memory,
             realloc,
             StringEncoding::Utf8 as u8,
@@ -1427,28 +2734,6 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         )
     }
 
-    fn error_context_new(
-        &mut self,
-        instance: &mut ComponentInstance,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        string_encoding: u8,
-        ty: TypeComponentLocalErrorContextTableIndex,
-        debug_msg_address: u32,
-        debug_msg_len: u32,
-    ) -> Result<u32> {
-        futures_and_streams::error_context_new(
-            StoreContextMut(self),
-            instance,
-            memory,
-            realloc,
-            string_encoding,
-            ty,
-            debug_msg_address,
-            debug_msg_len,
-        )
-    }
-
     fn error_context_debug_message(
         &mut self,
         instance: &mut ComponentInstance,
@@ -1459,89 +2744,14 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         err_ctx_handle: u32,
         debug_msg_address: u32,
     ) -> Result<()> {
-        futures_and_streams::error_context_debug_message(
+        instance.error_context_debug_message(
             StoreContextMut(self),
-            instance,
             memory,
             realloc,
             string_encoding,
             ty,
             err_ctx_handle,
             debug_msg_address,
-        )
-    }
-
-    fn error_context_drop(
-        &mut self,
-        instance: &mut ComponentInstance,
-        ty: TypeComponentLocalErrorContextTableIndex,
-        err_ctx_handle: u32,
-    ) -> Result<()> {
-        futures_and_streams::error_context_drop(StoreContextMut(self), instance, ty, err_ctx_handle)
-    }
-
-    fn context_get(&mut self, slot: u32) -> Result<u32> {
-        let mut store = StoreContextMut(self);
-        let task = store.concurrent_state().guest_task.unwrap();
-        Ok(store.concurrent_state().table.get(task)?.context[usize::try_from(slot).unwrap()])
-    }
-
-    fn context_set(&mut self, slot: u32, val: u32) -> Result<()> {
-        let mut store = StoreContextMut(self);
-        let task = store.concurrent_state().guest_task.unwrap();
-        store.concurrent_state().table.get_mut(task)?.context[usize::try_from(slot).unwrap()] = val;
-        Ok(())
-    }
-
-    fn future_transfer(
-        &mut self,
-        instance: &mut ComponentInstance,
-        src_idx: u32,
-        src: TypeFutureTableIndex,
-        dst: TypeFutureTableIndex,
-    ) -> Result<u32> {
-        futures_and_streams::guest_transfer(
-            StoreContextMut(self),
-            instance,
-            src_idx,
-            src,
-            instance.component_types()[src].instance,
-            dst,
-            instance.component_types()[dst].instance,
-            |state| {
-                if let WaitableState::Future(ty, state) = state {
-                    Ok((*ty, state))
-                } else {
-                    Err(anyhow!("invalid future handle"))
-                }
-            },
-            WaitableState::Future,
-        )
-    }
-
-    fn stream_transfer(
-        &mut self,
-        instance: &mut ComponentInstance,
-        src_idx: u32,
-        src: TypeStreamTableIndex,
-        dst: TypeStreamTableIndex,
-    ) -> Result<u32> {
-        futures_and_streams::guest_transfer(
-            StoreContextMut(self),
-            instance,
-            src_idx,
-            src,
-            instance.component_types()[src].instance,
-            dst,
-            instance.component_types()[dst].instance,
-            |state| {
-                if let WaitableState::Stream(ty, state) = state {
-                    Ok((*ty, state))
-                } else {
-                    Err(anyhow!("invalid stream handle"))
-                }
-            },
-            WaitableState::Stream,
         )
     }
 }
@@ -1555,11 +2765,11 @@ enum HostTaskOutput {
     Background(Result<()>),
     Call {
         waitable: u32,
-        fun: Box<dyn FnOnce(*mut dyn VMStore) -> Result<HostTaskResult> + Send + Sync>,
+        fun: Box<dyn FnOnce(&mut ComponentInstance) -> Result<HostTaskResult> + Send>,
     },
 }
 
-type HostTaskFuture = Pin<Box<dyn Future<Output = HostTaskOutput> + Send + Sync + 'static>>;
+type HostTaskFuture = Pin<Box<dyn Future<Output = HostTaskOutput> + Send + 'static>>;
 
 struct HostTask {
     common: WaitableCommon,
@@ -1584,7 +2794,7 @@ enum Deferred {
         async_: bool,
     },
     Stackless {
-        call: Box<dyn FnOnce(*mut dyn VMStore) -> Result<u32> + Send + Sync + 'static>,
+        call: Box<dyn FnOnce(&mut ComponentInstance) -> Result<u32> + Send + Sync + 'static>,
         instance: RuntimeComponentInstanceIndex,
     },
 }
@@ -1605,6 +2815,14 @@ impl Deferred {
 #[derive(Copy, Clone)]
 struct Callback {
     function: SendSyncPtr<VMFuncRef>,
+    caller: fn(
+        &mut ComponentInstance,
+        RuntimeComponentInstanceIndex,
+        SendSyncPtr<VMFuncRef>,
+        Event,
+        u32,
+        u32,
+    ) -> Result<u32>,
     instance: RuntimeComponentInstanceIndex,
 }
 
@@ -1641,17 +2859,14 @@ struct GuestTask {
 }
 
 impl GuestTask {
-    fn new<T>(
-        mut store: StoreContextMut<T>,
+    fn new(
+        instance: &mut ComponentInstance,
         lower_params: RawLower,
         lift_result: LiftResult,
         caller: Caller,
         callback: Option<Callback>,
     ) -> Result<Self> {
-        let sync_call_set = store
-            .concurrent_state()
-            .table
-            .push(WaitableSet::default())?;
+        let sync_call_set = instance.push(WaitableSet::default())?;
 
         Ok(Self {
             common: WaitableCommon::default(),
@@ -1671,25 +2886,23 @@ impl GuestTask {
         })
     }
 
-    fn dispose<T>(self, mut store: StoreContextMut<T>, me: TableId<GuestTask>) -> Result<()> {
-        store.concurrent_state().yielding.remove(&me);
+    fn dispose(self, instance: &mut ComponentInstance, me: TableId<GuestTask>) -> Result<()> {
+        instance.yielding().remove(&me);
 
-        for waitable in mem::take(
-            &mut store
-                .concurrent_state()
-                .table
-                .get_mut(self.sync_call_set)?
-                .ready,
-        ) {
-            if let Some((Event::CallReturned, _)) = waitable.common(&mut store)?.event {
-                waitable.delete_from(store.as_context_mut())?;
+        for waitable in mem::take(&mut instance.get_mut(self.sync_call_set)?.ready) {
+            if let Some((Event::CallReturned, _)) = waitable.common(instance)?.event {
+                waitable.delete_from(instance)?;
             }
         }
 
-        store.concurrent_state().table.delete(self.sync_call_set)?;
+        instance.delete(self.sync_call_set)?;
 
-        if let Caller::Guest { task, instance } = &self.caller {
-            let task_mut = store.concurrent_state().table.get_mut(*task)?;
+        if let Caller::Guest {
+            task,
+            instance: runtime_instance,
+        } = &self.caller
+        {
+            let task_mut = instance.get_mut(*task)?;
             let present = task_mut.subtasks.remove(&me);
             assert!(present);
 
@@ -1698,14 +2911,14 @@ impl GuestTask {
             }
 
             for subtask in &self.subtasks {
-                store.concurrent_state().table.get_mut(*subtask)?.caller = Caller::Guest {
+                instance.get_mut(*subtask)?.caller = Caller::Guest {
                     task: *task,
-                    instance: *instance,
+                    instance: *runtime_instance,
                 };
             }
         } else {
             for subtask in &self.subtasks {
-                store.concurrent_state().table.get_mut(*subtask)?.caller = Caller::Host(None);
+                instance.get_mut(*subtask)?.caller = Caller::Host(None);
             }
         }
 
@@ -1733,7 +2946,7 @@ impl Waitable {
         waitable: u32,
     ) -> Result<Self> {
         let (waitable, state) =
-            instance.component_waitable_tables()[caller_instance].get_mut_by_index(waitable)?;
+            instance.waitable_tables()[caller_instance].get_mut_by_index(waitable)?;
 
         Ok(match state {
             WaitableState::HostTask => Waitable::Host(TableId::new(waitable)),
@@ -1753,108 +2966,85 @@ impl Waitable {
         }
     }
 
-    fn join<T>(
+    fn join(
         &self,
-        mut store: StoreContextMut<T>,
+        instance: &mut ComponentInstance,
         set: Option<TableId<WaitableSet>>,
     ) -> Result<()> {
-        let old = mem::replace(&mut self.common(&mut store)?.set, set);
+        let old = mem::replace(&mut self.common(instance)?.set, set);
 
         if let Some(old) = old {
-            let table = &mut store.concurrent_state().table;
             match *self {
-                Waitable::Host(id) => table.remove_child(id, old),
-                Waitable::Guest(id) => table.remove_child(id, old),
-                Waitable::Transmit(id) => table.remove_child(id, old),
+                Waitable::Host(id) => instance.remove_child(id, old),
+                Waitable::Guest(id) => instance.remove_child(id, old),
+                Waitable::Transmit(id) => instance.remove_child(id, old),
             }?;
 
-            table.get_mut(old)?.ready.remove(self);
+            instance.get_mut(old)?.ready.remove(self);
         }
 
         if let Some(set) = set {
-            let table = &mut store.concurrent_state().table;
             match *self {
-                Waitable::Host(id) => table.add_child(id, set),
-                Waitable::Guest(id) => table.add_child(id, set),
-                Waitable::Transmit(id) => table.add_child(id, set),
+                Waitable::Host(id) => instance.add_child(id, set),
+                Waitable::Guest(id) => instance.add_child(id, set),
+                Waitable::Transmit(id) => instance.add_child(id, set),
             }?;
 
-            if self.common(&mut store)?.event.is_some() {
-                self.mark_ready(store)?;
+            if self.common(instance)?.event.is_some() {
+                self.mark_ready(instance)?;
             }
         }
 
         Ok(())
     }
 
-    fn has_suspended<T>(&self, mut store: StoreContextMut<T>) -> Result<bool> {
+    fn has_suspended(&self, instance: &mut ComponentInstance) -> Result<bool> {
         Ok(match self {
-            Waitable::Host(id) => store.concurrent_state().table.get(*id)?.has_suspended,
-            Waitable::Guest(id) => store.concurrent_state().table.get(*id)?.has_suspended,
+            Waitable::Host(id) => instance.get(*id)?.has_suspended,
+            Waitable::Guest(id) => instance.get(*id)?.has_suspended,
             Waitable::Transmit(_) => true,
         })
     }
 
-    fn common<'a, T>(&self, store: &'a mut StoreContextMut<T>) -> Result<&'a mut WaitableCommon> {
-        let table = &mut store.concurrent_state().table;
+    fn common<'a>(&self, instance: &'a mut ComponentInstance) -> Result<&'a mut WaitableCommon> {
         Ok(match self {
-            Self::Host(id) => &mut table.get_mut(*id)?.common,
-            Self::Guest(id) => &mut table.get_mut(*id)?.common,
-            Self::Transmit(id) => &mut table.get_mut(*id)?.common,
+            Self::Host(id) => &mut instance.get_mut(*id)?.common,
+            Self::Guest(id) => &mut instance.get_mut(*id)?.common,
+            Self::Transmit(id) => &mut instance.get_mut(*id)?.common,
         })
     }
 
-    fn mark_ready<T>(&self, mut store: StoreContextMut<T>) -> Result<()> {
-        if let Some(set) = self.common(&mut store)?.set {
-            store
-                .concurrent_state()
-                .table
-                .get_mut(set)?
-                .ready
-                .insert(*self);
+    fn mark_ready(&self, instance: &mut ComponentInstance) -> Result<()> {
+        if let Some(set) = self.common(instance)?.set {
+            instance.get_mut(set)?.ready.insert(*self);
         }
         Ok(())
     }
 
-    fn send_or_mark_ready<T>(&self, mut store: StoreContextMut<T>) -> Result<()> {
-        if let Some(set) = self.common(&mut store)?.set {
-            if let Some(task) = store
-                .concurrent_state()
-                .table
-                .get_mut(set)?
-                .waiting
-                .pop_first()
-            {
-                let (event, result) = self.common(&mut store)?.event.take().unwrap();
-                maybe_send_event(store, task, event, Some(*self), result)?;
+    fn send_or_mark_ready(&self, instance: &mut ComponentInstance) -> Result<()> {
+        if let Some(set) = self.common(instance)?.set {
+            if let Some(task) = instance.get_mut(set)?.waiting.pop_first() {
+                let (event, result) = self.common(instance)?.event.take().unwrap();
+                instance.maybe_send_event(task, event, Some(*self), result)?;
             } else {
-                store
-                    .concurrent_state()
-                    .table
-                    .get_mut(set)?
-                    .ready
-                    .insert(*self);
+                instance.get_mut(set)?.ready.insert(*self);
             }
         }
         Ok(())
     }
 
-    fn delete_from<T>(&self, mut store: StoreContextMut<T>) -> Result<()> {
+    fn delete_from(&self, instance: &mut ComponentInstance) -> Result<()> {
         match self {
             Self::Host(task) => {
                 log::trace!("delete host task {}", task.rep());
-                store.concurrent_state().table.delete(*task)?;
+                instance.delete(*task)?;
             }
             Self::Guest(task) => {
                 log::trace!("delete guest task {}", task.rep());
-                store
-                    .concurrent_state()
-                    .table
-                    .delete(*task)?
-                    .dispose(store, *task)?;
+                instance.delete(*task)?.dispose(instance, *task)?;
             }
             Self::Transmit(task) => {
-                store.concurrent_state().table.delete(*task)?;
+                instance.delete(*task)?;
             }
         }
 
@@ -1883,12 +3073,14 @@ impl Drop for LiftLowerContext {
 }
 
 type RawLower =
-    Box<dyn FnOnce(*mut dyn VMStore, &mut [MaybeUninit<ValRaw>]) -> Result<()> + Send + Sync>;
+    Box<dyn FnOnce(&mut ComponentInstance, &mut [MaybeUninit<ValRaw>]) -> Result<()> + Send + Sync>;
 
 type LowerFn = fn(LiftLowerContext, *mut dyn VMStore, &mut [MaybeUninit<ValRaw>]) -> Result<()>;
 
 type RawLift = Box<
-    dyn FnOnce(*mut dyn VMStore, &[ValRaw]) -> Result<Box<dyn Any + Send + Sync>> + Send + Sync,
+    dyn FnOnce(&mut ComponentInstance, &[ValRaw]) -> Result<Box<dyn Any + Send + Sync>>
+        + Send
+        + Sync,
 >;
 
 type LiftFn =
@@ -1925,7 +3117,7 @@ impl Default for PollContext {
     }
 }
 
-struct AsyncState {
+pub(crate) struct AsyncState {
     current_suspend: UnsafeCell<
         *mut Suspend<
             (Option<*mut dyn VMStore>, Result<()>),
@@ -1934,6 +3126,22 @@ struct AsyncState {
         >,
     >,
     current_poll_cx: UnsafeCell<PollContext>,
+}
+
+impl Default for AsyncState {
+    fn default() -> Self {
+        Self {
+            current_suspend: UnsafeCell::new(ptr::null_mut()),
+            current_poll_cx: UnsafeCell::new(PollContext::default()),
+        }
+    }
+}
+
+impl AsyncState {
+    pub(crate) fn async_guard_range(&self) -> Range<*mut u8> {
+        let context = unsafe { *self.current_poll_cx.get() };
+        context.guard_range_start..context.guard_range_end
+    }
 }
 
 unsafe impl Send for AsyncState {}
@@ -1951,18 +3159,18 @@ pub(crate) struct AsyncCx {
 }
 
 impl AsyncCx {
-    pub(crate) fn new<T>(store: &mut StoreContextMut<T>) -> Self {
+    pub(crate) fn new(store: &mut StoreOpaque) -> Self {
         Self::try_new(store).unwrap()
     }
 
-    pub(crate) fn try_new<T>(store: &mut StoreContextMut<T>) -> Option<Self> {
-        let current_poll_cx = store.concurrent_state().async_state.current_poll_cx.get();
+    pub(crate) fn try_new(store: &mut StoreOpaque) -> Option<Self> {
+        let current_poll_cx = store.concurrent_async_state().current_poll_cx.get();
         if unsafe { (*current_poll_cx).future_context.is_null() } {
             None
         } else {
             Some(Self {
-                current_suspend: store.concurrent_state().async_state.current_suspend.get(),
-                current_stack_limit: store.0.vm_store_context().stack_limit.get(),
+                current_suspend: store.concurrent_async_state().current_suspend.get(),
+                current_stack_limit: store.vm_store_context().stack_limit.get(),
                 current_poll_cx,
                 track_pkey_context_switch: store.has_pkey(),
             })
@@ -1977,11 +3185,11 @@ impl AsyncCx {
         future.as_mut().poll(&mut *poll_cx.future_context)
     }
 
-    pub(crate) unsafe fn block_on<'a, T, U>(
+    pub(crate) unsafe fn block_on<U>(
         &self,
         mut future: Pin<&mut (dyn Future<Output = U> + Send)>,
-        mut store: Option<StoreContextMut<'a, T>>,
-    ) -> Result<(U, Option<StoreContextMut<'a, T>>)> {
+        mut store: Option<*mut dyn VMStore>,
+    ) -> Result<(U, Option<*mut dyn VMStore>)> {
         loop {
             match self.poll(future.as_mut()) {
                 Poll::Ready(v) => break Ok((v, store)),
@@ -1992,10 +3200,7 @@ impl AsyncCx {
         }
     }
 
-    unsafe fn suspend<'a, T>(
-        &self,
-        store: Option<StoreContextMut<'a, T>>,
-    ) -> Result<Option<StoreContextMut<'a, T>>> {
+    unsafe fn suspend(&self, store: Option<*mut dyn VMStore>) -> Result<Option<*mut dyn VMStore>> {
         let previous_mask = if self.track_pkey_context_switch {
             let previous_mask = mpk::current_mask();
             mpk::allow(ProtectionMask::all());
@@ -2018,47 +3223,70 @@ struct InstanceState {
     task_queue: VecDeque<TableId<GuestTask>>,
 }
 
-pub struct ConcurrentState<T> {
+pub struct ConcurrentState {
     guest_task: Option<TableId<GuestTask>>,
-    futures: ReadyChunks<FuturesUnordered<HostTaskFuture>>,
+    futures: Mutex<ReadyChunks<FuturesUnordered<HostTaskFuture>>>,
     table: Table,
-    async_state: AsyncState,
     // TODO: this can and should be a `PrimaryMap`
     instance_states: HashMap<RuntimeComponentInstanceIndex, InstanceState>,
     yielding: HashMap<TableId<GuestTask>, Option<TableId<WaitableSet>>>,
     unblocked: HashSet<RuntimeComponentInstanceIndex>,
-    component_instance: Option<SendSyncPtr<ComponentInstance>>,
-    _phantom: PhantomData<T>,
+    waitable_tables: PrimaryMap<RuntimeComponentInstanceIndex, StateTable<WaitableState>>,
+
+    /// (Sub)Component specific error context tracking
+    ///
+    /// At the component level, only the number of references (`usize`) to a given error context is tracked,
+    /// with state related to the error context being held at the component model level, in concurrent
+    /// state.
+    ///
+    /// The state tables in the (sub)component local tracking must contain a pointer into the global
+    /// error context lookups in order to ensure that in contexts where only the local reference is present
+    /// the global state can still be maintained/updated.
+    error_context_tables:
+        PrimaryMap<TypeComponentLocalErrorContextTableIndex, StateTable<LocalErrorContextRefCount>>,
+
+    /// Reference counts for all component error contexts
+    ///
+    /// NOTE: it is possible the global ref count to be *greater* than the sum of
+    /// (sub)component ref counts as tracked by `error_context_tables`, for
+    /// example when the host holds one or more references to error contexts.
+    ///
+    /// The key of this primary map is often referred to as the "rep" (i.e. host-side
+    /// component-wide representation) of the index into concurrent state for a given
+    /// stored `ErrorContext`.
+    ///
+    /// Stated another way, `TypeComponentGlobalErrorContextTableIndex` is essentially the same
+    /// as a `TableId<ErrorContextState>`.
+    global_error_context_ref_counts:
+        BTreeMap<TypeComponentGlobalErrorContextTableIndex, GlobalErrorContextRefCount>,
 }
 
-impl<T> ConcurrentState<T> {
-    pub(crate) fn async_guard_range(&self) -> Range<*mut u8> {
-        let context = unsafe { *self.async_state.current_poll_cx.get() };
-        context.guard_range_start..context.guard_range_end
-    }
+impl ConcurrentState {
+    pub(crate) fn new(num_waitable_tables: u32, num_error_context_tables: usize) -> Self {
+        let mut waitable_tables =
+            PrimaryMap::with_capacity(usize::try_from(num_waitable_tables).unwrap());
+        for _ in 0..num_waitable_tables {
+            waitable_tables.push(StateTable::default());
+        }
 
-    pub(crate) fn spawn(&mut self, task: impl Future<Output = Result<()>> + Send + Sync + 'static) {
-        self.futures.get_mut().push(Box::pin(
-            async move { HostTaskOutput::Background(task.await) },
-        ))
-    }
-}
+        let mut error_context_tables = PrimaryMap::<
+            TypeComponentLocalErrorContextTableIndex,
+            StateTable<LocalErrorContextRefCount>,
+        >::with_capacity(num_error_context_tables);
+        for _ in 0..num_error_context_tables {
+            error_context_tables.push(StateTable::default());
+        }
 
-impl<T> Default for ConcurrentState<T> {
-    fn default() -> Self {
         Self {
             guest_task: None,
             table: Table::new(),
-            futures: ReadyChunks::new(FuturesUnordered::new(), 1024),
-            async_state: AsyncState {
-                current_suspend: UnsafeCell::new(ptr::null_mut()),
-                current_poll_cx: UnsafeCell::new(PollContext::default()),
-            },
+            futures: Mutex::new(ReadyChunks::new(FuturesUnordered::new(), 1024)),
             instance_states: HashMap::new(),
             yielding: HashMap::new(),
             unblocked: HashSet::new(),
-            component_instance: None,
-            _phantom: PhantomData,
+            waitable_tables,
+            error_context_tables,
+            global_error_context_ref_counts: BTreeMap::new(),
         }
     }
 }
@@ -2076,7 +3304,7 @@ fn dummy_waker() -> Waker {
 }
 
 fn for_any_lower<
-    F: FnOnce(*mut dyn VMStore, &mut [MaybeUninit<ValRaw>]) -> Result<()> + Send + Sync,
+    F: FnOnce(&mut ComponentInstance, &mut [MaybeUninit<ValRaw>]) -> Result<()> + Send + Sync,
 >(
     fun: F,
 ) -> F {
@@ -2084,218 +3312,36 @@ fn for_any_lower<
 }
 
 fn for_any_lift<
-    F: FnOnce(*mut dyn VMStore, &[ValRaw]) -> Result<Box<dyn Any + Send + Sync>> + Send + Sync,
+    F: FnOnce(&mut ComponentInstance, &[ValRaw]) -> Result<Box<dyn Any + Send + Sync>> + Send + Sync,
 >(
     fun: F,
 ) -> F {
     fun
 }
 
-pub(crate) fn first_poll<T, R: Send + Sync + 'static>(
-    instance: *mut ComponentInstance,
-    mut store: StoreContextMut<T>,
-    future: impl Future<Output = Result<R>> + Send + Sync + 'static,
-    caller_instance: RuntimeComponentInstanceIndex,
-    lower: impl FnOnce(StoreContextMut<T>, R) -> Result<()> + Send + Sync + 'static,
-) -> Result<Option<u32>> {
-    let caller = store.concurrent_state().guest_task.unwrap();
-    let task = store
-        .concurrent_state()
-        .table
-        .push(HostTask::new(caller_instance))?;
-
-    // Here we wrap the future in a `future::poll_fn` to ensure that we restore
-    // and save the `CallContext` for this task before and after polling it,
-    // respectively.  This involves unsafe shenanigans in order to smuggle the
-    // store pointer into the wrapping future, alas.
-
-    fn maybe_push<T>(
-        store: VMStoreRawPtr,
-        call_context: &mut Option<CallContext>,
-        task: TableId<HostTask>,
-    ) {
-        let store = unsafe { StoreContextMut::<T>(&mut *store.0.as_ptr().cast()) };
-        if let Some(call_context) = call_context.take() {
-            log::trace!("push call context for {}", task.rep());
-            store.0.component_resource_state().0.push(call_context);
-        }
-    }
-
-    fn pop<T>(
-        store: VMStoreRawPtr,
-        call_context: &mut Option<CallContext>,
-        task: TableId<HostTask>,
-    ) {
-        log::trace!("pop call context for {}", task.rep());
-        let store = unsafe { StoreContextMut::<T>(&mut *store.0.as_ptr().cast()) };
-        *call_context = Some(store.0.component_resource_state().0.pop().unwrap());
-    }
-
-    let future = future::poll_fn({
-        let mut future = Box::pin(future);
-        let store = VMStoreRawPtr(store.0.traitobj());
-        let mut call_context = None;
-        move |cx| {
-            maybe_push::<T>(store, &mut call_context, task);
-
-            match future.as_mut().poll(cx) {
-                Poll::Ready(output) => Poll::Ready(output),
-                Poll::Pending => {
-                    pop::<T>(store, &mut call_context, task);
-                    Poll::Pending
-                }
-            }
-        }
-    });
-
-    log::trace!("new host task child of {}: {}", caller.rep(), task.rep());
-    let mut future = Box::pin(future.map(move |result| HostTaskOutput::Call {
-        waitable: task.rep(),
-        fun: Box::new(move |store: *mut dyn VMStore| {
-            let store = unsafe { StoreContextMut(&mut *store.cast()) };
-            lower(store, result?)?;
-            Ok(HostTaskResult {
-                event: Event::CallReturned,
-                param: 0u32,
-            })
-        }),
-    })) as HostTaskFuture;
-
-    Ok(
-        match future
-            .as_mut()
-            .poll(&mut Context::from_waker(&dummy_waker()))
-        {
-            Poll::Ready(output) => {
-                let HostTaskOutput::Call { fun, .. } = output else {
-                    unreachable!()
-                };
-                log::trace!("delete host task {} (already ready)", task.rep());
-                store.concurrent_state().table.delete(task)?;
-                fun(store.0.traitobj().as_ptr())?;
-                None
-            }
-            Poll::Pending => {
-                store.concurrent_state().table.get_mut(task)?.has_suspended = true;
-                store.concurrent_state().futures.get_mut().push(future);
-                Some(
-                    unsafe { &mut *instance }.component_waitable_tables()[caller_instance]
-                        .insert(task.rep(), WaitableState::HostTask)?,
-                )
-            }
-        },
-    )
-}
-
-pub(crate) fn poll_and_block<'a, T, R: Send + Sync + 'static>(
-    mut store: StoreContextMut<'a, T>,
-    future: impl Future<Output = Result<R>> + Send + Sync + 'static,
-    caller_instance: RuntimeComponentInstanceIndex,
-) -> Result<R> {
-    let Some(caller) = store.concurrent_state().guest_task else {
-        return match pin!(future).poll(&mut Context::from_waker(&dummy_waker())) {
-            Poll::Ready(result) => result,
-            Poll::Pending => {
-                unreachable!()
-            }
-        };
-    };
-    let old_result = store
-        .concurrent_state()
-        .table
-        .get_mut(caller)
-        .with_context(|| format!("bad handle: {}", caller.rep()))?
-        .result
-        .take();
-    let task = store
-        .concurrent_state()
-        .table
-        .push(HostTask::new(caller_instance))?;
-    log::trace!("new host task child of {}: {}", caller.rep(), task.rep());
-    let mut future = Box::pin(future.map(move |result| HostTaskOutput::Call {
-        waitable: task.rep(),
-        fun: Box::new(move |store: *mut dyn VMStore| {
-            let mut store = unsafe { StoreContextMut::<T>(&mut *store.cast()) };
-            store.concurrent_state().table.get_mut(caller)?.result = Some(Box::new(result?) as _);
-            Ok(HostTaskResult {
-                event: Event::CallReturned,
-                param: 0u32,
-            })
-        }),
-    })) as HostTaskFuture;
-
-    let Some(cx) = AsyncCx::try_new(&mut store) else {
-        return Err(anyhow!("future dropped"));
-    };
-
-    Ok(match unsafe { cx.poll(future.as_mut()) } {
-        Poll::Ready(output) => {
-            let HostTaskOutput::Call { fun, .. } = output else {
-                unreachable!()
-            };
-            log::trace!("delete host task {} (already ready)", task.rep());
-            store.concurrent_state().table.delete(task)?;
-            fun(store.0.traitobj().as_ptr())?;
-            let result = *mem::replace(
-                &mut store.concurrent_state().table.get_mut(caller)?.result,
-                old_result,
-            )
-            .unwrap()
-            .downcast()
-            .unwrap();
-            result
-        }
-        Poll::Pending => {
-            store.concurrent_state().futures.get_mut().push(future);
-
-            let set = store
-                .concurrent_state()
-                .table
-                .get_mut(caller)?
-                .sync_call_set;
-            store
-                .concurrent_state()
-                .table
-                .get_mut(set)?
-                .waiting
-                .insert(caller);
-            Waitable::Host(task).join(store.as_context_mut(), Some(set))?;
-
-            poll_loop(store.as_context_mut(), |store| {
-                Ok(store
-                    .concurrent_state()
-                    .table
-                    .get_mut(caller)?
-                    .result
-                    .is_none())
-            })?;
-
-            if let Some(result) = store
-                .concurrent_state()
-                .table
-                .get_mut(caller)?
-                .result
-                .take()
-            {
-                store.concurrent_state().table.get_mut(caller)?.result = old_result;
-                *result.downcast().unwrap()
-            } else {
-                return Err(anyhow!(crate::Trap::NoAsyncResult));
-            }
-        }
-    })
-}
-
-pub(crate) async fn on_fiber<'a, R: Send + Sync + 'static, T: Send>(
-    mut store: StoreContextMut<'a, T>,
+pub(crate) async fn on_fiber<R: Send + 'static, T: Send>(
+    store: StoreContextMut<'_, T>,
     instance: Option<RuntimeComponentInstanceIndex>,
     func: impl FnOnce(&mut StoreContextMut<T>) -> R + Send,
 ) -> Result<R> {
+    unsafe {
+        on_fiber_raw(VMStoreRawPtr(store.traitobj()), instance, move |store| {
+            func(&mut StoreContextMut(&mut *store.cast()))
+        })
+        .await
+    }
+}
+
+async unsafe fn on_fiber_raw<R: Send + 'static>(
+    store: VMStoreRawPtr,
+    instance: Option<RuntimeComponentInstanceIndex>,
+    func: impl FnOnce(*mut dyn VMStore) -> R + Send,
+) -> Result<R> {
     let result = Arc::new(Mutex::new(None));
-    let mut fiber = make_fiber(&mut store, instance, {
+    let mut fiber = make_fiber(store.0.as_ptr(), instance, {
         let result = result.clone();
-        move |mut store| {
-            *result.lock().unwrap() = Some(func(&mut store));
+        move |store| {
+            *result.lock().unwrap() = Some(func(store));
             Ok(())
         }
     })?;
@@ -2327,614 +3373,8 @@ pub(crate) async fn on_fiber<'a, R: Send + Sync + 'static, T: Send>(
     Ok(result)
 }
 
-fn maybe_push_call_context<T>(
-    store: &mut StoreContextMut<T>,
-    guest_task: TableId<GuestTask>,
-) -> Result<()> {
-    let task = store.concurrent_state().table.get_mut(guest_task)?;
-    if task.lift_result.is_some() {
-        log::trace!("push call context for {}", guest_task.rep());
-        let call_context = task.call_context.take().unwrap();
-        store.0.component_resource_state().0.push(call_context);
-    }
-    Ok(())
-}
-
-fn maybe_pop_call_context<T>(
-    store: &mut StoreContextMut<T>,
-    guest_task: TableId<GuestTask>,
-) -> Result<()> {
-    if store
-        .concurrent_state()
-        .table
-        .get_mut(guest_task)?
-        .lift_result
-        .is_some()
-    {
-        log::trace!("pop call context for {}", guest_task.rep());
-        let call_context = Some(store.0.component_resource_state().0.pop().unwrap());
-        store
-            .concurrent_state()
-            .table
-            .get_mut(guest_task)?
-            .call_context = call_context;
-    }
-    Ok(())
-}
-
-fn maybe_send_event<'a, T>(
-    mut store: StoreContextMut<'a, T>,
-    guest_task: TableId<GuestTask>,
-    event: Event,
-    waitable: Option<Waitable>,
-    result: u32,
-) -> Result<()> {
-    assert_ne!(Some(guest_task.rep()), waitable.map(|v| v.rep()));
-
-    // We can only send an event to a caller if the callee has suspended at
-    // least once; otherwise, we will not have had a chance to return a
-    // `waitable` handle to the caller yet, in which case we can only queue the
-    // event for later.
-    let may_send = waitable
-        .map(|v| v.has_suspended(store.as_context_mut()))
-        .unwrap_or(Ok(true))?;
-
-    if let (true, Some(callback)) = (
-        may_send,
-        store.concurrent_state().table.get(guest_task)?.callback,
-    ) {
-        let instance = store
-            .concurrent_state()
-            .component_instance
-            .unwrap()
-            .as_ptr();
-
-        let handle = if let Some(waitable) = waitable {
-            let Some((
-                handle,
-                WaitableState::HostTask
-                | WaitableState::GuestTask
-                | WaitableState::Stream(..)
-                | WaitableState::Future(..),
-            )) = unsafe { &mut *instance }.component_waitable_tables()[callback.instance]
-                .get_mut_by_rep(waitable.rep())
-            else {
-                // If there's no handle found for the subtask, that means either the
-                // subtask was closed by the caller already or the caller called the
-                // callee via a sync-lowered import.  Either way, we can skip this
-                // event.
-                if let Event::CallReturned = event {
-                    // Since this is a `CallReturned` event which will never be
-                    // delivered to the caller, we must handle deleting the subtask
-                    // here.
-                    waitable.delete_from(store.as_context_mut())?;
-                }
-                return Ok(());
-            };
-            handle
-        } else {
-            0
-        };
-
-        log::trace!(
-            "use callback to deliver event {event:?} to {} for {:?} (handle {handle}): {:?}",
-            guest_task.rep(),
-            waitable.map(|v| v.rep()),
-            callback.function,
-        );
-
-        let old_task = store.concurrent_state().guest_task.replace(guest_task);
-        log::trace!(
-            "maybe_send_event (callback): replaced {:?} with {} as current task",
-            old_task.map(|v| v.rep()),
-            guest_task.rep()
-        );
-
-        maybe_push_call_context(&mut store, guest_task)?;
-
-        let mut flags = unsafe {
-            (*store
-                .concurrent_state()
-                .component_instance
-                .unwrap()
-                .as_ptr())
-            .instance_flags(callback.instance)
-        };
-
-        let params = &mut [
-            ValRaw::u32(event as u32),
-            ValRaw::u32(handle),
-            ValRaw::u32(result),
-        ];
-        unsafe {
-            flags.set_may_enter(false);
-            crate::Func::call_unchecked_raw(
-                &mut store,
-                callback.function.as_non_null(),
-                params.as_mut_slice().into(),
-            )?;
-            flags.set_may_enter(true);
-        }
-
-        maybe_pop_call_context(&mut store, guest_task)?;
-
-        handle_callback_code(
-            store.as_context_mut(),
-            unsafe { &mut *instance },
-            callback.instance,
-            guest_task,
-            params[0].get_u32(),
-            Event::None,
-        )?;
-
-        store.concurrent_state().guest_task = old_task;
-        log::trace!(
-            "maybe_send_event (callback): restored {:?} as current task",
-            old_task.map(|v| v.rep())
-        );
-    } else if let Some(waitable) = waitable {
-        waitable.common(&mut store)?.event = Some((event, result));
-        waitable.mark_ready(store.as_context_mut())?;
-
-        let resumed = if event == Event::CallReturned {
-            if let Some((fiber, async_)) = store
-                .concurrent_state()
-                .table
-                .get_mut(guest_task)?
-                .deferred
-                .take_stackful()
-            {
-                log::trace!(
-                    "use fiber to deliver event {event:?} to {} for {}",
-                    guest_task.rep(),
-                    waitable.rep()
-                );
-                let old_task = store.concurrent_state().guest_task.replace(guest_task);
-                log::trace!(
-                    "maybe_send_event (fiber): replaced {:?} with {} as current task",
-                    old_task.map(|v| v.rep()),
-                    guest_task.rep()
-                );
-                resume_stackful(store.as_context_mut(), guest_task, fiber, async_)?;
-                store.concurrent_state().guest_task = old_task;
-                log::trace!(
-                    "maybe_send_event (fiber): restored {:?} as current task",
-                    old_task.map(|v| v.rep())
-                );
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        if !resumed {
-            log::trace!(
-                "queue event {event:?} to {} for {}",
-                guest_task.rep(),
-                waitable.rep()
-            );
-        }
-    } else {
-        unreachable!("can't send waitable-less event to non-callback task");
-    }
-
-    Ok(())
-}
-
-fn resume_stackful<'a, T>(
-    mut store: StoreContextMut<'a, T>,
-    guest_task: TableId<GuestTask>,
-    mut fiber: StoreFiber<'static>,
-    async_: bool,
-) -> Result<()> {
-    maybe_push_call_context(&mut store, guest_task)?;
-
-    let async_cx = AsyncCx::new(&mut store);
-
-    let mut store = Some(store);
-    loop {
-        break match resume_fiber(&mut fiber, store.take(), Ok(()))? {
-            Ok((mut store, result)) => {
-                result?;
-                if async_ {
-                    if store
-                        .concurrent_state()
-                        .table
-                        .get(guest_task)?
-                        .lift_result
-                        .is_some()
-                    {
-                        return Err(anyhow!(crate::Trap::NoAsyncResult));
-                    }
-                }
-                if let Some(instance) = fiber.instance {
-                    maybe_resume_next_task(store.as_context_mut(), instance)?;
-                    match &store.concurrent_state().table.get(guest_task)?.caller {
-                        Caller::Host(_) => {
-                            log::trace!("resume_stackful will delete task {}", guest_task.rep());
-                            Waitable::Guest(guest_task).delete_from(store.as_context_mut())?;
-                        }
-                        Caller::Guest { .. } => {
-                            let waitable = Waitable::Guest(guest_task);
-                            waitable.common(&mut store)?.event = Some((Event::CallReturned, 0));
-                            waitable.send_or_mark_ready(store)?;
-                        }
-                    }
-                }
-                Ok(())
-            }
-            Err(new_store) => {
-                if let Some(mut store) = new_store {
-                    maybe_pop_call_context(&mut store, guest_task)?;
-                    store.concurrent_state().table.get_mut(guest_task)?.deferred =
-                        Deferred::Stackful { fiber, async_ };
-                    Ok(())
-                } else {
-                    // In this case, the fiber suspended while holding on to its
-                    // `StoreContextMut` instead of returning it to us.  That
-                    // means we can't do anything else with the store for now;
-                    // the only thing we can do is suspend _our_ fiber back up
-                    // to the top level executor, which will resume us when we
-                    // can make more progress, at which point we'll loop around
-                    // and restore the child fiber again.
-                    unsafe { async_cx.suspend::<T>(None) }?;
-                    continue;
-                }
-            }
-        };
-    }
-}
-
 fn unpack_callback_code(code: u32) -> (u32, u32) {
     (code & 0xF, code >> 4)
-}
-
-fn handle_callback_code<T>(
-    mut store: StoreContextMut<T>,
-    instance: &mut ComponentInstance,
-    runtime_instance: RuntimeComponentInstanceIndex,
-    guest_task: TableId<GuestTask>,
-    code: u32,
-    pending_event: Event,
-) -> Result<()> {
-    let (code, set) = unpack_callback_code(code);
-
-    log::trace!(
-        "received callback code from {}: {code} (set: {set})",
-        guest_task.rep()
-    );
-
-    let task = store.concurrent_state().table.get_mut(guest_task)?;
-    let event = if task.lift_result.is_some() {
-        if code == callback_code::EXIT {
-            return Err(anyhow!(crate::Trap::NoAsyncResult));
-        }
-        pending_event
-    } else {
-        Event::CallReturned
-    };
-
-    let get_set = |instance: &mut ComponentInstance, handle| {
-        if handle == 0 {
-            bail!("invalid waitable-set handle");
-        }
-
-        let (set, WaitableState::Set) =
-            instance.component_waitable_tables()[runtime_instance].get_mut_by_index(handle)?
-        else {
-            bail!("invalid waitable-set handle");
-        };
-
-        Ok(TableId::<WaitableSet>::new(set))
-    };
-
-    if event != Event::None {
-        let waitable = Waitable::Guest(guest_task);
-        waitable.common(&mut store)?.event = Some((event, 0));
-        waitable.send_or_mark_ready(store.as_context_mut())?;
-    }
-
-    match code {
-        callback_code::EXIT => match &store.concurrent_state().table.get(guest_task)?.caller {
-            Caller::Host(_) => {
-                log::trace!("handle_callback_code will delete task {}", guest_task.rep());
-                Waitable::Guest(guest_task).delete_from(store.as_context_mut())?;
-            }
-            Caller::Guest { .. } => {
-                store.concurrent_state().table.get_mut(guest_task)?.callback = None;
-            }
-        },
-        callback_code::YIELD => {
-            store.concurrent_state().yielding.insert(guest_task, None);
-        }
-        callback_code::WAIT => {
-            let set = store
-                .concurrent_state()
-                .table
-                .get_mut(get_set(instance, set)?)?;
-
-            if let Some(waitable) = set.ready.pop_first() {
-                let (event, result) = waitable.common(&mut store)?.event.take().unwrap();
-                maybe_send_event(
-                    store.as_context_mut(),
-                    guest_task,
-                    event,
-                    Some(waitable),
-                    result,
-                )?;
-            } else {
-                set.waiting.insert(guest_task);
-            }
-        }
-        callback_code::POLL => {
-            let set = get_set(instance, set)?;
-            store.concurrent_state().table.get_mut(set)?;
-            store
-                .concurrent_state()
-                .yielding
-                .insert(guest_task, Some(set));
-        }
-        _ => bail!("unsupported callback code: {code}"),
-    }
-
-    Ok(())
-}
-
-fn resume_stackless<'a, T>(
-    mut store: StoreContextMut<'a, T>,
-    guest_task: TableId<GuestTask>,
-    call: Box<dyn FnOnce(*mut dyn VMStore) -> Result<u32>>,
-    runtime_instance: RuntimeComponentInstanceIndex,
-) -> Result<()> {
-    maybe_push_call_context(&mut store, guest_task)?;
-
-    let code = call(store.0.traitobj().as_ptr())?;
-
-    maybe_pop_call_context(&mut store, guest_task)?;
-
-    let instance = store
-        .concurrent_state()
-        .component_instance
-        .unwrap()
-        .as_ptr();
-
-    handle_callback_code(
-        store.as_context_mut(),
-        unsafe { &mut *instance },
-        runtime_instance,
-        guest_task,
-        code,
-        Event::CallStarted,
-    )?;
-
-    maybe_resume_next_task(store, runtime_instance)
-}
-
-fn poll_for_result<'a, T>(mut store: StoreContextMut<'a, T>) -> Result<()> {
-    let task = store.concurrent_state().guest_task;
-    poll_loop(store, move |store| {
-        task.map(|task| {
-            Ok::<_, anyhow::Error>(store.concurrent_state().table.get(task)?.result.is_none())
-        })
-        .unwrap_or(Ok(true))
-    })
-}
-
-fn handle_ready<'a, T>(
-    mut store: StoreContextMut<'a, T>,
-    ready: Vec<HostTaskOutput>,
-) -> Result<()> {
-    for output in ready {
-        match output {
-            HostTaskOutput::Background(result) => {
-                result?;
-            }
-            HostTaskOutput::Call { waitable, fun } => {
-                let result = fun(store.0.traitobj().as_ptr())?;
-                log::trace!("handle_ready event {:?} for {waitable}", result.event);
-                let waitable = match result.event {
-                    Event::CallReturned => Waitable::Host(TableId::<HostTask>::new(waitable)),
-                    Event::StreamRead
-                    | Event::FutureRead
-                    | Event::StreamWrite
-                    | Event::FutureWrite => {
-                        Waitable::Transmit(TableId::<TransmitHandle>::new(waitable))
-                    }
-                    _ => unreachable!(),
-                };
-                waitable.common(&mut store)?.event = Some((result.event, result.param));
-                waitable.send_or_mark_ready(store.as_context_mut())?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn maybe_yield<'a, T>(mut store: StoreContextMut<'a, T>) -> Result<()> {
-    let guest_task = store.concurrent_state().guest_task.unwrap();
-
-    if store.concurrent_state().table.get(guest_task)?.should_yield {
-        log::trace!("maybe_yield suspend {}", guest_task.rep());
-
-        store.concurrent_state().yielding.insert(guest_task, None);
-        let cx = AsyncCx::new(&mut store);
-        unsafe { cx.suspend(Some(store)) }?.unwrap();
-
-        log::trace!("maybe_yield resume {}", guest_task.rep());
-    } else {
-        log::trace!("maybe_yield skip {}", guest_task.rep());
-    }
-
-    Ok(())
-}
-
-fn unyield<'a, T>(mut store: StoreContextMut<'a, T>) -> Result<bool> {
-    let mut resumed = false;
-    for (guest_task, set) in mem::take(&mut store.concurrent_state().yielding) {
-        if store
-            .concurrent_state()
-            .table
-            .get(guest_task)?
-            .callback
-            .is_some()
-        {
-            resumed = true;
-
-            let (waitable, event, result) = if let Some(set) = set {
-                if let Some(waitable) = store
-                    .concurrent_state()
-                    .table
-                    .get_mut(set)?
-                    .ready
-                    .pop_first()
-                {
-                    waitable
-                        .common(&mut store)?
-                        .event
-                        .take()
-                        .map(|(e, v)| (Some(waitable), e, v))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-            .unwrap_or((None, Event::None, 0));
-
-            maybe_send_event(store.as_context_mut(), guest_task, event, waitable, result)?;
-        } else {
-            assert!(set.is_none());
-
-            if let Some((fiber, async_)) = store
-                .concurrent_state()
-                .table
-                .get_mut(guest_task)
-                .with_context(|| format!("guest task {}", guest_task.rep()))?
-                .deferred
-                .take_stackful()
-            {
-                resumed = true;
-                let old_task = store.concurrent_state().guest_task.replace(guest_task);
-                log::trace!(
-                    "unyield: replaced {:?} with {} as current task",
-                    old_task.map(|v| v.rep()),
-                    guest_task.rep()
-                );
-                resume_stackful(store.as_context_mut(), guest_task, fiber, async_)?;
-                store.concurrent_state().guest_task = old_task;
-                log::trace!(
-                    "unyield: restored {:?} as current task",
-                    old_task.map(|v| v.rep())
-                );
-            }
-        }
-    }
-
-    for instance in mem::take(&mut store.concurrent_state().unblocked) {
-        let entry = store
-            .concurrent_state()
-            .instance_states
-            .entry(instance)
-            .or_default();
-
-        if !(entry.backpressure || entry.in_sync_call) {
-            if let Some(task) = entry.task_queue.pop_front() {
-                resumed = true;
-                resume(store.as_context_mut(), task)?;
-            }
-        }
-    }
-
-    Ok(resumed)
-}
-
-fn poll_loop<'a, T>(
-    mut store: StoreContextMut<'a, T>,
-    mut continue_: impl FnMut(&mut StoreContextMut<'a, T>) -> Result<bool>,
-) -> Result<()> {
-    loop {
-        let cx = AsyncCx::new(&mut store);
-        let mut future = pin!(store.concurrent_state().futures.next());
-        let ready = unsafe { cx.poll(future.as_mut()) };
-
-        match ready {
-            Poll::Ready(Some(ready)) => {
-                handle_ready(store.as_context_mut(), ready)?;
-            }
-            Poll::Ready(None) => {
-                let resumed = unyield(store.as_context_mut())?;
-                if !resumed {
-                    log::trace!("exhausted future queue; exiting poll_loop");
-                    break;
-                }
-            }
-            Poll::Pending => {
-                let resumed = unyield(store.as_context_mut())?;
-                if continue_(&mut store)? {
-                    let cx = AsyncCx::new(&mut store);
-                    unsafe { cx.suspend(Some(store.as_context_mut())) }?.unwrap();
-                } else if !resumed {
-                    break;
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn resume<'a, T>(mut store: StoreContextMut<'a, T>, task: TableId<GuestTask>) -> Result<()> {
-    log::trace!("resume {}", task.rep());
-
-    // TODO: Avoid calling `resume_stackful` or `resume_stackless` here, because it may call us, leading to
-    // recursion limited only by the number of waiters.  Flatten this into an iteration instead.
-    let old_task = store.concurrent_state().guest_task.replace(task);
-    log::trace!(
-        "resume: replaced {:?} with {} as current task",
-        old_task.map(|v| v.rep()),
-        task.rep()
-    );
-    match mem::replace(
-        &mut store.concurrent_state().table.get_mut(task)?.deferred,
-        Deferred::None,
-    ) {
-        Deferred::None => unreachable!(),
-        Deferred::Stackful { fiber, async_ } => {
-            resume_stackful(store.as_context_mut(), task, fiber, async_)
-        }
-        Deferred::Stackless { call, instance } => {
-            resume_stackless(store.as_context_mut(), task, call, instance)
-        }
-    }?;
-    store.concurrent_state().guest_task = old_task;
-    log::trace!(
-        "resume: restored {:?} as current task",
-        old_task.map(|v| v.rep())
-    );
-    Ok(())
-}
-
-fn maybe_resume_next_task<'a, T>(
-    mut store: StoreContextMut<'a, T>,
-    instance: RuntimeComponentInstanceIndex,
-) -> Result<()> {
-    let state = store
-        .concurrent_state()
-        .instance_states
-        .get_mut(&instance)
-        .unwrap();
-
-    if state.backpressure || state.in_sync_call {
-        Ok(())
-    } else {
-        if let Some(next) = state.task_queue.pop_front() {
-            resume(store, next)
-        } else {
-            Ok(())
-        }
-    }
 }
 
 struct StoreFiber<'a> {
@@ -2957,7 +3397,7 @@ struct StoreFiber<'a> {
     instance: Option<RuntimeComponentInstanceIndex>,
 }
 
-impl<'a> Drop for StoreFiber<'a> {
+impl Drop for StoreFiber<'_> {
     fn drop(&mut self) {
         if !self.fiber.as_ref().unwrap().done() {
             let result = unsafe { resume_fiber_raw(self, None, Err(anyhow!("future dropped"))) };
@@ -2974,39 +3414,43 @@ impl<'a> Drop for StoreFiber<'a> {
     }
 }
 
-unsafe impl<'a> Send for StoreFiber<'a> {}
-unsafe impl<'a> Sync for StoreFiber<'a> {}
+unsafe impl Send for StoreFiber<'_> {}
+unsafe impl Sync for StoreFiber<'_> {}
 
-fn make_fiber<'a, T>(
-    store: &mut StoreContextMut<T>,
+unsafe fn make_fiber<'a>(
+    store: *mut dyn VMStore,
     instance: Option<RuntimeComponentInstanceIndex>,
-    fun: impl FnOnce(StoreContextMut<T>) -> Result<()> + 'a,
+    fun: impl FnOnce(*mut dyn VMStore) -> Result<()> + 'a,
 ) -> Result<StoreFiber<'a>> {
-    let engine = store.engine().clone();
+    let engine = (*store).engine().clone();
     let stack = engine.allocator().allocate_fiber_stack()?;
     Ok(StoreFiber {
         fiber: Some(Fiber::new(
             stack,
-            move |(store_ptr, result): (Option<*mut dyn VMStore>, Result<()>), suspend| {
+            move |(store, result): (Option<*mut dyn VMStore>, Result<()>), suspend| {
                 if result.is_err() {
-                    (store_ptr, result)
+                    (store, result)
                 } else {
-                    unsafe {
-                        let store_ptr = store_ptr.unwrap();
-                        let mut store = StoreContextMut(&mut *store_ptr.cast());
-                        let suspend_ptr =
-                            store.concurrent_state().async_state.current_suspend.get();
-                        let _reset = Reset(suspend_ptr, *suspend_ptr);
-                        *suspend_ptr = suspend;
-                        (Some(store_ptr), fun(store.as_context_mut()))
-                    }
+                    let store = store.unwrap();
+                    let suspend_ptr = (*store)
+                        .store_opaque_mut()
+                        .concurrent_async_state()
+                        .current_suspend
+                        .get();
+                    let _reset = Reset(suspend_ptr, *suspend_ptr);
+                    *suspend_ptr = suspend;
+                    (Some(store), fun(store))
                 }
             },
         )?),
         state: Some(AsyncWasmCallState::new()),
         engine,
-        suspend: store.concurrent_state().async_state.current_suspend.get(),
-        stack_limit: store.0.vm_store_context().stack_limit.get(),
+        suspend: (*store)
+            .store_opaque_mut()
+            .concurrent_async_state()
+            .current_suspend
+            .get(),
+        stack_limit: (*store).vm_store_context().stack_limit.get(),
         instance,
     })
 }
@@ -3040,15 +3484,13 @@ unsafe fn resume_fiber_raw<'a>(
         .resume((store, result))
 }
 
-fn resume_fiber<'a, T>(
+fn resume_fiber(
     fiber: &mut StoreFiber,
-    store: Option<StoreContextMut<'a, T>>,
+    store: Option<*mut dyn VMStore>,
     result: Result<()>,
-) -> Result<Result<(StoreContextMut<'a, T>, Result<()>), Option<StoreContextMut<'a, T>>>> {
+) -> Result<Result<(*mut dyn VMStore, Result<()>), Option<*mut dyn VMStore>>> {
     unsafe {
-        match resume_fiber_raw(fiber, store.map(|s| s.0.traitobj().as_ptr()), result)
-            .map(|(store, result)| (StoreContextMut(&mut *store.unwrap().cast()), result))
-            .map_err(|v| v.map(|v| StoreContextMut(&mut *v.cast())))
+        match resume_fiber_raw(fiber, store, result).map(|(store, result)| (store.unwrap(), result))
         {
             Ok(pair) => Ok(Ok(pair)),
             Err(s) => {
@@ -3062,260 +3504,34 @@ fn resume_fiber<'a, T>(
     }
 }
 
-unsafe fn suspend_fiber<'a, T>(
+unsafe fn suspend_fiber(
     suspend: *mut *mut Suspend<
         (Option<*mut dyn VMStore>, Result<()>),
         Option<*mut dyn VMStore>,
         (Option<*mut dyn VMStore>, Result<()>),
     >,
     stack_limit: *mut usize,
-    store: Option<StoreContextMut<'a, T>>,
-) -> Result<Option<StoreContextMut<'a, T>>> {
+    store: Option<*mut dyn VMStore>,
+) -> Result<Option<*mut dyn VMStore>> {
     let _reset_suspend = Reset(suspend, *suspend);
     let _reset_stack_limit = Reset(stack_limit, *stack_limit);
     assert!(!(*suspend).is_null());
-    let (store, result) = (**suspend).suspend(store.map(|s| s.0.traitobj().as_ptr()));
+    let (store, result) = (**suspend).suspend(store);
     result?;
-    Ok(store.map(|v| StoreContextMut(&mut *v.cast())))
+    Ok(store)
 }
 
-struct WaitableCheckParams {
+pub(crate) struct WaitableCheckParams {
     set: TableId<WaitableSet>,
     memory: *mut VMMemoryDefinition,
     payload: u32,
     caller_instance: RuntimeComponentInstanceIndex,
 }
 
-enum WaitableCheck {
+pub(crate) enum WaitableCheck {
     Wait(WaitableCheckParams),
     Poll(WaitableCheckParams),
     Yield,
-}
-
-fn waitable_check<T>(
-    mut store: StoreContextMut<T>,
-    instance: *mut ComponentInstance,
-    async_: bool,
-    check: WaitableCheck,
-) -> Result<u32> {
-    if async_ {
-        bail!(
-            "todo: async `waitable-set.wait`, `waitable-set.poll`, and `yield` not yet implemented"
-        );
-    }
-
-    let guest_task = store.concurrent_state().guest_task.unwrap();
-
-    let (wait, set) = match &check {
-        WaitableCheck::Wait(params) => {
-            store
-                .concurrent_state()
-                .table
-                .get_mut(params.set)?
-                .waiting
-                .insert(guest_task);
-            (true, Some(params.set))
-        }
-        WaitableCheck::Poll(params) => (false, Some(params.set)),
-        WaitableCheck::Yield => (false, None),
-    };
-
-    log::trace!(
-        "waitable check for {}; set {:?}",
-        guest_task.rep(),
-        set.map(|v| v.rep())
-    );
-
-    if wait
-        && store
-            .concurrent_state()
-            .table
-            .get(guest_task)?
-            .callback
-            .is_some()
-    {
-        bail!("cannot call `task.wait` from async-lifted export with callback");
-    }
-
-    let set_is_empty = |mut store: StoreContextMut<_>| {
-        Ok::<_, anyhow::Error>(
-            set.map(|set| {
-                Ok::<_, anyhow::Error>(store.concurrent_state().table.get(set)?.ready.is_empty())
-            })
-            .transpose()?
-            .unwrap_or(true),
-        )
-    };
-
-    if matches!(check, WaitableCheck::Yield) || set_is_empty(store.as_context_mut())? {
-        maybe_yield(store.as_context_mut())?;
-
-        if set_is_empty(store.as_context_mut())? {
-            poll_loop(store.as_context_mut(), move |store| {
-                Ok::<_, anyhow::Error>(wait && set_is_empty(store.as_context_mut())?)
-            })?;
-        }
-    }
-
-    log::trace!(
-        "waitable check for {}; set {:?}, part two",
-        guest_task.rep(),
-        set.map(|v| v.rep())
-    );
-
-    let result = match check {
-        WaitableCheck::Wait(params) => {
-            store
-                .concurrent_state()
-                .table
-                .get_mut(params.set)?
-                .waiting
-                .remove(&guest_task);
-
-            let waitable = store
-                .concurrent_state()
-                .table
-                .get_mut(params.set)?
-                .ready
-                .pop_first()
-                .ok_or_else(|| anyhow!("no waitables to wait for"))?;
-
-            let (event, result) = waitable.common(&mut store)?.event.take().unwrap();
-
-            log::trace!(
-                "deliver event {event:?} via waitable-set.wait to {} for {}; set {}",
-                guest_task.rep(),
-                waitable.rep(),
-                params.set.rep()
-            );
-
-            let entry = unsafe {
-                (*instance).component_waitable_tables()[params.caller_instance]
-                    .get_mut_by_rep(waitable.rep())
-            };
-            let Some((
-                handle,
-                WaitableState::HostTask
-                | WaitableState::GuestTask
-                | WaitableState::Stream(..)
-                | WaitableState::Future(..),
-            )) = entry
-            else {
-                bail!("handle not found for waitable rep {}", waitable.rep());
-            };
-
-            let options = unsafe {
-                Options::new(
-                    store.0.id(),
-                    NonNull::new(params.memory),
-                    None,
-                    StringEncoding::Utf8,
-                    true,
-                    None,
-                )
-            };
-            let types = unsafe { (*instance).component_types() };
-            let ptr = func::validate_inbounds::<u32>(
-                options.memory_mut(store.0),
-                &ValRaw::u32(params.payload),
-            )?;
-            let mut lower = unsafe { LowerContext::new(store, &options, types, instance) };
-            handle.store(&mut lower, InterfaceType::U32, ptr)?;
-            result.store(&mut lower, InterfaceType::U32, ptr + 4)?;
-
-            Ok(event as u32)
-        }
-        WaitableCheck::Poll(params) => {
-            if let Some(waitable) = store
-                .concurrent_state()
-                .table
-                .get_mut(params.set)?
-                .ready
-                .pop_first()
-            {
-                let (event, result) = waitable.common(&mut store)?.event.take().unwrap();
-
-                let entry = unsafe {
-                    (*instance).component_waitable_tables()[params.caller_instance]
-                        .get_mut_by_rep(waitable.rep())
-                };
-                let Some((
-                    handle,
-                    WaitableState::HostTask
-                    | WaitableState::GuestTask
-                    | WaitableState::Stream(..)
-                    | WaitableState::Future(..),
-                )) = entry
-                else {
-                    bail!("handle not found for waitable rep {}", waitable.rep());
-                };
-
-                let options = unsafe {
-                    Options::new(
-                        store.0.id(),
-                        NonNull::new(params.memory),
-                        None,
-                        StringEncoding::Utf8,
-                        true,
-                        None,
-                    )
-                };
-                let types = unsafe { (*instance).component_types() };
-                let ptr = func::validate_inbounds::<(u32, u32)>(
-                    options.memory_mut(store.0),
-                    &ValRaw::u32(params.payload),
-                )?;
-                let mut lower = unsafe { LowerContext::new(store, &options, types, instance) };
-                (event as u32).store(&mut lower, InterfaceType::U32, ptr)?;
-                handle.store(&mut lower, InterfaceType::U32, ptr + 4)?;
-                result.store(&mut lower, InterfaceType::U32, ptr + 8)?;
-
-                Ok(1)
-            } else {
-                log::trace!(
-                    "no events ready to deliver via waitable-set.poll to {}; set {}",
-                    guest_task.rep(),
-                    params.set.rep()
-                );
-
-                Ok(0)
-            }
-        }
-        WaitableCheck::Yield => Ok(0),
-    };
-
-    result
-}
-
-fn may_enter<T>(
-    store: &mut StoreContextMut<T>,
-    mut guest_task: TableId<GuestTask>,
-    guest_instance: RuntimeComponentInstanceIndex,
-) -> bool {
-    // Walk the task tree back to the root, looking for potential reentrance.
-    //
-    // TODO: This could be optimized by maintaining a per-`GuestTask` bitset
-    // such that each bit represents and instance which has been entered by that
-    // task or an ancestor of that task, in which case this would be a constant
-    // time check.
-    loop {
-        match &store
-            .concurrent_state()
-            .table
-            .get_mut(guest_task)
-            .unwrap()
-            .caller
-        {
-            Caller::Host(_) => break true,
-            Caller::Guest { task, instance } => {
-                if *instance == guest_instance {
-                    break false;
-                } else {
-                    guest_task = *task;
-                }
-            }
-        }
-    }
 }
 
 fn make_call<T>(
@@ -3325,24 +3541,21 @@ fn make_call<T>(
     param_count: usize,
     result_count: usize,
     flags: Option<InstanceFlags>,
-) -> impl FnOnce(StoreContextMut<T>) -> Result<[MaybeUninit<ValRaw>; MAX_FLAT_PARAMS]>
+) -> impl FnOnce(
+    StoreContextMut<T>,
+    &mut ComponentInstance,
+) -> Result<[MaybeUninit<ValRaw>; MAX_FLAT_PARAMS]>
        + Send
        + Sync
        + 'static {
-    move |mut store: StoreContextMut<T>| {
-        if !may_enter(&mut store, guest_task, callee_instance) {
+    move |mut store: StoreContextMut<T>, instance: &mut ComponentInstance| {
+        if !instance.may_enter(guest_task, callee_instance) {
             bail!(crate::Trap::CannotEnterComponent);
         }
 
         let mut storage = [MaybeUninit::uninit(); MAX_FLAT_PARAMS];
-        let lower = store
-            .concurrent_state()
-            .table
-            .get_mut(guest_task)?
-            .lower_params
-            .take()
-            .unwrap();
-        lower(store.0.traitobj().as_ptr(), &mut storage[..param_count])?;
+        let lower = instance.get_mut(guest_task)?.lower_params.take().unwrap();
+        lower(instance, &mut storage[..param_count])?;
 
         unsafe {
             if let Some(mut flags) = flags {
@@ -3366,250 +3579,8 @@ fn make_call<T>(
     }
 }
 
-fn do_start_call<'a, T>(
-    mut store: StoreContextMut<'a, T>,
-    instance: *mut ComponentInstance,
-    guest_task: TableId<GuestTask>,
-    async_: bool,
-    call: impl FnOnce(StoreContextMut<T>) -> Result<[MaybeUninit<ValRaw>; MAX_FLAT_PARAMS]>
-        + Send
-        + Sync
-        + 'static,
-    callback: Option<SendSyncPtr<VMFuncRef>>,
-    post_return: Option<SendSyncPtr<VMFuncRef>>,
-    callee_instance: RuntimeComponentInstanceIndex,
-    result_count: usize,
-    use_fiber: bool,
-) -> Result<()> {
-    let state = &mut store
-        .concurrent_state()
-        .instance_states
-        .entry(callee_instance)
-        .or_default();
-    let ready = state.task_queue.is_empty() && !(state.backpressure || state.in_sync_call);
-
-    let mut code = callback_code::EXIT;
-    let mut async_finished = false;
-
-    if callback.is_some() {
-        assert!(async_);
-
-        if ready {
-            maybe_push_call_context(&mut store, guest_task)?;
-            let storage = call(store.as_context_mut())?;
-            code = unsafe { storage[0].assume_init() }.get_i32() as u32;
-            async_finished = code == callback_code::EXIT;
-            maybe_pop_call_context(&mut store, guest_task)?;
-        } else {
-            store
-                .concurrent_state()
-                .instance_states
-                .get_mut(&callee_instance)
-                .unwrap()
-                .task_queue
-                .push_back(guest_task);
-
-            store.concurrent_state().table.get_mut(guest_task)?.deferred = Deferred::Stackless {
-                call: Box::new(move |store| {
-                    let mut store = unsafe { StoreContextMut(&mut *store.cast()) };
-                    let old_task = store.concurrent_state().guest_task.replace(guest_task);
-                    log::trace!(
-                        "do_start_call: replaced {:?} with {} as current task",
-                        old_task.map(|v| v.rep()),
-                        guest_task.rep()
-                    );
-                    let storage = call(store.as_context_mut())?;
-                    store.concurrent_state().guest_task = old_task;
-                    log::trace!(
-                        "do_start_call: restored {:?} as current task",
-                        old_task.map(|v| v.rep())
-                    );
-                    Ok(unsafe { storage[0].assume_init() }.get_i32() as u32)
-                }),
-                instance: callee_instance,
-            };
-        }
-    } else {
-        let do_call = move |mut store: StoreContextMut<T>| {
-            let mut flags = unsafe { (*instance).instance_flags(callee_instance) };
-
-            if !async_ {
-                store
-                    .concurrent_state()
-                    .instance_states
-                    .get_mut(&callee_instance)
-                    .unwrap()
-                    .in_sync_call = true;
-            }
-
-            let storage = call(store.as_context_mut())?;
-
-            if !async_ {
-                store
-                    .concurrent_state()
-                    .instance_states
-                    .get_mut(&callee_instance)
-                    .unwrap()
-                    .in_sync_call = false;
-
-                let lift = store
-                    .concurrent_state()
-                    .table
-                    .get_mut(guest_task)?
-                    .lift_result
-                    .take()
-                    .unwrap();
-
-                assert!(store
-                    .concurrent_state()
-                    .table
-                    .get(guest_task)?
-                    .result
-                    .is_none());
-
-                let result = (lift.lift)(store.0.traitobj().as_ptr(), unsafe {
-                    mem::transmute::<&[MaybeUninit<ValRaw>], &[ValRaw]>(&storage[..result_count])
-                })?;
-
-                unsafe { flags.set_needs_post_return(false) }
-
-                if let Some(func) = post_return {
-                    let arg = match result_count {
-                        0 => ValRaw::i32(0),
-                        1 => unsafe { storage[0].assume_init() },
-                        _ => unreachable!(),
-                    };
-                    unsafe {
-                        crate::Func::call_unchecked_raw(
-                            &mut store,
-                            func.as_non_null(),
-                            NonNull::new(ptr::slice_from_raw_parts(&arg, 1).cast_mut()).unwrap(),
-                        )?;
-                    }
-                }
-
-                unsafe { flags.set_may_enter(true) }
-
-                let (calls, host_table, _) = store.0.component_resource_state();
-                ResourceTables {
-                    calls,
-                    host_table: Some(host_table),
-                    tables: unsafe { Some((*instance).component_resource_tables()) },
-                }
-                .exit_call()?;
-
-                if let Caller::Host(tx) =
-                    &mut store.concurrent_state().table.get_mut(guest_task)?.caller
-                {
-                    if let Some(tx) = tx.take() {
-                        _ = tx.send(result);
-                    }
-                } else {
-                    store.concurrent_state().table.get_mut(guest_task)?.result = Some(result);
-                }
-            }
-
-            Ok(())
-        };
-
-        if use_fiber {
-            let mut fiber = make_fiber(&mut store, Some(callee_instance), do_call)?;
-
-            store
-                .concurrent_state()
-                .table
-                .get_mut(guest_task)?
-                .should_yield = true;
-
-            if ready {
-                maybe_push_call_context(&mut store, guest_task)?;
-                store = {
-                    let mut store = Some(store);
-                    loop {
-                        match resume_fiber(&mut fiber, store.take(), Ok(()))? {
-                            Ok((mut store, result)) => {
-                                result?;
-                                async_finished = async_;
-                                maybe_resume_next_task(store.as_context_mut(), callee_instance)?;
-                                break store;
-                            }
-                            Err(store) => {
-                                if let Some(mut store) = store {
-                                    maybe_pop_call_context(&mut store, guest_task)?;
-                                    store.concurrent_state().table.get_mut(guest_task)?.deferred =
-                                        Deferred::Stackful { fiber, async_ };
-                                    break store;
-                                } else {
-                                    unsafe {
-                                        suspend_fiber::<T>(fiber.suspend, fiber.stack_limit, None)?;
-                                    };
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                store
-                    .concurrent_state()
-                    .instance_states
-                    .get_mut(&callee_instance)
-                    .unwrap()
-                    .task_queue
-                    .push_back(guest_task);
-
-                store.concurrent_state().table.get_mut(guest_task)?.deferred =
-                    Deferred::Stackful { fiber, async_ };
-            }
-        } else {
-            maybe_push_call_context(&mut store, guest_task)?;
-            do_call(store.as_context_mut())?;
-            async_finished = async_;
-            maybe_pop_call_context(&mut store, guest_task)?;
-        }
-    };
-
-    let guest_task = store.concurrent_state().guest_task.take().unwrap();
-
-    let caller = if let Caller::Guest { task, .. } =
-        &store.concurrent_state().table.get(guest_task)?.caller
-    {
-        Some(*task)
-    } else {
-        None
-    };
-    store.concurrent_state().guest_task = caller;
-    log::trace!(
-        "popped current task {}; new task is {:?}",
-        guest_task.rep(),
-        caller.map(|v| v.rep())
-    );
-
-    let task = store.concurrent_state().table.get_mut(guest_task)?;
-
-    if code == callback_code::EXIT
-        && async_finished
-        && !(matches!(&task.caller, Caller::Guest {..} if task.result.is_some())
-            || matches!(&task.caller, Caller::Host(tx) if tx.is_none()))
-    {
-        Err(anyhow!(crate::Trap::NoAsyncResult))
-    } else {
-        if ready && callback.is_some() {
-            handle_callback_code(
-                store.as_context_mut(),
-                unsafe { &mut *instance },
-                callee_instance,
-                guest_task,
-                code,
-                Event::CallStarted,
-            )?;
-        }
-
-        Ok(())
-    }
-}
-
-pub(crate) fn start_call<'a, T: Send, LowerParams: Copy, R: 'static>(
-    mut store: StoreContextMut<'a, T>,
+pub(crate) fn start_call<T: Send, LowerParams: Copy, R: 'static>(
+    mut store: StoreContextMut<T>,
     lower_params: LowerFn,
     lower_context: LiftLowerContext,
     lift_result: LiftFn,
@@ -3627,23 +3598,20 @@ pub(crate) fn start_call<'a, T: Send, LowerParams: Copy, R: 'static>(
     let memory = func_data.options.memory.map(SendSyncPtr::new);
     let string_encoding = func_data.options.string_encoding();
 
-    assert!(store.concurrent_state().guest_task.is_none());
+    let instance = unsafe { &mut *store.0[instance.0].as_ref().unwrap().instance_ptr() };
 
-    // TODO: Can we safely leave this set?  Can the same store be used with more than one ComponentInstance?  Could
-    // we instead set this when the ConcurrentState is created so we don't have to set/unset it on the fly?
-    store.concurrent_state().component_instance =
-        Some(store.0[instance.0].as_ref().unwrap().state.ptr);
+    assert!(instance.guest_task().is_none());
 
     let (tx, rx) = oneshot::channel();
 
     let task = GuestTask::new(
-        store.as_context_mut(),
-        Box::new(for_any_lower(move |store, params| {
-            lower_params(lower_context, store, params)
+        instance,
+        Box::new(for_any_lower(move |instance, params| {
+            lower_params(lower_context, instance.store(), params)
         })),
         LiftResult {
-            lift: Box::new(for_any_lift(move |store, result| {
-                lift_result(lift_context, store, result)
+            lift: Box::new(for_any_lift(move |instance, result| {
+                lift_result(lift_context, instance.store(), result)
             })),
             ty: task_return_type,
             memory,
@@ -3652,15 +3620,14 @@ pub(crate) fn start_call<'a, T: Send, LowerParams: Copy, R: 'static>(
         Caller::Host(Some(tx)),
         callback.map(|v| Callback {
             function: SendSyncPtr::new(v),
+            caller: ComponentInstance::call_callback::<T>,
             instance: component_instance,
         }),
     )?;
 
-    let guest_task = store.concurrent_state().table.push(task)?;
+    let guest_task = instance.push(task)?;
 
     log::trace!("starting call {}", guest_task.rep());
-
-    let instance = store.0[instance.0].as_ref().unwrap().instance_ptr();
 
     let call = make_call(
         guest_task,
@@ -3671,19 +3638,18 @@ pub(crate) fn start_call<'a, T: Send, LowerParams: Copy, R: 'static>(
         if callback.is_none() {
             None
         } else {
-            Some(unsafe { (*instance).instance_flags(component_instance) })
+            Some(instance.instance_flags(component_instance))
         },
     );
 
-    store.concurrent_state().guest_task = Some(guest_task);
+    *instance.guest_task() = Some(guest_task);
     log::trace!(
         "pushed {} as current task; old task was None",
         guest_task.rep()
     );
 
-    do_start_call(
+    instance.do_start_call(
         store.as_context_mut(),
-        instance,
         guest_task,
         is_concurrent,
         call,
@@ -3694,18 +3660,20 @@ pub(crate) fn start_call<'a, T: Send, LowerParams: Copy, R: 'static>(
         false,
     )?;
 
-    store.concurrent_state().guest_task = None;
+    *instance.guest_task() = None;
     log::trace!("popped current task {}; new task is None", guest_task.rep());
 
     log::trace!("started call {}", guest_task.rep());
 
-    Ok(Promise(Box::pin(
-        rx.map(|result| *result.unwrap().downcast().unwrap()),
-    )))
+    Ok(Promise {
+        inner: Box::pin(rx.map(|result| *result.unwrap().downcast().unwrap())),
+        instance: SendSyncPtr::new(NonNull::new(instance).unwrap()),
+        id: store.0.id(),
+    })
 }
 
-pub(crate) fn call<'a, T: Send, LowerParams: Copy, R: Send + Sync + 'static>(
-    mut store: StoreContextMut<'a, T>,
+pub(crate) fn call<T: Send, LowerParams: Copy, R: Send + Sync + 'static>(
+    mut store: StoreContextMut<T>,
     lower_params: LowerFn,
     lower_context: LiftLowerContext,
     lift_result: LiftFn,
@@ -3721,68 +3689,32 @@ pub(crate) fn call<'a, T: Send, LowerParams: Copy, R: Send + Sync + 'static>(
         handle,
     )?;
 
-    loop_until(store, promise.into_future())
-}
-
-fn loop_until<'a, T, R>(
-    mut store: StoreContextMut<'a, T>,
-    mut future: Pin<Box<dyn Future<Output = R> + Send + '_>>,
-) -> Result<R> {
-    let result = Arc::new(Mutex::new(None));
-    let poll = &mut {
-        let result = result.clone();
-        move |store: &mut StoreContextMut<T>| {
-            let cx = AsyncCx::new(store);
-            let ready = unsafe { cx.poll(future.as_mut()) };
-            Ok(match ready {
-                Poll::Ready(value) => {
-                    *result.lock().unwrap() = Some(value);
-                    false
-                }
-                Poll::Pending => true,
-            })
-        }
+    let instance = unsafe {
+        &mut *store.0[store.0[handle.0].instance.0]
+            .as_ref()
+            .unwrap()
+            .instance_ptr()
     };
-    poll_loop(store.as_context_mut(), |store| poll(store))?;
-
-    // Poll once more to get the result if necessary:
-    if result.lock().unwrap().is_none() {
-        poll(&mut store)?;
-    }
-
-    let result = result
-        .lock()
-        .unwrap()
-        .take()
-        .ok_or_else(|| anyhow!(crate::Trap::NoAsyncResult));
-
-    result
+    instance.loop_until(promise.into_future())
 }
 
-async fn poll_until<'a, T: Send, R: Send + Sync + 'static>(
-    store: StoreContextMut<'a, T>,
-    future: Pin<Box<dyn Future<Output = R> + Send + '_>>,
-) -> Result<R> {
-    on_fiber(store, None, move |store| {
-        loop_until(store.as_context_mut(), future)
-    })
-    .await?
-}
-
-async fn poll_fn<'a, T, R>(
-    mut store: StoreContextMut<'a, T>,
+async unsafe fn poll_fn<R>(
+    store: VMStoreRawPtr,
     guard_range: (Option<SendSyncPtr<u8>>, Option<SendSyncPtr<u8>>),
-    mut fun: impl FnMut(
-        &mut Context,
-        Option<StoreContextMut<'a, T>>,
-    ) -> Result<R, Option<StoreContextMut<'a, T>>>,
+    mut fun: impl FnMut(&mut Context, Option<*mut dyn VMStore>) -> Result<R, Option<*mut dyn VMStore>>,
 ) -> R {
     #[derive(Clone, Copy)]
     struct PollCx(*mut PollContext);
 
     unsafe impl Send for PollCx {}
 
-    let poll_cx = PollCx(store.concurrent_state().async_state.current_poll_cx.get());
+    let poll_cx = PollCx(
+        (*store.0.as_ptr())
+            .store_opaque_mut()
+            .concurrent_async_state()
+            .current_poll_cx
+            .get(),
+    );
     future::poll_fn({
         let mut store = Some(store);
 
@@ -3798,284 +3730,14 @@ async fn poll_fn<'a, T, R>(
             #[allow(dropping_copy_types)]
             drop(poll_cx);
 
-            match fun(cx, store.take()) {
+            match fun(cx, store.take().map(|s| s.0.as_ptr())) {
                 Ok(v) => Poll::Ready(v),
                 Err(s) => {
-                    store = s;
+                    store = s.map(|s| VMStoreRawPtr(NonNull::new(s).unwrap()));
                     Poll::Pending
                 }
             }
         }
     })
     .await
-}
-
-enum CallerInfo {
-    Async {
-        params: u32,
-        results: u32,
-    },
-    Sync {
-        params: Vec<ValRaw>,
-        result_count: u32,
-    },
-}
-
-fn enter_call<T>(
-    mut store: StoreContextMut<T>,
-    start: *mut VMFuncRef,
-    return_: *mut VMFuncRef,
-    caller_instance: RuntimeComponentInstanceIndex,
-    task_return_type: TypeTupleIndex,
-    memory: *mut VMMemoryDefinition,
-    string_encoding: u8,
-    caller_info: CallerInfo,
-) -> Result<()> {
-    enum ResultInfo {
-        Heap { results: u32 },
-        Stack { result_count: u32 },
-    }
-
-    let result_info = match &caller_info {
-        CallerInfo::Async { results, .. } => ResultInfo::Heap { results: *results },
-        CallerInfo::Sync {
-            result_count,
-            params,
-        } if *result_count > u32::try_from(MAX_FLAT_RESULTS).unwrap() => ResultInfo::Heap {
-            results: params.last().unwrap().get_u32(),
-        },
-        CallerInfo::Sync { result_count, .. } => ResultInfo::Stack {
-            result_count: *result_count,
-        },
-    };
-
-    let start = SendSyncPtr::new(NonNull::new(start).unwrap());
-    let return_ = SendSyncPtr::new(NonNull::new(return_).unwrap());
-    let old_task = store.concurrent_state().guest_task.take();
-    let old_task_rep = old_task.map(|v| v.rep());
-    let new_task = GuestTask::new(
-        store.as_context_mut(),
-        Box::new(move |store, dst| {
-            let mut store = unsafe { StoreContextMut::<T>(&mut *store.cast()) };
-            assert!(dst.len() <= MAX_FLAT_PARAMS);
-            let mut src = [MaybeUninit::uninit(); MAX_FLAT_PARAMS];
-            let count = match caller_info {
-                CallerInfo::Async { params, .. } => {
-                    src[0] = MaybeUninit::new(ValRaw::u32(params));
-                    1
-                }
-                CallerInfo::Sync { params, .. } => {
-                    src[..params.len()].copy_from_slice(unsafe {
-                        mem::transmute::<&[ValRaw], &[MaybeUninit<ValRaw>]>(&params)
-                    });
-                    params.len()
-                }
-            };
-            unsafe {
-                crate::Func::call_unchecked_raw(
-                    &mut store,
-                    start.as_non_null(),
-                    NonNull::new(
-                        &mut src[..count.max(dst.len())] as *mut [MaybeUninit<ValRaw>] as _,
-                    )
-                    .unwrap(),
-                )?;
-            }
-            dst.copy_from_slice(&src[..dst.len()]);
-            let task = store.concurrent_state().guest_task.unwrap();
-            if old_task_rep.is_some() {
-                let waitable = Waitable::Guest(task);
-                waitable.common(&mut store)?.event = Some((Event::CallStarted, 0));
-                waitable.send_or_mark_ready(store)?;
-            }
-            Ok(())
-        }),
-        LiftResult {
-            lift: Box::new(move |store, src| {
-                let mut store = unsafe { StoreContextMut::<T>(&mut *store.cast()) };
-                let mut my_src = src.to_owned(); // TODO: use stack to avoid allocation?
-                if let ResultInfo::Heap { results } = &result_info {
-                    my_src.push(ValRaw::u32(*results));
-                }
-                unsafe {
-                    crate::Func::call_unchecked_raw(
-                        &mut store,
-                        return_.as_non_null(),
-                        my_src.as_mut_slice().into(),
-                    )?;
-                }
-                let task = store.concurrent_state().guest_task.unwrap();
-                if let ResultInfo::Stack { result_count } = &result_info {
-                    match result_count {
-                        0 => {}
-                        1 => {
-                            store.concurrent_state().table.get_mut(task)?.sync_result =
-                                Some(my_src[0]);
-                        }
-                        _ => unreachable!(),
-                    }
-                }
-                if old_task_rep.is_some() {
-                    let waitable = Waitable::Guest(task);
-                    waitable.common(&mut store)?.event = Some((Event::CallReturned, 0));
-                    waitable.send_or_mark_ready(store)?;
-                }
-                Ok(Box::new(DummyResult) as Box<dyn std::any::Any + Send + Sync>)
-            }),
-            ty: task_return_type,
-            memory: NonNull::new(memory).map(SendSyncPtr::new),
-            string_encoding: StringEncoding::from_u8(string_encoding).unwrap(),
-        },
-        Caller::Guest {
-            task: old_task.unwrap(),
-            instance: caller_instance,
-        },
-        None,
-    )?;
-    let guest_task = if let Some(old_task) = old_task {
-        let child = store.concurrent_state().table.push(new_task)?;
-        store
-            .concurrent_state()
-            .table
-            .get_mut(old_task)?
-            .subtasks
-            .insert(child);
-        log::trace!(
-            "new guest task child of {}: {}",
-            old_task.rep(),
-            child.rep()
-        );
-        child
-    } else {
-        store.concurrent_state().table.push(new_task)?
-    };
-
-    store.concurrent_state().guest_task = Some(guest_task);
-    log::trace!(
-        "pushed {} as current task; old task was {:?}",
-        guest_task.rep(),
-        old_task.map(|v| v.rep())
-    );
-
-    Ok(())
-}
-
-fn exit_call<T>(
-    mut store: StoreContextMut<T>,
-    instance: &mut ComponentInstance,
-    callback: *mut VMFuncRef,
-    post_return: *mut VMFuncRef,
-    caller_instance: RuntimeComponentInstanceIndex,
-    callee: *mut VMFuncRef,
-    callee_instance: RuntimeComponentInstanceIndex,
-    param_count: u32,
-    result_count: u32,
-    flags: u32,
-    storage: Option<&mut [MaybeUninit<ValRaw>]>,
-) -> Result<u32> {
-    let async_caller = storage.is_none();
-    let guest_task = store.concurrent_state().guest_task.unwrap();
-    let callee = SendSyncPtr::new(NonNull::new(callee).unwrap());
-    let param_count = usize::try_from(param_count).unwrap();
-    assert!(param_count <= MAX_FLAT_PARAMS);
-    let result_count = usize::try_from(result_count).unwrap();
-    assert!(result_count <= MAX_FLAT_RESULTS);
-
-    if !callback.is_null() {
-        store.concurrent_state().table.get_mut(guest_task)?.callback = Some(Callback {
-            function: SendSyncPtr::new(NonNull::new(callback).unwrap()),
-            instance: callee_instance,
-        });
-    }
-
-    let call = make_call(
-        guest_task,
-        callee,
-        callee_instance,
-        param_count,
-        result_count,
-        if callback.is_null() {
-            None
-        } else {
-            Some(instance.instance_flags(callee_instance))
-        },
-    );
-
-    do_start_call(
-        store.as_context_mut(),
-        instance,
-        guest_task,
-        (flags & EXIT_FLAG_ASYNC_CALLEE) != 0,
-        call,
-        NonNull::new(callback).map(SendSyncPtr::new),
-        NonNull::new(post_return).map(SendSyncPtr::new),
-        callee_instance,
-        result_count,
-        true,
-    )?;
-
-    let task = store.concurrent_state().table.get(guest_task)?;
-
-    let mut status = if task.lower_params.is_some() {
-        Status::Starting
-    } else if task.lift_result.is_some() {
-        Status::Started
-    } else {
-        Status::Returned
-    };
-
-    log::trace!("status {status:?} for {}", guest_task.rep());
-
-    let call = if status != Status::Returned {
-        if async_caller {
-            store
-                .concurrent_state()
-                .table
-                .get_mut(guest_task)?
-                .has_suspended = true;
-
-            instance.component_waitable_tables()[caller_instance]
-                .insert(guest_task.rep(), WaitableState::GuestTask)?
-        } else {
-            let caller = if let Caller::Guest { task, .. } = &task.caller {
-                *task
-            } else {
-                unreachable!()
-            };
-
-            let set = store
-                .concurrent_state()
-                .table
-                .get_mut(caller)?
-                .sync_call_set;
-            store
-                .concurrent_state()
-                .table
-                .get_mut(set)?
-                .waiting
-                .insert(caller);
-            Waitable::Guest(guest_task).join(store.as_context_mut(), Some(set))?;
-
-            poll_for_result(store.as_context_mut())?;
-            status = Status::Returned;
-            0
-        }
-    } else {
-        0
-    };
-
-    if let Some(storage) = storage {
-        if let Some(result) = store
-            .concurrent_state()
-            .table
-            .get_mut(guest_task)?
-            .sync_result
-            .take()
-        {
-            storage[0] = MaybeUninit::new(result);
-        }
-        Ok(0)
-    } else {
-        Ok(((status as u32) << 30) | call)
-    }
 }

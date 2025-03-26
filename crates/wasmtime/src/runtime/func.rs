@@ -557,10 +557,9 @@ impl Func {
         Func::new(store, ty, move |mut caller, params, results| {
             #[cfg(feature = "component-model-async")]
             {
-                let async_cx =
-                    crate::component::concurrent::AsyncCx::new(&mut caller.store.as_context_mut());
+                let async_cx = crate::component::concurrent::AsyncCx::new(&mut caller.store.0);
                 let mut future = Pin::from(func(caller, params, results));
-                match unsafe { async_cx.block_on::<T, _>(future.as_mut(), None) } {
+                match unsafe { async_cx.block_on(future.as_mut(), None) } {
                     Ok((Ok(()), _)) => Ok(()),
                     Ok((Err(trap), _)) | Err(trap) => Err(trap),
                 }
@@ -889,11 +888,10 @@ impl Func {
         Func::wrap_inner(store, move |mut caller: Caller<'_, T>, args| {
             #[cfg(feature = "component-model-async")]
             {
-                let async_cx =
-                    crate::component::concurrent::AsyncCx::new(&mut caller.store.as_context_mut());
+                let async_cx = crate::component::concurrent::AsyncCx::new(&mut caller.store.0);
                 let mut future = Pin::from(func(caller, args));
 
-                match unsafe { async_cx.block_on::<T, _>(future.as_mut(), None) } {
+                match unsafe { async_cx.block_on(future.as_mut(), None) } {
                     Ok((ret, _)) => ret.into_fallible(),
                     Err(e) => R::fallible_from_error(e),
                 }

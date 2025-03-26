@@ -31,7 +31,7 @@ use {
     std::{fmt, future::Future, mem},
     wasi::http::types::{ErrorCode, HeaderError, Method, RequestOptionsError, Scheme},
     wasmtime::component::{
-        future, Accessor, AccessorTask, ErrorContext, FutureReader, HostFuture, HostStream, Linker,
+        Accessor, AccessorTask, ErrorContext, FutureReader, HostFuture, HostStream, Linker,
         Resource, ResourceTable, StreamReader,
     },
 };
@@ -263,7 +263,10 @@ impl<T: WasiHttpView> wasi::http::types::HostBody for WasiHttpImpl<T> {
             let trailers = store.table().delete(this)?.trailers;
             Ok::<FutureReader<_>, anyhow::Error>(match trailers {
                 Some(t) => t,
-                None => future(&mut store)?.1,
+                None => {
+                    let instance = store.instance();
+                    instance.future(&mut store)?.1
+                }
             })
         })?;
 

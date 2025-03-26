@@ -230,8 +230,6 @@ pub struct StoreInner<T> {
         Option<Box<dyn FnMut(StoreContextMut<T>) -> Result<UpdateDeadline> + Send + Sync>>,
     // for comments about `ManuallyDrop`, see `Store::into_data`
     data: ManuallyDrop<T>,
-    #[cfg(feature = "component-model-async")]
-    concurrent_state: concurrent::ConcurrentState<T>,
 }
 
 enum ResourceLimiterInner<T> {
@@ -388,6 +386,9 @@ pub struct StoreOpaque {
     component_calls: crate::runtime::vm::component::CallContexts,
     #[cfg(feature = "component-model")]
     host_resource_data: crate::component::HostResourceData,
+
+    #[cfg(feature = "component-model-async")]
+    concurrent_async_state: concurrent::AsyncState,
 
     /// State related to the executor of wasm code.
     ///
@@ -563,6 +564,8 @@ impl<T> Store<T> {
                 component_calls: Default::default(),
                 #[cfg(feature = "component-model")]
                 host_resource_data: Default::default(),
+                #[cfg(feature = "component-model-async")]
+                concurrent_async_state: Default::default(),
                 #[cfg(has_host_compiler_backend)]
                 executor: if cfg!(feature = "pulley") && engine.target().is_pulley() {
                     Executor::Interpreter(Interpreter::new(engine))
@@ -580,8 +583,6 @@ impl<T> Store<T> {
             #[cfg(target_has_atomic = "64")]
             epoch_deadline_behavior: None,
             data: ManuallyDrop::new(data),
-            #[cfg(feature = "component-model-async")]
-            concurrent_state: Default::default(),
         });
 
         // Wasmtime uses the callee argument to host functions to learn about
@@ -991,25 +992,6 @@ impl<'a, T> StoreContextMut<'a, T> {
         self.0.data_mut()
     }
 
-    #[cfg(feature = "component-model-async")]
-    pub(crate) fn concurrent_state(&mut self) -> &mut concurrent::ConcurrentState<T> {
-        self.0.concurrent_state()
-    }
-
-    #[cfg(feature = "component-model-async")]
-    pub(crate) fn has_pkey(&self) -> bool {
-        self.0.pkey.is_some()
-    }
-
-    #[cfg(feature = "component-model-async")]
-    #[doc(hidden)]
-    pub fn spawn(
-        &mut self,
-        future: impl std::future::Future<Output = Result<()>> + Send + Sync + 'static,
-    ) {
-        self.0.concurrent_state().spawn(future)
-    }
-
     /// Returns the underlying [`Engine`] this store is connected to.
     pub fn engine(&self) -> &Engine {
         self.0.engine()
@@ -1074,11 +1056,6 @@ impl<T> StoreInner<T> {
         &mut self.data
     }
 
-    #[cfg(feature = "component-model-async")]
-    fn concurrent_state(&mut self) -> &mut concurrent::ConcurrentState<T> {
-        &mut self.concurrent_state
-    }
-
     #[inline]
     pub fn call_hook(&mut self, s: CallHook) -> Result<()> {
         if self.inner.pkey.is_none() && self.call_hook.is_none() {
@@ -1120,17 +1097,15 @@ impl<T> StoreInner<T> {
             CallHookInner::Async(handler) => unsafe {
                 #[cfg(feature = "component-model-async")]
                 {
-                    let async_cx = crate::component::concurrent::AsyncCx::try_new(
-                        &mut (&mut *self).as_context_mut(),
-                    )
-                    .ok_or_else(|| anyhow!("couldn't grab async_cx for call hook"))?;
+                    let async_cx = crate::component::concurrent::AsyncCx::try_new(&mut self.inner)
+                        .ok_or_else(|| anyhow!("couldn't grab async_cx for call hook"))?;
 
                     async_cx
                         .block_on(
                             handler
                                 .handle_call_event((&mut *self).as_context_mut(), s)
                                 .as_mut(),
-                            None::<StoreContextMut<'_, T>>,
+                            None,
                         )?
                         .0
                 }
@@ -1914,6 +1889,16 @@ at https://bytecodealliance.org/security.
         self.num_component_instances += 1;
     }
 
+    #[cfg(feature = "component-model-async")]
+    pub(crate) fn concurrent_async_state(&mut self) -> &mut concurrent::AsyncState {
+        &mut self.concurrent_async_state
+    }
+
+    #[cfg(feature = "component-model-async")]
+    pub(crate) fn has_pkey(&self) -> bool {
+        self.pkey.is_some()
+    }
+
     pub(crate) fn executor(&mut self) -> ExecutorRef<'_> {
         match &mut self.executor {
             Executor::Interpreter(i) => ExecutorRef::Interpreter(i.as_interpreter_ref()),
@@ -1962,14 +1947,13 @@ unsafe impl<T> crate::runtime::vm::VMStore for StoreInner<T> {
                 #[cfg(feature = "component-model-async")]
                 {
                     _ = limiter;
-                    let async_cx = crate::component::concurrent::AsyncCx::new(
-                        &mut (&mut *self).as_context_mut(),
-                    );
+                    let async_cx =
+                        crate::component::concurrent::AsyncCx::new(&mut (&mut *self).inner);
                     let Some(ResourceLimiterInner::Async(ref mut limiter)) = self.limiter else {
                         unreachable!();
                     };
                     async_cx
-                        .block_on::<T, _>(
+                        .block_on(
                             limiter(&mut self.data)
                                 .memory_growing(current, desired, maximum)
                                 .as_mut(),
@@ -2036,14 +2020,13 @@ unsafe impl<T> crate::runtime::vm::VMStore for StoreInner<T> {
                 #[cfg(feature = "component-model-async")]
                 {
                     _ = limiter;
-                    let async_cx = crate::component::concurrent::AsyncCx::new(
-                        &mut (&mut *self).as_context_mut(),
-                    );
+                    let async_cx =
+                        crate::component::concurrent::AsyncCx::new(&mut (&mut *self).inner);
                     let Some(ResourceLimiterInner::Async(ref mut limiter)) = self.limiter else {
                         unreachable!();
                     };
                     async_cx
-                        .block_on::<T, _>(
+                        .block_on(
                             limiter(&mut self.data)
                                 .table_growing(current, desired, maximum)
                                 .as_mut(),
@@ -2137,11 +2120,22 @@ unsafe impl<T> crate::runtime::vm::VMStore for StoreInner<T> {
         if store.async_support() {
             #[cfg(feature = "async")]
             unsafe {
-                let async_cx = store.async_cx();
-                let future = store.gc_async();
-                async_cx
-                    .expect("attempted to pull async context during shutdown")
-                    .block_on(future)?;
+                #[cfg(feature = "component-model-async")]
+                {
+                    let async_cx = crate::component::concurrent::AsyncCx::try_new(&mut store.inner)
+                        .expect("attempted to pull async context during shutdown");
+                    let future = store.gc_async();
+                    let future = std::pin::pin!(future);
+                    async_cx.block_on(future, None)?.0
+                }
+                #[cfg(not(feature = "component-model-async"))]
+                {
+                    let async_cx = store.async_cx();
+                    let future = store.gc_async();
+                    async_cx
+                        .expect("attempted to pull async context during shutdown")
+                        .block_on(future)?;
+                }
             }
         } else {
             (**store).gc();

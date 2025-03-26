@@ -1543,7 +1543,7 @@ impl WasmStr {
         self.to_str_from_memory(memory)
     }
 
-    fn to_str_from_memory<'a>(&self, memory: &'a [u8]) -> Result<Cow<'a, str>> {
+    pub(crate) fn to_str_from_memory<'a>(&self, memory: &'a [u8]) -> Result<Cow<'a, str>> {
         match self.options.string_encoding() {
             StringEncoding::Utf8 => self.decode_utf8(memory),
             StringEncoding::Utf16 => self.decode_utf16(memory, self.len),

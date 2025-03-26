@@ -61,7 +61,10 @@ impl bindings::local::local::resource_stream::Host for &mut Ctx {
             }
         }
 
-        let (tx, rx) = accessor.with(|mut view| wasmtime::component::stream(&mut view))?;
+        let (tx, rx) = accessor.with(|mut view| {
+            let instance = view.instance();
+            instance.stream(&mut view)
+        })?;
         accessor.spawn(Task { tx, count });
         Ok(rx.into())
     }

@@ -315,17 +315,19 @@ async fn test_round_trip_many(component: &[u8], inputs_and_outputs: &[(&str, &st
         linker
             .root()
             .instance("local:local/many")?
-            .func_new_concurrent("foo", |_, params| async move {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                let mut params = params.into_iter();
-                let Some(Val::String(s)) = params.next() else {
-                    unreachable!()
-                };
-                Ok(vec![Val::Tuple(
-                    iter::once(Val::String(format!("{s} - entered host - exited host")))
-                        .chain(params)
-                        .collect(),
-                )])
+            .func_new_concurrent("foo", |_, params| {
+                Box::pin(async move {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    let mut params = params.into_iter();
+                    let Some(Val::String(s)) = params.next() else {
+                        unreachable!()
+                    };
+                    Ok(vec![Val::Tuple(
+                        iter::once(Val::String(format!("{s} - entered host - exited host")))
+                            .chain(params)
+                            .collect(),
+                    )])
+                })
             })?;
 
         let mut store = make_store();

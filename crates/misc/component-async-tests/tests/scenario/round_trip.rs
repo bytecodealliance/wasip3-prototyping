@@ -247,14 +247,16 @@ pub async fn test_round_trip(component: &[u8], inputs_and_outputs: &[(&str, &str
         linker
             .root()
             .instance("local:local/baz")?
-            .func_new_concurrent("foo", |_, params| async move {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                let Some(Val::String(s)) = params.into_iter().next() else {
-                    unreachable!()
-                };
-                Ok(vec![Val::String(format!(
-                    "{s} - entered host - exited host"
-                ))])
+            .func_new_concurrent("foo", |_, params| {
+                Box::pin(async move {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    let Some(Val::String(s)) = params.into_iter().next() else {
+                        unreachable!()
+                    };
+                    Ok(vec![Val::String(format!(
+                        "{s} - entered host - exited host"
+                    ))])
+                })
             })?;
 
         let mut store = make_store();

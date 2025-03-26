@@ -2809,15 +2809,17 @@ impl<'a> InterfaceGenerator<'a> {
             .import_call_style(self.qualifier().as_deref(), &func.name);
 
         let wt = self.generator.wasmtime_path();
-        let maybe_mut = if let CallStyle::Concurrent = style {
-            ""
+        if let CallStyle::Concurrent = style {
+            uwrite!(
+                self.src,
+                "move |caller: &mut {wt}::component::Accessor::<T, T>, ("
+            );
         } else {
-            "mut "
-        };
-        uwrite!(
-            self.src,
-            "move |{maybe_mut}caller: {wt}::StoreContextMut<'_, T>, ("
-        );
+            uwrite!(
+                self.src,
+                "move |mut caller: {wt}::StoreContextMut<'_, T>, ("
+            );
+        }
         for (i, _param) in func.params.iter().enumerate() {
             uwrite!(self.src, "arg{},", i);
         }
@@ -2868,7 +2870,9 @@ impl<'a> InterfaceGenerator<'a> {
             CallStyle::Concurrent => {
                 uwriteln!(
                     self.src,
-                    "let mut accessor = unsafe {{ {wt}::component::Accessor::<T, _>::new(get_host_and_store, spawn_task) }};
+                    "let mut accessor = unsafe {{
+                         {wt}::component::Accessor::<T, _>::new(get_host_and_store, spawn_task, caller.maybe_instance())
+                     }};
                      let mut future = {wt}::component::__internal::Box::pin(async move {{"
                 );
             }
@@ -2995,9 +2999,14 @@ impl<'a> InterfaceGenerator<'a> {
             uwriteln!(
                 self.src,
                 ";
-                 let store = {wt}::VMStoreRawPtr(caller.traitobj());
+                 let store = {wt}::VMStoreRawPtr(
+                     caller.with(|mut v| {wt}::AsContextMut::as_context_mut(&mut v).traitobj())
+                 );
+                 let instance = caller.maybe_instance();
                  {wt}::component::__internal::Box::pin({wt}::component::__internal::poll_fn(
-                     move |cx| poll_with_state(host_getter, store, cx, future.as_mut()),
+                     move |cx| {{
+                         poll_with_state(host_getter, store, instance, cx, future.as_mut())
+                     }}
                  ))
                 "
             );
@@ -3035,7 +3044,7 @@ impl<'a> InterfaceGenerator<'a> {
         self.generate_function_result(func);
 
         if let (CallStyle::Concurrent, false) = (&style, async_sugar) {
-            self.push_str("> + Send + Sync where Self: Sized");
+            self.push_str("> + Send where Self: Sized");
         }
     }
 
@@ -3724,6 +3733,7 @@ fn concurrent_declarations(wt: &str, get_host: &str) -> String {
         fn poll_with_state<T, G: for<'a> {get_host}<&'a mut T>, F: {wt}::component::__internal::Future + ?Sized>(
             getter: G,
             store: {wt}::VMStoreRawPtr,
+            instance: Option<{wt}::component::Instance>,
             cx: &mut {wt}::component::__internal::Context,
             future: {wt}::component::__internal::Pin<&mut F>,
         ) -> {wt}::component::__internal::Poll<F::Output> {{
@@ -3744,7 +3754,7 @@ fn concurrent_declarations(wt: &str, get_host: &str) -> String {
             }};
 
             for spawned in spawned {{
-                store_cx.spawn({wt}::component::__internal::poll_fn(move |cx| {{
+                instance.unwrap().spawn(&mut store_cx, {wt}::component::__internal::poll_fn(move |cx| {{
                     let mut spawned = spawned.try_lock().unwrap();
                     let inner = mem::replace(
                         DerefMut::deref_mut(&mut spawned),
@@ -3753,7 +3763,7 @@ fn concurrent_declarations(wt: &str, get_host: &str) -> String {
                     if let SpawnedInner::Unpolled(mut future)
                         | SpawnedInner::Polled {{ mut future, .. }} = inner
                     {{
-                        let result = poll_with_state(getter, store, cx, future.as_mut());
+                        let result = poll_with_state(getter, store, instance, cx, future.as_mut());
                         *DerefMut::deref_mut(&mut spawned) = SpawnedInner::Polled {{
                             future,
                             waker: cx.waker().clone()

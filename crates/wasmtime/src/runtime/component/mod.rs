@@ -116,9 +116,9 @@ mod values;
 pub use self::component::{Component, ComponentExportIndex};
 #[cfg(feature = "component-model-async")]
 pub use self::concurrent::{
-    future, get, stream, AbortOnDropHandle, Accessor, AccessorTask, ErrorContext, FutureReader,
-    FutureWriter, HostFuture, HostStream, Promise, PromisesUnordered, Single, StreamReader,
-    StreamWriter, VMComponentAsyncStore,
+    AbortOnDropHandle, Accessor, AccessorTask, ErrorContext, FutureReader, FutureWriter,
+    HostFuture, HostStream, Promise, PromisesUnordered, Single, StreamReader, StreamWriter,
+    VMComponentAsyncStore, Watch,
 };
 pub use self::func::{
     ComponentNamedList, ComponentType, Func, Lift, Lower, TypedFunc, WasmList, WasmStr,
@@ -165,6 +165,8 @@ pub mod __internal {
     pub use core::ops::DerefMut;
     #[cfg(feature = "component-model-async")]
     pub use core::pin::{pin, Pin};
+    #[cfg(feature = "component-model-async")]
+    pub use core::ptr::NonNull;
     #[cfg(feature = "component-model-async")]
     pub use core::task::{Context, Poll};
     #[cfg(feature = "component-model-async")]
@@ -702,6 +704,7 @@ pub(crate) mod concurrent {
                 func::{ComponentType, LiftContext, LowerContext},
                 Val,
             },
+            vm::component::ComponentInstance,
             StoreContextMut,
         },
         alloc::{sync::Arc, task::Wake},
@@ -709,7 +712,6 @@ pub(crate) mod concurrent {
         core::{
             future::Future,
             marker::PhantomData,
-            mem::MaybeUninit,
             pin::pin,
             task::{Context, Poll, Waker},
         },
@@ -726,45 +728,50 @@ pub(crate) mod concurrent {
         Arc::new(DummyWaker).into()
     }
 
-    pub(crate) fn poll_and_block<'a, T, R: Send + Sync + 'static>(
-        _store: StoreContextMut<'a, T>,
-        future: impl Future<Output = Result<R>> + Send + Sync + 'static,
-        _caller_instance: RuntimeComponentInstanceIndex,
-    ) -> Result<R> {
-        match pin!(future).poll(&mut Context::from_waker(&dummy_waker())) {
-            Poll::Ready(result) => result,
-            Poll::Pending => {
-                unreachable!()
+    impl ComponentInstance {
+        pub(crate) fn poll_and_block<'a, T, R: Send + Sync + 'static>(
+            &mut self,
+            _store: StoreContextMut<'a, T>,
+            future: impl Future<Output = Result<R>> + Send + 'static,
+            _caller_instance: RuntimeComponentInstanceIndex,
+        ) -> Result<R> {
+            match pin!(future).poll(&mut Context::from_waker(&dummy_waker())) {
+                Poll::Ready(result) => result,
+                Poll::Pending => {
+                    unreachable!()
+                }
             }
         }
+    }
+
+    pub(crate) fn lower_future_to_index<U>(
+        _rep: u32,
+        _cx: &mut LowerContext<'_, U>,
+        _ty: InterfaceType,
+    ) -> Result<u32> {
+        unreachable!()
+    }
+
+    pub(crate) fn lower_stream_to_index<U>(
+        _rep: u32,
+        _cx: &mut LowerContext<'_, U>,
+        _ty: InterfaceType,
+    ) -> Result<u32> {
+        unreachable!()
+    }
+
+    pub(crate) fn lower_error_context_to_index<U>(
+        _rep: u32,
+        _cx: &mut LowerContext<'_, U>,
+        _ty: InterfaceType,
+    ) -> Result<u32> {
+        unreachable!()
     }
 
     pub struct ErrorContext;
 
     impl ErrorContext {
-        pub(crate) fn new(_rep: u32) -> Self {
-            unreachable!()
-        }
-
         pub(crate) fn into_val(self) -> Val {
-            unreachable!()
-        }
-
-        pub(crate) fn lower<T>(
-            &self,
-            _cx: &mut LowerContext<'_, T>,
-            _ty: InterfaceType,
-            _dst: &mut MaybeUninit<<u32 as ComponentType>::Lower>,
-        ) -> Result<()> {
-            unreachable!()
-        }
-
-        pub(crate) fn store<T>(
-            &self,
-            _cx: &mut LowerContext<'_, T>,
-            _ty: InterfaceType,
-            _offset: usize,
-        ) -> Result<()> {
             unreachable!()
         }
 
@@ -790,29 +797,7 @@ pub(crate) mod concurrent {
     }
 
     impl<P> HostStream<P> {
-        pub(crate) fn new(_rep: u32) -> Self {
-            unreachable!()
-        }
-
         pub(crate) fn into_val(self) -> Val {
-            unreachable!()
-        }
-
-        pub(crate) fn lower<T>(
-            &self,
-            _cx: &mut LowerContext<'_, T>,
-            _ty: InterfaceType,
-            _dst: &mut MaybeUninit<<u32 as ComponentType>::Lower>,
-        ) -> Result<()> {
-            unreachable!()
-        }
-
-        pub(crate) fn store<T>(
-            &self,
-            _cx: &mut LowerContext<'_, T>,
-            _ty: InterfaceType,
-            _offset: usize,
-        ) -> Result<()> {
             unreachable!()
         }
 
@@ -838,29 +823,7 @@ pub(crate) mod concurrent {
     }
 
     impl<P> HostFuture<P> {
-        pub(crate) fn new(_rep: u32) -> Self {
-            unreachable!()
-        }
-
         pub(crate) fn into_val(self) -> Val {
-            unreachable!()
-        }
-
-        pub(crate) fn lower<T>(
-            &self,
-            _cx: &mut LowerContext<'_, T>,
-            _ty: InterfaceType,
-            _dst: &mut MaybeUninit<<u32 as ComponentType>::Lower>,
-        ) -> Result<()> {
-            unreachable!()
-        }
-
-        pub(crate) fn store<T>(
-            &self,
-            _cx: &mut LowerContext<'_, T>,
-            _ty: InterfaceType,
-            _offset: usize,
-        ) -> Result<()> {
             unreachable!()
         }
 

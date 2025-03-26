@@ -216,15 +216,8 @@ impl<T> StoreInner<T> {
         // things up.
         #[cfg(feature = "component-model-async")]
         unsafe {
-            use crate::runtime::store::context::AsContextMut;
-            let async_cx =
-                crate::component::concurrent::AsyncCx::new(&mut (&mut *self).as_context_mut());
-            async_cx
-                .block_on(
-                    Pin::new_unchecked(&mut future),
-                    None::<StoreContextMut<'_, T>>,
-                )?
-                .0;
+            let async_cx = crate::component::concurrent::AsyncCx::new(&mut (&mut *self).inner);
+            async_cx.block_on(Pin::new_unchecked(&mut future), None)?.0;
             Ok(())
         }
         #[cfg(not(feature = "component-model-async"))]
@@ -358,7 +351,7 @@ impl<T> StoreContextMut<'_, T> {
     pub(crate) fn async_guard_range(&mut self) -> Range<*mut u8> {
         #[cfg(feature = "component-model-async")]
         {
-            self.concurrent_state().async_guard_range()
+            self.0.concurrent_async_state().async_guard_range()
         }
         #[cfg(not(feature = "component-model-async"))]
         unsafe {

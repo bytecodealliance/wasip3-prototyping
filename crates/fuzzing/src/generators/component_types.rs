@@ -130,6 +130,7 @@ where
         + Debug
         + Arbitrary<'a>
         + Send
+        + Sync
         + 'static,
     R: ComponentNamedList
         + Lift
