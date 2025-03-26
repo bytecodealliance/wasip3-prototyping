@@ -135,9 +135,10 @@ where
                         }));
                         let task = task.abort_handle();
                         match response.await {
-                            Ok(response) => {
-                                (response.map(|body| body.map_err(Into::into).boxed()), task)
-                            }
+                            Ok(response) => (
+                                response.map(|body| body.map_err(Into::into).boxed_unsync()),
+                                task,
+                            ),
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -165,9 +166,10 @@ where
                         }));
                         let task = task.abort_handle();
                         match response.await {
-                            Ok(response) => {
-                                (response.map(|body| body.map_err(Into::into).boxed()), task)
-                            }
+                            Ok(response) => (
+                                response.map(|body| body.map_err(Into::into).boxed_unsync()),
+                                task,
+                            ),
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -211,9 +213,10 @@ where
                         eprintln!("[host] return Ok response");
                         let task = task.abort_handle();
                         match response.await {
-                            Ok(response) => {
-                                (response.map(|body| body.map_err(Into::into).boxed()), task)
-                            }
+                            Ok(response) => (
+                                response.map(|body| body.map_err(Into::into).boxed_unsync()),
+                                task,
+                            ),
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -256,9 +259,10 @@ where
                         eprintln!("[host] return Ok response");
                         let task = task.abort_handle();
                         match response.await {
-                            Ok(response) => {
-                                (response.map(|body| body.map_err(Into::into).boxed()), task)
-                            }
+                            Ok(response) => (
+                                response.map(|body| body.map_err(Into::into).boxed_unsync()),
+                                task,
+                            ),
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -280,9 +284,10 @@ where
                         }));
                         let task = task.abort_handle();
                         match response.await {
-                            Ok(response) => {
-                                (response.map(|body| body.map_err(Into::into).boxed()), task)
-                            }
+                            Ok(response) => (
+                                response.map(|body| body.map_err(Into::into).boxed_unsync()),
+                                task,
+                            ),
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -304,9 +309,10 @@ where
                         }));
                         let task = task.abort_handle();
                         match response.await {
-                            Ok(response) => {
-                                (response.map(|body| body.map_err(Into::into).boxed()), task)
-                            }
+                            Ok(response) => (
+                                response.map(|body| body.map_err(Into::into).boxed_unsync()),
+                                task,
+                            ),
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -331,9 +337,10 @@ where
                         }));
                         let task = task.abort_handle();
                         match response.await {
-                            Ok(response) => {
-                                (response.map(|body| body.map_err(Into::into).boxed()), task)
-                            }
+                            Ok(response) => (
+                                response.map(|body| body.map_err(Into::into).boxed_unsync()),
+                                task,
+                            ),
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -354,9 +361,10 @@ where
                         }));
                         let task = task.abort_handle();
                         match response.await {
-                            Ok(response) => {
-                                (response.map(|body| body.map_err(Into::into).boxed()), task)
-                            }
+                            Ok(response) => (
+                                response.map(|body| body.map_err(Into::into).boxed_unsync()),
+                                task,
+                            ),
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -379,9 +387,10 @@ where
                         }));
                         let task = task.abort_handle();
                         match response.await {
-                            Ok(response) => {
-                                (response.map(|body| body.map_err(Into::into).boxed()), task)
-                            }
+                            Ok(response) => (
+                                response.map(|body| body.map_err(Into::into).boxed_unsync()),
+                                task,
+                            ),
                             Err(err) => return Ok(Err(err)),
                         }
                     }
