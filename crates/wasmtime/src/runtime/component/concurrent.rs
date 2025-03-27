@@ -36,7 +36,10 @@ use {
         ops::{Deref, DerefMut, Range},
         pin::{pin, Pin},
         ptr::{self, NonNull},
-        sync::{Arc, Mutex},
+        sync::{
+            atomic::{AtomicU32, Ordering::Relaxed},
+            Arc, Mutex,
+        },
         task::{Context, Poll, Wake, Waker},
         vec::Vec,
     },
@@ -75,18 +78,45 @@ enum Status {
     Returned,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
-#[repr(u32)]
+#[derive(Clone, Copy, Debug)]
 enum Event {
     None,
     _CallStarting,
     CallStarted,
     CallReturned,
-    _Yielded,
-    StreamRead,
-    StreamWrite,
-    FutureRead,
-    FutureWrite,
+    StreamRead {
+        count: u32,
+        handle: u32,
+        ty: TypeStreamTableIndex,
+    },
+    StreamWrite {
+        count: u32,
+        pending: Option<(TypeStreamTableIndex, u32)>,
+    },
+    FutureRead {
+        count: u32,
+        handle: u32,
+        ty: TypeFutureTableIndex,
+    },
+    FutureWrite {
+        count: u32,
+        pending: Option<(TypeFutureTableIndex, u32)>,
+    },
+}
+
+impl Event {
+    fn parts(self) -> (u32, u32) {
+        match self {
+            Event::None => (0, 0),
+            Event::_CallStarting => (1, 0),
+            Event::CallStarted => (2, 0),
+            Event::CallReturned => (3, 0),
+            Event::StreamRead { count, .. } => (5, count),
+            Event::StreamWrite { count, .. } => (6, count),
+            Event::FutureRead { count, .. } => (7, count),
+            Event::FutureWrite { count, .. } => (8, count),
+        }
+    }
 }
 
 mod callback_code {
@@ -699,7 +729,6 @@ impl ComponentInstance {
         guest_task: TableId<GuestTask>,
         event: Event,
         waitable: Option<Waitable>,
-        result: u32,
     ) -> Result<()> {
         assert_ne!(Some(guest_task.rep()), waitable.map(|v| v.rep()));
 
@@ -745,6 +774,10 @@ impl ComponentInstance {
                 callback.function,
             );
 
+            if let Some(waitable) = waitable {
+                waitable.on_delivery(self, event);
+            }
+
             let old_task = self.guest_task().replace(guest_task);
             log::trace!(
                 "maybe_send_event (callback): replaced {:?} with {} as current task",
@@ -754,14 +787,8 @@ impl ComponentInstance {
 
             self.maybe_push_call_context(guest_task)?;
 
-            let code = (callback.caller)(
-                self,
-                callback.instance,
-                callback.function,
-                event,
-                handle,
-                result,
-            )?;
+            let code =
+                (callback.caller)(self, callback.instance, callback.function, event, handle)?;
 
             self.maybe_pop_call_context(guest_task)?;
 
@@ -773,10 +800,10 @@ impl ComponentInstance {
                 old_task.map(|v| v.rep())
             );
         } else if let Some(waitable) = waitable {
-            waitable.common(self)?.event = Some((event, result));
+            waitable.common(self)?.event = Some(event);
             waitable.mark_ready(self)?;
 
-            let resumed = if event == Event::CallReturned {
+            let resumed = if let Event::CallReturned = event {
                 if let Some((fiber, async_)) = self.get_mut(guest_task)?.deferred.take_stackful() {
                     log::trace!(
                         "use fiber to deliver event {event:?} to {} for {}",
@@ -849,7 +876,7 @@ impl ComponentInstance {
                             }
                             Caller::Guest { .. } => {
                                 let waitable = Waitable::Guest(guest_task);
-                                waitable.common(self)?.event = Some((Event::CallReturned, 0));
+                                waitable.common(self)?.event = Some(Event::CallReturned);
                                 waitable.send_or_mark_ready(self)?;
                             }
                         }
@@ -915,9 +942,9 @@ impl ComponentInstance {
             Ok(TableId::<WaitableSet>::new(set))
         };
 
-        if event != Event::None {
+        if !matches!(event, Event::None) {
             let waitable = Waitable::Guest(guest_task);
-            waitable.common(self)?.event = Some((event, 0));
+            waitable.common(self)?.event = Some(event);
             waitable.send_or_mark_ready(self)?;
         }
 
@@ -939,8 +966,8 @@ impl ComponentInstance {
                 let set = self.get_mut(set)?;
 
                 if let Some(waitable) = set.ready.pop_first() {
-                    let (event, result) = waitable.common(self)?.event.take().unwrap();
-                    self.maybe_send_event(guest_task, event, Some(waitable), result)?;
+                    let event = waitable.common(self)?.event.take().unwrap();
+                    self.maybe_send_event(guest_task, event, Some(waitable))?;
                 } else {
                     set.waiting.insert(guest_task);
                 }
@@ -987,21 +1014,26 @@ impl ComponentInstance {
                 HostTaskOutput::Background(result) => {
                     result?;
                 }
-                HostTaskOutput::Call { waitable, fun } => {
-                    let result = fun(self)?;
-                    log::trace!("handle_ready event {:?} for {waitable}", result.event);
-                    let waitable = match result.event {
-                        Event::CallReturned => Waitable::Host(TableId::<HostTask>::new(waitable)),
-                        Event::StreamRead
-                        | Event::FutureRead
-                        | Event::StreamWrite
-                        | Event::FutureWrite => {
-                            Waitable::Transmit(TableId::<TransmitHandle>::new(waitable))
-                        }
-                        _ => unreachable!(),
-                    };
-                    waitable.common(self)?.event = Some((result.event, result.param));
-                    waitable.send_or_mark_ready(self)?;
+                HostTaskOutput::Waitable { waitable, fun } => {
+                    let waitable = waitable.load(Relaxed);
+                    if waitable != 0 {
+                        let event = fun(self)?;
+                        log::trace!("handle_ready event {event:?} for {waitable}");
+                        let waitable = match event {
+                            Event::CallReturned => {
+                                Waitable::Host(TableId::<HostTask>::new(waitable))
+                            }
+                            Event::StreamRead { .. }
+                            | Event::FutureRead { .. }
+                            | Event::StreamWrite { .. }
+                            | Event::FutureWrite { .. } => {
+                                Waitable::Transmit(TableId::<TransmitHandle>::new(waitable))
+                            }
+                            _ => unreachable!(),
+                        };
+                        waitable.common(self)?.event = Some(event);
+                        waitable.send_or_mark_ready(self)?;
+                    }
                 }
             }
         }
@@ -1035,22 +1067,22 @@ impl ComponentInstance {
             if self.get(guest_task)?.callback.is_some() {
                 resumed = true;
 
-                let (waitable, event, result) = if let Some(set) = set {
+                let (waitable, event) = if let Some(set) = set {
                     if let Some(waitable) = self.get_mut(set)?.ready.pop_first() {
                         waitable
                             .common(self)?
                             .event
                             .take()
-                            .map(|(e, v)| (Some(waitable), e, v))
+                            .map(|e| (Some(waitable), e))
                     } else {
                         None
                     }
                 } else {
                     None
                 }
-                .unwrap_or((None, Event::None, 0));
+                .unwrap_or((None, Event::None));
 
-                self.maybe_send_event(guest_task, event, waitable, result)?;
+                self.maybe_send_event(guest_task, event, waitable)?;
             } else {
                 assert!(set.is_none());
 
@@ -1489,7 +1521,7 @@ impl ComponentInstance {
                 let task = instance.guest_task().unwrap();
                 if old_task_rep.is_some() {
                     let waitable = Waitable::Guest(task);
-                    waitable.common(instance)?.event = Some((Event::CallStarted, 0));
+                    waitable.common(instance)?.event = Some(Event::CallStarted);
                     waitable.send_or_mark_ready(instance)?;
                 }
                 Ok(())
@@ -1520,7 +1552,7 @@ impl ComponentInstance {
                     }
                     if old_task_rep.is_some() {
                         let waitable = Waitable::Guest(task);
-                        waitable.common(instance)?.event = Some((Event::CallReturned, 0));
+                        waitable.common(instance)?.event = Some(Event::CallReturned);
                         waitable.send_or_mark_ready(instance)?;
                     }
                     Ok(Box::new(DummyResult) as Box<dyn std::any::Any + Send + Sync>)
@@ -1535,17 +1567,20 @@ impl ComponentInstance {
             },
             None,
         )?;
-        let guest_task = if let Some(old_task) = old_task {
-            let child = self.push(new_task)?;
-            self.get_mut(old_task)?.subtasks.insert(child);
+
+        let guest_task = self.push(new_task)?;
+        self.get_mut(guest_task)?
+            .common
+            .rep
+            .store(guest_task.rep(), Relaxed);
+
+        if let Some(old_task) = old_task {
+            self.get_mut(old_task)?.subtasks.insert(guest_task);
             log::trace!(
                 "new guest task child of {}: {}",
                 old_task.rep(),
-                child.rep()
+                guest_task.rep()
             );
-            child
-        } else {
-            self.push(new_task)?
         };
 
         *self.guest_task() = Some(guest_task);
@@ -1564,13 +1599,13 @@ impl ComponentInstance {
         function: SendSyncPtr<VMFuncRef>,
         event: Event,
         handle: u32,
-        result: u32,
     ) -> Result<u32> {
         let mut store = unsafe { StoreContextMut::<T>(&mut *self.store().cast()) };
         let mut flags = self.instance_flags(callee_instance);
 
+        let (ordinal, result) = event.parts();
         let params = &mut [
-            ValRaw::u32(event as u32),
+            ValRaw::u32(ordinal),
             ValRaw::u32(handle),
             ValRaw::u32(result),
         ];
@@ -1762,6 +1797,8 @@ impl ComponentInstance {
     ) -> Result<Option<u32>> {
         let caller = self.guest_task().unwrap();
         let task = self.push(HostTask::new(caller_instance))?;
+        let waitable = self.get(task)?.common.rep.clone();
+        waitable.store(task.rep(), Relaxed);
 
         // Here we wrap the future in a `future::poll_fn` to ensure that we restore
         // and save the `CallContext` for this task before and after polling it,
@@ -1808,15 +1845,12 @@ impl ComponentInstance {
         });
 
         log::trace!("new host task child of {}: {}", caller.rep(), task.rep());
-        let mut future = Box::pin(future.map(move |result| HostTaskOutput::Call {
-            waitable: task.rep(),
+        let mut future = Box::pin(future.map(move |result| HostTaskOutput::Waitable {
+            waitable,
             fun: Box::new(move |instance| {
                 let store = unsafe { StoreContextMut(&mut *instance.store().cast()) };
                 lower(store, result?)?;
-                Ok(HostTaskResult {
-                    event: Event::CallReturned,
-                    param: 0u32,
-                })
+                Ok(Event::CallReturned)
             }),
         })) as HostTaskFuture;
 
@@ -1826,7 +1860,7 @@ impl ComponentInstance {
                 .poll(&mut Context::from_waker(&dummy_waker()))
             {
                 Poll::Ready(output) => {
-                    let HostTaskOutput::Call { fun, .. } = output else {
+                    let HostTaskOutput::Waitable { fun, .. } = output else {
                         unreachable!()
                     };
                     log::trace!("delete host task {} (already ready)", task.rep());
@@ -1866,15 +1900,15 @@ impl ComponentInstance {
             .result
             .take();
         let task = self.push(HostTask::new(caller_instance))?;
+        let waitable = self.get(task)?.common.rep.clone();
+        waitable.store(task.rep(), Relaxed);
+
         log::trace!("new host task child of {}: {}", caller.rep(), task.rep());
-        let mut future = Box::pin(future.map(move |result| HostTaskOutput::Call {
-            waitable: task.rep(),
+        let mut future = Box::pin(future.map(move |result| HostTaskOutput::Waitable {
+            waitable,
             fun: Box::new(move |instance| {
                 instance.get_mut(caller)?.result = Some(Box::new(result?) as _);
-                Ok(HostTaskResult {
-                    event: Event::CallReturned,
-                    param: 0u32,
-                })
+                Ok(Event::CallReturned)
             }),
         })) as HostTaskFuture;
 
@@ -1884,7 +1918,7 @@ impl ComponentInstance {
 
         Ok(match unsafe { cx.poll(future.as_mut()) } {
             Poll::Ready(output) => {
-                let HostTaskOutput::Call { fun, .. } = output else {
+                let HostTaskOutput::Waitable { fun, .. } = output else {
                     unreachable!()
                 };
                 log::trace!("delete host task {} (already ready)", task.rep());
@@ -2123,7 +2157,7 @@ impl ComponentInstance {
                     .pop_first()
                     .ok_or_else(|| anyhow!("no waitables to wait for"))?;
 
-                let (event, result) = waitable.common(self)?.event.take().unwrap();
+                let event = waitable.common(self)?.event.take().unwrap();
 
                 log::trace!(
                     "deliver event {event:?} via waitable-set.wait to {} for {}; set {}",
@@ -2145,6 +2179,9 @@ impl ComponentInstance {
                     bail!("handle not found for waitable rep {}", waitable.rep());
                 };
 
+                waitable.on_delivery(self, event);
+
+                let (ordinal, result) = event.parts();
                 let store = unsafe { (*self.store()).store_opaque_mut() };
                 let options = unsafe {
                     Options::new(
@@ -2163,11 +2200,18 @@ impl ComponentInstance {
                 options.memory_mut(store)[ptr + 0..][..4].copy_from_slice(&handle.to_le_bytes());
                 options.memory_mut(store)[ptr + 4..][..4].copy_from_slice(&result.to_le_bytes());
 
-                Ok(event as u32)
+                Ok(ordinal)
             }
             WaitableCheck::Poll(params) => {
                 if let Some(waitable) = self.get_mut(params.set)?.ready.pop_first() {
-                    let (event, result) = waitable.common(self)?.event.take().unwrap();
+                    let event = waitable.common(self)?.event.take().unwrap();
+
+                    log::trace!(
+                        "deliver event {event:?} via waitable-set.poll to {} for {}; set {}",
+                        guest_task.rep(),
+                        waitable.rep(),
+                        params.set.rep()
+                    );
 
                     let entry = self.waitable_tables()[params.caller_instance]
                         .get_mut_by_rep(waitable.rep());
@@ -2182,6 +2226,9 @@ impl ComponentInstance {
                         bail!("handle not found for waitable rep {}", waitable.rep());
                     };
 
+                    waitable.on_delivery(self, event);
+
+                    let (ordinal, result) = event.parts();
                     let store = unsafe { (*self.store()).store_opaque_mut() };
                     let options = unsafe {
                         Options::new(
@@ -2198,7 +2245,7 @@ impl ComponentInstance {
                         &ValRaw::u32(params.payload),
                     )?;
                     options.memory_mut(store)[ptr + 0..][..4]
-                        .copy_from_slice(&(event as u32).to_le_bytes());
+                        .copy_from_slice(&ordinal.to_le_bytes());
                     options.memory_mut(store)[ptr + 4..][..4]
                         .copy_from_slice(&handle.to_le_bytes());
                     options.memory_mut(store)[ptr + 8..][..4]
@@ -2756,16 +2803,11 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
     }
 }
 
-struct HostTaskResult {
-    event: Event,
-    param: u32,
-}
-
 enum HostTaskOutput {
     Background(Result<()>),
-    Call {
-        waitable: u32,
-        fun: Box<dyn FnOnce(&mut ComponentInstance) -> Result<HostTaskResult> + Send>,
+    Waitable {
+        waitable: Arc<AtomicU32>,
+        fun: Box<dyn FnOnce(&mut ComponentInstance) -> Result<Event> + Send>,
     },
 }
 
@@ -2820,7 +2862,6 @@ struct Callback {
         RuntimeComponentInstanceIndex,
         SendSyncPtr<VMFuncRef>,
         Event,
-        u32,
         u32,
     ) -> Result<u32>,
     instance: RuntimeComponentInstanceIndex,
@@ -2890,7 +2931,7 @@ impl GuestTask {
         instance.yielding().remove(&me);
 
         for waitable in mem::take(&mut instance.get_mut(self.sync_call_set)?.ready) {
-            if let Some((Event::CallReturned, _)) = waitable.common(instance)?.event {
+            if let Some(Event::CallReturned) = waitable.common(instance)?.event {
                 waitable.delete_from(instance)?;
             }
         }
@@ -2928,8 +2969,15 @@ impl GuestTask {
 
 #[derive(Default)]
 struct WaitableCommon {
-    event: Option<(Event, u32)>,
+    event: Option<Event>,
     set: Option<TableId<WaitableSet>>,
+    rep: Arc<AtomicU32>,
+}
+
+impl Drop for WaitableCommon {
+    fn drop(&mut self) {
+        self.rep.store(0, Relaxed);
+    }
 }
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
@@ -3024,13 +3072,63 @@ impl Waitable {
     fn send_or_mark_ready(&self, instance: &mut ComponentInstance) -> Result<()> {
         if let Some(set) = self.common(instance)?.set {
             if let Some(task) = instance.get_mut(set)?.waiting.pop_first() {
-                let (event, result) = self.common(instance)?.event.take().unwrap();
-                instance.maybe_send_event(task, event, Some(*self), result)?;
+                let event = self.common(instance)?.event.take().unwrap();
+                instance.maybe_send_event(task, event, Some(*self))?;
             } else {
                 instance.get_mut(set)?.ready.insert(*self);
             }
         }
         Ok(())
+    }
+
+    fn on_delivery(&self, instance: &mut ComponentInstance, event: Event) {
+        match event {
+            Event::FutureRead { ty, handle, .. }
+            | Event::FutureWrite {
+                pending: Some((ty, handle)),
+                ..
+            } => {
+                let runtime_instance = instance.component_types()[ty].instance;
+                let (rep, WaitableState::Future(actual_ty, state)) = instance.waitable_tables()
+                    [runtime_instance]
+                    .get_mut_by_index(handle)
+                    .unwrap()
+                else {
+                    unreachable!()
+                };
+                assert_eq!(*actual_ty, ty);
+                assert_eq!(rep, self.rep());
+                assert_eq!(*state, StreamFutureState::Busy);
+                *state = match event {
+                    Event::FutureRead { .. } => StreamFutureState::Read,
+                    Event::FutureWrite { .. } => StreamFutureState::Write,
+                    _ => unreachable!(),
+                };
+            }
+            Event::StreamRead { ty, handle, .. }
+            | Event::StreamWrite {
+                pending: Some((ty, handle)),
+                ..
+            } => {
+                let runtime_instance = instance.component_types()[ty].instance;
+                let (rep, WaitableState::Stream(actual_ty, state)) = instance.waitable_tables()
+                    [runtime_instance]
+                    .get_mut_by_index(handle)
+                    .unwrap()
+                else {
+                    unreachable!()
+                };
+                assert_eq!(*actual_ty, ty);
+                assert_eq!(rep, self.rep());
+                assert_eq!(*state, StreamFutureState::Busy);
+                *state = match event {
+                    Event::StreamRead { .. } => StreamFutureState::Read,
+                    Event::StreamWrite { .. } => StreamFutureState::Write,
+                    _ => unreachable!(),
+                };
+            }
+            _ => {}
+        }
     }
 
     fn delete_from(&self, instance: &mut ComponentInstance) -> Result<()> {
@@ -3626,6 +3724,11 @@ pub(crate) fn start_call<T: Send, LowerParams: Copy, R: 'static>(
     )?;
 
     let guest_task = instance.push(task)?;
+    instance
+        .get_mut(guest_task)?
+        .common
+        .rep
+        .store(guest_task.rep(), Relaxed);
 
     log::trace!("starting call {}", guest_task.rep());
 

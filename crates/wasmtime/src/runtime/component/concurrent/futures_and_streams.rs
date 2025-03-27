@@ -1,8 +1,7 @@
 use {
     super::{
         table::TableId, Event, GlobalErrorContextRefCount, HostTaskFuture, HostTaskOutput,
-        HostTaskResult, LocalErrorContextRefCount, Promise, StateTable, WaitableCommon,
-        WaitableState,
+        LocalErrorContextRefCount, Promise, StateTable, Waitable, WaitableCommon, WaitableState,
     },
     crate::{
         component::{
@@ -32,7 +31,10 @@ use {
         ops::{Deref, DerefMut},
         ptr::NonNull,
         string::{String, ToString},
-        sync::{Arc, Mutex},
+        sync::{
+            atomic::{AtomicU32, Ordering::Relaxed},
+            Arc, Mutex,
+        },
         task::{Poll, Waker},
         vec::Vec,
     },
@@ -169,6 +171,7 @@ fn accept<T: func::Lower + Send + Sync + 'static, B: Buffer<T>, U>(
                 _ = tx.send(());
                 count
             }
+            Reader::End => 0,
         };
 
         Ok(count)
@@ -357,20 +360,28 @@ impl<T> FutureWriter<T> {
     /// The returned `Promise` will yield `true` if the read end accepted the
     /// value; otherwise it will return `false`, meaning the read end was closed
     /// before the value could be delivered.
-    pub fn write(mut self, value: T) -> Promise<bool> {
+    pub fn write(mut self, value: T) -> Promise<bool>
+    where
+        T: Send + 'static,
+    {
         let (tx, rx) = oneshot::channel();
         send(
-            &mut self.tx.take().unwrap(),
+            &mut self.tx.as_mut().unwrap(),
             StreamOrFutureEvent::Write {
                 values: Single(value),
-                post_write: PostWrite::Close(None),
+                post_write: PostWrite::Continue,
                 tx,
             },
         );
+        let instance = self.instance;
+        let id = self.id;
         Promise {
-            inner: Box::pin(rx.map(|v| v.is_ok())),
-            instance: self.instance,
-            id: self.id,
+            inner: Box::pin(rx.map(move |v| {
+                drop(self);
+                v.is_ok()
+            })),
+            instance,
+            id,
         }
     }
 
@@ -625,18 +636,23 @@ impl<T> FutureReader<T> {
     {
         let (tx, rx) = oneshot::channel();
         send(
-            &mut self.tx.take().unwrap(),
+            &mut self.tx.as_mut().unwrap(),
             StreamOrFutureEvent::Read { tx },
         );
+        let instance = self.instance;
+        let id = self.id;
         Promise {
-            inner: Box::pin(rx.map(|v| match v {
-                Ok(HostReadResult::Values(v)) => Ok(v.0),
-                Ok(HostReadResult::EndOfStream(None)) => unreachable!(),
-                Err(_) => Err(None),
-                Ok(HostReadResult::EndOfStream(s)) => Err(s),
+            inner: Box::pin(rx.map(move |v| {
+                drop(self);
+                match v {
+                    Ok(HostReadResult::Values(v)) => Ok(v.0),
+                    Ok(HostReadResult::EndOfStream(None)) => unreachable!(),
+                    Err(_) => Err(None),
+                    Ok(HostReadResult::EndOfStream(s)) => Err(s),
+                }
             })),
-            instance: self.instance,
-            id: self.id,
+            instance,
+            id,
         }
     }
 
@@ -718,10 +734,7 @@ impl<B> StreamWriter<B> {
         Promise {
             inner: Box::pin(rx.map(|v| match v {
                 Ok(()) => Some(self),
-                Err(_) => {
-                    self.tx.take();
-                    None
-                }
+                Err(_) => None,
             })),
             instance,
             id,
@@ -982,14 +995,8 @@ impl<B> StreamReader<B> {
         Promise {
             inner: Box::pin(rx.map(|v| match v {
                 Ok(HostReadResult::Values(v)) => Ok((self, v)),
-                Err(_) => {
-                    self.tx.take();
-                    Err(None)
-                }
-                Ok(HostReadResult::EndOfStream(s)) => {
-                    self.tx.take();
-                    Err(s)
-                }
+                Err(_) => Err(None),
+                Ok(HostReadResult::EndOfStream(s)) => Err(s),
             })),
             instance,
             id,
@@ -1249,6 +1256,7 @@ enum Reader<'a> {
     Host {
         accept: Box<dyn FnOnce(Box<dyn Any>) -> Result<()>>,
     },
+    End,
 }
 
 impl Instance {
@@ -1426,17 +1434,17 @@ impl ComponentInstance {
         tx
     }
 
-    fn push_event(&mut self, rep: u32, event: Event, param: usize) {
-        log::trace!("push event {event:?} for {rep}");
-        self.push_future(Box::pin(future::ready(HostTaskOutput::Call {
-            waitable: rep,
-            fun: Box::new(move |_| {
-                Ok(HostTaskResult {
-                    event,
-                    param: u32::try_from(param).unwrap(),
-                })
-            }),
+    fn push_event(&mut self, waitable: u32, event: Event) -> Result<()> {
+        log::trace!("push event {event:?} for {waitable}");
+        let waitable = Waitable::Transmit(TableId::<TransmitHandle>::new(waitable))
+            .common(self)?
+            .rep
+            .clone();
+        self.push_future(Box::pin(future::ready(HostTaskOutput::Waitable {
+            waitable,
+            fun: Box::new(move |_| Ok(event)),
         })) as HostTaskFuture);
+        Ok(())
     }
 
     fn get_mut_by_index(
@@ -1449,8 +1457,13 @@ impl ComponentInstance {
 
     fn new_transmit(&mut self) -> Result<(TableId<TransmitHandle>, TableId<TransmitHandle>)> {
         let state_id = self.push(TransmitState::default())?;
+
         let write = self.push(TransmitHandle::new(state_id))?;
+        self.get_mut(write)?.common.rep.store(write.rep(), Relaxed);
+
         let read = self.push(TransmitHandle::new(state_id))?;
+        self.get_mut(read)?.common.rep.store(read.rep(), Relaxed);
+
         let state = self.get_mut(state_id)?;
         state.write_handle = write;
         state.read_handle = read;
@@ -1566,7 +1579,11 @@ impl ComponentInstance {
                         &mut LowerContext::new(store.as_context_mut(), &options, types, instance)
                     };
                     if address % usize::try_from(T::ALIGN32)? != 0 {
-                        bail!("read pointer not aligned");
+                        bail!(
+                            "read pointer not aligned: {address} not aligned to {} for {}",
+                            T::ALIGN32,
+                            transmit_id.rep()
+                        );
                     }
                     lower
                         .as_slice_mut()
@@ -1580,16 +1597,14 @@ impl ComponentInstance {
                     }
                     offset += count;
 
-                    *self.get_mut_by_index(ty, handle)?.1 = StreamFutureState::Read;
-
+                    let count = u32::try_from(count).unwrap();
                     self.push_event(
                         read_handle.rep(),
                         match ty {
-                            TableIndex::Future(_) => Event::FutureRead,
-                            TableIndex::Stream(_) => Event::StreamRead,
+                            TableIndex::Future(ty) => Event::FutureRead { count, ty, handle },
+                            TableIndex::Stream(ty) => Event::StreamRead { count, ty, handle },
                         },
-                        count,
-                    );
+                    )?;
 
                     if offset < values.len() {
                         continue;
@@ -1603,7 +1618,6 @@ impl ComponentInstance {
                 }
 
                 ReadState::Closed => {
-                    self.delete_transmit(transmit_id)?;
                     break Ok(());
                 }
             }
@@ -1730,20 +1744,27 @@ impl ComponentInstance {
                     B::from(T::load_list(lift, list)?)
                 }));
 
-                if let PostWrite::Close(err_ctx) = post_write {
+                let pending = if let PostWrite::Close(err_ctx) = post_write {
                     self.get_mut(transmit_id)?.write = WriteState::Closed(err_ctx);
+                    false
                 } else {
-                    *self.get_mut_by_index(ty, handle)?.1 = StreamFutureState::Write;
-                }
+                    true
+                };
 
+                let count = u32::try_from(count).unwrap();
                 self.push_event(
                     write_handle.rep(),
                     match ty {
-                        TableIndex::Future(_) => Event::FutureWrite,
-                        TableIndex::Stream(_) => Event::StreamWrite,
+                        TableIndex::Future(ty) => Event::FutureWrite {
+                            count,
+                            pending: pending.then_some((ty, handle)),
+                        },
+                        TableIndex::Stream(ty) => Event::StreamWrite {
+                            count,
+                            pending: pending.then_some((ty, handle)),
+                        },
                     },
-                    count,
-                );
+                )?;
             }
 
             WriteState::HostReady { accept, post_write } => {
@@ -1765,9 +1786,7 @@ impl ComponentInstance {
                 }
             }
 
-            WriteState::Closed(_) => {
-                self.host_close_reader(rep)?;
-            }
+            WriteState::Closed(_) => {}
         }
 
         Ok(())
@@ -1782,10 +1801,13 @@ impl ComponentInstance {
                 transmit.write = WriteState::Open;
             }
 
-            WriteState::Open | WriteState::Closed(_) => {
-                bail!("stream or future write canceled when no write is pending")
-            }
+            WriteState::Open | WriteState::Closed(_) => {}
         }
+
+        let write_id = transmit.write_handle;
+        let write = self.get_mut(write_id)?;
+        write.common.rep.store(0, Relaxed);
+        write.common.rep = Arc::new(AtomicU32::new(write_id.rep()));
 
         log::trace!("canceled write {rep}");
 
@@ -1801,10 +1823,13 @@ impl ComponentInstance {
                 transmit.read = ReadState::Open;
             }
 
-            ReadState::Open | ReadState::Closed => {
-                bail!("stream or future read canceled when no read is pending")
-            }
+            ReadState::Open | ReadState::Closed => {}
         }
+
+        let read_id = transmit.read_handle;
+        let read = self.get_mut(read_id)?;
+        read.common.rep.store(0, Relaxed);
+        read.common.rep = Arc::new(AtomicU32::new(read_id.rep()));
 
         log::trace!("canceled read {rep}");
 
@@ -1826,7 +1851,7 @@ impl ComponentInstance {
         let transmit_id = TableId::<TransmitState>::new(transmit_rep);
         let transmit = self
             .get_mut(transmit_id)
-            .with_context(|| format!("writer {transmit_rep}"))?;
+            .with_context(|| format!("error closing writer {transmit_rep}"))?;
 
         transmit.writer_watcher = None;
 
@@ -1905,23 +1930,20 @@ impl ComponentInstance {
                 };
 
                 // Ensure the final read of the guest is queued, with appropriate closure indicator
+                let count = u32::try_from(push_param).unwrap();
                 self.push_event(
                     read_handle.rep(),
                     match ty {
-                        TableIndex::Future(_) => Event::FutureRead,
-                        TableIndex::Stream(_) => Event::StreamRead,
+                        TableIndex::Future(ty) => Event::FutureRead { count, ty, handle },
+                        TableIndex::Stream(ty) => Event::StreamRead { count, ty, handle },
                     },
-                    push_param,
-                );
-
-                *self.get_mut_by_index(ty, handle)?.1 = StreamFutureState::Read;
+                )?;
             }
 
             // If the host was ready to read, and the writer end is being closed (host->host write?)
-            // signal to the reader that we've reached the end of the stream, and close the reader immediately
+            // signal to the reader that we've reached the end of the stream
             ReadState::HostReady { accept } => {
                 accept(Writer::End(err_ctx))?;
-                self.host_close_reader(transmit_rep)?;
             }
 
             // If the read state is open, then there are no registered readers of the stream/future
@@ -1947,7 +1969,7 @@ impl ComponentInstance {
         let transmit_id = TableId::<TransmitState>::new(transmit_rep);
         let transmit = self
             .get_mut(transmit_id)
-            .with_context(|| format!("reader {transmit_rep}"))?;
+            .with_context(|| format!("error closing reader {transmit_rep}"))?;
 
         transmit.read = ReadState::Closed;
         transmit.reader_watcher = None;
@@ -1969,26 +1991,33 @@ impl ComponentInstance {
                 post_write,
                 ..
             } => {
-                let read_handle = transmit.read_handle;
-                self.push_event(
-                    read_handle.rep(),
-                    match ty {
-                        TableIndex::Future(_) => Event::FutureRead,
-                        TableIndex::Stream(_) => Event::StreamRead,
-                    },
-                    CLOSED,
-                );
+                let write_handle = transmit.write_handle;
 
-                if let PostWrite::Close(_) = post_write {
+                let pending = if let PostWrite::Close(_) = post_write {
                     self.delete_transmit(transmit_id)?;
+                    false
                 } else {
-                    *self.get_mut_by_index(ty, handle)?.1 = StreamFutureState::Write;
-                }
+                    true
+                };
+
+                let count = u32::try_from(CLOSED).unwrap();
+                self.push_event(
+                    write_handle.rep(),
+                    match ty {
+                        TableIndex::Future(ty) => Event::FutureWrite {
+                            count,
+                            pending: pending.then_some((ty, handle)),
+                        },
+                        TableIndex::Stream(ty) => Event::StreamWrite {
+                            count,
+                            pending: pending.then_some((ty, handle)),
+                        },
+                    },
+                )?;
             }
 
-            // If the reader is closed, we can ignore the waiting write from  host
-            WriteState::HostReady { .. } => {
-                self.delete_transmit(transmit_id)?;
+            WriteState::HostReady { accept, .. } => {
+                accept(self, Reader::End)?;
             }
 
             WriteState::Open => {}
@@ -2228,16 +2257,24 @@ impl ComponentInstance {
                     rep,
                 )?;
 
-                *self.get_mut_by_index(read_ty, read_handle)?.1 = StreamFutureState::Read;
-
-                self.push_event(
-                    read_handle_rep,
-                    match read_ty {
-                        TableIndex::Future(_) => Event::FutureRead,
-                        TableIndex::Stream(_) => Event::StreamRead,
-                    },
-                    count,
-                );
+                {
+                    let count = u32::try_from(count).unwrap();
+                    self.push_event(
+                        read_handle_rep,
+                        match read_ty {
+                            TableIndex::Future(ty) => Event::FutureRead {
+                                count,
+                                ty,
+                                handle: read_handle,
+                            },
+                            TableIndex::Stream(ty) => Event::StreamRead {
+                                count,
+                                ty,
+                                handle: read_handle,
+                            },
+                        },
+                    )?;
+                }
 
                 count
             }
@@ -2356,20 +2393,29 @@ impl ComponentInstance {
                     rep,
                 )?;
 
-                if let PostWrite::Close(err_ctx) = post_write {
+                let pending = if let PostWrite::Close(err_ctx) = post_write {
                     self.get_mut(transmit_id)?.write = WriteState::Closed(err_ctx);
+                    false
                 } else {
-                    *self.get_mut_by_index(write_ty, write_handle)?.1 = StreamFutureState::Write;
-                }
+                    true
+                };
 
-                self.push_event(
-                    write_handle_rep,
-                    match write_ty {
-                        TableIndex::Future(_) => Event::FutureWrite,
-                        TableIndex::Stream(_) => Event::StreamWrite,
-                    },
-                    count,
-                );
+                {
+                    let count = u32::try_from(count).unwrap();
+                    self.push_event(
+                        write_handle_rep,
+                        match write_ty {
+                            TableIndex::Future(ty) => Event::FutureWrite {
+                                count,
+                                pending: pending.then_some((ty, write_handle)),
+                            },
+                            TableIndex::Stream(ty) => Event::StreamWrite {
+                                count,
+                                pending: pending.then_some((ty, write_handle)),
+                            },
+                        },
+                    )?;
+                }
 
                 count
             }
@@ -2472,6 +2518,7 @@ impl ComponentInstance {
         else {
             bail!("invalid stream or future handle");
         };
+        log::trace!("guest cancel write {rep} (handle {writer})");
         match state {
             StreamFutureState::Local | StreamFutureState::Write => {
                 bail!("stream or future write canceled when no write is pending")
@@ -2493,6 +2540,7 @@ impl ComponentInstance {
         else {
             bail!("invalid stream or future handle");
         };
+        log::trace!("guest cancel read {rep} (handle {reader})");
         match state {
             StreamFutureState::Local | StreamFutureState::Read => {
                 bail!("stream or future read canceled when no read is pending")
@@ -2609,6 +2657,7 @@ impl ComponentInstance {
             StreamFutureState::Busy => bail!("cannot drop busy stream or future"),
         }
         let rep = self.get(TableId::<TransmitHandle>::new(rep))?.state.rep();
+        log::trace!("guest_close_readable: close reader {rep}");
         self.host_close_reader(rep)
     }
 
