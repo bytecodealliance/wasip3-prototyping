@@ -890,7 +890,7 @@ impl ComponentInstance {
                         Ok(())
                     } else {
                         // In this case, the fiber suspended while holding on to its
-                        // `*mut dyn VMStoret` instead of returning it to us.  That
+                        // `*mut dyn VMStore` instead of returning it to us.  That
                         // means we can't do anything else with the store (or self)
                         // for now; the only thing we can do is suspend _our_ fiber
                         // back up to the top level executor, which will resume us
@@ -1485,6 +1485,8 @@ impl ComponentInstance {
             },
         };
 
+        let sync_caller = matches!(caller_info, CallerInfo::Sync { .. });
+
         let start = SendSyncPtr::new(NonNull::new(start).unwrap());
         let return_ = SendSyncPtr::new(NonNull::new(return_).unwrap());
         let old_task = self.guest_task().take();
@@ -1541,14 +1543,17 @@ impl ComponentInstance {
                         )?;
                     }
                     let task = instance.guest_task().unwrap();
-                    if let ResultInfo::Stack { result_count } = &result_info {
-                        match result_count {
-                            0 => {}
-                            1 => {
-                                instance.get_mut(task)?.sync_result = Some(my_src[0]);
-                            }
-                            _ => unreachable!(),
-                        }
+                    if sync_caller {
+                        instance.get_mut(task)?.sync_result =
+                            Some(if let ResultInfo::Stack { result_count } = &result_info {
+                                match result_count {
+                                    0 => None,
+                                    1 => Some(my_src[0]),
+                                    _ => unreachable!(),
+                                }
+                            } else {
+                                None
+                            });
                     }
                     if old_task_rep.is_some() {
                         let waitable = Waitable::Guest(task);
@@ -1576,11 +1581,6 @@ impl ComponentInstance {
 
         if let Some(old_task) = old_task {
             self.get_mut(old_task)?.subtasks.insert(guest_task);
-            log::trace!(
-                "new guest task child of {}: {}",
-                old_task.rep(),
-                guest_task.rep()
-            );
         };
 
         *self.guest_task() = Some(guest_task);
@@ -1714,7 +1714,11 @@ impl ComponentInstance {
 
         if let Some(storage) = storage {
             if let Some(result) = self.get_mut(guest_task)?.sync_result.take() {
-                storage[0] = MaybeUninit::new(result);
+                if let Some(result) = result {
+                    storage[0] = MaybeUninit::new(result);
+                }
+            } else {
+                return Err(anyhow!(crate::Trap::NoAsyncResult));
             }
             Ok(0)
         } else {
@@ -2892,7 +2896,7 @@ struct GuestTask {
     deferred: Deferred,
     should_yield: bool,
     call_context: Option<CallContext>,
-    sync_result: Option<ValRaw>,
+    sync_result: Option<Option<ValRaw>>,
     has_suspended: bool,
     context: [u32; 2],
     subtasks: HashSet<TableId<GuestTask>>,
