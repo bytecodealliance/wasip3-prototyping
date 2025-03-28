@@ -1285,7 +1285,13 @@ impl<'a> TrampolineCompiler<'a> {
             // realloc: *mut VMFuncRef
             callee_args.push(self.load_realloc(vmctx, options.realloc));
             // string_encoding: StringEncoding
-            callee_args.push(self.string_encoding(options.string_encoding))
+            callee_args.push(self.string_encoding(options.string_encoding));
+            // async: bool
+            callee_args.push(
+                self.builder
+                    .ins()
+                    .iconst(ir::types::I8, if options.async_ { 1 } else { 0 }),
+            );
         }
 
         for ty in tys {
@@ -1310,6 +1316,9 @@ impl<'a> TrampolineCompiler<'a> {
             vmctx,
             self.load_memory(vmctx, options.memory.unwrap()),
             self.load_realloc(vmctx, options.realloc),
+            self.builder
+                .ins()
+                .iconst(ir::types::I8, if options.async_ { 1 } else { 0 }),
         ];
         for ty in tys {
             callee_args.push(self.builder.ins().iconst(ir::types::I32, i64::from(*ty)));

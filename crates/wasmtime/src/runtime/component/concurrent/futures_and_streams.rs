@@ -2185,6 +2185,7 @@ impl ComponentInstance {
         memory: *mut VMMemoryDefinition,
         realloc: *mut VMFuncRef,
         string_encoding: u8,
+        async_: bool,
         ty: TableIndex,
         err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         flat_abi: Option<FlatAbi>,
@@ -2192,6 +2193,10 @@ impl ComponentInstance {
         address: u32,
         count: u32,
     ) -> Result<u32> {
+        if !async_ {
+            bail!("synchronous stream and future writes not yet supported");
+        }
+
         // TODO: handle errors sent via `{stream|future}.close-readable`:
         _ = err_ctx_ty;
 
@@ -2324,6 +2329,7 @@ impl ComponentInstance {
         memory: *mut VMMemoryDefinition,
         realloc: *mut VMFuncRef,
         string_encoding: u8,
+        async_: bool,
         ty: TableIndex,
         err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         flat_abi: Option<FlatAbi>,
@@ -2331,6 +2337,10 @@ impl ComponentInstance {
         address: u32,
         count: u32,
     ) -> Result<u32> {
+        if !async_ {
+            bail!("synchronous stream and future reads not yet supported");
+        }
+
         let address = usize::try_from(address).unwrap();
         let count = usize::try_from(count).unwrap();
         let options = unsafe {
