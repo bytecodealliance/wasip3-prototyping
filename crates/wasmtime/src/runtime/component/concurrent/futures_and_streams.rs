@@ -143,7 +143,7 @@ fn accept<T: func::Lower + Send + Sync + 'static, B: Buffer<T>, U>(
                     .and_then(|b| b.get_mut(..T::SIZE32 * count))
                     .ok_or_else(|| anyhow::anyhow!("read pointer out of bounds of memory"))?;
 
-                let count = values.len().min(usize::try_from(count).unwrap());
+                let count = (values.len() - offset).min(usize::try_from(count).unwrap());
 
                 if let Some(ty) = payload(ty, types) {
                     T::store_list(lower, ty, address, &values[offset..][..count])?;
