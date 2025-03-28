@@ -4100,6 +4100,7 @@ checksum = "6ee99da9c5ba11bd675621338ef6fa52296b76b83305e9b6e5c77d4c286d6d49"
 [[package]]
 name = "wasm-compose"
 version = "0.227.1"
+source = "git+https://github.com/alexcrichton/wasm-tools?branch=new-async-signatures#e290b3513ff78d78e2b8241c7b0125a5bf3b51ab"
 dependencies = [
  "anyhow",
  "heck 0.4.1",
@@ -4119,6 +4120,7 @@ dependencies = [
 [[package]]
 name = "wasm-encoder"
 version = "0.227.1"
+source = "git+https://github.com/alexcrichton/wasm-tools?branch=new-async-signatures#e290b3513ff78d78e2b8241c7b0125a5bf3b51ab"
 dependencies = [
  "leb128fmt",
  "wasmparser",
@@ -4127,6 +4129,7 @@ dependencies = [
 [[package]]
 name = "wasm-metadata"
 version = "0.227.1"
+source = "git+https://github.com/alexcrichton/wasm-tools?branch=new-async-signatures#e290b3513ff78d78e2b8241c7b0125a5bf3b51ab"
 dependencies = [
  "anyhow",
  "indexmap 2.7.0",
@@ -4137,6 +4140,7 @@ dependencies = [
 [[package]]
 name = "wasm-mutate"
 version = "0.227.1"
+source = "git+https://github.com/alexcrichton/wasm-tools?branch=new-async-signatures#e290b3513ff78d78e2b8241c7b0125a5bf3b51ab"
 dependencies = [
  "egg",
  "log",
@@ -4149,6 +4153,7 @@ dependencies = [
 [[package]]
 name = "wasm-smith"
 version = "0.227.1"
+source = "git+https://github.com/alexcrichton/wasm-tools?branch=new-async-signatures#e290b3513ff78d78e2b8241c7b0125a5bf3b51ab"
 dependencies = [
  "anyhow",
  "arbitrary",
@@ -4167,6 +4172,7 @@ dependencies = [
 [[package]]
 name = "wasm-wave"
 version = "0.227.1"
+source = "git+https://github.com/alexcrichton/wasm-tools?branch=new-async-signatures#e290b3513ff78d78e2b8241c7b0125a5bf3b51ab"
 dependencies = [
  "indexmap 2.7.0",
  "logos",
@@ -4221,6 +4227,7 @@ dependencies = [
 [[package]]
 name = "wasmparser"
 version = "0.227.1"
+source = "git+https://github.com/alexcrichton/wasm-tools?branch=new-async-signatures#e290b3513ff78d78e2b8241c7b0125a5bf3b51ab"
 dependencies = [
  "bitflags 2.6.0",
  "hashbrown 0.15.2",
@@ -4241,6 +4248,7 @@ dependencies = [
 [[package]]
 name = "wasmprinter"
 version = "0.227.1"
+source = "git+https://github.com/alexcrichton/wasm-tools?branch=new-async-signatures#e290b3513ff78d78e2b8241c7b0125a5bf3b51ab"
 dependencies = [
  "anyhow",
  "termcolor",
@@ -4895,6 +4903,7 @@ dependencies = [
 [[package]]
 name = "wast"
 version = "227.0.1"
+source = "git+https://github.com/alexcrichton/wasm-tools?branch=new-async-signatures#e290b3513ff78d78e2b8241c7b0125a5bf3b51ab"
 dependencies = [
  "bumpalo",
  "leb128fmt",
@@ -4906,6 +4915,7 @@ dependencies = [
 [[package]]
 name = "wat"
 version = "1.227.1"
+source = "git+https://github.com/alexcrichton/wasm-tools?branch=new-async-signatures#e290b3513ff78d78e2b8241c7b0125a5bf3b51ab"
 dependencies = [
  "wast 227.0.1",
 ]
@@ -5273,6 +5283,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen"
 version = "0.41.0"
+source = "git+https://github.com/alexcrichton/witx-bindgen?branch=wit-bindgen-async-tests#f213e8178374b82324c683866c1a83a17f198a58"
 dependencies = [
  "wit-bindgen-rt 0.41.0",
  "wit-bindgen-rust-macro",
@@ -5281,6 +5292,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-core"
 version = "0.41.0"
+source = "git+https://github.com/alexcrichton/witx-bindgen?branch=wit-bindgen-async-tests#f213e8178374b82324c683866c1a83a17f198a58"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5299,6 +5311,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rt"
 version = "0.41.0"
+source = "git+https://github.com/alexcrichton/witx-bindgen?branch=wit-bindgen-async-tests#f213e8178374b82324c683866c1a83a17f198a58"
 dependencies = [
  "bitflags 2.6.0",
  "futures",
@@ -5308,6 +5321,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rust"
 version = "0.41.0"
+source = "git+https://github.com/alexcrichton/witx-bindgen?branch=wit-bindgen-async-tests#f213e8178374b82324c683866c1a83a17f198a58"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5322,6 +5336,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rust-macro"
 version = "0.41.0"
+source = "git+https://github.com/alexcrichton/witx-bindgen?branch=wit-bindgen-async-tests#f213e8178374b82324c683866c1a83a17f198a58"
 dependencies = [
  "anyhow",
  "prettyplease",
@@ -5335,6 +5350,7 @@ dependencies = [
 [[package]]
 name = "wit-component"
 version = "0.227.1"
+source = "git+https://github.com/alexcrichton/wasm-tools?branch=new-async-signatures#e290b3513ff78d78e2b8241c7b0125a5bf3b51ab"
 dependencies = [
  "anyhow",
  "bitflags 2.6.0",
@@ -5352,6 +5368,7 @@ dependencies = [
 [[package]]
 name = "wit-parser"
 version = "0.227.1"
+source = "git+https://github.com/alexcrichton/wasm-tools?branch=new-async-signatures#e290b3513ff78d78e2b8241c7b0125a5bf3b51ab"
 dependencies = [
  "anyhow",
  "id-arena",

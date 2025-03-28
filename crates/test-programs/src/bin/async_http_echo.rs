@@ -53,6 +53,7 @@ impl Handler for Component {
                             assert!(chunk.is_empty());
                         }
                         StreamResult::Closed => break,
+                        // TODO: this should panic
                         StreamResult::Cancelled => {}
                     }
                 }
