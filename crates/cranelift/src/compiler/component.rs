@@ -138,14 +138,10 @@ impl<'a> TrampolineCompiler<'a> {
                 &[ty.as_u32()],
                 None,
                 host::stream_new,
-                TrapSentinel::NegativeOne,
+                TrapSentinel::Negative,
             ),
-            Trampoline::StreamRead {
-                ty,
-                err_ctx_ty,
-                options,
-            } => {
-                let tys = &[ty.as_u32(), err_ctx_ty.as_u32()];
+            Trampoline::StreamRead { ty, options } => {
+                let tys = &[ty.as_u32()];
                 if let Some(info) = self.flat_stream_element_info(*ty).cloned() {
                     self.translate_flat_stream_call(tys, options, host::flat_stream_read, &info)
                 } else {
@@ -157,12 +153,8 @@ impl<'a> TrampolineCompiler<'a> {
                     )
                 }
             }
-            Trampoline::StreamWrite {
-                ty,
-                err_ctx_ty,
-                options,
-            } => {
-                let tys = &[ty.as_u32(), err_ctx_ty.as_u32()];
+            Trampoline::StreamWrite { ty, options } => {
+                let tys = &[ty.as_u32()];
                 if let Some(info) = self.flat_stream_element_info(*ty).cloned() {
                     self.translate_flat_stream_call(tys, options, host::flat_stream_write, &info)
                 } else {
@@ -180,42 +172,32 @@ impl<'a> TrampolineCompiler<'a> {
             Trampoline::StreamCancelWrite { ty, async_ } => {
                 self.translate_cancel_call(ty.as_u32(), *async_, host::stream_cancel_write)
             }
-            Trampoline::StreamCloseReadable { ty, err_ctx_ty } => self
-                .translate_future_or_stream_call(
-                    &[ty.as_u32(), err_ctx_ty.as_u32()],
-                    None,
-                    host::stream_close_readable,
-                    TrapSentinel::Falsy,
-                ),
-            Trampoline::StreamCloseWritable { ty, err_ctx_ty } => self
-                .translate_future_or_stream_call(
-                    &[ty.as_u32(), err_ctx_ty.as_u32()],
-                    None,
-                    host::stream_close_writable,
-                    TrapSentinel::Falsy,
-                ),
+            Trampoline::StreamCloseReadable { ty } => self.translate_future_or_stream_call(
+                &[ty.as_u32()],
+                None,
+                host::stream_close_readable,
+                TrapSentinel::Falsy,
+            ),
+            Trampoline::StreamCloseWritable { ty } => self.translate_future_or_stream_call(
+                &[ty.as_u32()],
+                None,
+                host::stream_close_writable,
+                TrapSentinel::Falsy,
+            ),
             Trampoline::FutureNew { ty } => self.translate_future_or_stream_call(
                 &[ty.as_u32()],
                 None,
                 host::future_new,
-                TrapSentinel::NegativeOne,
+                TrapSentinel::Negative,
             ),
-            Trampoline::FutureRead {
-                ty,
-                err_ctx_ty,
-                options,
-            } => self.translate_future_or_stream_call(
-                &[ty.as_u32(), err_ctx_ty.as_u32()],
+            Trampoline::FutureRead { ty, options } => self.translate_future_or_stream_call(
+                &[ty.as_u32()],
                 Some(&options),
                 host::future_read,
                 TrapSentinel::NegativeOne,
             ),
-            Trampoline::FutureWrite {
-                ty,
-                err_ctx_ty,
-                options,
-            } => self.translate_future_or_stream_call(
-                &[ty.as_u32(), err_ctx_ty.as_u32()],
+            Trampoline::FutureWrite { ty, options } => self.translate_future_or_stream_call(
+                &[ty.as_u32()],
                 Some(options),
                 host::future_write,
                 TrapSentinel::NegativeOne,
@@ -226,20 +208,18 @@ impl<'a> TrampolineCompiler<'a> {
             Trampoline::FutureCancelWrite { ty, async_ } => {
                 self.translate_cancel_call(ty.as_u32(), *async_, host::future_cancel_write)
             }
-            Trampoline::FutureCloseReadable { ty, err_ctx_ty } => self
-                .translate_future_or_stream_call(
-                    &[ty.as_u32(), err_ctx_ty.as_u32()],
-                    None,
-                    host::future_close_readable,
-                    TrapSentinel::Falsy,
-                ),
-            Trampoline::FutureCloseWritable { ty, err_ctx_ty } => self
-                .translate_future_or_stream_call(
-                    &[ty.as_u32(), err_ctx_ty.as_u32()],
-                    None,
-                    host::future_close_writable,
-                    TrapSentinel::Falsy,
-                ),
+            Trampoline::FutureCloseReadable { ty } => self.translate_future_or_stream_call(
+                &[ty.as_u32()],
+                None,
+                host::future_close_readable,
+                TrapSentinel::Falsy,
+            ),
+            Trampoline::FutureCloseWritable { ty } => self.translate_future_or_stream_call(
+                &[ty.as_u32()],
+                None,
+                host::future_close_writable,
+                TrapSentinel::Falsy,
+            ),
             Trampoline::ErrorContextNew { ty, options } => self.translate_error_context_call(
                 *ty,
                 options,
@@ -256,12 +236,12 @@ impl<'a> TrampolineCompiler<'a> {
             Trampoline::ErrorContextDrop { ty } => self.translate_error_context_drop_call(*ty),
             Trampoline::ResourceTransferOwn => {
                 self.translate_host_libcall(host::resource_transfer_own, |me, rets| {
-                    rets[0] = me.raise_if_negative_one(rets[0]);
+                    rets[0] = me.raise_if_negative_one_and_truncate(rets[0]);
                 })
             }
             Trampoline::ResourceTransferBorrow => {
                 self.translate_host_libcall(host::resource_transfer_borrow, |me, rets| {
-                    rets[0] = me.raise_if_negative_one(rets[0]);
+                    rets[0] = me.raise_if_negative_one_and_truncate(rets[0]);
                 })
             }
             Trampoline::ResourceEnterCall => {
@@ -281,17 +261,17 @@ impl<'a> TrampolineCompiler<'a> {
             } => self.translate_async_exit(*callback, *post_return),
             Trampoline::FutureTransfer => {
                 self.translate_host_libcall(host::future_transfer, |me, rets| {
-                    rets[0] = me.raise_if_negative_one(rets[0]);
+                    rets[0] = me.raise_if_negative_one_and_truncate(rets[0]);
                 })
             }
             Trampoline::StreamTransfer => {
                 self.translate_host_libcall(host::stream_transfer, |me, rets| {
-                    rets[0] = me.raise_if_negative_one(rets[0]);
+                    rets[0] = me.raise_if_negative_one_and_truncate(rets[0]);
                 })
             }
             Trampoline::ErrorContextTransfer => {
                 self.translate_host_libcall(host::error_context_transfer, |me, rets| {
-                    rets[0] = me.raise_if_negative_one(rets[0]);
+                    rets[0] = me.raise_if_negative_one_and_truncate(rets[0]);
                 })
             }
             Trampoline::ContextGet(i) => self.translate_context_get(*i),
@@ -381,6 +361,10 @@ impl<'a> TrampolineCompiler<'a> {
         let result = self.builder.func.dfg.inst_results(call)[0];
         match sentinel {
             TrapSentinel::NegativeOne => {
+                let result = self.raise_if_negative_one_and_truncate(result);
+                self.abi_store_results(&[result]);
+            }
+            TrapSentinel::Negative => {
                 let result = self.raise_if_negative_one(result);
                 self.abi_store_results(&[result]);
             }
@@ -923,7 +907,7 @@ impl<'a> TrampolineCompiler<'a> {
         );
         let call = self.call_libcall(vmctx, host::resource_new32, &host_args);
         let result = self.builder.func.dfg.inst_results(call)[0];
-        let result = self.raise_if_negative_one(result);
+        let result = self.raise_if_negative_one_and_truncate(result);
         self.abi_store_results(&[result]);
     }
 
@@ -952,7 +936,7 @@ impl<'a> TrampolineCompiler<'a> {
         );
         let call = self.call_libcall(vmctx, host::resource_rep32, &host_args);
         let result = self.builder.func.dfg.inst_results(call)[0];
-        let result = self.raise_if_negative_one(result);
+        let result = self.raise_if_negative_one_and_truncate(result);
         self.abi_store_results(&[result]);
     }
 
@@ -1479,11 +1463,16 @@ impl<'a> TrampolineCompiler<'a> {
         self.raise_if_host_trapped(succeeded);
     }
 
+    fn raise_if_negative_one_and_truncate(&mut self, ret: ir::Value) -> ir::Value {
+        let ret = self.raise_if_negative_one(ret);
+        self.builder.ins().ireduce(ir::types::I32, ret)
+    }
+
     fn raise_if_negative_one(&mut self, ret: ir::Value) -> ir::Value {
         let minus_one = self.builder.ins().iconst(ir::types::I64, -1);
         let succeeded = self.builder.ins().icmp(IntCC::NotEqual, ret, minus_one);
         self.raise_if_host_trapped(succeeded);
-        self.builder.ins().ireduce(ir::types::I32, ret)
+        ret
     }
 
     fn call_libcall(

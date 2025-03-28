@@ -18,7 +18,6 @@ use {
         exports::local::local::transmit::{Control, Guest},
         wit_future, wit_stream,
     },
-    futures::{SinkExt, StreamExt},
     std::future::IntoFuture,
     wit_bindgen_rt::async_support::{self, FutureReader, StreamReader},
 };
@@ -44,24 +43,27 @@ impl Guest for Component {
             let mut caller_future_rx1 = Some(caller_future_rx1);
             let mut callee_future_tx1 = Some(callee_future_tx1);
 
-            while let Some(Ok(messages)) = control_rx.next().await {
-                for message in messages {
-                    match message {
-                        Control::ReadStream(value) => {
-                            assert_eq!(caller_stream_rx.next().await, Some(Ok(vec![value])));
-                        }
-                        Control::ReadFuture(value) => {
-                            assert_eq!(
-                                caller_future_rx1.take().unwrap().into_future().await,
-                                Some(Ok(value))
-                            );
-                        }
-                        Control::WriteStream(value) => {
-                            callee_stream_tx.send(vec![value]).await.unwrap();
-                        }
-                        Control::WriteFuture(value) => {
-                            callee_future_tx1.take().unwrap().write(value).await;
-                        }
+            while let Some(message) = control_rx.next().await {
+                match message {
+                    Control::ReadStream(value) => {
+                        assert_eq!(caller_stream_rx.next().await, Some(value));
+                    }
+                    Control::ReadFuture(value) => {
+                        assert_eq!(
+                            caller_future_rx1.take().unwrap().into_future().await,
+                            Some(value)
+                        );
+                    }
+                    Control::WriteStream(value) => {
+                        assert!(callee_stream_tx.write_one(value).await.is_none());
+                    }
+                    Control::WriteFuture(value) => {
+                        callee_future_tx1
+                            .take()
+                            .unwrap()
+                            .write(value)
+                            .await
+                            .unwrap();
                     }
                 }
             }

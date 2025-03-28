@@ -11,18 +11,20 @@ mod bindings {
 
 use {
     bindings::exports::local::local::closed::Guest,
-    wit_bindgen_rt::async_support::{futures::StreamExt, FutureReader, StreamReader},
+    wit_bindgen_rt::async_support::{FutureReader, StreamReader, StreamResult},
 };
 
 struct Component;
 
 impl Guest for Component {
     async fn read_stream(mut rx: StreamReader<u8>, expected: Vec<u8>) {
-        assert_eq!(rx.next().await.unwrap().unwrap(), expected);
+        let (result, buf) = rx.read(Vec::with_capacity(expected.len())).await;
+        assert_eq!(result, StreamResult::Complete(expected.len()));
+        assert_eq!(buf, expected);
     }
 
     async fn read_future(rx: FutureReader<u8>, expected: u8, _rx_ignored: FutureReader<u8>) {
-        assert_eq!(rx.await.unwrap().unwrap(), expected);
+        assert_eq!(rx.await.unwrap(), expected);
     }
 }
 

@@ -22,12 +22,13 @@ use {
         local::local::transmit::{self, Control},
         wit_future, wit_stream,
     },
-    futures::{future, FutureExt, SinkExt, StreamExt},
+    futures::{future, FutureExt},
     std::{
         future::{Future, IntoFuture},
         pin::pin,
         task::Poll,
     },
+    wit_bindgen_rt::async_support::FutureWriteCancel,
 };
 
 struct Component;
@@ -48,91 +49,94 @@ impl Guest for Component {
         .await;
 
         // Tell peer to read from its end of the stream and assert that the result matches an expected value.
-        control_tx
-            .send(vec![Control::ReadStream("a".into())])
+        assert!(control_tx
+            .write_one(Control::ReadStream("a".into()))
             .await
-            .unwrap();
-        caller_stream_tx.send(vec!["a".into()]).await.unwrap();
+            .is_none());
+        assert!(caller_stream_tx.write_one("a".into()).await.is_none());
 
         // Start writing another value, but cancel the write before telling the peer to read.
         {
-            let send = caller_stream_tx.send(vec!["b".into()]);
+            let send = Box::pin(caller_stream_tx.write_one("b".into()));
             assert!(poll(send).await.is_err());
-            caller_stream_tx.cancel();
         }
 
         // Tell the peer to read an expected value again, which should _not_ match the value provided in the
         // canceled write above.
-        control_tx
-            .send(vec![Control::ReadStream("c".into())])
+        assert!(control_tx
+            .write_one(Control::ReadStream("c".into()))
             .await
-            .unwrap();
-        caller_stream_tx.send(vec!["c".into()]).await.unwrap();
+            .is_none());
+        assert!(caller_stream_tx.write_one("c".into()).await.is_none());
 
         // Start writing a value to the future, but cancel the write before telling the peer to read.
         {
-            let send = caller_future_tx1.write("x".into());
+            let send = Box::pin(caller_future_tx1.write("x".into()));
             match poll(send).await {
                 Ok(_) => panic!(),
-                Err(send) => caller_future_tx1 = send.cancel(),
+                Err(mut send) => {
+                    caller_future_tx1 = match send.as_mut().cancel().unwrap_err() {
+                        FutureWriteCancel::Closed(_) => unreachable!(),
+                        FutureWriteCancel::Cancelled(_, writer) => writer,
+                    }
+                }
             }
         }
 
         // Tell the peer to read an expected value again, which should _not_ match the value provided in the
         // canceled write above.
-        control_tx
-            .send(vec![Control::ReadFuture("y".into())])
+        assert!(control_tx
+            .write_one(Control::ReadFuture("y".into()))
             .await
-            .unwrap();
-        caller_future_tx1.write("y".into()).await;
+            .is_none());
+        caller_future_tx1.write("y".into()).await.unwrap();
 
         // Tell the peer to write a value to its end of the stream, then read from our end and assert the value
         // matches.
-        control_tx
-            .send(vec![Control::WriteStream("a".into())])
+        assert!(control_tx
+            .write_one(Control::WriteStream("a".into()))
             .await
-            .unwrap();
-        assert_eq!(callee_stream_rx.next().await, Some(Ok(vec!["a".into()])));
+            .is_none());
+        assert_eq!(callee_stream_rx.next().await, Some("a".into()));
 
         // Start reading a value from the stream, but cancel the read before telling the peer to write.
         {
-            let next = callee_stream_rx.next();
+            let next = Box::pin(callee_stream_rx.read(Vec::with_capacity(1)));
             assert!(poll(next).await.is_err());
-            callee_stream_rx.cancel();
         }
 
         // Once again, tell the peer to write a value to its end of the stream, then read from our end and assert
         // the value matches.
-        control_tx
-            .send(vec![Control::WriteStream("b".into())])
+        assert!(control_tx
+            .write_one(Control::WriteStream("b".into()))
             .await
-            .unwrap();
-        assert_eq!(callee_stream_rx.next().await, Some(Ok(vec!["b".into()])));
+            .is_none());
+        assert_eq!(callee_stream_rx.next().await, Some("b".into()));
 
         // Start reading a value from the future, but cancel the read before telling the peer to write.
         {
-            let next = callee_future_rx1.into_future();
+            let next = Box::pin(callee_future_rx1.into_future());
             match poll(next).await {
                 Ok(_) => panic!(),
-                Err(next) => callee_future_rx1 = next.cancel(),
+                Err(mut next) => callee_future_rx1 = next.as_mut().cancel().unwrap_err(),
             }
         }
 
         // Tell the peer to write a value to its end of the future, then read from our end and assert the value
         // matches.
-        control_tx
-            .send(vec![Control::WriteFuture("b".into())])
+        assert!(control_tx
+            .write_one(Control::WriteFuture("b".into()))
             .await
-            .unwrap();
-        assert_eq!(callee_future_rx1.into_future().await, Some(Ok("b".into())));
+            .is_none());
+        assert_eq!(callee_future_rx1.into_future().await, Some("b".into()));
 
         // Start writing a value to the stream, but drop the stream without telling the peer to read.
-        let send = caller_stream_tx.send(vec!["d".into()]);
+        let send = Box::pin(caller_stream_tx.write_one("d".into()));
         assert!(poll(send).await.is_err());
         drop(caller_stream_tx);
 
         // Start reading a value from the stream, but drop the stream without telling the peer to write.
-        let next = callee_stream_rx.next();
+        let next = Box::pin(callee_stream_rx.next());
         assert!(poll(next).await.is_err());
         drop(callee_stream_rx);
 
@@ -144,7 +148,7 @@ impl Guest for Component {
 
         // Start reading a value from the future, but drop the read without telling the peer to write.
         {
-            let next = callee_future_rx2.into_future();
+            let next = Box::pin(callee_future_rx2.into_future());
             assert!(poll(next).await.is_err());
         }
     }

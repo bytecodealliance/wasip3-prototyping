@@ -1,4 +1,4 @@
-use futures::{join, StreamExt as _};
+use futures::join;
 use test_programs::p3::wasi::sockets::types::{
     ErrorCode, IpAddress, IpAddressFamily, IpSocketAddress, TcpSocket,
 };
@@ -117,7 +117,7 @@ async fn test_tcp_connect_explicit_bind(family: IpAddressFamily) {
             client.connect(listener_address).await.unwrap();
         },
         async {
-            accept.next().await.unwrap().unwrap();
+            accept.next().await.unwrap();
         }
     );
 }

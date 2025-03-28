@@ -15,8 +15,6 @@ use scenario::backpressure::{async_backpressure_callee, async_backpressure_calle
 use scenario::borrowing::{async_borrowing_callee, async_borrowing_caller};
 use scenario::error_context::{
     async_error_context, async_error_context_callee, async_error_context_caller,
-    async_error_context_future_callee, async_error_context_future_caller,
-    async_error_context_stream_callee, async_error_context_stream_caller,
 };
 use scenario::post_return::{async_post_return_callee, async_post_return_caller};
 use scenario::proxy::{async_http_echo, async_http_middleware, async_http_middleware_with_chain};

@@ -1,6 +1,6 @@
 use core::future::Future;
 
-use futures::{join, SinkExt as _, StreamExt as _, TryStreamExt as _};
+use futures::join;
 use test_programs::p3::wasi::sockets::types::{
     IpAddress, IpAddressFamily, IpSocketAddress, TcpSocket,
 };
@@ -23,7 +23,7 @@ async fn test_tcp_input_stream_should_be_closed_by_remote_shutdown(family: IpAdd
 
         // Wait for the shutdown signal to reach the client:
         assert!(client_rx.next().await.is_none());
-        assert_eq!(client_fut.await, Some(Ok(Ok(()))));
+        assert_eq!(client_fut.await, Some(Ok(())));
     })
     .await;
 }
@@ -40,7 +40,8 @@ async fn test_tcp_input_stream_should_be_closed_by_local_shutdown(family: IpAddr
                 // On Linux, `recv` continues to work even after `shutdown(sock, SHUT_RD)`
                 // has been called. To properly test that this behavior doesn't happen in
                 // WASI, we make sure there's some data to read by the client:
-                server_tx.send(b"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.".into()).await.unwrap();
+                let rest = server_tx.write_all(b"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.".into()).await;
+                assert!(rest.is_empty());
                 drop(server_tx);
             },
         );
@@ -50,15 +51,14 @@ async fn test_tcp_input_stream_should_be_closed_by_local_shutdown(family: IpAddr
         // Shut down socket locally:
         drop(client_rx);
         // Wait for the shutdown signal to reach the client:
-        assert_eq!(client_fut.await, Some(Ok(Ok(()))));
+        assert_eq!(client_fut.await, Some(Ok(())));
     }).await;
 }
 
 /// StreamWriter should return `StreamError::Closed` after the connection has been locally shut down for sending.
 async fn test_tcp_output_stream_should_be_closed_by_local_shutdown(family: IpAddressFamily) {
     setup(family, |_server, client| async move {
-        let (mut client_tx, client_rx) = wit_stream::new();
-        client_tx.close().await.unwrap();
+        let (client_tx, client_rx) = wit_stream::new();
         join!(
             async {
                 client.send(client_rx).await.unwrap();
@@ -92,18 +92,19 @@ async fn test_tcp_shutdown_should_not_lose_data(family: IpAddressFamily) {
                 client.send(client_rx).await.unwrap();
             },
             async {
-                client_tx.send(outgoing_data.clone()).await.unwrap();
+                let ret = client_tx.write_all(outgoing_data.clone()).await;
+                assert!(ret.is_empty());
                 drop(client_tx);
             },
             async {
                 // The peer should receive _all_ data:
                 let (server_rx, server_fut) = server.receive();
-                let incoming_data = server_rx.try_collect::<Vec<_>>().await.unwrap().concat();
+                let incoming_data = server_rx.collect().await;
                 assert_eq!(
                     outgoing_data, incoming_data,
                     "Received data should match the sent data"
                 );
-                server_fut.await.unwrap().unwrap().unwrap()
+                server_fut.await.unwrap().unwrap()
             },
         );
     })
@@ -144,11 +145,7 @@ async fn setup<Fut: Future<Output = ()>>(
         async {
             client_socket.connect(bound_address).await.unwrap();
         },
-        async {
-            let mut accepted_socket = accept.next().await.unwrap().unwrap();
-            assert_eq!(accepted_socket.len(), 1);
-            accepted_socket.pop().unwrap()
-        },
+        async { accept.next().await.unwrap() },
     );
     body(accepted_socket, client_socket).await;
 }

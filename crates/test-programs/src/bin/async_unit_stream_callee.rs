@@ -15,7 +15,6 @@ mod bindings {
 
 use {
     bindings::{exports::local::local::unit_stream::Guest, wit_stream},
-    futures::SinkExt,
     wit_bindgen_rt::async_support::{self, StreamReader},
 };
 
@@ -30,9 +29,8 @@ impl Guest for Component {
             let mut chunk_size = 1;
             while sent < count {
                 let n = (count - sent).min(chunk_size);
-                tx.send(vec![(); usize::try_from(n).unwrap()])
-                    .await
-                    .unwrap();
+                let remaining = tx.write_all(vec![(); usize::try_from(n).unwrap()]).await;
+                assert!(remaining.is_empty());
                 sent += n;
                 chunk_size *= 2;
             }

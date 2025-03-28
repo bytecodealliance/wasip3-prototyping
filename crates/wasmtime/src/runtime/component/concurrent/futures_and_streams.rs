@@ -14,7 +14,7 @@ use {
         vm::{component::ComponentInstance, SendSyncPtr, VMFuncRef, VMMemoryDefinition},
         AsContextMut, StoreContextMut, ValRaw,
     },
-    anyhow::{anyhow, bail, ensure, Context, Result},
+    anyhow::{anyhow, bail, Context, Result},
     bytes::Bytes,
     futures::{
         channel::{mpsc, oneshot},
@@ -58,8 +58,8 @@ pub(super) enum TableIndex {
 enum PostWrite {
     /// Continue performing writes
     Continue,
-    /// Close the channel post-write, possibly with an error
-    Close(Option<TypeComponentGlobalErrorContextTableIndex>),
+    /// Close the channel post-write
+    Close,
 }
 
 pub(crate) enum HostReadResult<B> {
@@ -181,8 +181,6 @@ fn accept<T: func::Lower + Send + Sync + 'static, B: Buffer<T>, U>(
 /// Represents the state of a stream or future handle.
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum StreamFutureState {
-    /// Both the read and write ends are owned by the same component instance.
-    Local,
     /// Only the write end is owned by this component instance.
     Write,
     /// Only the read end is owned by this component instance.
@@ -210,9 +208,7 @@ enum StreamOrFutureEvent<B> {
         post_write: PostWrite,
         tx: oneshot::Sender<()>,
     },
-    CloseWriter {
-        err_ctx: Option<ErrorContext>,
-    },
+    CloseWriter,
     WatchWriter {
         tx: oneshot::Sender<()>,
     },
@@ -385,21 +381,6 @@ impl<T> FutureWriter<T> {
         }
     }
 
-    /// Close this object with and error instead of writing a value.
-    ///
-    /// # Arguments
-    ///
-    /// * `err_ctx` - The handle of an error context that should be reported with the stream closure
-    ///
-    pub fn close_with_error(mut self, err_ctx: ErrorContext) {
-        send(
-            &mut self.tx.take().unwrap(),
-            StreamOrFutureEvent::CloseWriter {
-                err_ctx: Some(err_ctx),
-            },
-        );
-    }
-
     /// Convert this object into a `Promise` which will resolve when the read
     /// end of this `future` is closed, plus a `Watch` which can be used to
     /// retrieve the `FutureWriter` again.
@@ -431,7 +412,7 @@ impl<T: Send> Ready for FutureWriter<T> {
 impl<T> Drop for FutureWriter<T> {
     fn drop(&mut self) {
         if let Some(mut tx) = self.tx.take() {
-            send(&mut tx, StreamOrFutureEvent::CloseWriter { err_ctx: None });
+            send(&mut tx, StreamOrFutureEvent::CloseWriter);
         }
     }
 }
@@ -507,9 +488,6 @@ impl<T> HostFuture<T> {
                     get_mut_by_index_from(state_table, TableIndex::Future(src), index)?;
 
                 match state {
-                    StreamFutureState::Local => {
-                        *state = StreamFutureState::Write;
-                    }
                     StreamFutureState::Read => {
                         state_table.remove_by_index(index)?;
                     }
@@ -741,21 +719,6 @@ impl<B> StreamWriter<B> {
         }
     }
 
-    /// Close this object with a final error.
-    ///
-    /// # Arguments
-    ///
-    /// * `err_ctx` - The handle of an error context that should be reported with the stream closure.
-    ///
-    pub fn close_with_error(mut self, err_ctx: ErrorContext) {
-        send(
-            &mut self.tx.take().unwrap(),
-            StreamOrFutureEvent::CloseWriter {
-                err_ctx: Some(err_ctx),
-            },
-        );
-    }
-
     /// Convert this object into a `Promise` which will resolve when the read
     /// end of this `stream` is closed, plus a `Watch` which can be used to
     /// retrieve the `StreamWriter` again.
@@ -787,7 +750,7 @@ impl<T: Send> Ready for StreamWriter<T> {
 impl<T> Drop for StreamWriter<T> {
     fn drop(&mut self) {
         if let Some(mut tx) = self.tx.take() {
-            send(&mut tx, StreamOrFutureEvent::CloseWriter { err_ctx: None });
+            send(&mut tx, StreamOrFutureEvent::CloseWriter);
         }
     }
 }
@@ -864,9 +827,6 @@ impl<T> HostStream<T> {
                     get_mut_by_index_from(state_table, TableIndex::Stream(src), index)?;
 
                 match state {
-                    StreamFutureState::Local => {
-                        *state = StreamFutureState::Write;
-                    }
                     StreamFutureState::Read => {
                         state_table.remove_by_index(index)?;
                     }
@@ -1202,7 +1162,7 @@ enum WriteState {
         accept: Box<dyn FnOnce(&mut ComponentInstance, Reader) -> Result<usize> + Send + Sync>,
         post_write: PostWrite,
     },
-    Closed(Option<TypeComponentGlobalErrorContextTableIndex>),
+    Closed,
 }
 
 /// Read state of a transmit channel
@@ -1215,7 +1175,6 @@ enum ReadState {
     Open,
     GuestReady {
         ty: TableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         flat_abi: Option<FlatAbi>,
         options: Options,
         address: usize,
@@ -1239,7 +1198,7 @@ enum Writer<'a> {
     Host {
         values: Box<dyn Any>,
     },
-    End(Option<TypeComponentGlobalErrorContextTableIndex>),
+    End,
 }
 
 struct RawLowerContext<'a> {
@@ -1333,16 +1292,9 @@ impl ComponentInstance {
             instance.host_write(store, rep, values, post_write, tx)
         }
 
-        fn close_writer(
-            instance: SendSyncPtr<ComponentInstance>,
-            rep: u32,
-            err_ctx: Option<ErrorContext>,
-        ) -> Result<()> {
+        fn close_writer(instance: SendSyncPtr<ComponentInstance>, rep: u32) -> Result<()> {
             let instance = unsafe { &mut *instance.as_ptr() };
-            instance.host_close_writer(
-                rep,
-                err_ctx.map(|v| TypeComponentGlobalErrorContextTableIndex::from_u32(v.rep)),
-            )
+            instance.host_close_writer(rep)
         }
 
         fn watch_writer(
@@ -1352,7 +1304,7 @@ impl ComponentInstance {
         ) -> Result<()> {
             let instance = unsafe { &mut *instance.as_ptr() };
             let state = instance.get_mut(TableId::<TransmitState>::new(rep))?;
-            if !matches!(&state.write, WriteState::Closed(_)) {
+            if !matches!(&state.write, WriteState::Closed) {
                 state.writer_watcher = Some(tx);
             }
             Ok(())
@@ -1412,9 +1364,7 @@ impl ComponentInstance {
                                 post_write,
                                 tx,
                             } => write::<T, B, U>(instance, rep, values, post_write, tx)?,
-                            StreamOrFutureEvent::CloseWriter { err_ctx } => {
-                                close_writer(instance, rep, err_ctx)?
-                            }
+                            StreamOrFutureEvent::CloseWriter => close_writer(instance, rep)?,
                             StreamOrFutureEvent::WatchWriter { tx } => {
                                 watch_writer(instance, rep, tx)?
                             }
@@ -1501,10 +1451,15 @@ impl ComponentInstance {
         &mut self.waitable_tables()[runtime_instance]
     }
 
-    fn guest_new(&mut self, ty: TableIndex) -> Result<u32> {
-        let state = self.new_transmit()?.0.rep();
-        self.state_table(ty)
-            .insert(state, waitable_state(ty, StreamFutureState::Local))
+    fn guest_new(&mut self, ty: TableIndex) -> Result<ResourcePair> {
+        let (write, read) = self.new_transmit()?;
+        let write = self
+            .state_table(ty)
+            .insert(write.rep(), waitable_state(ty, StreamFutureState::Write))?;
+        let read = self
+            .state_table(ty)
+            .insert(read.rep(), waitable_state(ty, StreamFutureState::Read))?;
+        Ok(ResourcePair { write, read })
     }
 
     /// Write to a waitable from the host
@@ -1622,8 +1577,8 @@ impl ComponentInstance {
                 }
             }
 
-            if let PostWrite::Close(err_ctx) = post_write {
-                self.host_close_writer(transmit_rep, err_ctx)?;
+            if let PostWrite::Close = post_write {
+                self.host_close_writer(transmit_rep)?;
             }
 
             if let Some(tx) = tx.take() {
@@ -1649,8 +1604,8 @@ impl ComponentInstance {
         let transmit_id = TableId::<TransmitState>::new(rep);
         let transmit = self.get_mut(transmit_id).with_context(|| rep.to_string())?;
 
-        let new_state = if let WriteState::Closed(maybe_err_ctx) = &transmit.write {
-            WriteState::Closed(*maybe_err_ctx)
+        let new_state = if let WriteState::Closed = &transmit.write {
+            WriteState::Closed
         } else {
             WriteState::Open
         };
@@ -1701,18 +1656,10 @@ impl ComponentInstance {
                                 _ = tx.send(HostReadResult::Values(values));
                                 count
                             }
-                            Writer::End(maybe_err_ctx) => match maybe_err_ctx {
-                                None => {
-                                    _ = tx.send(HostReadResult::EndOfStream(None));
-                                    CLOSED
-                                }
-                                Some(err_ctx) => {
-                                    _ = tx.send(HostReadResult::EndOfStream(Some(
-                                        ErrorContext::new(err_ctx.as_u32()),
-                                    )));
-                                    CLOSED | err_ctx.as_u32() as usize
-                                }
-                            },
+                            Writer::End => {
+                                _ = tx.send(HostReadResult::EndOfStream(None));
+                                CLOSED
+                            }
                         })
                     }),
                 };
@@ -1744,8 +1691,8 @@ impl ComponentInstance {
                     B::from(T::load_list(lift, list)?)
                 }));
 
-                let pending = if let PostWrite::Close(err_ctx) = post_write {
-                    self.get_mut(transmit_id)?.write = WriteState::Closed(err_ctx);
+                let pending = if let PostWrite::Close = post_write {
+                    self.get_mut(transmit_id)?.write = WriteState::Closed;
                     false
                 } else {
                     true
@@ -1781,12 +1728,12 @@ impl ComponentInstance {
                     },
                 )?;
 
-                if let PostWrite::Close(err_ctx) = post_write {
-                    self.get_mut(transmit_id)?.write = WriteState::Closed(err_ctx);
+                if let PostWrite::Close = post_write {
+                    self.get_mut(transmit_id)?.write = WriteState::Closed;
                 }
             }
 
-            WriteState::Closed(_) => {}
+            WriteState::Closed => {}
         }
 
         Ok(())
@@ -1801,7 +1748,7 @@ impl ComponentInstance {
                 transmit.write = WriteState::Open;
             }
 
-            WriteState::Open | WriteState::Closed(_) => {}
+            WriteState::Open | WriteState::Closed => {}
         }
 
         let write_id = transmit.write_handle;
@@ -1843,11 +1790,7 @@ impl ComponentInstance {
     /// * `transmit_rep` - A component-global representation of the transmit state for the writer that should be closed
     /// * `err_ctx` - An optional component-global representation of an error context to use as the final value of the writer
     ///
-    fn host_close_writer(
-        &mut self,
-        transmit_rep: u32,
-        err_ctx: Option<TypeComponentGlobalErrorContextTableIndex>,
-    ) -> Result<()> {
+    fn host_close_writer(&mut self, transmit_rep: u32) -> Result<()> {
         let transmit_id = TableId::<TransmitState>::new(transmit_rep);
         let transmit = self
             .get_mut(transmit_id)
@@ -1858,15 +1801,15 @@ impl ComponentInstance {
         // Existing queued transmits must be updated with information for the impending writer closure
         match &mut transmit.write {
             WriteState::GuestReady { post_write, .. } => {
-                *post_write = PostWrite::Close(err_ctx);
+                *post_write = PostWrite::Close;
             }
             WriteState::HostReady { post_write, .. } => {
-                *post_write = PostWrite::Close(err_ctx);
+                *post_write = PostWrite::Close;
             }
             v @ WriteState::Open => {
-                *v = WriteState::Closed(err_ctx);
+                *v = WriteState::Closed;
             }
-            WriteState::Closed(_) => unreachable!("write state is already closed"),
+            WriteState::Closed => unreachable!("write state is already closed"),
         }
 
         // If the existing read state is closed, then there's nothing to read
@@ -1885,49 +1828,10 @@ impl ComponentInstance {
             // If the guest was ready to read, then we cannot close the reader (or writer)
             // we must deliver the event, and update the state associated with the handle to
             // represent that a read must be performed
-            ReadState::GuestReady {
-                ty,
-                err_ctx_ty,
-                handle,
-                ..
-            } => {
+            ReadState::GuestReady { ty, handle, .. } => {
                 let read_handle = transmit.read_handle;
 
-                // Lift the global err_ctx that we're receiving into an error context
-                // reference that the reader(caller) will
-                let reader_state_tbl = self
-                    .error_context_tables()
-                    .get_mut(err_ctx_ty)
-                    .context("retrieving component-local error context during host writer close")?;
-
-                let push_param = match err_ctx {
-                    None => CLOSED,
-                    Some(err_ctx) => {
-                        let rep = err_ctx.as_u32();
-                        // Get or insert the global error context into this guest's component-local error context tracking
-                        let (local_err_ctx, _) = match reader_state_tbl.get_mut_by_rep(rep) {
-                            Some(r) => {
-                                // If the error already existed, since we're about to read it, increase
-                                // the local component-wide reference count
-                                (*r.1).0 += 1;
-                                r
-                            }
-                            None => {
-                                // If the error context was not already tracked locally, start tracking
-                                reader_state_tbl.insert(rep, LocalErrorContextRefCount(1))?;
-                                reader_state_tbl.get_mut_by_rep(rep).context(
-                                    "retrieving inserted local error context during guest read",
-                                )?
-                            }
-                        };
-
-                        // NOTE: we do not have to manage the global error context ref count here, because
-                        // it was preemptively increased, and the guest that is ready to consume this
-                        // will account for the extra global context ref count.
-
-                        CLOSED | local_err_ctx as usize
-                    }
-                };
+                let push_param = CLOSED;
 
                 // Ensure the final read of the guest is queued, with appropriate closure indicator
                 let count = u32::try_from(push_param).unwrap();
@@ -1943,7 +1847,7 @@ impl ComponentInstance {
             // If the host was ready to read, and the writer end is being closed (host->host write?)
             // signal to the reader that we've reached the end of the stream
             ReadState::HostReady { accept } => {
-                accept(Writer::End(err_ctx))?;
+                accept(Writer::End)?;
             }
 
             // If the read state is open, then there are no registered readers of the stream/future
@@ -1976,8 +1880,8 @@ impl ComponentInstance {
 
         // If the write end is already closed, it should stay closed,
         // otherwise, it should be opened.
-        let new_state = if let WriteState::Closed(err_ctx) = &transmit.write {
-            WriteState::Closed(*err_ctx)
+        let new_state = if let WriteState::Closed = &transmit.write {
+            WriteState::Closed
         } else {
             WriteState::Open
         };
@@ -1993,7 +1897,7 @@ impl ComponentInstance {
             } => {
                 let write_handle = transmit.write_handle;
 
-                let pending = if let PostWrite::Close(_) = post_write {
+                let pending = if let PostWrite::Close = post_write {
                     self.delete_transmit(transmit_id)?;
                     false
                 } else {
@@ -2022,7 +1926,7 @@ impl ComponentInstance {
 
             WriteState::Open => {}
 
-            WriteState::Closed(_) => {
+            WriteState::Closed => {
                 log::trace!("host_close_reader delete {transmit_rep}");
                 self.delete_transmit(transmit_id)?;
             }
@@ -2187,7 +2091,6 @@ impl ComponentInstance {
         string_encoding: u8,
         async_: bool,
         ty: TableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         flat_abi: Option<FlatAbi>,
         handle: u32,
         address: u32,
@@ -2196,9 +2099,6 @@ impl ComponentInstance {
         if !async_ {
             bail!("synchronous stream and future writes not yet supported");
         }
-
-        // TODO: handle errors sent via `{stream|future}.close-readable`:
-        _ = err_ctx_ty;
 
         let address = usize::try_from(address).unwrap();
         let count = usize::try_from(count).unwrap();
@@ -2331,7 +2231,6 @@ impl ComponentInstance {
         string_encoding: u8,
         async_: bool,
         ty: TableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         flat_abi: Option<FlatAbi>,
         handle: u32,
         address: u32,
@@ -2368,8 +2267,8 @@ impl ComponentInstance {
             transmit_id.rep()
         );
         let transmit = self.get_mut(transmit_id)?;
-        let new_state = if let WriteState::Closed(err_ctx) = &transmit.write {
-            WriteState::Closed(*err_ctx)
+        let new_state = if let WriteState::Closed = &transmit.write {
+            WriteState::Closed
         } else {
             WriteState::Open
         };
@@ -2403,8 +2302,8 @@ impl ComponentInstance {
                     rep,
                 )?;
 
-                let pending = if let PostWrite::Close(err_ctx) = post_write {
-                    self.get_mut(transmit_id)?.write = WriteState::Closed(err_ctx);
+                let pending = if let PostWrite::Close = post_write {
+                    self.get_mut(transmit_id)?.write = WriteState::Closed;
                     false
                 } else {
                     true
@@ -2441,8 +2340,8 @@ impl ComponentInstance {
                     },
                 )?;
 
-                if let PostWrite::Close(err_ctx) = post_write {
-                    self.get_mut(transmit_id)?.write = WriteState::Closed(err_ctx);
+                if let PostWrite::Close = post_write {
+                    self.get_mut(transmit_id)?.write = WriteState::Closed;
                 }
 
                 count
@@ -2459,60 +2358,12 @@ impl ComponentInstance {
                     address: usize::try_from(address).unwrap(),
                     count: usize::try_from(count).unwrap(),
                     handle,
-                    err_ctx_ty,
                 };
 
                 BLOCKED
             }
 
-            WriteState::Closed(err_ctx) => {
-                match err_ctx {
-                    // If no error context is provided, closed can be sent
-                    None => CLOSED,
-                    // If an error context was present, we must ensure it's created and bitwise OR w/ CLOSED
-                    Some(err_ctx) => {
-                        // Lower the global error context that was saved into write state into a component-local
-                        // error context handle
-                        let state_tbl = self.error_context_tables().get_mut(err_ctx_ty).context(
-                            "retrieving local error context table during closed read w/ error",
-                        )?;
-
-                        // Get or insert the global error context into this guest's component-local error context tracking
-                        let (local_err_ctx, _) = match state_tbl.get_mut_by_rep(err_ctx.as_u32()) {
-                            Some(r) => {
-                                // If the error already existed, since we're about to read it, increase
-                                // the local component-wide reference count
-                                (*r.1).0 += 1;
-                                r
-                            }
-                            None => {
-                                let rep = err_ctx.as_u32();
-                                // If the error context was not already tracked locally, start tracking
-                                state_tbl.insert(rep, LocalErrorContextRefCount(1))?;
-                                state_tbl.get_mut_by_rep(rep).context(
-                                    "retrieving inserted local error context during guest read",
-                                )?
-                            }
-                        };
-
-                        // NOTE: During write closure when the error context was provided, we
-                        // incremented the global count to ensure the error context would not be garbage collected,
-                        // if dropped by the sending component.
-                        //
-                        // Since we did that preemptively, we do not need to increment the global ref count even
-                        // after this increase in local ref count.
-                        //
-                        // If a reader (this reader) *never* comes along, when the relevant stream/future is closed,
-                        // the writer state will indicate that the global count must be amended.
-
-                        // We reset the write state to a simple closed now that the error value has been read out,
-                        // in the case that another read is performed
-                        self.get_mut(transmit_id)?.write = WriteState::Closed(None);
-
-                        CLOSED | local_err_ctx as usize
-                    }
-                }
-            }
+            WriteState::Closed => CLOSED,
         };
 
         if result != BLOCKED {
@@ -2530,7 +2381,7 @@ impl ComponentInstance {
         };
         log::trace!("guest cancel write {rep} (handle {writer})");
         match state {
-            StreamFutureState::Local | StreamFutureState::Write => {
+            StreamFutureState::Write => {
                 bail!("stream or future write canceled when no write is pending")
             }
             StreamFutureState::Read => {
@@ -2552,7 +2403,7 @@ impl ComponentInstance {
         };
         log::trace!("guest cancel read {rep} (handle {reader})");
         match state {
-            StreamFutureState::Local | StreamFutureState::Read => {
+            StreamFutureState::Read => {
                 bail!("stream or future read canceled when no read is pending")
             }
             StreamFutureState::Write => {
@@ -2566,13 +2417,7 @@ impl ComponentInstance {
         self.host_cancel_read(rep)
     }
 
-    fn guest_close_writable(
-        &mut self,
-        ty: TableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
-        writer: u32,
-        local_err_ctx: u32,
-    ) -> Result<()> {
+    fn guest_close_writable(&mut self, ty: TableIndex, writer: u32) -> Result<()> {
         let (transmit_rep, WaitableState::Stream(_, state) | WaitableState::Future(_, state)) =
             self.state_table(ty)
                 .remove_by_index(writer)
@@ -2581,86 +2426,28 @@ impl ComponentInstance {
             bail!("invalid stream or future handle");
         };
         match state {
-            StreamFutureState::Local | StreamFutureState::Write => {}
+            StreamFutureState::Write => {}
             StreamFutureState::Read => {
                 bail!("passed read end to `{{stream|future}}.close-writable`")
             }
             StreamFutureState::Busy => bail!("cannot drop busy stream or future"),
         }
 
-        // Resolve the error context
-        let global_err_ctx = match local_err_ctx {
-            // If no error context was provided, we can pass that along as-is
-            0 => None,
-
-            // If a non-zero error context was provided, first ensure it's valid,
-            // then lift the guest-local (component instance local) error context reference
-            // to the component-global level.
-            //
-            // This ensures that after closing the writer, when the eventual reader appears
-            // we can lower the component-global error context into a reader-local error context
-            err_ctx => {
-                // Look up the local component error context
-                let state_tbl = self
-                    .error_context_tables()
-                    .get_mut(err_ctx_ty)
-                    .context("retrieving local error context during guest close writable")?;
-
-                // NOTE: the rep below is the component-global error context index
-                let (rep, _) = state_tbl.get_mut_by_index(local_err_ctx).with_context(|| {
-                format!("missing component local error context idx [{local_err_ctx}] while closing writable")
-            })?;
-
-                let global_err_ctx = TypeComponentGlobalErrorContextTableIndex::from_u32(rep);
-
-                // Closing the writer with an error context means that a reader must later
-                // come along and discover the error context even once the writer goes away.
-                //
-                // Here we preemptively increase the ref count to ensure the error context
-                // won't be removed by the time the reader comes along
-                let GlobalErrorContextRefCount(global_count) = self
-                    .global_error_context_ref_counts()
-                    .get_mut(&global_err_ctx)
-                    .context(
-                        "retrieving global error context ref count during guest close writable",
-                    )?;
-                *global_count += 1;
-                ensure!(
-                self
-                    .get(TableId::<ErrorContextState>::new(rep))
-                    .is_ok(),
-                "missing global error context state [{rep}] for local error context [{err_ctx}] during guest close writable"
-            );
-                Some(global_err_ctx)
-            }
-        };
-
         let transmit_rep = self
             .get(TableId::<TransmitHandle>::new(transmit_rep))?
             .state
             .rep();
-        self.host_close_writer(transmit_rep, global_err_ctx)
+        self.host_close_writer(transmit_rep)
     }
 
-    fn guest_close_readable(
-        &mut self,
-        ty: TableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
-        reader: u32,
-        error: u32,
-    ) -> Result<()> {
-        if error != 0 {
-            _ = err_ctx_ty;
-            todo!();
-        }
-
+    fn guest_close_readable(&mut self, ty: TableIndex, reader: u32) -> Result<()> {
         let (rep, WaitableState::Stream(_, state) | WaitableState::Future(_, state)) =
             self.state_table(ty).remove_by_index(reader)?
         else {
             bail!("invalid stream or future handle");
         };
         match state {
-            StreamFutureState::Local | StreamFutureState::Read => {}
+            StreamFutureState::Read => {}
             StreamFutureState::Write => {
                 bail!("passed write end to `{{stream|future}}.close-readable`")
             }
@@ -2870,48 +2657,29 @@ impl ComponentInstance {
         make_state: impl Fn(U, StreamFutureState) -> WaitableState,
     ) -> Result<u32> {
         let src_table = &mut self.waitable_tables()[src_instance];
-        let (rep, src_state) = src_table.get_mut_by_index(src_idx)?;
+        let (_rep, src_state) = src_table.get_mut_by_index(src_idx)?;
         let (src_ty, _) = match_state(src_state)?;
         if src_ty != src {
             bail!("invalid future handle");
         }
-
-        let state = self.get(TableId::<TransmitHandle>::new(rep))?.state;
-        let state = self.get_mut(state)?;
-        let read_handle = state.read_handle.rep();
-        let write_handle = state.write_handle.rep();
 
         let src_table = &mut self.waitable_tables()[src_instance];
         let (rep, src_state) = src_table.get_mut_by_index(src_idx)?;
         let (_, src_state) = match_state(src_state)?;
 
         match src_state {
-            StreamFutureState::Local => {
-                *src_state = StreamFutureState::Write;
-                let dst_table = &mut self.waitable_tables()[dst_instance];
-                assert!(dst_table.get_mut_by_rep(read_handle).is_none());
-                dst_table.insert(read_handle, make_state(dst, StreamFutureState::Read))
-            }
             StreamFutureState::Read => {
                 src_table.remove_by_index(src_idx)?;
 
                 let dst_table = &mut self.waitable_tables()[dst_instance];
-                if let Some((dst_idx, dst_state)) = dst_table.get_mut_by_rep(write_handle) {
-                    let (dst_ty, dst_state) = match_state(dst_state).unwrap();
-                    assert_eq!(dst_ty, dst);
-                    assert_eq!(*dst_state, StreamFutureState::Write);
-                    *dst_state = StreamFutureState::Local;
-                    Ok(dst_idx)
-                } else {
-                    dst_table.insert(rep, make_state(dst, StreamFutureState::Read))
-                }
+                dst_table.insert(rep, make_state(dst, StreamFutureState::Read))
             }
             StreamFutureState::Write => bail!("cannot transfer write end of stream or future"),
             StreamFutureState::Busy => bail!("cannot transfer busy stream or future"),
         }
     }
 
-    pub(crate) fn future_new(&mut self, ty: TypeFutureTableIndex) -> Result<u32> {
+    pub(crate) fn future_new(&mut self, ty: TypeFutureTableIndex) -> Result<ResourcePair> {
         self.guest_new(TableIndex::Future(ty))
     }
 
@@ -2936,24 +2704,20 @@ impl ComponentInstance {
     pub(crate) fn future_close_writable(
         &mut self,
         ty: TypeFutureTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         writer: u32,
-        error: u32,
     ) -> Result<()> {
-        self.guest_close_writable(TableIndex::Future(ty), err_ctx_ty, writer, error)
+        self.guest_close_writable(TableIndex::Future(ty), writer)
     }
 
     pub(crate) fn future_close_readable(
         &mut self,
         ty: TypeFutureTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         reader: u32,
-        error: u32,
     ) -> Result<()> {
-        self.guest_close_readable(TableIndex::Future(ty), err_ctx_ty, reader, error)
+        self.guest_close_readable(TableIndex::Future(ty), reader)
     }
 
-    pub(crate) fn stream_new(&mut self, ty: TypeStreamTableIndex) -> Result<u32> {
+    pub(crate) fn stream_new(&mut self, ty: TypeStreamTableIndex) -> Result<ResourcePair> {
         self.guest_new(TableIndex::Stream(ty))
     }
 
@@ -2978,21 +2742,17 @@ impl ComponentInstance {
     pub(crate) fn stream_close_writable(
         &mut self,
         ty: TypeStreamTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         writer: u32,
-        error: u32,
     ) -> Result<()> {
-        self.guest_close_writable(TableIndex::Stream(ty), err_ctx_ty, writer, error)
+        self.guest_close_writable(TableIndex::Stream(ty), writer)
     }
 
     pub(crate) fn stream_close_readable(
         &mut self,
         ty: TypeStreamTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         reader: u32,
-        error: u32,
     ) -> Result<()> {
-        self.guest_close_readable(TableIndex::Stream(ty), err_ctx_ty, reader, error)
+        self.guest_close_readable(TableIndex::Stream(ty), reader)
     }
 
     pub(crate) fn future_transfer(
@@ -3080,4 +2840,9 @@ impl ComponentInstance {
 
         Ok(updated_count)
     }
+}
+
+pub(crate) struct ResourcePair {
+    pub(crate) write: u32,
+    pub(crate) read: u32,
 }

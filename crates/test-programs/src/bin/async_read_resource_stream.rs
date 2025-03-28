@@ -13,10 +13,7 @@ mod bindings {
     export!(Component);
 }
 
-use {
-    bindings::{exports::local::local::run::Guest, local::local::resource_stream},
-    futures::StreamExt,
-};
+use bindings::{exports::local::local::run::Guest, local::local::resource_stream};
 
 struct Component;
 
@@ -25,16 +22,14 @@ impl Guest for Component {
         let mut count = 7;
         let mut stream = resource_stream::foo(count);
 
-        while let Some(Ok(chunk)) = stream.next().await {
-            for x in chunk {
-                if count > 0 {
-                    count -= 1;
-                } else {
-                    panic!("received too many items");
-                }
-
-                x.foo()
+        while let Some(x) = stream.next().await {
+            if count > 0 {
+                count -= 1;
+            } else {
+                panic!("received too many items");
             }
+
+            x.foo()
         }
 
         if count != 0 {

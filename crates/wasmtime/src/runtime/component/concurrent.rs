@@ -57,7 +57,7 @@ use {
 };
 
 pub(crate) use futures_and_streams::{
-    lower_error_context_to_index, lower_future_to_index, lower_stream_to_index,
+    lower_error_context_to_index, lower_future_to_index, lower_stream_to_index, ResourcePair,
 };
 pub use futures_and_streams::{
     ErrorContext, FutureReader, FutureWriter, HostFuture, HostStream, Single, StreamReader,
@@ -2429,7 +2429,6 @@ pub unsafe trait VMComponentAsyncStore {
         string_encoding: u8,
         async_: bool,
         ty: TypeFutureTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         future: u32,
         address: u32,
     ) -> Result<u32>;
@@ -2443,7 +2442,6 @@ pub unsafe trait VMComponentAsyncStore {
         string_encoding: u8,
         async_: bool,
         ty: TypeFutureTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         future: u32,
         address: u32,
     ) -> Result<u32>;
@@ -2457,7 +2455,6 @@ pub unsafe trait VMComponentAsyncStore {
         string_encoding: u8,
         async_: bool,
         ty: TypeStreamTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         stream: u32,
         address: u32,
         count: u32,
@@ -2472,7 +2469,6 @@ pub unsafe trait VMComponentAsyncStore {
         string_encoding: u8,
         async_: bool,
         ty: TypeStreamTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         stream: u32,
         address: u32,
         count: u32,
@@ -2487,7 +2483,6 @@ pub unsafe trait VMComponentAsyncStore {
         realloc: *mut VMFuncRef,
         async_: bool,
         ty: TypeStreamTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         payload_size: u32,
         payload_align: u32,
         stream: u32,
@@ -2504,7 +2499,6 @@ pub unsafe trait VMComponentAsyncStore {
         realloc: *mut VMFuncRef,
         async_: bool,
         ty: TypeStreamTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         payload_size: u32,
         payload_align: u32,
         stream: u32,
@@ -2637,7 +2631,6 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         string_encoding: u8,
         async_: bool,
         ty: TypeFutureTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         future: u32,
         address: u32,
     ) -> Result<u32> {
@@ -2648,7 +2641,6 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
             string_encoding,
             async_,
             TableIndex::Future(ty),
-            err_ctx_ty,
             None,
             future,
             address,
@@ -2664,7 +2656,6 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         string_encoding: u8,
         async_: bool,
         ty: TypeFutureTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         future: u32,
         address: u32,
     ) -> Result<u32> {
@@ -2675,7 +2666,6 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
             string_encoding,
             async_,
             TableIndex::Future(ty),
-            err_ctx_ty,
             None,
             future,
             address,
@@ -2691,7 +2681,6 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         string_encoding: u8,
         async_: bool,
         ty: TypeStreamTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         stream: u32,
         address: u32,
         count: u32,
@@ -2703,7 +2692,6 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
             string_encoding,
             async_,
             TableIndex::Stream(ty),
-            err_ctx_ty,
             None,
             stream,
             address,
@@ -2719,7 +2707,6 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         string_encoding: u8,
         async_: bool,
         ty: TypeStreamTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         stream: u32,
         address: u32,
         count: u32,
@@ -2731,7 +2718,6 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
             string_encoding,
             async_,
             TableIndex::Stream(ty),
-            err_ctx_ty,
             None,
             stream,
             address,
@@ -2746,7 +2732,6 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         realloc: *mut VMFuncRef,
         async_: bool,
         ty: TypeStreamTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         payload_size: u32,
         payload_align: u32,
         stream: u32,
@@ -2760,7 +2745,6 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
             StringEncoding::Utf8 as u8,
             async_,
             TableIndex::Stream(ty),
-            err_ctx_ty,
             Some(FlatAbi {
                 size: payload_size,
                 align: payload_align,
@@ -2778,7 +2762,6 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         realloc: *mut VMFuncRef,
         async_: bool,
         ty: TypeStreamTableIndex,
-        err_ctx_ty: TypeComponentLocalErrorContextTableIndex,
         payload_size: u32,
         payload_align: u32,
         stream: u32,
@@ -2792,7 +2775,6 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
             StringEncoding::Utf8 as u8,
             async_,
             TableIndex::Stream(ty),
-            err_ctx_ty,
             Some(FlatAbi {
                 size: payload_size,
                 align: payload_align,

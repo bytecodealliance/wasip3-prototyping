@@ -1,4 +1,4 @@
-use futures::{join, SinkExt as _, TryStreamExt as _};
+use futures::join;
 use test_programs::p3::wasi::filesystem::types::{DescriptorFlags, OpenFlags, PathFlags};
 use test_programs::p3::{wasi, wit_stream};
 
@@ -26,14 +26,16 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
                 file.write_via_stream(data_rx, 5).await.unwrap();
             },
             async {
-                data_tx.send(b"Hello, ".to_vec()).await.unwrap();
-                data_tx.send(b"World!".to_vec()).await.unwrap();
+                let remaining = data_tx.write_all(b"Hello, ".to_vec()).await;
+                assert!(remaining.is_empty());
+                let remaining = data_tx.write_all(b"World!".to_vec()).await;
+                assert!(remaining.is_empty());
                 drop(data_tx);
             },
         );
         let (data_rx, data_fut) = file.read_via_stream(0);
-        let contents = data_rx.try_collect::<Vec<_>>().await.unwrap().concat();
-        data_fut.await.unwrap().unwrap().unwrap();
+        let contents = data_rx.collect().await;
+        data_fut.await.unwrap().unwrap();
         assert_eq!(
             String::from_utf8_lossy(&contents),
             "\0\0\0\0\0Hello, World!"
@@ -41,8 +43,8 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
 
         // Test that file read streams behave like other read streams.
         let (data_rx, data_fut) = file.read_via_stream(5);
-        let contents = data_rx.try_collect::<Vec<_>>().await.unwrap().concat();
-        data_fut.await.unwrap().unwrap().unwrap();
+        let contents = data_rx.collect().await;
+        data_fut.await.unwrap().unwrap();
         assert_eq!(String::from_utf8_lossy(&contents), "Hello, World!");
 
         dir.unlink_file_at(filename).unwrap();

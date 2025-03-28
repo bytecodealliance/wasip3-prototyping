@@ -1,6 +1,8 @@
 //! Implementation of string transcoding required by the component model.
 
 use crate::prelude::*;
+#[cfg(feature = "component-model-async")]
+use crate::runtime::component::concurrent::ResourcePair;
 use crate::runtime::vm::component::{ComponentInstance, VMComponentContext};
 use crate::runtime::vm::{HostResultHasUnwindSentinel, VmSafe};
 use core::cell::Cell;
@@ -871,7 +873,18 @@ unsafe fn error_context_transfer(
 }
 
 #[cfg(feature = "component-model-async")]
-unsafe fn future_new(vmctx: NonNull<VMComponentContext>, ty: u32) -> Result<u32> {
+unsafe impl HostResultHasUnwindSentinel for ResourcePair {
+    type Abi = u64;
+    const SENTINEL: u64 = u64::MAX;
+
+    fn into_abi(self) -> Self::Abi {
+        assert!(self.read & (1 << 31) == 0);
+        (u64::from(self.read) << 32) | u64::from(self.write)
+    }
+}
+
+#[cfg(feature = "component-model-async")]
+unsafe fn future_new(vmctx: NonNull<VMComponentContext>, ty: u32) -> Result<ResourcePair> {
     ComponentInstance::from_vmctx(vmctx, |instance| {
         instance.future_new(wasmtime_environ::component::TypeFutureTableIndex::from_u32(
             ty,
@@ -887,7 +900,6 @@ unsafe fn future_write(
     string_encoding: u8,
     async_: u8,
     ty: u32,
-    err_ctx_ty: u32,
     future: u32,
     address: u32,
 ) -> Result<u32> {
@@ -899,9 +911,6 @@ unsafe fn future_write(
             string_encoding,
             async_ != 0,
             wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
-            wasmtime_environ::component::TypeComponentLocalErrorContextTableIndex::from_u32(
-                err_ctx_ty,
-            ),
             future,
             address,
         )
@@ -916,7 +925,6 @@ unsafe fn future_read(
     string_encoding: u8,
     async_: u8,
     ty: u32,
-    err_ctx_ty: u32,
     future: u32,
     address: u32,
 ) -> Result<u32> {
@@ -928,9 +936,6 @@ unsafe fn future_read(
             string_encoding,
             async_ != 0,
             wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
-            wasmtime_environ::component::TypeComponentLocalErrorContextTableIndex::from_u32(
-                err_ctx_ty,
-            ),
             future,
             address,
         )
@@ -973,18 +978,12 @@ unsafe fn future_cancel_read(
 unsafe fn future_close_writable(
     vmctx: NonNull<VMComponentContext>,
     ty: u32,
-    err_ctx_ty: u32,
     writer: u32,
-    error: u32,
 ) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |instance| {
         instance.future_close_writable(
             wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
-            wasmtime_environ::component::TypeComponentLocalErrorContextTableIndex::from_u32(
-                err_ctx_ty,
-            ),
             writer,
-            error,
         )
     })
 }
@@ -993,24 +992,18 @@ unsafe fn future_close_writable(
 unsafe fn future_close_readable(
     vmctx: NonNull<VMComponentContext>,
     ty: u32,
-    err_ctx_ty: u32,
     reader: u32,
-    error: u32,
 ) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |instance| {
         instance.future_close_readable(
             wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
-            wasmtime_environ::component::TypeComponentLocalErrorContextTableIndex::from_u32(
-                err_ctx_ty,
-            ),
             reader,
-            error,
         )
     })
 }
 
 #[cfg(feature = "component-model-async")]
-unsafe fn stream_new(vmctx: NonNull<VMComponentContext>, ty: u32) -> Result<u32> {
+unsafe fn stream_new(vmctx: NonNull<VMComponentContext>, ty: u32) -> Result<ResourcePair> {
     ComponentInstance::from_vmctx(vmctx, |instance| {
         instance.stream_new(wasmtime_environ::component::TypeStreamTableIndex::from_u32(
             ty,
@@ -1026,7 +1019,6 @@ unsafe fn stream_write(
     string_encoding: u8,
     async_: u8,
     ty: u32,
-    err_ctx_ty: u32,
     stream: u32,
     address: u32,
     count: u32,
@@ -1039,9 +1031,6 @@ unsafe fn stream_write(
             string_encoding,
             async_ != 0,
             wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
-            wasmtime_environ::component::TypeComponentLocalErrorContextTableIndex::from_u32(
-                err_ctx_ty,
-            ),
             stream,
             address,
             count,
@@ -1057,7 +1046,6 @@ unsafe fn stream_read(
     string_encoding: u8,
     async_: u8,
     ty: u32,
-    err_ctx_ty: u32,
     stream: u32,
     address: u32,
     count: u32,
@@ -1070,9 +1058,6 @@ unsafe fn stream_read(
             string_encoding,
             async_ != 0,
             wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
-            wasmtime_environ::component::TypeComponentLocalErrorContextTableIndex::from_u32(
-                err_ctx_ty,
-            ),
             stream,
             address,
             count,
@@ -1116,18 +1101,12 @@ unsafe fn stream_cancel_read(
 unsafe fn stream_close_writable(
     vmctx: NonNull<VMComponentContext>,
     ty: u32,
-    err_ctx_ty: u32,
     writer: u32,
-    error: u32,
 ) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |instance| {
         instance.stream_close_writable(
             wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
-            wasmtime_environ::component::TypeComponentLocalErrorContextTableIndex::from_u32(
-                err_ctx_ty,
-            ),
             writer,
-            error,
         )
     })
 }
@@ -1136,18 +1115,12 @@ unsafe fn stream_close_writable(
 unsafe fn stream_close_readable(
     vmctx: NonNull<VMComponentContext>,
     ty: u32,
-    err_ctx_ty: u32,
     reader: u32,
-    error: u32,
 ) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |instance| {
         instance.stream_close_readable(
             wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
-            wasmtime_environ::component::TypeComponentLocalErrorContextTableIndex::from_u32(
-                err_ctx_ty,
-            ),
             reader,
-            error,
         )
     })
 }
@@ -1159,7 +1132,6 @@ unsafe fn flat_stream_write(
     realloc: *mut u8,
     async_: u8,
     ty: u32,
-    err_ctx_ty: u32,
     payload_size: u32,
     payload_align: u32,
     stream: u32,
@@ -1175,9 +1147,6 @@ unsafe fn flat_stream_write(
                 realloc.cast::<crate::vm::VMFuncRef>(),
                 async_ != 0,
                 wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
-                wasmtime_environ::component::TypeComponentLocalErrorContextTableIndex::from_u32(
-                    err_ctx_ty,
-                ),
                 payload_size,
                 payload_align,
                 stream,
@@ -1194,7 +1163,6 @@ unsafe fn flat_stream_read(
     realloc: *mut u8,
     async_: u8,
     ty: u32,
-    err_ctx_ty: u32,
     payload_size: u32,
     payload_align: u32,
     stream: u32,
@@ -1210,9 +1178,6 @@ unsafe fn flat_stream_read(
                 realloc.cast::<crate::vm::VMFuncRef>(),
                 async_ != 0,
                 wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
-                wasmtime_environ::component::TypeComponentLocalErrorContextTableIndex::from_u32(
-                    err_ctx_ty,
-                ),
                 payload_size,
                 payload_align,
                 stream,

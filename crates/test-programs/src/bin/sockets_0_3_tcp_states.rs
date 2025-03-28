@@ -1,4 +1,4 @@
-use futures::{join, StreamExt as _};
+use futures::join;
 use test_programs::p3::wasi::sockets::types::{
     ErrorCode, IpAddress, IpAddressFamily, IpSocketAddress, TcpSocket,
 };
@@ -155,7 +155,7 @@ async fn test_tcp_connected_state_invariants(family: IpAddressFamily) {
             sock.connect(addr_listener).await.unwrap();
         },
         async {
-            accept.next().await.unwrap().unwrap();
+            accept.next().await.unwrap();
         }
     );
 
