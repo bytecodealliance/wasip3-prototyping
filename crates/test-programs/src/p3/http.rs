@@ -134,7 +134,7 @@ pub async fn request(
             eprintln!("[guest] collect body...");
             let body = body.try_collect::<Vec<_>>().await?;
             let body = body.concat();
-            eprintln!("[guest] body collected {body:?}");
+            eprintln!("[guest] collected body of {} bytes", body.len());
             eprintln!("[guest] await trailers...");
             let trailers = trailers
                 .await
