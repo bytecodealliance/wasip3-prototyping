@@ -1,4 +1,4 @@
-use futures::{join, SinkExt as _, StreamExt as _};
+use futures::join;
 use test_programs::p3::sockets::attempt_random_port;
 use test_programs::p3::wasi::sockets::types::{
     ErrorCode, IpAddress, IpAddressFamily, IpSocketAddress, TcpSocket,
@@ -66,16 +66,15 @@ async fn test_tcp_bind_reuseaddr(ip: IpAddress) {
                 client.connect(connect_addr).await.unwrap();
             },
             async {
-                let mut sock = accept.next().await.unwrap().unwrap();
-                assert_eq!(sock.len(), 1);
-                let sock = sock.pop().unwrap();
+                let sock = accept.next().await.unwrap();
                 let (mut data_tx, data_rx) = wit_stream::new();
                 join!(
                     async {
                         sock.send(data_rx).await.unwrap();
                     },
                     async {
-                        data_tx.send(vec![0; 10]).await.unwrap();
+                        let remaining = data_tx.write_all(vec![0; 10]).await;
+                        assert!(remaining.is_empty());
                         drop(data_tx);
                     }
                 );

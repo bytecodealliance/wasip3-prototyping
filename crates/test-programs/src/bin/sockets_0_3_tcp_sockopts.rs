@@ -1,4 +1,4 @@
-use futures::{join, StreamExt as _};
+use futures::join;
 use test_programs::p3::wasi::sockets::types::{
     ErrorCode, IpAddress, IpAddressFamily, IpSocketAddress, TcpSocket,
 };
@@ -136,11 +136,7 @@ async fn test_tcp_sockopt_inheritance(family: IpAddressFamily) {
         async {
             client.connect(bound_addr).await.unwrap();
         },
-        async {
-            let mut sock = accept.next().await.unwrap().unwrap();
-            assert_eq!(sock.len(), 1);
-            sock.pop().unwrap()
-        }
+        async { accept.next().await.unwrap() }
     );
 
     // Verify options on accepted socket:
@@ -204,11 +200,7 @@ async fn test_tcp_sockopt_after_listen(family: IpAddressFamily) {
         async {
             client.connect(bound_addr).await.unwrap();
         },
-        async {
-            let mut sock = accept.next().await.unwrap().unwrap();
-            assert_eq!(sock.len(), 1);
-            sock.pop().unwrap()
-        }
+        async { accept.next().await.unwrap() }
     );
 
     // Verify options on accepted socket:
