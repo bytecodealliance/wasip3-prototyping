@@ -1,6 +1,6 @@
 use {
     anyhow::Result,
-    component_async_tests::{closed_streams, Ctx},
+    component_async_tests::{closed_streams, util::init_logger, Ctx},
     futures::future,
     std::sync::{Arc, Mutex},
     tokio::fs,
@@ -16,6 +16,8 @@ use {
 
 #[tokio::test]
 pub async fn async_watch_streams() -> Result<()> {
+    init_logger();
+
     let mut config = Config::new();
     config.wasm_component_model(true);
     config.wasm_component_model_async(true);
@@ -141,6 +143,8 @@ pub async fn async_closed_streams_with_watch() -> Result<()> {
 }
 
 pub async fn test_closed_streams(watch: bool) -> Result<()> {
+    init_logger();
+
     let mut config = Config::new();
     config.debug_info(true);
     config.cranelift_debug_verifier(true);
