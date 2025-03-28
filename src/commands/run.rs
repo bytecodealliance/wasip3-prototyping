@@ -472,6 +472,8 @@ impl RunCommand {
                 }
 
                 let component = module.unwrap_component();
+                        // wasmtime run -S p3 <my>.wasm
+                        // wasmtime serve -S p3 <my>.wasm
                 let result = if let Ok(command) =
                     wasmtime_wasi::p3::bindings::Command::instantiate_async(
                         &mut *store,
