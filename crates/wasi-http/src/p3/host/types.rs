@@ -269,7 +269,7 @@ where
                     contents_tx = new_contents_tx;
                     watch_reader = new_watch_reader.into_future();
                 }
-                drop(contents_tx);
+                drop(contents_tx.into_inner());
 
                 let (watch_reader, trailers_tx) = self.trailers_tx.watch_reader();
                 let mut watch_reader = watch_reader.into_future();
@@ -355,7 +355,7 @@ where
                             return Ok(());
                         }
                         Some(None) => {
-                            drop(contents_tx);
+                            drop(contents_tx.into_inner());
                             if !self.trailers_tx.write(Ok(None)).into_future().await {
                                 let Ok(mut body) = self.body.lock() else {
                                     bail!("lock poisoned");
@@ -389,7 +389,7 @@ where
                                     watch_reader = new_watch_reader.into_future();
                                 }
                                 Err(Ok(trailers)) => {
-                                    drop(contents_tx);
+                                    drop(contents_tx.into_inner());
                                     let trailers = store.with(|mut view| {
                                         push_fields(view.table(), WithChildren::new(trailers))
                                     })?;
@@ -410,7 +410,7 @@ where
                                     return Ok(());
                                 }
                                 Err(Err(..)) => {
-                                    drop(contents_tx);
+                                    drop(contents_tx.into_inner());
                                     if !self
                                         .trailers_tx
                                         .write(Err(ErrorCode::HttpProtocolError))
@@ -432,7 +432,7 @@ where
                             }
                         }
                         Some(Some(Err(err))) => {
-                            drop(contents_tx);
+                            drop(contents_tx.into_inner());
                             if !self.trailers_tx.write(Err(err.clone())).into_future().await {
                                 let Ok(mut body) = self.body.lock() else {
                                     bail!("lock poisoned");
