@@ -5283,7 +5283,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen"
 version = "0.41.0"
-source = "git+https://github.com/alexcrichton/witx-bindgen?branch=wit-bindgen-async-tests#f213e8178374b82324c683866c1a83a17f198a58"
+source = "git+https://github.com/alexcrichton/witx-bindgen?branch=wit-bindgen-async-tests#4c89fc06c3257a8fe49e981c04e0384eee9f027a"
 dependencies = [
  "wit-bindgen-rt 0.41.0",
  "wit-bindgen-rust-macro",
@@ -5292,7 +5292,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-core"
 version = "0.41.0"
-source = "git+https://github.com/alexcrichton/witx-bindgen?branch=wit-bindgen-async-tests#f213e8178374b82324c683866c1a83a17f198a58"
+source = "git+https://github.com/alexcrichton/witx-bindgen?branch=wit-bindgen-async-tests#4c89fc06c3257a8fe49e981c04e0384eee9f027a"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5311,7 +5311,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rt"
 version = "0.41.0"
-source = "git+https://github.com/alexcrichton/witx-bindgen?branch=wit-bindgen-async-tests#f213e8178374b82324c683866c1a83a17f198a58"
+source = "git+https://github.com/alexcrichton/witx-bindgen?branch=wit-bindgen-async-tests#4c89fc06c3257a8fe49e981c04e0384eee9f027a"
 dependencies = [
  "bitflags 2.6.0",
  "futures",
@@ -5321,7 +5321,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rust"
 version = "0.41.0"
-source = "git+https://github.com/alexcrichton/witx-bindgen?branch=wit-bindgen-async-tests#f213e8178374b82324c683866c1a83a17f198a58"
+source = "git+https://github.com/alexcrichton/witx-bindgen?branch=wit-bindgen-async-tests#4c89fc06c3257a8fe49e981c04e0384eee9f027a"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5336,7 +5336,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rust-macro"
 version = "0.41.0"
-source = "git+https://github.com/alexcrichton/witx-bindgen?branch=wit-bindgen-async-tests#f213e8178374b82324c683866c1a83a17f198a58"
+source = "git+https://github.com/alexcrichton/witx-bindgen?branch=wit-bindgen-async-tests#4c89fc06c3257a8fe49e981c04e0384eee9f027a"
 dependencies = [
  "anyhow",
  "prettyplease",
