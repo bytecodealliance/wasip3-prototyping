@@ -51,8 +51,7 @@
   (func (export "run") (alias export $lowerer "run"))
 )
 
-;; TODO: this requires async support in `wasmtime-wast`:
-;;(assert_return (invoke "run"))
+(assert_return (invoke "run"))
 
 ;; async lower -> async lift with callback
 (component
@@ -105,8 +104,7 @@
   (func (export "run") (alias export $lowerer "run"))
 )
 
-;; TODO: this requires async support in `wasmtime-wast`:
-;;(assert_return (invoke "run"))
+(assert_return (invoke "run"))
 
 ;; async lower -> sync lift
 (component
@@ -152,8 +150,7 @@
   (func (export "run") (alias export $lowerer "run"))
 )
 
-;; TODO: this requires async support in `wasmtime-wast`:
-;;(assert_return (invoke "run"))
+(assert_return (invoke "run"))
 
 ;; sync lower -> async lift without callback
 (component
@@ -196,8 +193,7 @@
   (func (export "run") (alias export $lowerer "run"))
 )
 
-;; TODO: this requires async support in `wasmtime-wast`:
-;;(assert_return (invoke "run"))
+(assert_return (invoke "run"))
 
 ;; sync lower -> async lift with callback
 (component
@@ -244,5 +240,4 @@
   (func (export "run") (alias export $lowerer "run"))
 )
 
-;; TODO: this requires async support in `wasmtime-wast`:
-;;(assert_return (invoke "run"))
+(assert_return (invoke "run"))
