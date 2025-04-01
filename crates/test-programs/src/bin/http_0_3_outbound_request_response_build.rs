@@ -1,4 +1,3 @@
-use futures::SinkExt as _;
 use test_programs::p3::wasi::http::types::{Fields, Headers, Method, Request, Response, Scheme};
 use test_programs::p3::{wit_future, wit_stream};
 
@@ -26,7 +25,8 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
             request
                 .set_authority(Some("www.example.com"))
                 .expect("setting authority");
-            contents_tx.send(b"request-body".to_vec()).await.unwrap();
+            let remaining = contents_tx.write_all(b"request-body".to_vec()).await;
+            assert!(remaining.is_empty());
         }
         {
             let headers = Headers::from_list(&[(
@@ -37,7 +37,8 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
             let (mut contents_tx, contents_rx) = wit_stream::new();
             let (_, trailers_rx) = wit_future::new();
             let _ = Response::new(headers, Some(contents_rx), trailers_rx);
-            contents_tx.send(b"response-body".to_vec()).await.unwrap();
+            let remaining = contents_tx.write_all(b"response-body".to_vec()).await;
+            assert!(remaining.is_empty());
         }
 
         {
