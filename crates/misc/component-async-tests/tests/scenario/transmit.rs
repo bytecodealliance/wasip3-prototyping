@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, Result};
 use tokio::fs;
 use wasmtime::component::{
-    Component, ErrorContext, HostFuture, HostStream, Instance, Linker, Promise, PromisesUnordered,
-    ResourceTable, Single, StreamReader, StreamWriter, Val,
+    Component, HostFuture, HostStream, Instance, Linker, Promise, PromisesUnordered, ResourceTable,
+    Single, StreamReader, StreamWriter, Val,
 };
 use wasmtime::{AsContextMut, Config, Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;
@@ -232,13 +232,14 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
         ControlWriteD,
         WriteA,
         WriteB(bool),
-        ReadC(Result<(StreamReader<Vec<String>>, Vec<String>), Option<ErrorContext>>),
-        ReadD(Result<String, Option<ErrorContext>>),
-        ReadNone(Result<(StreamReader<Vec<String>>, Vec<String>), Option<ErrorContext>>),
+        ReadC(Option<StreamReader<Single<String>>>, Single<String>),
+        ReadD(Option<String>),
+        ReadNone(Option<StreamReader<Single<String>>>),
     }
 
-    let (control_tx, control_rx) = instance.stream(&mut store)?;
-    let (caller_stream_tx, caller_stream_rx) = instance.stream(&mut store)?;
+    let (control_tx, control_rx) = instance.stream::<_, _, Single<_>, _, _>(&mut store)?;
+    let (caller_stream_tx, caller_stream_rx) =
+        instance.stream::<_, _, Single<_>, _, _>(&mut store)?;
     let (caller_future1_tx, caller_future1_rx) = instance.future(&mut store)?;
     let (_caller_future2_tx, caller_future2_rx) = instance.future(&mut store)?;
 
@@ -250,13 +251,13 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
 
     promises.push(
         control_tx
-            .write(Single(Control::ReadStream("a".into())))
-            .map(Event::ControlWriteA),
+            .write(Single::new(Control::ReadStream("a".into())))
+            .map(|(w, _)| Event::ControlWriteA(w)),
     );
 
     promises.push(
         caller_stream_tx
-            .write(Single("a".into()))
+            .write(Single::new(String::from("a")))
             .map(|_| Event::WriteA),
     );
 
@@ -285,8 +286,8 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
             Event::ControlWriteA(tx) => {
                 promises.push(
                     tx.unwrap()
-                        .write(Single(Control::ReadFuture("b".into())))
-                        .map(Event::ControlWriteB),
+                        .write(Single::new(Control::ReadFuture("b".into())))
+                        .map(|(w, _)| Event::ControlWriteB(w)),
                 );
             }
             Event::WriteA => {
@@ -301,36 +302,47 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
             Event::ControlWriteB(tx) => {
                 promises.push(
                     tx.unwrap()
-                        .write(Single(Control::WriteStream("c".into())))
-                        .map(Event::ControlWriteC),
+                        .write(Single::new(Control::WriteStream("c".into())))
+                        .map(|(w, _)| Event::ControlWriteC(w)),
                 );
             }
             Event::WriteB(delivered) => {
                 assert!(delivered);
-                promises.push(callee_stream_rx.take().unwrap().read().map(Event::ReadC));
+                promises.push(
+                    callee_stream_rx
+                        .take()
+                        .unwrap()
+                        .read(Single::default())
+                        .map(|(r, b)| Event::ReadC(r, b)),
+                );
             }
             Event::ControlWriteC(tx) => {
                 promises.push(
                     tx.unwrap()
-                        .write(Single(Control::WriteFuture("d".into())))
+                        .write(Single::new(Control::WriteFuture("d".into())))
                         .map(|_| Event::ControlWriteD),
                 );
             }
-            Event::ReadC(Err(_)) => unreachable!(),
-            Event::ReadC(Ok((rx, values))) => {
-                assert_eq!("c", &values[0]);
+            Event::ReadC(None, _) => unreachable!(),
+            Event::ReadC(Some(rx), mut value) => {
+                assert_eq!(value.take().as_deref(), Some("c"));
                 promises.push(callee_future1_rx.take().unwrap().read().map(Event::ReadD));
                 callee_stream_rx = Some(rx);
             }
             Event::ControlWriteD => {}
-            Event::ReadD(Err(_)) => unreachable!(),
-            Event::ReadD(Ok(value)) => {
-                assert_eq!(value, "d");
-                promises.push(callee_stream_rx.take().unwrap().read().map(Event::ReadNone));
+            Event::ReadD(None) => unreachable!(),
+            Event::ReadD(Some(value)) => {
+                assert_eq!(&value, "d");
+                promises.push(
+                    callee_stream_rx
+                        .take()
+                        .unwrap()
+                        .read(Single::default())
+                        .map(|(r, _)| Event::ReadNone(r)),
+                );
             }
-            Event::ReadNone(Ok(_)) => unreachable!(),
-            Event::ReadNone(Err(e)) => {
-                assert!(e.is_none());
+            Event::ReadNone(Some(_)) => unreachable!(),
+            Event::ReadNone(None) => {
                 complete = true;
             }
         }

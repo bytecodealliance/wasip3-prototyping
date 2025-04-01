@@ -6,8 +6,8 @@ use {
     tokio::fs,
     wasmtime::{
         component::{
-            Component, ErrorContext, Linker, PromisesUnordered, ResourceTable, StreamReader,
-            StreamWriter,
+            Component, Linker, PromisesUnordered, ResourceTable, Single, StreamReader,
+            StreamWriter, VecBuffer,
         },
         Config, Engine, Store,
     },
@@ -47,24 +47,24 @@ pub async fn async_watch_streams() -> Result<()> {
     let instance = linker.instantiate_async(&mut store, &component).await?;
 
     // Test watching and then dropping the read end of a stream.
-    let (tx, rx) = instance.stream::<u8, Vec<u8>, _, _>(&mut store)?;
+    let (tx, rx) = instance.stream::<u8, Single<_>, Single<_>, _, _>(&mut store)?;
     let watch = tx.watch_reader().0;
     drop(rx);
     watch.get(&mut store).await?;
 
     // Test dropping and then watching the read end of a stream.
-    let (tx, rx) = instance.stream::<u8, Vec<u8>, _, _>(&mut store)?;
+    let (tx, rx) = instance.stream::<u8, Single<_>, Single<_>, _, _>(&mut store)?;
     drop(rx);
     tx.watch_reader().0.get(&mut store).await?;
 
     // Test watching and then dropping the write end of a stream.
-    let (tx, rx) = instance.stream::<u8, Vec<u8>, _, _>(&mut store)?;
+    let (tx, rx) = instance.stream::<u8, Single<_>, Single<_>, _, _>(&mut store)?;
     let watch = rx.watch_writer().0;
     drop(tx);
     watch.get(&mut store).await?;
 
     // Test dropping and then watching the write end of a stream.
-    let (tx, rx) = instance.stream::<u8, Vec<u8>, _, _>(&mut store)?;
+    let (tx, rx) = instance.stream::<u8, Single<_>, Single<_>, _, _>(&mut store)?;
     drop(tx);
     rx.watch_writer().0.get(&mut store).await?;
 
@@ -92,26 +92,31 @@ pub async fn async_watch_streams() -> Result<()> {
 
     #[allow(clippy::type_complexity)]
     enum Event {
-        Write(Option<StreamWriter<Vec<u8>>>),
-        Read(Result<(StreamReader<Vec<u8>>, Vec<u8>), Option<ErrorContext>>),
+        Write(Option<StreamWriter<Single<u8>>>),
+        Read(Option<StreamReader<Single<u8>>>, Single<u8>),
     }
 
     // Test watching, then writing to, then dropping, then writing again to the
     // read end of a stream.
     let mut promises = PromisesUnordered::new();
-    let (tx, rx) = instance.stream::<u8, Vec<u8>, _, _>(&mut store)?;
+    let (tx, rx) = instance.stream(&mut store)?;
     let watch = tx.watch_reader().1;
-    promises.push(watch.into_inner().write(vec![42]).map(Event::Write));
-    promises.push(rx.read().map(Event::Read));
+    promises.push(
+        watch
+            .into_inner()
+            .write(Single::new(42))
+            .map(|(w, _)| Event::Write(w)),
+    );
+    promises.push(rx.read(Single::default()).map(|(r, b)| Event::Read(r, b)));
     let mut rx = None;
     let mut tx = None;
     while let Some(event) = promises.next(&mut store).await? {
         match event {
             Event::Write(None) => unreachable!(),
             Event::Write(Some(new_tx)) => tx = Some(new_tx),
-            Event::Read(Err(_)) => unreachable!(),
-            Event::Read(Ok((new_rx, values))) => {
-                assert_eq!(values, vec![42]);
+            Event::Read(None, _) => unreachable!(),
+            Event::Read(Some(new_rx), mut buffer) => {
+                assert_eq!(buffer.take(), Some(42));
                 rx = Some(new_rx);
             }
         }
@@ -124,9 +129,10 @@ pub async fn async_watch_streams() -> Result<()> {
         .await?;
     assert!(watch
         .into_inner()
-        .write(vec![42])
+        .write(Single::new(42))
         .get(&mut store)
         .await?
+        .0
         .is_none());
 
     Ok(())
@@ -179,15 +185,15 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
 
     #[allow(clippy::type_complexity)]
     enum StreamEvent {
-        FirstWrite(Option<StreamWriter<Vec<u8>>>),
-        FirstRead(Result<(StreamReader<Vec<u8>>, Vec<u8>), Option<ErrorContext>>),
-        SecondWrite(Option<StreamWriter<Vec<u8>>>),
+        FirstWrite(Option<StreamWriter<VecBuffer<u8>>>),
+        FirstRead(Option<StreamReader<Vec<u8>>>, Vec<u8>),
+        SecondWrite(Option<StreamWriter<VecBuffer<u8>>>),
         GuestCompleted,
     }
 
     enum FutureEvent {
         Write(bool),
-        Read(Result<u8, Option<ErrorContext>>),
+        Read(Option<u8>),
         WriteIgnored(bool),
         GuestCompleted,
     }
@@ -201,8 +207,14 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
         let (tx, rx) = instance.stream(&mut store)?;
 
         let mut promises = PromisesUnordered::new();
-        promises.push(tx.write(values.clone()).map(StreamEvent::FirstWrite));
-        promises.push(rx.read().map(StreamEvent::FirstRead));
+        promises.push(
+            tx.write(values.clone().into())
+                .map(|(w, _)| StreamEvent::FirstWrite(w)),
+        );
+        promises.push(
+            rx.read(Vec::with_capacity(3))
+                .map(|(r, b)| StreamEvent::FirstRead(r, b)),
+        );
 
         let mut count = 0;
         while let Some(event) = promises.next(&mut store).await? {
@@ -210,16 +222,23 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
             match event {
                 StreamEvent::FirstWrite(Some(tx)) => {
                     if watch {
-                        promises.push(tx.watch_reader().0.map(|()| StreamEvent::SecondWrite(None)));
+                        promises.push(
+                            tx.watch_reader()
+                                .0
+                                .map(move |()| StreamEvent::SecondWrite(None)),
+                        );
                     } else {
-                        promises.push(tx.write(values.clone()).map(StreamEvent::SecondWrite));
+                        promises.push(
+                            tx.write(values.clone().into())
+                                .map(|(w, _)| StreamEvent::SecondWrite(w)),
+                        );
                     }
                 }
                 StreamEvent::FirstWrite(None) => panic!("first write should have been accepted"),
-                StreamEvent::FirstRead(Ok((_, results))) => {
+                StreamEvent::FirstRead(Some(_), results) => {
                     assert_eq!(values, results);
                 }
-                StreamEvent::FirstRead(Err(_)) => unreachable!(),
+                StreamEvent::FirstRead(None, _) => unreachable!(),
                 StreamEvent::SecondWrite(None) => {}
                 StreamEvent::SecondWrite(Some(_)) => {
                     panic!("second write should _not_ have been accepted")
@@ -258,10 +277,10 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
                 FutureEvent::Write(delivered) => {
                     assert!(delivered);
                 }
-                FutureEvent::Read(Ok(result)) => {
+                FutureEvent::Read(Some(result)) => {
                     assert_eq!(value, result);
                 }
-                FutureEvent::Read(Err(_)) => panic!("read should have succeeded"),
+                FutureEvent::Read(None) => panic!("read should have succeeded"),
                 FutureEvent::WriteIgnored(delivered) => {
                     assert!(!delivered);
                 }
@@ -274,7 +293,7 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
 
     // Next, test stream host->guest
     {
-        let (tx, rx) = instance.stream(&mut store)?;
+        let (tx, rx) = instance.stream::<_, _, Vec<_>, _, _>(&mut store)?;
 
         let mut promises = PromisesUnordered::new();
         promises.push(
@@ -284,7 +303,10 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
                 .await?
                 .map(|()| StreamEvent::GuestCompleted),
         );
-        promises.push(tx.write(values.clone()).map(StreamEvent::FirstWrite));
+        promises.push(
+            tx.write(values.clone().into())
+                .map(|(w, _)| StreamEvent::FirstWrite(w)),
+        );
 
         let mut count = 0;
         while let Some(event) = promises.next(&mut store).await? {
@@ -294,11 +316,14 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
                     if watch {
                         promises.push(tx.watch_reader().0.map(|()| StreamEvent::SecondWrite(None)));
                     } else {
-                        promises.push(tx.write(values.clone()).map(StreamEvent::SecondWrite));
+                        promises.push(
+                            tx.write(values.clone().into())
+                                .map(|(w, _)| StreamEvent::SecondWrite(w)),
+                        );
                     }
                 }
                 StreamEvent::FirstWrite(None) => panic!("first write should have been accepted"),
-                StreamEvent::FirstRead(_) => unreachable!(),
+                StreamEvent::FirstRead(_, _) => unreachable!(),
                 StreamEvent::SecondWrite(None) => {}
                 StreamEvent::SecondWrite(Some(_)) => {
                     panic!("second write should _not_ have been accepted")

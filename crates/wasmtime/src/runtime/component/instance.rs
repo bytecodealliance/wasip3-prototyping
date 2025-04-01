@@ -321,22 +321,6 @@ impl Instance {
             index,
         ))
     }
-
-    #[cfg(feature = "component-model-async")]
-    #[doc(hidden)]
-    pub fn spawn(
-        &self,
-        mut store: impl AsContextMut,
-        task: impl std::future::Future<Output = Result<()>> + Send + 'static,
-    ) {
-        let instance = unsafe {
-            &mut *store.as_context_mut().0[self.0]
-                .as_ref()
-                .unwrap()
-                .instance_ptr()
-        };
-        instance.spawn(task)
-    }
 }
 
 /// Trait used to lookup the export of a component instance.

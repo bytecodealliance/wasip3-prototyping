@@ -27,7 +27,7 @@ wasmtime::component::bindgen!({
 
 use {
     anyhow::anyhow,
-    bytes::Bytes,
+    bytes::BytesMut,
     std::{fmt, future::Future, mem},
     wasi::http::types::{ErrorCode, HeaderError, Method, RequestOptionsError, Scheme},
     wasmtime::component::{
@@ -107,7 +107,7 @@ impl<T: WasiHttpView> WasiHttpView for WasiHttpImpl<T> {
 }
 
 pub struct Body {
-    pub stream: Option<StreamReader<Bytes>>,
+    pub stream: Option<StreamReader<BytesMut>>,
     pub trailers: Option<FutureReader<Resource<Fields>>>,
 }
 

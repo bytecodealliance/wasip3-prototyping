@@ -60,8 +60,8 @@ pub(crate) use futures_and_streams::{
     lower_error_context_to_index, lower_future_to_index, lower_stream_to_index, ResourcePair,
 };
 pub use futures_and_streams::{
-    ErrorContext, FutureReader, FutureWriter, HostFuture, HostStream, Single, StreamReader,
-    StreamWriter, Watch,
+    BytesBuffer, BytesMutBuffer, ErrorContext, FutureReader, FutureWriter, HostFuture, HostStream,
+    ReadBuffer, Single, StreamReader, StreamWriter, VecBuffer, Watch, WriteBuffer,
 };
 
 mod error_contexts;
@@ -3315,6 +3315,23 @@ impl AsyncCx {
             mpk::allow(previous_mask);
         }
         store
+    }
+}
+
+impl Instance {
+    #[doc(hidden)]
+    pub fn spawn(
+        &self,
+        mut store: impl AsContextMut,
+        task: impl std::future::Future<Output = Result<()>> + Send + 'static,
+    ) {
+        let instance = unsafe {
+            &mut *store.as_context_mut().0[self.0]
+                .as_ref()
+                .unwrap()
+                .instance_ptr()
+        };
+        instance.spawn(task)
     }
 }
 
