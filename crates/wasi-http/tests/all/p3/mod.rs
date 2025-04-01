@@ -16,6 +16,7 @@ use wasmtime_wasi_http::p3::bindings::http::types::ErrorCode;
 use wasmtime_wasi_http::p3::bindings::Proxy;
 use wasmtime_wasi_http::p3::{
     default_send_request, Client, RequestOptions, WasiHttpCtx, WasiHttpView,
+    DEFAULT_FORBIDDEN_HEADERS,
 };
 
 use crate::http_server::Server;
@@ -107,7 +108,7 @@ impl<C: Client> WasiHttpView for Ctx<C> {
     }
 
     fn is_forbidden_header(&mut self, name: &http::header::HeaderName) -> bool {
-        name.as_str() == "custom-forbidden-header"
+        name.as_str() == "custom-forbidden-header" || DEFAULT_FORBIDDEN_HEADERS.contains(name)
     }
 }
 
@@ -198,9 +199,7 @@ async fn run_wasi_http<E: Into<ErrorCode> + 'static>(
 
 #[test_log::test(tokio::test)]
 async fn wasi_http_proxy_tests() -> anyhow::Result<()> {
-    let req = hyper::Request::builder()
-        // TODO: remove forbidden headers?
-        //.header("custom-forbidden-header", "yes")
+    let req = http::Request::builder()
         .uri("http://example.com:8080/test-path")
         .method(http::Method::GET);
 

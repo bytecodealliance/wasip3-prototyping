@@ -373,6 +373,21 @@ impl<T: ResourceView> ResourceView for WasiHttpImpl<T> {
     }
 }
 
+/// Set of [http::header::HeaderName], that are forbidden by default
+/// for requests and responses originating in the guest.
+pub const DEFAULT_FORBIDDEN_HEADERS: [http::header::HeaderName; 10] = [
+    http::header::CONNECTION,
+    http::header::HeaderName::from_static("keep-alive"),
+    http::header::PROXY_AUTHENTICATE,
+    http::header::PROXY_AUTHORIZATION,
+    http::header::HeaderName::from_static("proxy-connection"),
+    http::header::TE,
+    http::header::TRANSFER_ENCODING,
+    http::header::UPGRADE,
+    http::header::HOST,
+    http::header::HeaderName::from_static("http2-settings"),
+];
+
 /// A trait which provides internal WASI HTTP state.
 pub trait WasiHttpView: ResourceView + Send {
     /// HTTP client
@@ -381,10 +396,11 @@ pub trait WasiHttpView: ResourceView + Send {
     /// Returns a reference to [WasiHttpCtx]
     fn http(&self) -> &WasiHttpCtx<Self::Client>;
 
-    /// Whether a given header should be considered forbidden and not allowed.
+    /// Whether a given header should be considered forbidden and not allowed
+    /// for requests and responses originating in the guest.
+    /// Note: headers of incoming requests and responses are not validated.
     fn is_forbidden_header(&mut self, name: &http::header::HeaderName) -> bool {
-        _ = name;
-        false
+        DEFAULT_FORBIDDEN_HEADERS.contains(name)
     }
 }
 

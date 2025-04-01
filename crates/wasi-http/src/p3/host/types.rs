@@ -79,24 +79,6 @@ fn delete_request_options(
         .context("failed to delete request options from table")
 }
 
-/// Returns `true` when the header is forbidden according to this [`WasiHttpView`] implementation.
-fn is_forbidden_header(view: &mut impl WasiHttpView, name: &http::header::HeaderName) -> bool {
-    static FORBIDDEN_HEADERS: [http::header::HeaderName; 10] = [
-        http::header::CONNECTION,
-        http::header::HeaderName::from_static("keep-alive"),
-        http::header::PROXY_AUTHENTICATE,
-        http::header::PROXY_AUTHORIZATION,
-        http::header::HeaderName::from_static("proxy-connection"),
-        http::header::TE,
-        http::header::TRANSFER_ENCODING,
-        http::header::UPGRADE,
-        http::header::HOST,
-        http::header::HeaderName::from_static("http2-settings"),
-    ];
-
-    FORBIDDEN_HEADERS.contains(name) || view.is_forbidden_header(name)
-}
-
 fn clone_trailer_result(
     res: &Result<Option<Resource<Trailers>>, ErrorCode>,
 ) -> Result<Option<Resource<Trailers>>, ErrorCode> {
@@ -494,7 +476,7 @@ where
             let Ok(header) = header.parse() else {
                 return Ok(Err(HeaderError::InvalidSyntax));
             };
-            if is_forbidden_header(self, &header) {
+            if self.is_forbidden_header(&header) {
                 return Ok(Err(HeaderError::Forbidden));
             }
             let value = match http::header::HeaderValue::from_bytes(&value) {
@@ -538,7 +520,7 @@ where
         let Ok(name) = name.parse() else {
             return Ok(Err(HeaderError::InvalidSyntax));
         };
-        if is_forbidden_header(self, &name) {
+        if self.is_forbidden_header(&name) {
             return Ok(Err(HeaderError::Forbidden));
         }
         let mut values = Vec::with_capacity(value.len());
@@ -567,7 +549,7 @@ where
             Ok(header) => header,
             Err(_) => return Ok(Err(HeaderError::InvalidSyntax)),
         };
-        if is_forbidden_header(self, &header) {
+        if self.is_forbidden_header(&header) {
             return Ok(Err(HeaderError::Forbidden));
         }
         let Some(mut fields) = get_fields_inner_mut(self.table(), &fields)? else {
@@ -585,7 +567,7 @@ where
         let Ok(header) = http::header::HeaderName::from_bytes(name.as_bytes()) else {
             return Ok(Err(HeaderError::InvalidSyntax));
         };
-        if is_forbidden_header(self, &header) {
+        if self.is_forbidden_header(&header) {
             return Ok(Err(HeaderError::Forbidden));
         }
         let Some(mut fields) = get_fields_inner_mut(self.table(), &fields)? else {
@@ -608,7 +590,7 @@ where
             Ok(header) => header,
             Err(_) => return Ok(Err(HeaderError::InvalidSyntax)),
         };
-        if is_forbidden_header(self, &header) {
+        if self.is_forbidden_header(&header) {
             return Ok(Err(HeaderError::Forbidden));
         }
         let value = match http::header::HeaderValue::from_bytes(&value) {
