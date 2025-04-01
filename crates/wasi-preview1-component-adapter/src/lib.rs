@@ -62,7 +62,12 @@ pub mod bindings {
         // can't support in these special core-wasm adapters.
         // Instead, we manually define the bindings for these functions in
         // terms of raw pointers.
-        skip: ["run", "get-environment", "poll"],
+        skip: [
+            "run",
+            "get-environment",
+            "poll",
+            "[method]outgoing-datagram-stream.send",
+        ],
         generate_all,
         disable_custom_section_link_helpers: true,
     });
@@ -79,7 +84,11 @@ pub mod bindings {
         // can't support in these special core-wasm adapters.
         // Instead, we manually define the bindings for these functions in
         // terms of raw pointers.
-        skip: ["get-environment", "poll"],
+        skip: [
+            "get-environment",
+            "poll",
+            "[method]outgoing-datagram-stream.send",
+        ],
         generate_all,
         disable_custom_section_link_helpers: true,
     });
@@ -102,75 +111,15 @@ pub mod bindings {
         world: "wasmtime:adapter/adapter",
         raw_strings,
         runtime_path: "crate::bindings::wit_bindgen_rt_shim",
-        skip: ["poll"],
+        skip: ["poll", "[method]outgoing-datagram-stream.send"],
         generate_all,
         disable_custom_section_link_helpers: true,
     });
 
     pub mod wit_bindgen_rt_shim {
-
         pub use bitflags;
 
         pub fn maybe_link_cabi_realloc() {}
-
-        // ===============================================================
-        // TODO: shouldn't have to copy this...
-
-        extern crate alloc;
-        use alloc::alloc::Layout;
-        use core::ptr::{self, NonNull};
-
-        /// Cleanup helper used to deallocate blocks of canonical ABI data from
-        /// lowerings.
-        pub struct Cleanup {
-            ptr: NonNull<u8>,
-            layout: Layout,
-        }
-
-        // Usage of the returned pointer is always unsafe and must abide by these
-        // conventions, but this structure itself has no inherent reason to not be
-        // send/sync.
-        unsafe impl Send for Cleanup {}
-        unsafe impl Sync for Cleanup {}
-
-        impl Cleanup {
-            /// Allocates a chunk of memory with `layout` and returns an object to clean
-            /// it up.
-            ///
-            /// Always returns a pointer which is null if `layout` has size zero. The
-            /// optional cleanup returned will be present if `layout` has a non-zero
-            /// size. When dropped `Cleanup` will deallocate the pointer returned.
-            pub fn new(layout: Layout) -> (*mut u8, Option<Cleanup>) {
-                use alloc::alloc;
-
-                if layout.size() == 0 {
-                    return (ptr::null_mut(), None);
-                }
-                let ptr = unsafe { alloc::alloc(layout) };
-                let ptr = match NonNull::new(ptr) {
-                    Some(ptr) => ptr,
-                    None => alloc::handle_alloc_error(layout),
-                };
-                (ptr.as_ptr(), Some(Cleanup { ptr, layout }))
-            }
-
-            /// Discards this cleanup to leak its memory or intentionally transfer
-            /// ownership to some other location.
-            pub fn forget(self) {
-                core::mem::forget(self);
-            }
-        }
-
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                unsafe {
-                    for i in 0..self.layout.size() {
-                        *self.ptr.add(i).as_ptr() = 0xff;
-                    }
-                    alloc::alloc::dealloc(self.ptr.as_ptr(), self.layout);
-                }
-            }
-        }
     }
 }
 
