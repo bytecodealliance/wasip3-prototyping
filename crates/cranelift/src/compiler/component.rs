@@ -138,7 +138,7 @@ impl<'a> TrampolineCompiler<'a> {
                 &[ty.as_u32()],
                 None,
                 host::stream_new,
-                TrapSentinel::Negative,
+                TrapSentinel::NegativeOne,
             ),
             Trampoline::StreamRead { ty, options } => {
                 let tys = &[ty.as_u32()];
@@ -188,7 +188,7 @@ impl<'a> TrampolineCompiler<'a> {
                 &[ty.as_u32()],
                 None,
                 host::future_new,
-                TrapSentinel::Negative,
+                TrapSentinel::NegativeOne,
             ),
             Trampoline::FutureRead { ty, options } => self.translate_future_or_stream_call(
                 &[ty.as_u32()],
@@ -359,16 +359,22 @@ impl<'a> TrampolineCompiler<'a> {
         let call = self.call_libcall(vmctx, get_libcall, args);
 
         let result = self.builder.func.dfg.inst_results(call)[0];
+        let result_ty = self.builder.func.dfg.value_type(result);
+        let expected = &self.builder.func.signature.returns;
         match sentinel {
             TrapSentinel::NegativeOne => {
-                let result = self.raise_if_negative_one_and_truncate(result);
-                self.abi_store_results(&[result]);
-            }
-            TrapSentinel::Negative => {
-                let result = self.raise_if_negative_one(result);
+                assert_eq!(expected.len(), 1);
+                let result = match (result_ty, expected[0].value_type) {
+                    (ir::types::I64, ir::types::I32) => {
+                        self.raise_if_negative_one_and_truncate(result)
+                    }
+                    (ir::types::I64, ir::types::I64) => self.raise_if_negative_one(result),
+                    other => panic!("unsupported NegativeOne combo {other:?}"),
+                };
                 self.abi_store_results(&[result]);
             }
             TrapSentinel::Falsy => {
+                assert_eq!(expected.len(), 0);
                 self.raise_if_host_trapped(result);
                 self.builder.ins().return_(&[]);
             }
