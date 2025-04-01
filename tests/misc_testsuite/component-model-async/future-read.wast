@@ -35,11 +35,11 @@
   (core func $child-run (canon lower (func $child "run")))
 
   (core module $m
-    (import "" "new" (func $new (result i32)))
+    (import "" "new" (func $new (result i64)))
     (import "" "child-run" (func $child-run (param i32)))
 
     (func (export "run")
-      (call $child-run (call $new))
+      (call $child-run (i32.wrap_i64 (i64.shr_u (call $new) (i64.const 32))))
     )
   )
   (core instance $i (instantiate $m
@@ -87,11 +87,11 @@
   (core func $child-run (canon lower (func $child "run")))
 
   (core module $m
-    (import "" "new" (func $new (result i32)))
+    (import "" "new" (func $new (result i64)))
     (import "" "child-run" (func $child-run (param i32)))
 
     (func (export "run")
-      (call $child-run (call $new))
+      (call $child-run (i32.wrap_i64 (i64.shr_u (call $new) (i64.const 32))))
     )
   )
   (core instance $i (instantiate $m
@@ -143,11 +143,11 @@
   (core func $child-run (canon lower (func $child "run")))
 
   (core module $m
-    (import "" "new" (func $new (result i32)))
+    (import "" "new" (func $new (result i64)))
     (import "" "child-run" (func $child-run (param i32)))
 
     (func (export "run")
-      (call $child-run (call $new))
+      (call $child-run (i32.wrap_i64 (i64.shr_u (call $new) (i64.const 32))))
     )
   )
   (core instance $i (instantiate $m
@@ -190,7 +190,7 @@
     (core instance $i (instantiate $m
       (with "" (instance
         (export "read" (func $read))
-        (export "return" (func $return))        
+        (export "return" (func $return))
       ))
     ))
     (func (export "run") (param "x" $future)
@@ -203,11 +203,11 @@
   (core func $child-run (canon lower (func $child "run")))
 
   (core module $m
-    (import "" "new" (func $new (result i32)))
+    (import "" "new" (func $new (result i64)))
     (import "" "child-run" (func $child-run (param i32)))
 
     (func (export "run")
-      (call $child-run (call $new))
+      (call $child-run (i32.wrap_i64 (i64.shr_u (call $new) (i64.const 32))))
     )
   )
   (core instance $i (instantiate $m

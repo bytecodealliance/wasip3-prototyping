@@ -300,24 +300,22 @@ system-interface = { version = "0.27.1", features = ["cap_std_impls"] }
 io-lifetimes = { version = "2.0.3", default-features = false }
 io-extras = "0.18.1"
 rustix = "0.38.43"
-# TODO: switch back to release:
-wit-bindgen = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "ec56282b", default-features = false }
-wit-bindgen-rt = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "ec56282b", default-features = false }
-wit-bindgen-rust-macro = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "ec56282b", default-features = false }
+wit-bindgen = { version = "0.41.0", default-features = false }
+wit-bindgen-rt = { version = "0.41.0", default-features = false }
+wit-bindgen-rust-macro = { version = "0.41.0", default-features = false }
 
 # wasm-tools family:
-# TODO: switch back to release:
-wasmparser = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041", default-features = false, features = ['simd'] }
-wat = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wast = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wasmprinter = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wasm-encoder = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wasm-smith = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wasm-mutate = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wit-parser = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wit-component = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wasm-wave = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wasm-compose = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
+wasmparser = { version = "0.227.0", default-features = false, features = ['simd'] }
+wat = "1.227.0"
+wast = "227.0.0"
+wasmprinter = "0.227.0"
+wasm-encoder = "0.227.0"
+wasm-smith = "0.227.0"
+wasm-mutate = "0.227.0"
+wit-parser = "0.227.0"
+wit-component = "0.227.0"
+wasm-wave = "0.227.0"
+wasm-compose = "0.227.0"
 
 # Non-Bytecode Alliance maintained dependencies:
 # --------------------------
@@ -572,17 +570,36 @@ inherits = "release"
 codegen-units = 1
 lto = true
 
-# TODO: remove this once we've switched to a wasm-tools release:
+# TODO: remove this once we've switched to a wasm-tools/wit-bindgen release:
 [patch.crates-io]
-wasmparser = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wat = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wast = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wasmprinter = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wasm-encoder = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wasm-smith = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wasm-mutate = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wit-parser = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wit-component = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wasm-wave = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wasm-compose = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
-wasm-metadata = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "43556041" }
+wasmparser = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wat = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wast = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasmprinter = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasm-encoder = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasm-smith = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasm-mutate = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wit-parser = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wit-component = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasm-wave = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasm-compose = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasm-metadata = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wit-bindgen = { git = "https://github.com/bytecodealliance/witx-bindgen" }
+wit-bindgen-rt = { git = "https://github.com/bytecodealliance/witx-bindgen" }
+wit-bindgen-rust-macro = { git = "https://github.com/bytecodealliance/witx-bindgen" }
+
+# wasmparser = { path = '../wasm-tools/crates/wasmparser' }
+# wat = { path = '../wasm-tools/crates/wat' }
+# wast = { path = '../wasm-tools/crates/wast' }
+# wasmprinter = { path = '../wasm-tools/crates/wasmprinter' }
+# wasm-encoder = { path = '../wasm-tools/crates/wasm-encoder' }
+# wasm-smith = { path = '../wasm-tools/crates/wasm-smith' }
+# wasm-mutate = { path = '../wasm-tools/crates/wasm-mutate' }
+# wit-parser = { path = '../wasm-tools/crates/wit-parser' }
+# wit-component = { path = '../wasm-tools/crates/wit-component' }
+# wasm-wave = { path = '../wasm-tools/crates/wasm-wave' }
+# wasm-compose = { path = '../wasm-tools/crates/wasm-compose' }
+# wasm-metadata = { path = '../wasm-tools/crates/wasm-metadata' }
+# wit-bindgen = { path = '../wit-bindgen/crates/guest-rust' }
+# wit-bindgen-rt = { path = '../wit-bindgen/crates/guest-rust/rt' }
+# wit-bindgen-rust-macro = { path = '../wit-bindgen/crates/guest-rust/macro' }

@@ -1,8 +1,9 @@
-use futures::{join, SinkExt as _, StreamExt as _};
+use futures::join;
 use test_programs::p3::wasi::sockets::types::{
     IpAddressFamily, IpSocketAddress, Ipv4SocketAddress, Ipv6SocketAddress, TcpSocket,
 };
 use test_programs::p3::wit_stream;
+use wit_bindgen_rt::async_support::StreamResult;
 
 struct Component;
 
@@ -30,23 +31,26 @@ async fn test_tcp_sample_application(family: IpAddressFamily, bind_address: IpSo
                     client.send(data_rx).await.unwrap();
                 },
                 async {
-                    data_tx.send(vec![]).await.unwrap();
-                    data_tx.send(first_message.into()).await.unwrap();
+                    let (result, _) = data_tx.write(vec![]).await;
+                    // FIXME(WebAssembly/component-model#490): this should be a
+                    // panic but will require some spec changes because right
+                    // now this and `Complete(0)` are the same.
+                    assert_eq!(result, StreamResult::Cancelled);
+                    let remaining = data_tx.write_all(first_message.into()).await;
+                    assert!(remaining.is_empty());
                     drop(data_tx);
                 }
             );
         },
         async {
-            let mut sock = accept.next().await.unwrap().unwrap();
-            assert_eq!(sock.len(), 1);
-            let sock = sock.pop().unwrap();
-
+            let sock = accept.next().await.unwrap();
             let (mut data_rx, fut) = sock.receive();
-            let data = data_rx.next().await.unwrap().unwrap();
+            let (result, data) = data_rx.read(Vec::with_capacity(100)).await;
+            assert_eq!(result, StreamResult::Complete(first_message.len()));
 
             // Check that we sent and received our message!
             assert_eq!(data, first_message); // Not guaranteed to work but should work in practice.
-            fut.await.unwrap().unwrap().unwrap()
+            fut.await.unwrap().unwrap()
         },
     );
 
@@ -61,21 +65,21 @@ async fn test_tcp_sample_application(family: IpAddressFamily, bind_address: IpSo
                     client.send(data_rx).await.unwrap();
                 },
                 async {
-                    data_tx.send(second_message.into()).await.unwrap();
+                    let remaining = data_tx.write_all(second_message.into()).await;
+                    assert!(remaining.is_empty());
                     drop(data_tx);
                 }
             );
         },
         async {
-            let mut sock = accept.next().await.unwrap().unwrap();
-            assert_eq!(sock.len(), 1);
-            let sock = sock.pop().unwrap();
+            let sock = accept.next().await.unwrap();
             let (mut data_rx, fut) = sock.receive();
-            let data = data_rx.next().await.unwrap().unwrap();
+            let (result, data) = data_rx.read(Vec::with_capacity(100)).await;
+            assert_eq!(result, StreamResult::Complete(second_message.len()));
 
             // Check that we sent and received our message!
             assert_eq!(data, second_message); // Not guaranteed to work but should work in practice.
-            fut.await.unwrap().unwrap().unwrap()
+            fut.await.unwrap().unwrap()
         }
     );
 }

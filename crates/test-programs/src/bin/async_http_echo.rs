@@ -22,8 +22,7 @@ use {
         wasi::http::types::{Body, ErrorCode, Request, Response},
         wit_future, wit_stream,
     },
-    futures::{SinkExt, StreamExt},
-    wit_bindgen_rt::async_support,
+    wit_bindgen_rt::async_support::{self, StreamResult},
 };
 
 struct Component;
@@ -44,18 +43,27 @@ impl Handler for Component {
 
             async_support::spawn(async move {
                 let mut body_rx = body.stream().unwrap();
-                while let Some(Ok(chunk)) = body_rx.next().await {
-                    pipe_tx.send(chunk).await.unwrap();
+                let mut chunk = Vec::with_capacity(1024);
+                loop {
+                    let (status, buf) = body_rx.read(chunk).await;
+                    chunk = buf;
+                    match status {
+                        StreamResult::Complete(_) => {
+                            chunk = pipe_tx.write_all(chunk).await;
+                            assert!(chunk.is_empty());
+                        }
+                        StreamResult::Closed => break,
+                        // FIXME(WebAssembly/component-model#490): this should
+                        // be a panic but will require some spec changes because
+                        // right now this and `Complete(0)` are the same.
+                        StreamResult::Cancelled => {}
+                    }
                 }
 
                 drop(pipe_tx);
 
-                if let Some(trailers) = Body::finish(body)
-                    .await
-                    .transpose()
-                    .expect("stream not closed early w/ error")
-                {
-                    trailers_tx.write(trailers).await;
+                if let Some(trailers) = Body::finish(body).await {
+                    trailers_tx.write(trailers).await.unwrap();
                 }
             });
 

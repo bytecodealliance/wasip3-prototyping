@@ -29,9 +29,8 @@ use {
         write::{DeflateDecoder, DeflateEncoder},
         Compression,
     },
-    futures::{SinkExt, StreamExt},
     std::{io::Write, mem},
-    wit_bindgen_rt::async_support,
+    wit_bindgen_rt::async_support::{self, StreamResult},
 };
 
 struct Component;
@@ -78,22 +77,23 @@ impl Handler for Component {
 
                     let mut decoder = DeflateDecoder::new(Vec::new());
 
-                    while let Some(Ok(chunk)) = body_rx.next().await {
+                    let (mut status, mut chunk) = body_rx.read(Vec::with_capacity(64 * 1024)).await;
+                    while let StreamResult::Complete(_) = status {
                         decoder.write_all(&chunk).unwrap();
-                        pipe_tx.send(mem::take(decoder.get_mut())).await.unwrap();
+                        let remaining = pipe_tx.write_all(mem::take(decoder.get_mut())).await;
+                        assert!(remaining.is_empty());
+                        *decoder.get_mut() = remaining;
+                        (status, chunk) = body_rx.read(chunk).await;
                     }
 
-                    pipe_tx.send(decoder.finish().unwrap()).await.unwrap();
+                    let remaining = pipe_tx.write_all(decoder.finish().unwrap()).await;
+                    assert!(remaining.is_empty());
 
                     drop(pipe_tx);
                 }
 
-                if let Some(trailers) = Body::finish(body)
-                    .await
-                    .transpose()
-                    .expect("stream not closed early w/ error")
-                {
-                    trailers_tx.write(trailers).await;
+                if let Some(trailers) = Body::finish(body).await {
+                    trailers_tx.write(trailers).await.unwrap();
                 }
             });
 
@@ -136,23 +136,24 @@ impl Handler for Component {
                     let mut body_rx = body.stream().unwrap();
 
                     let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
+                    let (mut status, mut chunk) = body_rx.read(Vec::with_capacity(64 * 1024)).await;
 
-                    while let Some(Ok(chunk)) = body_rx.next().await {
+                    while let StreamResult::Complete(_) = status {
                         encoder.write_all(&chunk).unwrap();
-                        pipe_tx.send(mem::take(encoder.get_mut())).await.unwrap();
+                        let remaining = pipe_tx.write_all(mem::take(encoder.get_mut())).await;
+                        assert!(remaining.is_empty());
+                        *encoder.get_mut() = remaining;
+                        (status, chunk) = body_rx.read(chunk).await;
                     }
 
-                    pipe_tx.send(encoder.finish().unwrap()).await.unwrap();
+                    let remaining = pipe_tx.write_all(encoder.finish().unwrap()).await;
+                    assert!(remaining.is_empty());
 
                     drop(pipe_tx);
                 }
 
-                if let Some(trailers) = Body::finish(body)
-                    .await
-                    .transpose()
-                    .expect("stream not closed early w/ error")
-                {
-                    trailers_tx.write(trailers).await;
+                if let Some(trailers) = Body::finish(body).await {
+                    trailers_tx.write(trailers).await.unwrap();
                 }
             });
 
