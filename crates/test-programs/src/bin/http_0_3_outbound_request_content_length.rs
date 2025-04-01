@@ -1,4 +1,3 @@
-use futures::SinkExt as _;
 use test_programs::p3::wasi::http::types::{ErrorCode, Headers, Method, Request, Scheme, Trailers};
 use test_programs::p3::{wit_future, wit_stream};
 use wit_bindgen_rt::async_support::{FutureWriter, StreamWriter};
@@ -44,17 +43,19 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
         {
             println!("writing enough");
             let (_, mut contents_tx, trailers_tx) = make_request();
-            contents_tx.send(b"long enough".to_vec()).await.unwrap();
+            let remaining = contents_tx.write_all(b"long enough".to_vec()).await;
+            assert!(remaining.is_empty());
             drop(contents_tx);
-            trailers_tx.write(Ok(None)).await;
+            trailers_tx.write(Ok(None)).await.unwrap();
         }
 
         {
             println!("writing too little");
             let (_, mut contents_tx, trailers_tx) = make_request();
-            contents_tx.send(b"msg".to_vec()).await.unwrap();
+            let remaining = contents_tx.write_all(b"msg".to_vec()).await;
+            assert!(remaining.is_empty());
             drop(contents_tx);
-            trailers_tx.write(Ok(None)).await;
+            trailers_tx.write(Ok(None)).await.unwrap();
 
             // handle()
 
@@ -71,12 +72,10 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
         {
             println!("writing too much");
             let (_, mut contents_tx, trailers_tx) = make_request();
-            contents_tx
-                .send(b"more than 11 bytes".to_vec())
-                .await
-                .unwrap();
+            let remaining = contents_tx.write_all(b"more than 11 bytes".to_vec()).await;
+            assert!(remaining.is_empty());
             drop(contents_tx);
-            trailers_tx.write(Ok(None)).await;
+            trailers_tx.write(Ok(None)).await.unwrap();
 
             // TODO: Figure out how/if to represent this in wasip3
             //let e = request_body

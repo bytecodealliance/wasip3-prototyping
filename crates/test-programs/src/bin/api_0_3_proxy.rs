@@ -1,4 +1,4 @@
-use futures::{join, SinkExt as _};
+use futures::join;
 use test_programs::p3::wasi::http::types::{ErrorCode, Headers, Request, Response};
 use test_programs::p3::{wit_future, wit_stream};
 use wit_bindgen_rt::async_support::spawn;
@@ -39,10 +39,8 @@ impl test_programs::p3::proxy::exports::wasi::http::handler::Guest for T {
         spawn(async {
             join!(
                 async {
-                    contents_tx
-                        .send(b"hello, world!".to_vec())
-                        .await
-                        .expect("writing response");
+                    let remaining = contents_tx.write_all(b"hello, world!".to_vec()).await;
+                    assert!(remaining.is_empty());
                     drop(contents_tx);
                     trailers_tx.write(Ok(None));
                 },
@@ -50,7 +48,6 @@ impl test_programs::p3::proxy::exports::wasi::http::handler::Guest for T {
                     transmit
                         .await
                         .expect("failed to transmit response")
-                        .unwrap()
                         .unwrap()
                 }
             );
