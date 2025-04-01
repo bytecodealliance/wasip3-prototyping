@@ -572,21 +572,21 @@ lto = true
 
 # TODO: remove this once we've switched to a wasm-tools/wit-bindgen release:
 [patch.crates-io]
-wasmparser = { git = "https://github.com/alexcrichton/wasm-tools", branch = 'new-async-signatures' }
-wat = { git = "https://github.com/alexcrichton/wasm-tools", branch = 'new-async-signatures' }
-wast = { git = "https://github.com/alexcrichton/wasm-tools", branch = 'new-async-signatures' }
-wasmprinter = { git = "https://github.com/alexcrichton/wasm-tools", branch = 'new-async-signatures' }
-wasm-encoder = { git = "https://github.com/alexcrichton/wasm-tools", branch = 'new-async-signatures' }
-wasm-smith = { git = "https://github.com/alexcrichton/wasm-tools", branch = 'new-async-signatures' }
-wasm-mutate = { git = "https://github.com/alexcrichton/wasm-tools", branch = 'new-async-signatures' }
-wit-parser = { git = "https://github.com/alexcrichton/wasm-tools", branch = 'new-async-signatures' }
-wit-component = { git = "https://github.com/alexcrichton/wasm-tools", branch = 'new-async-signatures' }
-wasm-wave = { git = "https://github.com/alexcrichton/wasm-tools", branch = 'new-async-signatures' }
-wasm-compose = { git = "https://github.com/alexcrichton/wasm-tools", branch = 'new-async-signatures' }
-wasm-metadata = { git = "https://github.com/alexcrichton/wasm-tools", branch = 'new-async-signatures' }
-wit-bindgen = { git = "https://github.com/alexcrichton/witx-bindgen", branch = 'wit-bindgen-async-tests' }
-wit-bindgen-rt = { git = "https://github.com/alexcrichton/witx-bindgen", branch = 'wit-bindgen-async-tests' }
-wit-bindgen-rust-macro = { git = "https://github.com/alexcrichton/witx-bindgen", branch = 'wit-bindgen-async-tests' }
+wasmparser = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wat = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wast = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasmprinter = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasm-encoder = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasm-smith = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasm-mutate = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wit-parser = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wit-component = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasm-wave = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasm-compose = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasm-metadata = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wit-bindgen = { git = "https://github.com/bytecodealliance/witx-bindgen" }
+wit-bindgen-rt = { git = "https://github.com/bytecodealliance/witx-bindgen" }
+wit-bindgen-rust-macro = { git = "https://github.com/bytecodealliance/witx-bindgen" }
 
 # wasmparser = { path = '../wasm-tools/crates/wasmparser' }
 # wat = { path = '../wasm-tools/crates/wat' }

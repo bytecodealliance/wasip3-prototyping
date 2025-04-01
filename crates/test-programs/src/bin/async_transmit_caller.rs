@@ -75,7 +75,8 @@ impl Guest for Component {
             match poll(send).await {
                 Ok(_) => panic!(),
                 Err(mut send) => {
-                    caller_future_tx1 = match send.as_mut().cancel().unwrap_err() {
+                    caller_future_tx1 = match send.as_mut().cancel() {
+                        FutureWriteCancel::AlreadySent => unreachable!(),
                         FutureWriteCancel::Closed(_) => unreachable!(),
                         FutureWriteCancel::Cancelled(_, writer) => writer,
                     }
