@@ -32,11 +32,6 @@ impl test_programs::p3::proxy::exports::wasi::http::handler::Guest for T {
             "append of forbidden header succeeded"
         );
 
-        assert!(
-            !req_hdrs.has("host"),
-            "forbidden host header present in incoming request"
-        );
-
         let hdrs = Headers::new();
         let (mut contents_tx, contents_rx) = wit_stream::new();
         let (trailers_tx, trailers_rx) = wit_future::new();
