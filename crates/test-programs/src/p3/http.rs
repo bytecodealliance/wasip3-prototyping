@@ -1,7 +1,6 @@
-use core::fmt;
-
 use anyhow::{anyhow, Context as _, Result};
-use futures::{try_join, SinkExt as _, TryStreamExt as _};
+use core::fmt;
+use futures::try_join;
 
 use crate::p3::wasi::http::{handler, types};
 use crate::p3::{wit_future, wit_stream};
@@ -92,20 +91,17 @@ pub async fn request(
     let ((), (), response) = try_join!(
         async {
             if let Some(buf) = body {
-                contents_tx
-                    .send(buf.into())
-                    .await
-                    .expect("failed to send body content chunk");
+                let remaining = contents_tx.write_all(buf.into()).await;
+                assert!(remaining.is_empty());
             }
             drop(contents_tx);
-            trailers_tx.write(Ok(None)).await;
+            trailers_tx.write(Ok(None)).await.unwrap();
             anyhow::Ok(())
         },
         async {
             transmit
                 .await
                 .expect("transmit sender dropped")
-                .expect("failed to receive request transmit result")
                 .context("failed to transmit request")?;
             Ok(())
         },
@@ -115,12 +111,10 @@ pub async fn request(
             let headers = response.headers().entries();
 
             let (body, trailers) = response.body().expect("failed to get response body");
-            let body = body.try_collect::<Vec<_>>().await?;
-            let body = body.concat();
+            let body = body.collect().await;
             let trailers = trailers
                 .await
                 .expect("trailers sender dropped")
-                .expect("failed to receive response trailers result")
                 .context("failed to read body")?;
             let trailers = trailers.map(|trailers| trailers.entries());
             Ok(Response {
