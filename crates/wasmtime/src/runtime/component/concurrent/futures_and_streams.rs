@@ -1788,8 +1788,6 @@ impl ComponentInstance {
     /// # Arguments
     ///
     /// * `transmit_rep` - A component-global representation of the transmit state for the writer that should be closed
-    /// * `err_ctx` - An optional component-global representation of an error context to use as the final value of the writer
-    ///
     fn host_close_writer(&mut self, transmit_rep: u32) -> Result<()> {
         let transmit_id = TableId::<TransmitState>::new(transmit_rep);
         let transmit = self
