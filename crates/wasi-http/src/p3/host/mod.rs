@@ -7,7 +7,7 @@ use wasmtime_wasi::ResourceTable;
 
 use crate::p3::{Request, Response};
 
-mod handle;
+mod handler;
 mod types;
 
 fn get_fields<'a>(
