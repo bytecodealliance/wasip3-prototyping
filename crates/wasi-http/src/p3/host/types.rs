@@ -2,12 +2,15 @@ use core::future::poll_fn;
 use core::mem;
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
+use core::str;
 use core::task::Poll;
 
 use std::sync::Arc;
 
 use anyhow::{bail, Context as _};
 use bytes::Bytes;
+use futures::join;
+use http::header::CONTENT_LENGTH;
 use http_body::Body as _;
 use wasmtime::component::{
     Accessor, AccessorTask, FutureWriter, HostFuture, HostStream, Resource, StreamWriter,
@@ -25,7 +28,10 @@ use crate::p3::host::{
     get_request, get_request_mut, get_response, get_response_mut, push_fields, push_fields_child,
     push_request, push_response,
 };
-use crate::p3::{Body, BodyFrame, Request, RequestOptions, Response, WasiHttpImpl, WasiHttpView};
+use crate::p3::{
+    Body, BodyContext, BodyFrame, ContentLength, Request, RequestOptions, Response, WasiHttpImpl,
+    WasiHttpView,
+};
 
 fn get_request_options<'a>(
     table: &'a ResourceTable,
@@ -89,9 +95,22 @@ fn clone_trailer_result(
     }
 }
 
+/// Extract the `Content-Length` header value from a [`http::HeaderMap`], returning `None` if it's not
+/// present. This function will return `Err` if it's not possible to parse the `Content-Length`
+/// header.
+fn get_content_length(headers: &http::HeaderMap) -> wasmtime::Result<Option<u64>> {
+    let Some(v) = headers.get(CONTENT_LENGTH) else {
+        return Ok(None);
+    };
+    let v = v.to_str()?;
+    let v = v.parse()?;
+    Ok(Some(v))
+}
+
 type TrailerFuture = HostFuture<Result<Option<Resource<Trailers>>, ErrorCode>>;
 
 struct BodyTask {
+    cx: BodyContext,
     body: Arc<std::sync::Mutex<Body>>,
     contents_tx: StreamWriter<Bytes>,
     trailers_tx: FutureWriter<Result<Option<Resource<Trailers>>, ErrorCode>>,
@@ -111,9 +130,33 @@ where
         match body {
             Body::Guest {
                 contents: None,
+                buffer: Some(BodyFrame::Trailers(Ok(None))) | None,
+                tx,
+                content_length: Some(ContentLength { limit, sent }),
+                ..
+            } if limit != sent => {
+                drop(self.contents_tx);
+                join!(
+                    async {
+                        tx.write(Err(self.cx.as_body_size_error(sent)))
+                            .into_future()
+                            .await;
+                    },
+                    async {
+                        self.trailers_tx
+                            .write(Err(self.cx.as_body_size_error(sent)))
+                            .into_future()
+                            .await;
+                    }
+                );
+                return Ok(());
+            }
+            Body::Guest {
+                contents: None,
                 trailers: Some(mut trailers_rx),
                 buffer: None,
                 tx,
+                content_length: None,
             } => {
                 drop(self.contents_tx);
                 let (watch_reader, trailers_tx) = self.trailers_tx.watch_reader();
@@ -132,6 +175,7 @@ where
                         trailers: Some(trailers_rx),
                         buffer: None,
                         tx,
+                        content_length: None,
                     };
                     return Ok(());
                 };
@@ -149,6 +193,7 @@ where
                         trailers: None,
                         buffer: Some(BodyFrame::Trailers(res)),
                         tx,
+                        content_length: None,
                     };
                     return Ok(());
                 }
@@ -160,6 +205,7 @@ where
                 trailers: None,
                 buffer: Some(BodyFrame::Trailers(res)),
                 tx,
+                content_length: None,
             } => {
                 drop(self.contents_tx);
                 if !self
@@ -176,6 +222,7 @@ where
                         trailers: None,
                         buffer: Some(BodyFrame::Trailers(res)),
                         tx,
+                        content_length: None,
                     };
                     return Ok(());
                 }
@@ -187,6 +234,7 @@ where
                 trailers: Some(mut trailers_rx),
                 buffer,
                 tx,
+                mut content_length,
             } => {
                 let mut contents_tx = self.contents_tx;
                 match buffer {
@@ -201,6 +249,7 @@ where
                                 trailers: Some(trailers_rx),
                                 buffer: Some(BodyFrame::Data(buf)),
                                 tx,
+                                content_length,
                             };
                             return Ok(());
                         };
@@ -227,12 +276,63 @@ where
                             trailers: Some(trailers_rx),
                             buffer: None,
                             tx,
+                            content_length,
                         };
                         return Ok(());
                     };
                     let Ok((rx_tail, buf)) = rx else {
+                        if let Some(ContentLength { limit, sent }) = content_length {
+                            if limit != sent {
+                                drop(contents_tx.into_inner());
+                                join!(
+                                    async {
+                                        tx.write(Err(self.cx.as_body_size_error(sent)))
+                                            .into_future()
+                                            .await;
+                                    },
+                                    async {
+                                        self.trailers_tx
+                                            .write(Err(self.cx.as_body_size_error(sent)))
+                                            .into_future()
+                                            .await;
+                                    }
+                                );
+                                return Ok(());
+                            }
+                        }
                         break;
                     };
+                    if let Some(ContentLength { limit, sent }) = &mut content_length {
+                        let n = buf.len().try_into().ok();
+                        let n = n.and_then(|n| sent.checked_add(n));
+                        if let Err(n) = n
+                            .map(|n| {
+                                if n > *limit {
+                                    Err(n)
+                                } else {
+                                    *sent = n;
+                                    Ok(())
+                                }
+                            })
+                            .unwrap_or(Err(u64::MAX))
+                        {
+                            drop(contents_tx.into_inner());
+                            join!(
+                                async {
+                                    tx.write(Err(self.cx.as_body_size_error(n)))
+                                        .into_future()
+                                        .await;
+                                },
+                                async {
+                                    self.trailers_tx
+                                        .write(Err(self.cx.as_body_size_error(n)))
+                                        .into_future()
+                                        .await;
+                                }
+                            );
+                            return Ok(());
+                        }
+                    }
                     contents_rx = rx_tail.read().into_future();
                     let tx_tail = contents_tx.into_inner();
                     let Some(tx_tail) = tx_tail.write(buf.clone()).into_future().await else {
@@ -244,6 +344,7 @@ where
                             trailers: Some(trailers_rx),
                             buffer: Some(BodyFrame::Data(buf)),
                             tx,
+                            content_length,
                         };
                         return Ok(());
                     };
@@ -269,6 +370,7 @@ where
                         trailers: Some(trailers_rx),
                         buffer: None,
                         tx,
+                        content_length: None,
                     };
                     return Ok(());
                 };
@@ -286,6 +388,7 @@ where
                         trailers: None,
                         buffer: Some(BodyFrame::Trailers(res)),
                         tx,
+                        content_length: None,
                     };
                     return Ok(());
                 }
@@ -458,6 +561,19 @@ where
 
 impl<T> Host for WasiHttpImpl<T> where T: WasiHttpView {}
 
+fn parse_header_value(
+    name: &http::HeaderName,
+    value: impl AsRef<[u8]>,
+) -> Result<http::HeaderValue, HeaderError> {
+    if name == CONTENT_LENGTH {
+        let s = str::from_utf8(value.as_ref()).or(Err(HeaderError::InvalidSyntax))?;
+        let v: u64 = s.parse().or(Err(HeaderError::InvalidSyntax))?;
+        Ok(v.into())
+    } else {
+        http::header::HeaderValue::from_bytes(value.as_ref()).or(Err(HeaderError::InvalidSyntax))
+    }
+}
+
 impl<T> HostFields for WasiHttpImpl<T>
 where
     T: WasiHttpView,
@@ -472,18 +588,19 @@ where
     ) -> wasmtime::Result<Result<Resource<WithChildren<http::HeaderMap>>, HeaderError>> {
         let mut fields = http::HeaderMap::new();
 
-        for (header, value) in entries {
-            let Ok(header) = header.parse() else {
+        for (name, value) in entries {
+            let Ok(name) = name.parse() else {
                 return Ok(Err(HeaderError::InvalidSyntax));
             };
-            if self.is_forbidden_header(&header) {
+            if self.is_forbidden_header(&name) {
                 return Ok(Err(HeaderError::Forbidden));
             }
-            let value = match http::header::HeaderValue::from_bytes(&value) {
-                Ok(value) => value,
-                Err(_) => return Ok(Err(HeaderError::InvalidSyntax)),
-            };
-            fields.append(header, value);
+            match parse_header_value(&name, value) {
+                Ok(value) => {
+                    fields.append(name, value);
+                }
+                Err(err) => return Ok(Err(err)),
+            }
         }
         let fields = push_fields(self.table(), WithChildren::new(fields))?;
         Ok(Ok(fields))
@@ -525,9 +642,11 @@ where
         }
         let mut values = Vec::with_capacity(value.len());
         for value in value {
-            match http::header::HeaderValue::from_bytes(&value) {
-                Ok(value) => values.push(value),
-                Err(_) => return Ok(Err(HeaderError::InvalidSyntax)),
+            match parse_header_value(&name, value) {
+                Ok(value) => {
+                    values.push(value);
+                }
+                Err(err) => return Ok(Err(err)),
             }
         }
         let Some(mut fields) = get_fields_inner_mut(self.table(), &fields)? else {
@@ -586,21 +705,20 @@ where
         name: FieldName,
         value: FieldValue,
     ) -> wasmtime::Result<Result<(), HeaderError>> {
-        let header = match http::header::HeaderName::from_bytes(name.as_bytes()) {
-            Ok(header) => header,
-            Err(_) => return Ok(Err(HeaderError::InvalidSyntax)),
+        let Ok(name) = name.parse() else {
+            return Ok(Err(HeaderError::InvalidSyntax));
         };
-        if self.is_forbidden_header(&header) {
+        if self.is_forbidden_header(&name) {
             return Ok(Err(HeaderError::Forbidden));
         }
-        let value = match http::header::HeaderValue::from_bytes(&value) {
+        let value = match parse_header_value(&name, value) {
             Ok(value) => value,
-            Err(_) => return Ok(Err(HeaderError::InvalidSyntax)),
+            Err(err) => return Ok(Err(err)),
         };
         let Some(mut fields) = get_fields_inner_mut(self.table(), &fields)? else {
             return Ok(Err(HeaderError::Immutable));
         };
-        fields.append(header, value);
+        fields.append(name, value);
         Ok(Ok(()))
     }
 
@@ -654,6 +772,7 @@ where
             let table = view.table();
             let headers = delete_fields(table, headers)?;
             let headers = headers.unwrap_or_clone()?;
+            let content_length = get_content_length(&headers)?;
             let options = options
                 .map(|options| {
                     let options = delete_request_options(table, options)?;
@@ -665,6 +784,7 @@ where
                 trailers: Some(trailers),
                 buffer: None,
                 tx: res_tx,
+                content_length: content_length.map(ContentLength::new),
             };
             let req = push_request(
                 table,
@@ -813,6 +933,7 @@ where
             }
             let body = Arc::clone(&body);
             let task = view.spawn(BodyTask {
+                cx: BodyContext::Request,
                 body,
                 contents_tx,
                 trailers_tx,
@@ -966,11 +1087,13 @@ where
             let table = view.table();
             let headers = delete_fields(table, headers)?;
             let headers = headers.unwrap_or_clone()?;
+            let content_length = get_content_length(&headers)?;
             let body = Body::Guest {
                 contents,
                 trailers: Some(trailers),
                 buffer: None,
                 tx: res_tx,
+                content_length: content_length.map(ContentLength::new),
             };
             let res = push_response(table, Response::new(http::StatusCode::OK, headers, body))?;
             Ok((res, res_rx.into()))
@@ -1030,6 +1153,7 @@ where
             }
             let body = Arc::clone(&body);
             let task = view.spawn(BodyTask {
+                cx: BodyContext::Response,
                 body,
                 contents_tx,
                 trailers_tx,
@@ -1041,9 +1165,7 @@ where
     }
 
     fn drop(&mut self, res: Resource<Response>) -> wasmtime::Result<()> {
-        eprintln!("[host] drop response");
         delete_response(self.table(), res)?;
-        eprintln!("[host] response dropped");
         Ok(())
     }
 }

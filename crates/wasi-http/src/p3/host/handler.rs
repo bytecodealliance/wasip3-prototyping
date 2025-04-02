@@ -15,8 +15,8 @@ use wasmtime_wasi::p3::{AccessorTaskFn, ResourceView as _};
 use crate::p3::bindings::http::handler;
 use crate::p3::bindings::http::types::ErrorCode;
 use crate::p3::{
-    empty_body, Body, BodyFrame, Client as _, GuestBody, GuestRequestTrailers,
-    OutgoingTrailerFuture, Request, Response, WasiHttpImpl, WasiHttpView,
+    empty_body, Body, BodyContext, BodyFrame, Client as _, ContentLength, GuestBody,
+    GuestRequestTrailers, OutgoingTrailerFuture, Request, Response, WasiHttpImpl, WasiHttpView,
 };
 
 use super::{delete_request, get_fields_inner, push_response};
@@ -53,7 +53,6 @@ where
         store: &mut Accessor<U, Self>,
         request: Resource<Request>,
     ) -> wasmtime::Result<Result<Resource<Response>, ErrorCode>> {
-        eprintln!("[host] call handle");
         let Request {
             method,
             scheme,
@@ -116,29 +115,44 @@ where
             Ok(request) => request,
             Err(err) => return Ok(Err(ErrorCode::InternalError(Some(err.to_string())))),
         };
-        eprintln!("[host] have built req {request:?}");
-        let (response, task) = match body {
+        let response = match body {
+            Body::Guest {
+                contents: None,
+                buffer: Some(BodyFrame::Trailers(Ok(None))) | None,
+                tx,
+                content_length: Some(ContentLength { limit, sent }),
+                ..
+            } if limit != sent => {
+                store.spawn(AccessorTaskFn(
+                    move |_: &mut Accessor<U, Self>| async move {
+                        tx.write(Err(ErrorCode::HttpRequestBodySize(Some(sent))))
+                            .into_future()
+                            .await;
+                        Ok(())
+                    },
+                ));
+                return Ok(Err(ErrorCode::HttpRequestBodySize(Some(sent))));
+            }
             Body::Guest {
                 contents: None,
                 trailers: None,
                 buffer: Some(BodyFrame::Trailers(Ok(None))),
                 tx,
+                content_length: None,
             } => {
                 let body = empty_body();
                 let request = request.map(|()| body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        let task = store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                        store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                             let res = io.await;
                             tx.write(res.map_err(Into::into)).into_future().await;
                             Ok(())
                         }));
-                        let task = task.abort_handle();
                         match response.await {
-                            Ok(response) => (
-                                response.map(|body| body.map_err(Into::into).boxed_unsync()),
-                                task,
-                            ),
+                            Ok(response) => {
+                                response.map(|body| body.map_err(Into::into).boxed_unsync())
+                            }
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -150,6 +164,7 @@ where
                 trailers: None,
                 buffer: Some(BodyFrame::Trailers(Ok(Some(trailers)))),
                 tx,
+                content_length: None,
             } => {
                 let trailers = store.with(|mut view| {
                     let trailers = get_fields_inner(view.table(), &trailers)?;
@@ -159,17 +174,15 @@ where
                 let request = request.map(|()| body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        let task = store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                        store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                             let res = io.await;
                             tx.write(res.map_err(Into::into)).into_future().await;
                             Ok(())
                         }));
-                        let task = task.abort_handle();
                         match response.await {
-                            Ok(response) => (
-                                response.map(|body| body.map_err(Into::into).boxed_unsync()),
-                                task,
-                            ),
+                            Ok(response) => {
+                                response.map(|body| body.map_err(Into::into).boxed_unsync())
+                            }
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -180,15 +193,25 @@ where
                 contents: None,
                 trailers: None,
                 buffer: Some(BodyFrame::Trailers(Err(err))),
-                tx: _,
-            } => return Ok(Err(err)),
+                tx,
+                content_length: None,
+            } => {
+                store.spawn({
+                    let err = err.clone();
+                    AccessorTaskFn(move |_: &mut Accessor<U, Self>| async move {
+                        tx.write(Err(err)).into_future().await;
+                        Ok(())
+                    })
+                });
+                return Ok(Err(err));
+            }
             Body::Guest {
                 contents: None,
                 trailers: Some(trailers),
                 buffer: None,
                 tx,
+                content_length: None,
             } => {
-                eprintln!("[host] no contents, only trailers");
                 let (trailers_tx, trailers_rx) = oneshot::channel();
                 let task = store.spawn(TrailerTask {
                     rx: trailers,
@@ -199,24 +222,17 @@ where
                     trailer_task: task.abort_handle(),
                 });
                 let request = request.map(|()| body);
-                eprintln!("[host] send request..");
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        let task = store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
-                            eprintln!("[host] await Tx result..");
+                        store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                             let res = io.await;
-                            eprintln!("[host] write Tx result..");
                             tx.write(res.map_err(Into::into)).into_future().await;
-                            eprintln!("[host] done writing Tx result");
                             Ok(())
                         }));
-                        eprintln!("[host] return Ok response");
-                        let task = task.abort_handle();
                         match response.await {
-                            Ok(response) => (
-                                response.map(|body| body.map_err(Into::into).boxed_unsync()),
-                                task,
-                            ),
+                            Ok(response) => {
+                                response.map(|body| body.map_err(Into::into).boxed_unsync())
+                            }
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -228,8 +244,8 @@ where
                 trailers: Some(trailers),
                 buffer,
                 tx,
+                content_length,
             } => {
-                eprintln!("[host] contents, trailers");
                 let (trailers_tx, trailers_rx) = oneshot::channel();
                 let task = store.spawn(TrailerTask {
                     rx: trailers,
@@ -240,29 +256,24 @@ where
                     Some(BodyFrame::Trailers(..)) => bail!("guest body is corrupted"),
                     None => Bytes::default(),
                 };
-                let body = GuestBody::new(contents, buffer).with_trailers(GuestRequestTrailers {
-                    trailers: Some(trailers_rx),
-                    trailer_task: task.abort_handle(),
-                });
+                let body = GuestBody::new(BodyContext::Request, contents, buffer, content_length)
+                    .with_trailers(GuestRequestTrailers {
+                        trailers: Some(trailers_rx),
+                        trailer_task: task.abort_handle(),
+                    });
                 let request = request.map(|()| body);
-                eprintln!("[host] send request..");
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        let task = store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
-                            eprintln!("[host] await Tx result..");
+                        store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                             let res = io.await;
-                            eprintln!("[host] write Tx result..");
                             tx.write(res.map_err(Into::into)).into_future().await;
-                            eprintln!("[host] done writing Tx result");
                             Ok(())
                         }));
-                        eprintln!("[host] return Ok response");
-                        let task = task.abort_handle();
                         match response.await {
-                            Ok(response) => (
-                                response.map(|body| body.map_err(Into::into).boxed_unsync()),
-                                task,
-                            ),
+                            Ok(response) => {
+                                response.map(|body| body.map_err(Into::into).boxed_unsync())
+                            }
+
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -278,16 +289,14 @@ where
                 let request = request.map(|()| body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        let task = store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                        store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                             _ = io.await;
                             Ok(())
                         }));
-                        let task = task.abort_handle();
                         match response.await {
-                            Ok(response) => (
-                                response.map(|body| body.map_err(Into::into).boxed_unsync()),
-                                task,
-                            ),
+                            Ok(response) => {
+                                response.map(|body| body.map_err(Into::into).boxed_unsync())
+                            }
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -303,16 +312,14 @@ where
                 let request = request.map(|()| body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        let task = store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                        store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                             _ = io.await;
                             Ok(())
                         }));
-                        let task = task.abort_handle();
                         match response.await {
-                            Ok(response) => (
-                                response.map(|body| body.map_err(Into::into).boxed_unsync()),
-                                task,
-                            ),
+                            Ok(response) => {
+                                response.map(|body| body.map_err(Into::into).boxed_unsync())
+                            }
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -331,16 +338,14 @@ where
                 let request = request.map(|()| body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        let task = store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                        store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                             _ = io.await;
                             Ok(())
                         }));
-                        let task = task.abort_handle();
                         match response.await {
-                            Ok(response) => (
-                                response.map(|body| body.map_err(Into::into).boxed_unsync()),
-                                task,
-                            ),
+                            Ok(response) => {
+                                response.map(|body| body.map_err(Into::into).boxed_unsync())
+                            }
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -355,16 +360,14 @@ where
                 let request = request.map(|()| body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        let task = store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                        store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                             _ = io.await;
                             Ok(())
                         }));
-                        let task = task.abort_handle();
                         match response.await {
-                            Ok(response) => (
-                                response.map(|body| body.map_err(Into::into).boxed_unsync()),
-                                task,
-                            ),
+                            Ok(response) => {
+                                response.map(|body| body.map_err(Into::into).boxed_unsync())
+                            }
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -381,16 +384,14 @@ where
                 let request = request.map(|()| body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        let task = store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                        store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                             _ = io.await;
                             Ok(())
                         }));
-                        let task = task.abort_handle();
                         match response.await {
-                            Ok(response) => (
-                                response.map(|body| body.map_err(Into::into).boxed_unsync()),
-                                task,
-                            ),
+                            Ok(response) => {
+                                response.map(|body| body.map_err(Into::into).boxed_unsync())
+                            }
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -398,7 +399,6 @@ where
                 }
             }
         };
-        eprintln!("[host] handle return");
         let (
             http::response::Parts {
                 status, headers, ..
@@ -410,7 +410,7 @@ where
                 stream: Some(body),
                 buffer: None,
             };
-            let response = Response::new_incoming(status, headers, body, task);
+            let response = Response::new(status, headers, body);
             let response = push_response(view.table(), response)?;
             Ok(Ok(response))
         })

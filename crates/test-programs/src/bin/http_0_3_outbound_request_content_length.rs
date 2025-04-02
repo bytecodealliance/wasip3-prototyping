@@ -1,5 +1,9 @@
+use anyhow::Context as _;
+use futures::join;
+use test_programs::p3::wasi::http::handler;
 use test_programs::p3::wasi::http::types::{ErrorCode, Headers, Method, Request, Scheme, Trailers};
 use test_programs::p3::{wit_future, wit_stream};
+use wit_bindgen::FutureReader;
 use wit_bindgen_rt::async_support::{FutureWriter, StreamWriter};
 
 struct Component;
@@ -10,10 +14,11 @@ fn make_request() -> (
     Request,
     StreamWriter<u8>,
     FutureWriter<Result<Option<Trailers>, ErrorCode>>,
+    FutureReader<Result<(), ErrorCode>>,
 ) {
     let (contents_tx, contents_rx) = wit_stream::new();
     let (trailers_tx, trailers_rx) = wit_future::new();
-    let (request, _) = Request::new(
+    let (request, transmit) = Request::new(
         Headers::from_list(&[("Content-Length".to_string(), b"11".to_vec())]).unwrap(),
         Some(contents_rx),
         trailers_rx,
@@ -35,72 +40,95 @@ fn make_request() -> (
         .set_path_with_query(Some("/"))
         .expect("setting path with query");
 
-    (request, contents_tx, trailers_tx)
+    (request, contents_tx, trailers_tx, transmit)
 }
 
 impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
     async fn run() -> Result<(), ()> {
         {
-            println!("writing enough");
-            let (_, mut contents_tx, trailers_tx) = make_request();
-            let remaining = contents_tx.write_all(b"long enough".to_vec()).await;
-            assert!(remaining.is_empty());
-            drop(contents_tx);
-            trailers_tx.write(Ok(None)).await.unwrap();
+            let (request, mut contents_tx, trailers_tx, transmit) = make_request();
+            let (transmit, handle) = join!(async { transmit.await }, async {
+                let res = handler::handle(request)
+                    .await
+                    .context("failed to send request")?;
+                println!("writing enough");
+                let remaining = contents_tx.write_all(b"long enough".to_vec()).await;
+                assert!(
+                    remaining.is_empty(),
+                    "{}",
+                    String::from_utf8_lossy(&remaining)
+                );
+                drop(contents_tx);
+                trailers_tx
+                    .write(Ok(None))
+                    .await
+                    .context("failed to finish body")?;
+                anyhow::Ok(res)
+            });
+            let res = handle.unwrap();
+            drop(res);
+            transmit
+                .expect("transmit sender dropped")
+                .expect("failed to transmit request");
         }
 
         {
-            println!("writing too little");
-            let (_, mut contents_tx, trailers_tx) = make_request();
-            let remaining = contents_tx.write_all(b"msg".to_vec()).await;
-            assert!(remaining.is_empty());
-            drop(contents_tx);
-            trailers_tx.write(Ok(None)).await.unwrap();
-
-            // handle()
-
-            // TODO: Figure out how/if to represent this in wasip3
-            //let e = OutgoingBody::finish(outgoing_body, None)
-            //    .expect_err("finish should fail");
-
-            //assert!(
-            //    matches!(&e, ErrorCode::HttpRequestBodySize(Some(3))),
-            //    "unexpected error: {e:#?}"
-            //);
+            let (request, mut contents_tx, trailers_tx, transmit) = make_request();
+            let (transmit, handle) = join!(async { transmit.await }, async {
+                let res = handler::handle(request)
+                    .await
+                    .context("failed to send request")?;
+                println!("writing too little");
+                let remaining = contents_tx.write_all(b"msg".to_vec()).await;
+                assert!(
+                    remaining.is_empty(),
+                    "{}",
+                    String::from_utf8_lossy(&remaining)
+                );
+                drop(contents_tx);
+                trailers_tx
+                    .write(Ok(None))
+                    .await
+                    .context("failed to finish body")?;
+                anyhow::Ok(res)
+            });
+            let res = handle.unwrap();
+            drop(res);
+            let err = transmit
+                .expect("transmit sender dropped")
+                .expect_err("request transmission should have failed");
+            assert!(
+                matches!(err, ErrorCode::HttpRequestBodySize(Some(3))),
+                "unexpected error: {err:#?}"
+            );
         }
 
         {
-            println!("writing too much");
-            let (_, mut contents_tx, trailers_tx) = make_request();
-            let remaining = contents_tx.write_all(b"more than 11 bytes".to_vec()).await;
-            assert!(remaining.is_empty());
-            drop(contents_tx);
-            trailers_tx.write(Ok(None)).await.unwrap();
-
-            // TODO: Figure out how/if to represent this in wasip3
-            //let e = request_body
-            //    .blocking_write_and_flush("more than 11 bytes".as_bytes())
-            //    .expect_err("write should fail");
-            //let e = match e {
-            //    test_programs::wasi::io::streams::StreamError::LastOperationFailed(e) => {
-            //        http_error_code(&e)
-            //    }
-            //    test_programs::wasi::io::streams::StreamError::Closed => panic!("request closed"),
-            //};
-            //assert!(
-            //    matches!(
-            //        e,
-            //        Some(ErrorCode::HttpRequestBodySize(Some(18)))
-            //    ),
-            //    "unexpected error {e:?}"
-            //);
-            //let e = OutgoingBody::finish(outgoing_body, None)
-            //    .expect_err("finish should fail");
-
-            //assert!(
-            //    matches!(&e, ErrorCode::HttpRequestBodySize(Some(18))),
-            //    "unexpected error: {e:#?}"
-            //);
+            let (request, mut contents_tx, trailers_tx, transmit) = make_request();
+            let (transmit, handle) = join!(async { transmit.await }, async {
+                let res = handler::handle(request)
+                    .await
+                    .context("failed to send request")?;
+                println!("writing too much");
+                let remaining = contents_tx.write_all(b"more than 11 bytes".to_vec()).await;
+                assert!(
+                    remaining.is_empty(),
+                    "{}",
+                    String::from_utf8_lossy(&remaining)
+                );
+                drop(contents_tx);
+                _ = trailers_tx.write(Ok(None)).await;
+                anyhow::Ok(res)
+            });
+            let res = handle.unwrap();
+            drop(res);
+            let err = transmit
+                .expect("transmit sender dropped")
+                .expect_err("request transmission should have failed");
+            assert!(
+                matches!(err, ErrorCode::HttpRequestBodySize(Some(18))),
+                "unexpected error: {err:#?}"
+            );
         }
         Ok(())
     }

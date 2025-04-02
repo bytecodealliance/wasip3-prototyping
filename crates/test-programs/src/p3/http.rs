@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context as _, Result};
 use core::fmt;
-use futures::try_join;
+use futures::join;
 
 use crate::p3::wasi::http::{handler, types};
 use crate::p3::{wit_future, wit_stream};
@@ -88,42 +88,47 @@ pub async fn request(
         .set_path_with_query(Some(&path_with_query))
         .map_err(|()| anyhow!("failed to set path_with_query"))?;
 
-    let ((), (), response) = try_join!(
-        async {
-            if let Some(buf) = body {
-                let remaining = contents_tx.write_all(buf.into()).await;
-                assert!(remaining.is_empty());
-            }
-            drop(contents_tx);
-            trailers_tx.write(Ok(None)).await.unwrap();
-            anyhow::Ok(())
-        },
+    let (transmit, handle) = join!(
         async {
             transmit
                 .await
-                .expect("transmit sender dropped")
-                .context("failed to transmit request")?;
-            Ok(())
+                .context("transmit sender dropped")?
+                .context("failed to transmit request")
         },
         async {
             let response = handler::handle(request).await?;
             let status = response.status_code();
             let headers = response.headers().entries();
-
-            let (body, trailers) = response.body().expect("failed to get response body");
-            let body = body.collect().await;
-            let trailers = trailers
-                .await
-                .expect("trailers sender dropped")
-                .context("failed to read body")?;
-            let trailers = trailers.map(|trailers| trailers.entries());
-            Ok(Response {
-                status,
-                headers,
-                body,
-                trailers,
-            })
+            let (body_rx, trailers_rx) = response.body().expect("failed to get response body");
+            let ((), rx) = join!(
+                async {
+                    if let Some(buf) = body {
+                        let remaining = contents_tx.write_all(buf.into()).await;
+                        assert!(remaining.is_empty());
+                    }
+                    drop(contents_tx);
+                    // This can fail in HTTP/1.1, since the connection might already be closed
+                    _ = trailers_tx.write(Ok(None)).await;
+                },
+                async {
+                    let body = body_rx.collect().await;
+                    let trailers = trailers_rx
+                        .await
+                        .context("trailers sender dropped")?
+                        .context("failed to read body")?;
+                    let trailers = trailers.map(|trailers| trailers.entries());
+                    anyhow::Ok(Response {
+                        status,
+                        headers,
+                        body,
+                        trailers,
+                    })
+                }
+            );
+            rx
         },
-    )?;
+    );
+    let response = handle?;
+    transmit?;
     Ok(response)
 }

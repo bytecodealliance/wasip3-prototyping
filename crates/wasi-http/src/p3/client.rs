@@ -1,7 +1,7 @@
+use core::future::Future;
 use core::pin::Pin;
 use core::task::{ready, Context, Poll};
 use core::time::Duration;
-use core::{error::Error as _, future::Future};
 
 use bytes::Bytes;
 use http::uri::Scheme;
@@ -13,38 +13,6 @@ use tracing::warn;
 use crate::io::TokioIo;
 use crate::p3::bindings::http::types::{DnsErrorPayload, ErrorCode};
 use crate::p3::RequestOptions;
-
-/// Translate a [`hyper::Error`] to a wasi-http `ErrorCode` in the context of a request.
-pub fn hyper_request_error(err: hyper::Error) -> ErrorCode {
-    // If there's a source, we might be able to extract a wasi-http error from it.
-    if let Some(cause) = err.source() {
-        if let Some(err) = cause.downcast_ref::<ErrorCode>() {
-            return err.clone();
-        }
-    }
-
-    warn!("hyper request error: {err:?}");
-
-    ErrorCode::HttpProtocolError
-}
-
-/// Translate a [`hyper::Error`] to a wasi-http `ErrorCode` in the context of a response.
-pub fn hyper_response_error(err: hyper::Error) -> ErrorCode {
-    if err.is_timeout() {
-        return ErrorCode::HttpResponseTimeout;
-    }
-
-    // If there's a source, we might be able to extract a wasi-http error from it.
-    if let Some(cause) = err.source() {
-        if let Some(err) = cause.downcast_ref::<ErrorCode>() {
-            return err.clone();
-        }
-    }
-
-    warn!("hyper response error: {err:?}");
-
-    ErrorCode::HttpProtocolError
-}
 
 fn dns_error(rcode: String, info_code: u16) -> ErrorCode {
     ErrorCode::DnsError(DnsErrorPayload {
@@ -140,12 +108,12 @@ impl Client for DefaultClient {
     }
 }
 
-struct IncomingBody {
+struct IncomingResponseBody {
     incoming: hyper::body::Incoming,
     timeout: tokio::time::Interval,
 }
 
-impl http_body::Body for IncomingBody {
+impl http_body::Body for IncomingResponseBody {
     type Data = <hyper::body::Incoming as http_body::Body>::Data;
     type Error = ErrorCode;
 
@@ -155,7 +123,9 @@ impl http_body::Body for IncomingBody {
     ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
         match Pin::new(&mut self.as_mut().incoming).poll_frame(cx) {
             Poll::Ready(None) => Poll::Ready(None),
-            Poll::Ready(Some(Err(err))) => Poll::Ready(Some(Err(hyper_response_error(err)))),
+            Poll::Ready(Some(Err(err))) => {
+                Poll::Ready(Some(Err(ErrorCode::from_hyper_response_error(err))))
+            }
             Poll::Ready(Some(Ok(frame))) => {
                 self.timeout.reset();
                 Poll::Ready(Some(Ok(frame)))
@@ -199,8 +169,6 @@ pub async fn default_send_request(
     }
     impl<T> TokioStream for T where T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static {}
 
-    eprintln!("[host] default send request");
-
     let uri = request.uri();
     let authority = uri.authority().ok_or(ErrorCode::HttpRequestUriInvalid)?;
     let use_tls = uri.scheme() == Some(&Scheme::HTTPS);
@@ -239,7 +207,6 @@ pub async fn default_send_request(
         )
         .unwrap_or(Duration::from_secs(600));
 
-    eprintln!("[host] connect...");
     let stream = match tokio::time::timeout(connect_timeout, TcpStream::connect(&authority)).await {
         Ok(Ok(stream)) => stream,
         Ok(Err(err)) if err.kind() == std::io::ErrorKind::AddrNotAvailable => {
@@ -292,7 +259,6 @@ pub async fn default_send_request(
     } else {
         stream.boxed()
     };
-    eprintln!("[host] handshake...");
     let (mut sender, conn) = tokio::time::timeout(
         connect_timeout,
         // TODO: we should plumb the builder through the http context, and use it here
@@ -300,7 +266,7 @@ pub async fn default_send_request(
     )
     .await
     .map_err(|_| ErrorCode::ConnectionTimeout)?
-    .map_err(hyper_request_error)?;
+    .map_err(ErrorCode::from_hyper_request_error)?;
 
     // at this point, the request contains the scheme and the authority, but
     // the http packet should only include those if addressing a proxy, so
@@ -320,19 +286,16 @@ pub async fn default_send_request(
         request.map(|body| body.map_err(|err| err.unwrap_or(ErrorCode::InternalError(None))));
     Ok((
         async move {
-            eprintln!("[host] real send request...");
             let response = tokio::time::timeout(first_byte_timeout, sender.send_request(request))
                 .await
                 .map_err(|_| ErrorCode::ConnectionReadTimeout)?
-                .map_err(hyper_request_error)?;
+                .map_err(ErrorCode::from_hyper_request_error)?;
             let mut timeout = tokio::time::interval(between_bytes_timeout);
             timeout.reset();
-            Ok(response.map(|incoming| IncomingBody { incoming, timeout }))
+            Ok(response.map(|incoming| IncomingResponseBody { incoming, timeout }))
         },
         async move {
-            eprintln!("[host] await conn...");
-            conn.await.map_err(hyper_request_error)?;
-            eprintln!("[host] conn awaited");
+            conn.await.map_err(ErrorCode::from_hyper_request_error)?;
             Ok(())
         },
     ))

@@ -13,7 +13,9 @@ use wasmtime::AsContextMut;
 use wasmtime_wasi::p3::{ResourceView, WithChildren};
 
 use crate::p3::bindings::http::types::ErrorCode;
-use crate::p3::{empty_body, guest_response_trailers, Body, BodyFrame, GuestBody};
+use crate::p3::{
+    empty_body, guest_response_trailers, Body, BodyContext, BodyFrame, ContentLength, GuestBody,
+};
 
 /// The concrete type behind a `wasi:http/types/response` resource.
 pub struct Response {
@@ -25,9 +27,6 @@ pub struct Response {
     pub(crate) body: Arc<std::sync::Mutex<Body>>,
     /// Body stream task handle
     pub(crate) body_task: Option<AbortOnDropHandle>,
-    /// I/O task handle
-    #[allow(dead_code)]
-    pub(crate) io_task: Option<AbortOnDropHandle>,
 }
 
 impl Response {
@@ -38,23 +37,6 @@ impl Response {
             headers: WithChildren::new(headers),
             body: Arc::new(std::sync::Mutex::new(body)),
             body_task: None,
-            io_task: None,
-        }
-    }
-
-    /// Construct a new [Response]
-    pub(crate) fn new_incoming(
-        status: StatusCode,
-        headers: HeaderMap,
-        body: Body,
-        task: AbortOnDropHandle,
-    ) -> Self {
-        Self {
-            status,
-            headers: WithChildren::new(headers),
-            body: Arc::new(std::sync::Mutex::new(body)),
-            body_task: None,
-            io_task: Some(task),
         }
     }
 
@@ -80,15 +62,25 @@ impl Response {
         let (body, tx) = match body {
             Body::Guest {
                 contents: None,
+                buffer: None | Some(BodyFrame::Trailers(Ok(None))),
+                content_length: Some(ContentLength { limit, sent }),
+                ..
+            } if limit != sent => {
+                bail!("guest response Content-Length mismatch, limit: {limit}, sent: {sent}")
+            }
+            Body::Guest {
+                contents: None,
                 trailers: None,
                 buffer: Some(BodyFrame::Trailers(Ok(None))),
                 tx,
+                ..
             } => (empty_body().boxed_unsync(), Some(tx)),
             Body::Guest {
                 contents: None,
                 trailers: None,
                 buffer: Some(BodyFrame::Trailers(Ok(Some(trailers)))),
                 tx,
+                ..
             } => {
                 let mut store = store.as_context_mut();
                 let table = store.data_mut().table();
@@ -108,6 +100,7 @@ impl Response {
                 trailers: None,
                 buffer: Some(BodyFrame::Trailers(Err(err))),
                 tx,
+                ..
             } => (
                 empty_body()
                     .with_trailers(async move { Some(Err(Some(err))) })
@@ -119,6 +112,7 @@ impl Response {
                 trailers: Some(trailers),
                 buffer: None,
                 tx,
+                ..
             } => {
                 let body = empty_body()
                     .with_trailers(guest_response_trailers(store, trailers))
@@ -130,13 +124,14 @@ impl Response {
                 trailers: Some(trailers),
                 buffer,
                 tx,
+                content_length,
             } => {
                 let buffer = match buffer {
                     Some(BodyFrame::Data(buffer)) => buffer,
                     Some(BodyFrame::Trailers(..)) => bail!("guest body is corrupted"),
                     None => Bytes::default(),
                 };
-                let body = GuestBody::new(contents, buffer)
+                let body = GuestBody::new(BodyContext::Response, contents, buffer, content_length)
                     .with_trailers(guest_response_trailers(store, trailers))
                     .boxed_unsync();
                 (body, Some(tx))
