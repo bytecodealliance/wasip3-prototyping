@@ -7,6 +7,7 @@ test_programs::p3::export!(Component);
 
 impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
     async fn run() -> Result<(), ()> {
+        const BODY: &[u8] = b"{\"foo\": \"bar\"}";
         let addr = test_programs::p3::wasi::cli::environment::get_environment()
             .into_iter()
             .find_map(|(k, v)| k.eq("HTTP_SERVER").then_some(v))
@@ -16,7 +17,7 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
             Scheme::Http,
             &addr,
             "/post",
-            Some(b"{\"foo\": \"bar\"}"),
+            Some(BODY),
             None,
             None,
             None,
@@ -32,7 +33,7 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
         assert_eq!(std::str::from_utf8(method).unwrap(), "POST");
         let uri = res.header("x-wasmtime-test-uri").unwrap();
         assert_eq!(std::str::from_utf8(uri).unwrap(), format!("/post"));
-        assert_eq!(res.body, b"{\"foo\": \"bar\"}", "invalid body returned");
+        assert_eq!(res.body, BODY, "invalid body returned");
         Ok(())
     }
 }

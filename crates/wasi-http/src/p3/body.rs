@@ -6,12 +6,11 @@ use core::task::{ready, Context, Poll};
 use anyhow::Context as _;
 use bytes::Bytes;
 use http::HeaderMap;
-use http_body_util::{combinators::UnsyncBoxBody, BodyExt as _};
+use http_body_util::combinators::UnsyncBoxBody;
+use http_body_util::BodyExt as _;
 use tokio::sync::oneshot;
-use wasmtime::{
-    component::{AbortOnDropHandle, ErrorContext, FutureWriter, Resource, StreamReader},
-    AsContextMut,
-};
+use wasmtime::component::{AbortOnDropHandle, ErrorContext, FutureWriter, Resource, StreamReader};
+use wasmtime::AsContextMut;
 use wasmtime_wasi::p3::{ResourceView, WithChildren};
 
 use crate::p3::bindings::http::types::ErrorCode;
@@ -58,6 +57,25 @@ pub enum BodyFrame {
     Trailers(Result<Option<Resource<WithChildren<HeaderMap>>>, ErrorCode>),
 }
 
+/// Whether the body is a request or response body.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BodyContext {
+    /// The body is a request body.
+    Request,
+    /// The body is a response body.
+    Response,
+}
+
+impl BodyContext {
+    /// Construct the correct [`ErrorCode`] body size error.
+    pub fn as_body_size_error(&self, size: u64) -> ErrorCode {
+        match self {
+            Self::Request => ErrorCode::HttpRequestBodySize(Some(size)),
+            Self::Response => ErrorCode::HttpResponseBodySize(Some(size)),
+        }
+    }
+}
+
 /// The concrete type behind a `wasi:http/types/body` resource.
 pub enum Body {
     /// Body constructed by the guest
@@ -70,6 +88,8 @@ pub enum Body {
         buffer: Option<BodyFrame>,
         /// Future, on which transmission result will be written
         tx: FutureWriter<Result<(), ErrorCode>>,
+        /// Optional `Content-Length` header limit and state
+        content_length: Option<ContentLength>,
     },
     /// Body constructed by the host
     Host {
@@ -200,17 +220,42 @@ where
     }
 }
 
+/// Represents `Content-Length` limit and state
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ContentLength {
+    /// Limit of bytes to be sent
+    pub limit: u64,
+    /// Number of bytes sent
+    pub sent: u64,
+}
+
+impl ContentLength {
+    /// Constructs new [ContentLength]
+    pub fn new(limit: u64) -> Self {
+        Self { limit, sent: 0 }
+    }
+}
+
 /// Body constructed by the guest
 pub(crate) struct GuestBody {
+    pub cx: BodyContext,
     pub contents: Option<OutgoingContentsStreamFuture>,
     pub buffer: Bytes,
+    pub content_length: Option<ContentLength>,
 }
 
 impl GuestBody {
-    pub fn new(contents: OutgoingContentsStreamFuture, buffer: Bytes) -> Self {
+    pub fn new(
+        cx: BodyContext,
+        contents: OutgoingContentsStreamFuture,
+        buffer: Bytes,
+        content_length: Option<ContentLength>,
+    ) -> Self {
         Self {
+            cx,
             contents: Some(contents),
             buffer,
+            content_length,
         }
     }
 }
@@ -225,6 +270,18 @@ impl http_body::Body for GuestBody {
     ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
         if !self.buffer.is_empty() {
             let buffer = mem::take(&mut self.buffer);
+            if let Some(ContentLength { limit, sent }) = &mut self.content_length {
+                let Ok(n) = buffer.len().try_into() else {
+                    return Poll::Ready(Some(Err(Some(self.cx.as_body_size_error(u64::MAX)))));
+                };
+                let Some(n) = sent.checked_add(n) else {
+                    return Poll::Ready(Some(Err(Some(self.cx.as_body_size_error(u64::MAX)))));
+                };
+                if n > *limit {
+                    return Poll::Ready(Some(Err(Some(self.cx.as_body_size_error(n)))));
+                }
+                *sent = n;
+            }
             return Poll::Ready(Some(Ok(http_body::Frame::data(buffer))));
         }
         let Some(stream) = &mut self.contents else {
@@ -233,12 +290,41 @@ impl http_body::Body for GuestBody {
         match ready!(Pin::new(stream).poll(cx)) {
             Ok((tail, buf)) => {
                 self.contents = Some(tail.read().into_future());
+                if let Some(ContentLength { limit, sent }) = &mut self.content_length {
+                    let Ok(n) = buf.len().try_into() else {
+                        return Poll::Ready(Some(Err(Some(self.cx.as_body_size_error(u64::MAX)))));
+                    };
+                    let Some(n) = sent.checked_add(n) else {
+                        return Poll::Ready(Some(Err(Some(self.cx.as_body_size_error(u64::MAX)))));
+                    };
+                    if n > *limit {
+                        return Poll::Ready(Some(Err(Some(self.cx.as_body_size_error(n)))));
+                    }
+                    *sent = n;
+                }
                 Poll::Ready(Some(Ok(http_body::Frame::data(buf))))
             }
             Err(..) => {
                 self.contents = None;
+                if let Some(ContentLength { limit, sent }) = self.content_length {
+                    if limit != sent {
+                        return Poll::Ready(Some(Err(Some(self.cx.as_body_size_error(sent)))));
+                    }
+                }
                 Poll::Ready(None)
             }
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.contents.is_none()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        if let Some(ContentLength { limit, sent }) = self.content_length {
+            http_body::SizeHint::with_exact(limit.saturating_sub(sent))
+        } else {
+            http_body::SizeHint::default()
         }
     }
 }

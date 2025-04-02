@@ -41,55 +41,55 @@ async fn run(path: &str, server: &Server) -> anyhow::Result<()> {
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_get() -> anyhow::Result<()> {
-    let server = Server::http1()?;
+    let server = Server::http1(1)?;
     run(HTTP_0_3_OUTBOUND_REQUEST_GET_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_timeout() -> anyhow::Result<()> {
-    let server = Server::http1()?;
+    let server = Server::http1(1)?;
     run(HTTP_0_3_OUTBOUND_REQUEST_TIMEOUT_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_post() -> anyhow::Result<()> {
-    let server = Server::http1()?;
+    let server = Server::http1(1)?;
     run(HTTP_0_3_OUTBOUND_REQUEST_POST_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_large_post() -> anyhow::Result<()> {
-    let server = Server::http1()?;
+    let server = Server::http1(1)?;
     run(HTTP_0_3_OUTBOUND_REQUEST_LARGE_POST_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_put() -> anyhow::Result<()> {
-    let server = Server::http1()?;
+    let server = Server::http1(1)?;
     run(HTTP_0_3_OUTBOUND_REQUEST_PUT_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_invalid_version() -> anyhow::Result<()> {
-    let server = Server::http2()?;
+    let server = Server::http2(1)?;
     run(HTTP_0_3_OUTBOUND_REQUEST_INVALID_VERSION_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_invalid_header() -> anyhow::Result<()> {
-    let server = Server::http2()?;
+    let server = Server::http2(1)?;
     run(HTTP_0_3_OUTBOUND_REQUEST_INVALID_HEADER_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_unknown_method() -> anyhow::Result<()> {
-    let server = Server::http1()?;
+    let server = Server::http1(1)?;
     run(HTTP_0_3_OUTBOUND_REQUEST_UNKNOWN_METHOD_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_unsupported_scheme() -> anyhow::Result<()> {
-    let server = Server::http1()?;
+    let server = Server::http1(1)?;
     run(
         HTTP_0_3_OUTBOUND_REQUEST_UNSUPPORTED_SCHEME_COMPONENT,
         &server,
@@ -99,31 +99,31 @@ async fn http_0_3_outbound_request_unsupported_scheme() -> anyhow::Result<()> {
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_invalid_port() -> anyhow::Result<()> {
-    let server = Server::http1()?;
+    let server = Server::http1(1)?;
     run(HTTP_0_3_OUTBOUND_REQUEST_INVALID_PORT_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_invalid_dnsname() -> anyhow::Result<()> {
-    let server = Server::http1()?;
+    let server = Server::http1(1)?;
     run(HTTP_0_3_OUTBOUND_REQUEST_INVALID_DNSNAME_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_response_build() -> anyhow::Result<()> {
-    let server = Server::http1()?;
+    let server = Server::http1(1)?;
     run(HTTP_0_3_OUTBOUND_REQUEST_RESPONSE_BUILD_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_content_length() -> anyhow::Result<()> {
-    let server = Server::http1()?;
+    let server = Server::http1(3)?;
     run(HTTP_0_3_OUTBOUND_REQUEST_CONTENT_LENGTH_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_missing_path_and_query() -> anyhow::Result<()> {
-    let server = Server::http1()?;
+    let server = Server::http1(1)?;
     run(
         HTTP_0_3_OUTBOUND_REQUEST_MISSING_PATH_AND_QUERY_COMPONENT,
         &server,

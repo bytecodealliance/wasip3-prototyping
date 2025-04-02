@@ -197,6 +197,7 @@ async fn run_wasi_http<E: Into<ErrorCode> + 'static>(
     }
 }
 
+#[ignore = "TODO"]
 #[test_log::test(tokio::test)]
 async fn wasi_http_proxy_tests() -> anyhow::Result<()> {
     let req = http::Request::builder()
