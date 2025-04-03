@@ -15,8 +15,8 @@ use wasmtime_wasi::p3::{AccessorTaskFn, ResourceView as _};
 use crate::p3::bindings::http::handler;
 use crate::p3::bindings::http::types::ErrorCode;
 use crate::p3::{
-    empty_body, Body, BodyContext, BodyFrame, Client as _, ContentLength, GuestBody,
-    GuestRequestTrailers, OutgoingTrailerFuture, Request, Response, WasiHttpImpl, WasiHttpView,
+    empty_body, Body, BodyFrame, Client as _, ContentLength, OutgoingRequestBody,
+    OutgoingRequestTrailers, OutgoingTrailerFuture, Request, Response, WasiHttpImpl, WasiHttpView,
 };
 
 use super::{delete_request, get_fields_inner, push_response};
@@ -29,18 +29,18 @@ struct TrailerTask {
 impl<T, U: WasiHttpView> AccessorTask<T, U, wasmtime::Result<()>> for TrailerTask {
     async fn run(self, store: &mut Accessor<T, U>) -> wasmtime::Result<()> {
         match self.rx.await {
-            Ok(Ok(trailers)) => store.with(|mut view| {
+            Some(Ok(trailers)) => store.with(|mut view| {
                 let trailers = trailers
                     .map(|trailers| get_fields_inner(view.table(), &trailers))
                     .transpose()?;
                 _ = self.tx.send(Ok(trailers.as_deref().cloned()));
                 Ok(())
             }),
-            Ok(Err(err)) => {
+            Some(Err(err)) => {
                 _ = self.tx.send(Err(err));
                 Ok(())
             }
-            Err(..) => Ok(()),
+            None => Ok(()),
         }
     }
 }
@@ -217,7 +217,7 @@ where
                     rx: trailers,
                     tx: trailers_tx,
                 });
-                let body = empty_body().with_trailers(GuestRequestTrailers {
+                let body = empty_body().with_trailers(OutgoingRequestTrailers {
                     trailers: Some(trailers_rx),
                     trailer_task: task.abort_handle(),
                 });
@@ -256,8 +256,8 @@ where
                     Some(BodyFrame::Trailers(..)) => bail!("guest body is corrupted"),
                     None => Bytes::default(),
                 };
-                let body = GuestBody::new(BodyContext::Request, contents, buffer, content_length)
-                    .with_trailers(GuestRequestTrailers {
+                let body = OutgoingRequestBody::new(contents, buffer, content_length)
+                    .with_trailers(OutgoingRequestTrailers {
                         trailers: Some(trailers_rx),
                         trailer_task: task.abort_handle(),
                     });

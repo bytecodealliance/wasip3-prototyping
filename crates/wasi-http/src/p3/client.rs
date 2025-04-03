@@ -10,9 +10,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tracing::warn;
 
-use crate::io::TokioIo;
 use crate::p3::bindings::http::types::{DnsErrorPayload, ErrorCode};
 use crate::p3::RequestOptions;
+use crate::{io::TokioIo, p3::IncomingResponseBody};
 
 fn dns_error(rcode: String, info_code: u16) -> ErrorCode {
     ErrorCode::DnsError(DnsErrorPayload {
@@ -105,36 +105,6 @@ impl Client for DefaultClient {
         >,
     > {
         Ok(default_send_request(request, options).await)
-    }
-}
-
-struct IncomingResponseBody {
-    incoming: hyper::body::Incoming,
-    timeout: tokio::time::Interval,
-}
-
-impl http_body::Body for IncomingResponseBody {
-    type Data = <hyper::body::Incoming as http_body::Body>::Data;
-    type Error = ErrorCode;
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-        match Pin::new(&mut self.as_mut().incoming).poll_frame(cx) {
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Ready(Some(Err(err))) => {
-                Poll::Ready(Some(Err(ErrorCode::from_hyper_response_error(err))))
-            }
-            Poll::Ready(Some(Ok(frame))) => {
-                self.timeout.reset();
-                Poll::Ready(Some(Ok(frame)))
-            }
-            Poll::Pending => {
-                ready!(self.timeout.poll_tick(cx));
-                Poll::Ready(Some(Err(ErrorCode::ConnectionReadTimeout)))
-            }
-        }
     }
 }
 
