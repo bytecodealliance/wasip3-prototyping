@@ -14,7 +14,7 @@ use wasmtime_wasi::p3::{ResourceView, WithChildren};
 
 use crate::p3::bindings::http::types::ErrorCode;
 use crate::p3::{
-    empty_body, guest_response_trailers, Body, BodyContext, BodyFrame, ContentLength, GuestBody,
+    empty_body, outgoing_response_trailers, Body, BodyFrame, ContentLength, OutgoingResponseBody,
 };
 
 /// The concrete type behind a `wasi:http/types/response` resource.
@@ -41,9 +41,9 @@ impl Response {
     }
 
     /// Convert [Response] into [http::Response].
-    pub fn into_http<T: ResourceView + 'static>(
+    pub fn into_http<T: ResourceView + Send + 'static>(
         self,
-        mut store: impl AsContextMut<Data = T> + Send + 'static,
+        mut store: impl AsContextMut<Data = T> + Send + Unpin + 'static,
     ) -> anyhow::Result<(
         http::Response<UnsyncBoxBody<Bytes, Option<ErrorCode>>>,
         Option<FutureWriter<Result<(), ErrorCode>>>,
@@ -115,7 +115,7 @@ impl Response {
                 ..
             } => {
                 let body = empty_body()
-                    .with_trailers(guest_response_trailers(store, trailers))
+                    .with_trailers(outgoing_response_trailers(store, trailers))
                     .boxed_unsync();
                 (body, Some(tx))
             }
@@ -131,9 +131,10 @@ impl Response {
                     Some(BodyFrame::Trailers(..)) => bail!("guest body is corrupted"),
                     None => Bytes::default(),
                 };
-                let body = GuestBody::new(BodyContext::Response, contents, buffer, content_length)
-                    .with_trailers(guest_response_trailers(store, trailers))
-                    .boxed_unsync();
+                eprintln!("return body with trailers");
+                let body =
+                    OutgoingResponseBody::new(store, contents, trailers, buffer, content_length)
+                        .boxed_unsync();
                 (body, Some(tx))
             }
             Body::Guest { .. } => bail!("guest body is corrupted"),

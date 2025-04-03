@@ -8,12 +8,13 @@ use core::task::Poll;
 use std::sync::Arc;
 
 use anyhow::{bail, Context as _};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures::join;
 use http::header::CONTENT_LENGTH;
 use http_body::Body as _;
 use wasmtime::component::{
-    Accessor, AccessorTask, FutureWriter, HostFuture, HostStream, Resource, StreamWriter,
+    Accessor, AccessorTask, BytesBuffer, FutureWriter, HostFuture, HostStream, Resource,
+    StreamWriter,
 };
 use wasmtime_wasi::p3::bindings::clocks::monotonic_clock::Duration;
 use wasmtime_wasi::p3::{ResourceView as _, WithChildren};
@@ -112,7 +113,7 @@ type TrailerFuture = HostFuture<Result<Option<Resource<Trailers>>, ErrorCode>>;
 struct BodyTask {
     cx: BodyContext,
     body: Arc<std::sync::Mutex<Body>>,
-    contents_tx: StreamWriter<Bytes>,
+    contents_tx: StreamWriter<BytesBuffer>,
     trailers_tx: FutureWriter<Result<Option<Resource<Trailers>>, ErrorCode>>,
 }
 
@@ -161,7 +162,7 @@ where
                 drop(self.contents_tx);
                 let (watch_reader, trailers_tx) = self.trailers_tx.watch_reader();
                 let mut watch_reader = watch_reader.into_future();
-                let Some(Ok(res)) = poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
+                let Some(Some(res)) = poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
                     Poll::Ready(()) => return Poll::Ready(None),
                     Poll::Pending => trailers_rx.as_mut().poll(cx).map(Some),
                 })
@@ -239,11 +240,14 @@ where
                 let mut contents_tx = self.contents_tx;
                 match buffer {
                     Some(BodyFrame::Data(buf)) => {
-                        let Some(tx_tail) = contents_tx.write(buf.clone()).into_future().await
-                        else {
+                        let (tx_tail, buf) = contents_tx.write_all(buf.into()).into_future().await;
+                        let Some(tx_tail) = tx_tail else {
                             let Ok(mut body) = self.body.lock() else {
                                 bail!("lock poisoned");
                             };
+                            // TODO: split
+                            //buf = buf.into_inner();
+                            let buf = Bytes::copy_from_slice(&buf);
                             *body = Body::Guest {
                                 contents: Some(contents_rx),
                                 trailers: Some(trailers_rx),
@@ -258,14 +262,15 @@ where
                     Some(BodyFrame::Trailers(..)) => bail!("corrupted guest body state"),
                     None => {}
                 }
-                let (watch_reader, mut contents_tx) = contents_tx.watch_reader();
-                let mut watch_reader = watch_reader.into_future();
+                let (contents_tx_drop, mut contents_tx) = contents_tx.watch_reader();
+                let mut contents_tx_drop = contents_tx_drop.into_future();
                 loop {
-                    let Some(rx) = poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
-                        Poll::Ready(()) => return Poll::Ready(None),
-                        Poll::Pending => contents_rx.as_mut().poll(cx).map(Some),
-                    })
-                    .await
+                    let Some((rx_tail, mut rx_buffer)) =
+                        poll_fn(|cx| match contents_tx_drop.as_mut().poll(cx) {
+                            Poll::Ready(()) => return Poll::Ready(None),
+                            Poll::Pending => contents_rx.as_mut().poll(cx).map(Some),
+                        })
+                        .await
                     else {
                         // read handle dropped
                         let Ok(mut body) = self.body.lock() else {
@@ -280,10 +285,12 @@ where
                         };
                         return Ok(());
                     };
-                    let Ok((rx_tail, buf)) = rx else {
+                    let tx_tail = contents_tx.into_inner();
+                    let Some(rx_tail) = rx_tail else {
+                        debug_assert!(rx_buffer.is_empty());
                         if let Some(ContentLength { limit, sent }) = content_length {
                             if limit != sent {
-                                drop(contents_tx.into_inner());
+                                drop(tx_tail);
                                 join!(
                                     async {
                                         tx.write(Err(self.cx.as_body_size_error(sent)))
@@ -303,7 +310,7 @@ where
                         break;
                     };
                     if let Some(ContentLength { limit, sent }) = &mut content_length {
-                        let n = buf.len().try_into().ok();
+                        let n = rx_buffer.len().try_into().ok();
                         let n = n.and_then(|n| sent.checked_add(n));
                         if let Err(n) = n
                             .map(|n| {
@@ -316,7 +323,7 @@ where
                             })
                             .unwrap_or(Err(u64::MAX))
                         {
-                            drop(contents_tx.into_inner());
+                            drop(tx_tail);
                             join!(
                                 async {
                                     tx.write(Err(self.cx.as_body_size_error(n)))
@@ -333,12 +340,16 @@ where
                             return Ok(());
                         }
                     }
-                    contents_rx = rx_tail.read().into_future();
-                    let tx_tail = contents_tx.into_inner();
-                    let Some(tx_tail) = tx_tail.write(buf.clone()).into_future().await else {
+                    let buf = rx_buffer.split().freeze();
+                    contents_rx = rx_tail.read(rx_buffer).into_future();
+                    let (tx_tail, buf) = tx_tail.write_all(buf.into()).into_future().await;
+                    let Some(tx_tail) = tx_tail else {
                         let Ok(mut body) = self.body.lock() else {
                             bail!("lock poisoned");
                         };
+                        // TODO: split
+                        //buf = buf.into_inner();
+                        let buf = Bytes::copy_from_slice(&buf);
                         *body = Body::Guest {
                             contents: Some(contents_rx),
                             trailers: Some(trailers_rx),
@@ -348,15 +359,14 @@ where
                         };
                         return Ok(());
                     };
-                    let (new_watch_reader, new_contents_tx) = tx_tail.watch_reader();
-                    contents_tx = new_contents_tx;
-                    watch_reader = new_watch_reader.into_future();
+                    let (tx_tail_drop, tx_tail) = tx_tail.watch_reader();
+                    contents_tx = tx_tail;
+                    contents_tx_drop = tx_tail_drop.into_future();
                 }
-                drop(contents_tx.into_inner());
 
                 let (watch_reader, trailers_tx) = self.trailers_tx.watch_reader();
                 let mut watch_reader = watch_reader.into_future();
-                let Some(Ok(res)) = poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
+                let Some(Some(res)) = poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
                     Poll::Ready(()) => return Poll::Ready(None),
                     Poll::Pending => trailers_rx.as_mut().poll(cx).map(Some),
                 })
@@ -403,11 +413,14 @@ where
                 let mut contents_tx = self.contents_tx;
                 match buffer {
                     Some(BodyFrame::Data(buf)) => {
-                        let Some(tx_tail) = contents_tx.write(buf.clone()).into_future().await
-                        else {
+                        let (tx_tail, buf) = contents_tx.write_all(buf.into()).into_future().await;
+                        let Some(tx_tail) = tx_tail else {
                             let Ok(mut body) = self.body.lock() else {
                                 bail!("lock poisoned");
                             };
+                            // TODO: split
+                            //buf = buf.into_inner();
+                            let buf = Bytes::copy_from_slice(&buf);
                             *body = Body::Host {
                                 stream: Some(stream),
                                 buffer: Some(BodyFrame::Data(buf)),
@@ -456,12 +469,15 @@ where
                             match frame.into_data().map_err(http_body::Frame::into_trailers) {
                                 Ok(buf) => {
                                     let tx_tail = contents_tx.into_inner();
-                                    let Some(tx_tail) =
-                                        tx_tail.write(buf.clone()).into_future().await
-                                    else {
+                                    let (tx_tail, buf) =
+                                        tx_tail.write_all(buf.into()).into_future().await;
+                                    let Some(tx_tail) = tx_tail else {
                                         let Ok(mut body) = self.body.lock() else {
                                             bail!("lock poisoned");
                                         };
+                                        // TODO: split
+                                        //buf = buf.into_inner();
+                                        let buf = Bytes::copy_from_slice(&buf);
                                         *body = Body::Host {
                                             stream: Some(stream),
                                             buffer: Some(BodyFrame::Data(buf)),
@@ -766,8 +782,12 @@ where
             let (res_tx, res_rx) = instance
                 .future(&mut view)
                 .context("failed to create future")?;
-            let contents =
-                contents.map(|contents| contents.into_reader(&mut view).read().into_future());
+            let contents = contents.map(|contents| {
+                contents
+                    .into_reader(&mut view)
+                    .read(BytesMut::with_capacity(8096))
+                    .into_future()
+            });
             let trailers = trailers.into_reader(&mut view).read().into_future();
             let table = view.table();
             let headers = delete_fields(table, headers)?;
@@ -914,7 +934,7 @@ where
         store.with(|mut view| {
             let instance = view.instance();
             let (contents_tx, contents_rx) = instance
-                .stream(&mut view)
+                .stream::<_, _, Vec<_>, _, _>(&mut view)
                 .context("failed to create stream")?;
             let (trailers_tx, trailers_rx) = instance
                 .future(&mut view)
@@ -1081,8 +1101,12 @@ where
             let (res_tx, res_rx) = instance
                 .future(&mut view)
                 .context("failed to create future")?;
-            let contents =
-                contents.map(|contents| contents.into_reader(&mut view).read().into_future());
+            let contents = contents.map(|contents| {
+                contents
+                    .into_reader(&mut view)
+                    .read(BytesMut::with_capacity(8096))
+                    .into_future()
+            });
             let trailers = trailers.into_reader(&mut view).read().into_future();
             let table = view.table();
             let headers = delete_fields(table, headers)?;
@@ -1134,7 +1158,7 @@ where
         store.with(|mut view| {
             let instance = view.instance();
             let (contents_tx, contents_rx) = instance
-                .stream(&mut view)
+                .stream::<_, _, Vec<_>, _, _>(&mut view)
                 .context("failed to create stream")?;
             let (trailers_tx, trailers_rx) = instance
                 .future(&mut view)

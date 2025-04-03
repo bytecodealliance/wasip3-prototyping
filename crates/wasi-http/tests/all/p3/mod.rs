@@ -179,13 +179,17 @@ async fn run_wasi_http<E: Into<ErrorCode> + 'static>(
     wasmtime_wasi::add_to_linker_async(&mut linker)?;
     wasmtime_wasi_http::p3::add_to_linker(&mut linker)?;
     let proxy = Proxy::instantiate_async(&mut store, &component, &linker).await?;
+    eprintln!("call handle...");
     match proxy.handle(store, req).await? {
         Ok((resp, fut)) => {
+            eprintln!("got resp...");
             let (parts, body) = resp.into_parts();
+            eprintln!("collect body...");
             let body = body
                 .collect()
                 .await
                 .map_err(|err| err.expect("trailer future dropped"))?;
+            eprintln!("collected body");
             if let Some(fut) = fut {
                 let _fut = fut.write(Ok(()));
                 // TODO: Should we await the future, if so, how do we do that after having moved
