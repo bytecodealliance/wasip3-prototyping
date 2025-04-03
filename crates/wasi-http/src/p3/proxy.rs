@@ -30,7 +30,7 @@ impl Proxy {
     /// Call `handle` on [Proxy].
     pub async fn handle<T>(
         &self,
-        mut store: impl AsContextMut<Data = T> + Send + 'static,
+        mut store: impl AsContextMut<Data = T> + Send + Unpin + 'static,
         req: impl Into<Request>,
     ) -> wasmtime::Result<
         Result<

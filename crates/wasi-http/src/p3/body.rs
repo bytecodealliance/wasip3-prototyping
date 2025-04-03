@@ -4,43 +4,34 @@ use core::pin::Pin;
 use core::task::{ready, Context, Poll};
 
 use anyhow::Context as _;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use http::HeaderMap;
 use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::BodyExt as _;
 use tokio::sync::oneshot;
-use wasmtime::component::{AbortOnDropHandle, ErrorContext, FutureWriter, Resource, StreamReader};
+use wasmtime::component::{
+    AbortOnDropHandle, BytesBuffer, ErrorContext, FutureWriter, PromisesUnordered, Resource,
+    StreamReader,
+};
 use wasmtime::AsContextMut;
 use wasmtime_wasi::p3::{ResourceView, WithChildren};
 
 use crate::p3::bindings::http::types::ErrorCode;
 
-pub(crate) type OutgoingContentsStreamFuture = Pin<
-    Box<
-        dyn Future<Output = Result<(StreamReader<Bytes>, Bytes), Option<ErrorContext>>>
-            + Send
-            + 'static,
-    >,
->;
+pub(crate) type OutgoingContentsStreamFuture =
+    Pin<Box<dyn Future<Output = (Option<StreamReader<BytesMut>>, BytesMut)> + Send + 'static>>;
 
 pub(crate) type OutgoingTrailerFuture = Pin<
     Box<
-        dyn Future<
-                Output = Result<
-                    Result<Option<Resource<WithChildren<HeaderMap>>>, ErrorCode>,
-                    Option<ErrorContext>,
-                >,
-            > + Send
+        dyn Future<Output = Option<Result<Option<Resource<WithChildren<HeaderMap>>>, ErrorCode>>>
+            + Send
             + 'static,
     >,
 >;
 
 pub(crate) type OutgoingTrailerFutureMut<'a> = Pin<
     &'a mut (dyn Future<
-        Output = Result<
-            Result<Option<Resource<WithChildren<HeaderMap>>>, ErrorCode>,
-            Option<ErrorContext>,
-        >,
+        Output = Option<Result<Option<Resource<WithChildren<HeaderMap>>>, ErrorCode>>,
     > + Send
                  + 'static),
 >;
@@ -128,13 +119,13 @@ impl Body {
     }
 }
 
-pub(crate) struct GuestRequestTrailers {
+pub(crate) struct OutgoingRequestTrailers {
     pub trailers: Option<oneshot::Receiver<Result<Option<HeaderMap>, ErrorCode>>>,
     #[allow(dead_code)]
     pub trailer_task: AbortOnDropHandle,
 }
 
-impl Future for GuestRequestTrailers {
+impl Future for OutgoingRequestTrailers {
     type Output = Option<Result<HeaderMap, Option<ErrorCode>>>;
 
     fn poll(
@@ -155,13 +146,13 @@ impl Future for GuestRequestTrailers {
     }
 }
 
-fn poll_guest_response_trailers<T: ResourceView>(
+fn poll_outgoing_response_trailers<T: ResourceView>(
     cx: &mut Context<'_>,
     mut store: impl AsContextMut<Data = T>,
     trailers: OutgoingTrailerFutureMut<'_>,
 ) -> Poll<Option<Result<HeaderMap, Option<ErrorCode>>>> {
     match ready!(trailers.poll(cx)) {
-        Ok(Ok(Some(trailers))) => {
+        Some(Ok(Some(trailers))) => {
             let mut store = store.as_context_mut();
             let table = store.data_mut().table();
             match table
@@ -178,28 +169,28 @@ fn poll_guest_response_trailers<T: ResourceView>(
                 ))))))),
             }
         }
-        Ok(Ok(None)) => Poll::Ready(None),
-        Ok(Err(err)) => Poll::Ready(Some(Err(Some(err)))),
-        Err(..) => Poll::Ready(Some(Err(None))),
+        Some(Ok(None)) => Poll::Ready(None),
+        Some(Err(err)) => Poll::Ready(Some(Err(Some(err)))),
+        None => Poll::Ready(Some(Err(None))),
     }
 }
 
-pub(crate) async fn guest_response_trailers<T>(
+pub(crate) async fn outgoing_response_trailers<T>(
     mut store: impl AsContextMut<Data = T>,
     mut trailers: OutgoingTrailerFuture,
 ) -> Option<Result<HeaderMap, Option<ErrorCode>>>
 where
     T: ResourceView,
 {
-    poll_fn(move |cx| poll_guest_response_trailers(cx, &mut store, trailers.as_mut())).await
+    poll_fn(move |cx| poll_outgoing_response_trailers(cx, &mut store, trailers.as_mut())).await
 }
 
-pub(crate) struct GuestResponseTrailers<T> {
+pub(crate) struct OutgoingResponseTrailers<T> {
     pub store: T,
     pub trailers: Option<OutgoingTrailerFuture>,
 }
 
-impl<T> Future for GuestResponseTrailers<T>
+impl<T> Future for OutgoingResponseTrailers<T>
 where
     T: AsContextMut + Unpin,
     T::Data: ResourceView,
@@ -214,7 +205,11 @@ where
         else {
             return Poll::Ready(None);
         };
-        let trailers = ready!(poll_guest_response_trailers(cx, store, trailers.as_mut()));
+        let trailers = ready!(poll_outgoing_response_trailers(
+            cx,
+            store,
+            trailers.as_mut()
+        ));
         self.trailers = None;
         Poll::Ready(trailers)
     }
@@ -236,31 +231,40 @@ impl ContentLength {
     }
 }
 
-/// Body constructed by the guest
-pub(crate) struct GuestBody {
-    pub cx: BodyContext,
-    pub contents: Option<OutgoingContentsStreamFuture>,
-    pub buffer: Bytes,
-    pub content_length: Option<ContentLength>,
+/// Response body constructed by the guest
+pub(crate) struct OutgoingResponseBody<T> {
+    store: T,
+    contents: Option<OutgoingContentsStreamFuture>,
+    trailers: Option<OutgoingTrailerFuture>,
+    buffer: Bytes,
+    content_length: Option<ContentLength>,
+    promises: PromisesUnordered<Result<(StreamReader<Bytes>, Bytes), Option<ErrorContext>>>,
 }
 
-impl GuestBody {
+impl<T> OutgoingResponseBody<T> {
     pub fn new(
-        cx: BodyContext,
+        store: T,
         contents: OutgoingContentsStreamFuture,
+        trailers: OutgoingTrailerFuture,
         buffer: Bytes,
         content_length: Option<ContentLength>,
     ) -> Self {
         Self {
-            cx,
+            store,
             contents: Some(contents),
+            trailers: Some(trailers),
             buffer,
             content_length,
+            promises: PromisesUnordered::new(),
         }
     }
 }
 
-impl http_body::Body for GuestBody {
+impl<T> http_body::Body for OutgoingResponseBody<T>
+where
+    T: AsContextMut + Send + Unpin,
+    T::Data: ResourceView + Send,
+{
     type Data = Bytes;
     type Error = Option<ErrorCode>;
 
@@ -272,13 +276,13 @@ impl http_body::Body for GuestBody {
             let buffer = mem::take(&mut self.buffer);
             if let Some(ContentLength { limit, sent }) = &mut self.content_length {
                 let Ok(n) = buffer.len().try_into() else {
-                    return Poll::Ready(Some(Err(Some(self.cx.as_body_size_error(u64::MAX)))));
+                    return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(None)))));
                 };
                 let Some(n) = sent.checked_add(n) else {
-                    return Poll::Ready(Some(Err(Some(self.cx.as_body_size_error(u64::MAX)))));
+                    return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(None)))));
                 };
                 if n > *limit {
-                    return Poll::Ready(Some(Err(Some(self.cx.as_body_size_error(n)))));
+                    return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(Some(n))))));
                 }
                 *sent = n;
             }
@@ -287,28 +291,132 @@ impl http_body::Body for GuestBody {
         let Some(stream) = &mut self.contents else {
             return Poll::Ready(None);
         };
-        match ready!(Pin::new(stream).poll(cx)) {
-            Ok((tail, buf)) => {
-                self.contents = Some(tail.read().into_future());
+        todo!()
+        //self.contents.poll_promise(cx, &mut self.store);
+        //core::pin::pin!(&mut self.promises.next(&mut self.store)).poll(cx);
+        //match ready!(Pin::new(stream).poll(cx)) {
+        //    Ok((tail, buf)) => {
+        //        core::pin::pin!(tail.read().get(&mut self.store)).poll(cx);
+        //        if let Some(ContentLength { limit, sent }) = &mut self.content_length {
+        //            let Ok(n) = buf.len().try_into() else {
+        //                return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(None)))));
+        //            };
+        //            let Some(n) = sent.checked_add(n) else {
+        //                return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(None)))));
+        //            };
+        //            if n > *limit {
+        //                return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(Some(
+        //                    n,
+        //                ))))));
+        //            }
+        //            *sent = n;
+        //        }
+        //        Poll::Ready(Some(Ok(http_body::Frame::data(buf))))
+        //    }
+        //    Err(..) => {
+        //        self.contents = None;
+        //        if let Some(ContentLength { limit, sent }) = self.content_length {
+        //            if limit != sent {
+        //                return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(Some(
+        //                    sent,
+        //                ))))));
+        //            }
+        //        }
+        //        Poll::Ready(None)
+        //    }
+        //}
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.contents.is_none()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        if let Some(ContentLength { limit, sent }) = self.content_length {
+            http_body::SizeHint::with_exact(limit.saturating_sub(sent))
+        } else {
+            http_body::SizeHint::default()
+        }
+    }
+}
+
+/// Request body constructed by the guest
+pub(crate) struct OutgoingRequestBody {
+    pub contents: Option<OutgoingContentsStreamFuture>,
+    pub buffer: Bytes,
+    pub content_length: Option<ContentLength>,
+}
+
+impl OutgoingRequestBody {
+    pub fn new(
+        contents: OutgoingContentsStreamFuture,
+        buffer: Bytes,
+        content_length: Option<ContentLength>,
+    ) -> Self {
+        Self {
+            contents: Some(contents),
+            buffer,
+            content_length,
+        }
+    }
+}
+
+impl http_body::Body for OutgoingRequestBody {
+    type Data = Bytes;
+    type Error = Option<ErrorCode>;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        if !self.buffer.is_empty() {
+            let buffer = mem::take(&mut self.buffer);
+            if let Some(ContentLength { limit, sent }) = &mut self.content_length {
+                let Ok(n) = buffer.len().try_into() else {
+                    return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(None)))));
+                };
+                let Some(n) = sent.checked_add(n) else {
+                    return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(None)))));
+                };
+                if n > *limit {
+                    return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(Some(n))))));
+                }
+                *sent = n;
+            }
+            return Poll::Ready(Some(Ok(http_body::Frame::data(buffer))));
+        }
+        let Some(stream) = &mut self.contents else {
+            return Poll::Ready(None);
+        };
+        let (tail, mut buf) = ready!(Pin::new(stream).poll(cx));
+        match tail {
+            Some(tail) => {
+                let frame = buf.split();
+                self.contents = Some(tail.read(buf).into_future());
                 if let Some(ContentLength { limit, sent }) = &mut self.content_length {
-                    let Ok(n) = buf.len().try_into() else {
-                        return Poll::Ready(Some(Err(Some(self.cx.as_body_size_error(u64::MAX)))));
+                    let Ok(n) = frame.len().try_into() else {
+                        return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(None)))));
                     };
                     let Some(n) = sent.checked_add(n) else {
-                        return Poll::Ready(Some(Err(Some(self.cx.as_body_size_error(u64::MAX)))));
+                        return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(None)))));
                     };
                     if n > *limit {
-                        return Poll::Ready(Some(Err(Some(self.cx.as_body_size_error(n)))));
+                        return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(Some(
+                            n,
+                        ))))));
                     }
                     *sent = n;
                 }
-                Poll::Ready(Some(Ok(http_body::Frame::data(buf))))
+                Poll::Ready(Some(Ok(http_body::Frame::data(frame.freeze()))))
             }
-            Err(..) => {
+            None => {
+                debug_assert!(buf.is_empty());
                 self.contents = None;
                 if let Some(ContentLength { limit, sent }) = self.content_length {
                     if limit != sent {
-                        return Poll::Ready(Some(Err(Some(self.cx.as_body_size_error(sent)))));
+                        return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(Some(
+                            sent,
+                        ))))));
                     }
                 }
                 Poll::Ready(None)
@@ -326,5 +434,43 @@ impl http_body::Body for GuestBody {
         } else {
             http_body::SizeHint::default()
         }
+    }
+}
+
+pub(crate) struct IncomingResponseBody {
+    pub incoming: hyper::body::Incoming,
+    pub timeout: tokio::time::Interval,
+}
+
+impl http_body::Body for IncomingResponseBody {
+    type Data = <hyper::body::Incoming as http_body::Body>::Data;
+    type Error = ErrorCode;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        match Pin::new(&mut self.as_mut().incoming).poll_frame(cx) {
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Ready(Some(Err(err))) => {
+                Poll::Ready(Some(Err(ErrorCode::from_hyper_response_error(err))))
+            }
+            Poll::Ready(Some(Ok(frame))) => {
+                self.timeout.reset();
+                Poll::Ready(Some(Ok(frame)))
+            }
+            Poll::Pending => {
+                ready!(self.timeout.poll_tick(cx));
+                Poll::Ready(Some(Err(ErrorCode::ConnectionReadTimeout)))
+            }
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.incoming.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.incoming.size_hint()
     }
 }
