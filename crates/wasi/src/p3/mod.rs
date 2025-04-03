@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 use wasmtime::component::{
     AbortOnDropHandle, Accessor, AccessorTask, FutureWriter, Linker, Lower, ResourceTable,
-    StreamWriter,
+    StreamWriter, VecBuffer,
 };
 
 use crate::p3::bindings::LinkOptions;
@@ -152,7 +152,7 @@ where
 }
 
 pub struct IoTask<T, E> {
-    pub data: StreamWriter<Vec<T>>,
+    pub data: StreamWriter<VecBuffer<T>>,
     pub result: FutureWriter<Result<(), E>>,
     pub rx: mpsc::Receiver<Result<Vec<T>, E>>,
 }
@@ -171,8 +171,8 @@ where
                     break Ok(());
                 }
                 Some(Ok(buf)) => {
-                    let fut = tx.write(buf);
-                    let Some(tail) = fut.into_future().await else {
+                    let fut = tx.write_all(buf.into());
+                    let (Some(tail), _) = fut.into_future().await else {
                         break Ok(());
                     };
                     tx = tail;

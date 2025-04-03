@@ -3,13 +3,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use component_async_tests::Ctx;
 use tokio::fs;
 use wasi_http_draft::wasi::http::types::{ErrorCode, Method, Scheme};
 use wasi_http_draft::{Body, Fields, Request, Response};
 use wasmtime::component::{
-    Accessor, Component, ErrorContext, Linker, PromisesUnordered, Resource, ResourceTable,
+    Accessor, BytesBuffer, Component, Linker, PromisesUnordered, Resource, ResourceTable,
     StreamReader, StreamWriter,
 };
 use wasmtime::{Config, Engine, Store};
@@ -157,27 +157,27 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
     let body = b"And the mome raths outgrabe";
 
     enum Event {
-        RequestBodyWrite(Option<StreamWriter<Bytes>>),
+        RequestBodyWrite(Option<StreamWriter<BytesBuffer>>),
         RequestTrailersWrite(bool),
         Response(Result<Resource<Response>, ErrorCode>),
-        ResponseBodyRead(Result<(StreamReader<Bytes>, Bytes), Option<ErrorContext>>),
-        ResponseTrailersRead(Result<Resource<Fields>, Option<ErrorContext>>),
+        ResponseBodyRead(Option<StreamReader<BytesMut>>, BytesMut),
+        ResponseTrailersRead(Option<Resource<Fields>>),
     }
 
     let mut promises = PromisesUnordered::new();
 
-    let (request_body_tx, request_body_rx) = instance.stream(&mut store)?;
+    let (request_body_tx, request_body_rx) = instance.stream::<_, _, BytesMut, _, _>(&mut store)?;
 
     promises.push(
         request_body_tx
-            .write(if use_compression {
+            .write_all(if use_compression {
                 let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
                 encoder.write_all(body)?;
-                Bytes::from(encoder.finish()?)
+                Bytes::from(encoder.finish()?).into()
             } else {
-                Bytes::copy_from_slice(body)
+                Bytes::copy_from_slice(body).into()
             })
-            .map(Event::RequestBodyWrite),
+            .map(|(w, _)| Event::RequestBodyWrite(w)),
     );
 
     let trailers = vec![("fizz".into(), b"buzz".into())];
@@ -268,17 +268,16 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
                         .stream
                         .take()
                         .unwrap()
-                        .read()
-                        .map(Event::ResponseBodyRead),
+                        .read(BytesMut::with_capacity(8096))
+                        .map(|(r, b)| Event::ResponseBodyRead(r, b)),
                 );
             }
-            Event::ResponseBodyRead(Ok((rx, chunk))) => {
-                response_body.extend(chunk);
-                promises.push(rx.read().map(Event::ResponseBodyRead));
+            Event::ResponseBodyRead(Some(rx), mut buffer) => {
+                response_body.extend(&buffer);
+                buffer.clear();
+                promises.push(rx.read(buffer).map(|(r, b)| Event::ResponseBodyRead(r, b)));
             }
-            Event::ResponseBodyRead(Err(e)) => {
-                assert!(e.is_none());
-
+            Event::ResponseBodyRead(None, _) => {
                 let response_body = if use_compression {
                     let mut decoder = DeflateDecoder::new(Vec::new());
                     decoder.write_all(&response_body)?;
@@ -297,7 +296,7 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
                         .map(Event::ResponseTrailersRead),
                 );
             }
-            Event::ResponseTrailersRead(Ok(response_trailers)) => {
+            Event::ResponseTrailersRead(Some(response_trailers)) => {
                 let response_trailers =
                     IoView::table(store.data_mut()).delete(response_trailers)?;
 
@@ -308,7 +307,7 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
 
                 received_trailers = true;
             }
-            Event::ResponseTrailersRead(Err(_)) => panic!("expected response trailers; got none"),
+            Event::ResponseTrailersRead(None) => panic!("expected response trailers; got none"),
         }
     }
 

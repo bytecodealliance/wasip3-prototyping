@@ -1,7 +1,8 @@
 use anyhow::{anyhow, Context as _};
+use bytes::BytesMut;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use wasmtime::component::{
-    Accessor, AccessorTask, HostStream, Resource, StreamReader, StreamWriter,
+    Accessor, AccessorTask, BytesMutBuffer, HostStream, Resource, StreamReader, StreamWriter,
 };
 
 use crate::p3::bindings::cli::{
@@ -13,7 +14,7 @@ use crate::p3::ResourceView as _;
 
 struct InputTask<T> {
     input: T,
-    tx: StreamWriter<Vec<u8>>,
+    tx: StreamWriter<BytesMutBuffer>,
 }
 
 impl<T, U, V> AccessorTask<T, U, wasmtime::Result<()>> for InputTask<V>
@@ -22,16 +23,19 @@ where
 {
     async fn run(mut self, _: &mut Accessor<T, U>) -> wasmtime::Result<()> {
         let mut tx = self.tx;
+        let mut buf = BytesMut::with_capacity(8096);
         loop {
-            let mut buf = vec![0; 8096];
-            match self.input.read(&mut buf).await {
+            match self.input.read_buf(&mut buf).await {
                 Ok(0) => return Ok(()),
-                Ok(n) => {
-                    buf.truncate(n);
-                    let Some(tail) = tx.write(buf).into_future().await else {
+                Ok(_) => {
+                    let (Some(tail), buf_again) =
+                        tx.write_all(BytesMutBuffer::from(buf)).into_future().await
+                    else {
                         break Ok(());
                     };
                     tx = tail;
+                    buf = buf_again.into_inner();
+                    buf.clear();
                 }
                 Err(_err) => {
                     // TODO: Close the stream with an error context
@@ -45,7 +49,7 @@ where
 
 struct OutputTask<T> {
     output: T,
-    data: StreamReader<Vec<u8>>,
+    data: StreamReader<BytesMut>,
 }
 
 impl<T, U, V> AccessorTask<T, U, wasmtime::Result<()>> for OutputTask<V>
@@ -53,27 +57,24 @@ where
     V: AsyncWrite + Send + Sync + Unpin + 'static,
 {
     async fn run(mut self, _: &mut Accessor<T, U>) -> wasmtime::Result<()> {
-        let mut fut = self.data.read().into_future();
-        'outer: loop {
-            let Ok((tail, buf)) = fut.await else {
+        let mut buf = BytesMut::with_capacity(8096);
+        let mut fut = self.data.read(buf).into_future();
+        loop {
+            let (Some(tail), buf_again) = fut.await else {
                 return Ok(());
             };
-            let mut buf = buf.as_slice();
-            loop {
-                match self.output.write(&buf).await {
-                    Ok(n) => {
-                        if n == buf.len() {
-                            fut = tail.read().into_future();
-                            continue 'outer;
-                        } else {
-                            buf = &buf[n..];
-                        }
-                    }
-                    Err(_err) => {
-                        // TODO: Report the error to the guest
-                        drop(tail);
-                        return Ok(());
-                    }
+
+            buf = buf_again;
+            match self.output.write_all(&buf).await {
+                Ok(()) => {
+                    buf.clear();
+                    fut = tail.read(buf).into_future();
+                    continue;
+                }
+                Err(_err) => {
+                    // TODO: Report the error to the guest
+                    drop(tail);
+                    return Ok(());
                 }
             }
         }
@@ -168,7 +169,7 @@ where
         store.with(|mut view| {
             let instance = view.instance();
             let (tx, rx) = instance
-                .stream(&mut view)
+                .stream::<_, _, Vec<_>, _, _>(&mut view)
                 .context("failed to create stream")?;
             let stdin = view.cli().stdin.reader();
             view.spawn(InputTask { input: stdin, tx });

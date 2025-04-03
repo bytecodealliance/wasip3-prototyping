@@ -15,20 +15,18 @@ use {
         AsContextMut, StoreContextMut, ValRaw,
     },
     anyhow::{anyhow, bail, Context, Result},
-    bytes::Bytes,
     futures::{
         channel::{mpsc, oneshot},
         future::{self, FutureExt},
         stream::StreamExt,
     },
     std::{
-        any::Any,
         boxed::Box,
         future::Future,
         iter,
         marker::PhantomData,
         mem::{self, MaybeUninit},
-        ops::{Deref, DerefMut},
+        ops::DerefMut,
         ptr::NonNull,
         string::{String, ToString},
         sync::{
@@ -44,6 +42,10 @@ use {
         TypeComponentLocalErrorContextTableIndex, TypeFutureTableIndex, TypeStreamTableIndex,
     },
 };
+
+pub use buffers::{BytesBuffer, BytesMutBuffer, ReadBuffer, Single, VecBuffer, WriteBuffer};
+
+mod buffers;
 
 const BLOCKED: usize = 0xffff_ffff;
 const CLOSED: usize = 0x8000_0000;
@@ -62,12 +64,9 @@ enum PostWrite {
     Close,
 }
 
-pub(crate) enum HostReadResult<B> {
-    /// Values sent to the stream
-    Values(B),
-    /// When host streams end, they may have an attached error-context
-    #[allow(unused)]
-    EndOfStream(Option<ErrorContext>),
+struct HostResult<B> {
+    buffer: B,
+    closed: bool,
 }
 
 fn payload(ty: TableIndex, types: &Arc<ComponentTypes>) -> Option<InterfaceType> {
@@ -115,11 +114,9 @@ fn waitable_state(ty: TableIndex, state: StreamFutureState) -> WaitableState {
     }
 }
 
-fn accept<T: func::Lower + Send + Sync + 'static, B: Buffer<T>, U>(
-    values: B,
-    mut offset: usize,
-    transmit_id: TableId<TransmitState>,
-    tx: oneshot::Sender<()>,
+fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U>(
+    mut buffer: B,
+    tx: oneshot::Sender<HostResult<B>>,
 ) -> impl FnOnce(&mut ComponentInstance, Reader) -> Result<usize> + Send + Sync + 'static {
     move |instance, reader| {
         let count = match reader {
@@ -143,35 +140,94 @@ fn accept<T: func::Lower + Send + Sync + 'static, B: Buffer<T>, U>(
                     .and_then(|b| b.get_mut(..T::SIZE32 * count))
                     .ok_or_else(|| anyhow::anyhow!("read pointer out of bounds of memory"))?;
 
-                let count = (values.len() - offset).min(usize::try_from(count).unwrap());
+                let count = buffer.remaining().min(usize::try_from(count).unwrap());
 
                 if let Some(ty) = payload(ty, types) {
-                    T::store_list(lower, ty, address, &values[offset..][..count])?;
-                }
-                offset += count;
-
-                if offset < values.len() {
-                    let transmit = instance.get_mut(transmit_id)?;
-                    assert!(matches!(&transmit.write, WriteState::Open));
-
-                    transmit.write = WriteState::HostReady {
-                        accept: Box::new(accept::<T, B, U>(values, offset, transmit_id, tx)),
-                        post_write: PostWrite::Continue,
-                    };
-                } else {
-                    _ = tx.send(());
+                    T::store_list(lower, ty, address, &buffer[..count])?;
                 }
 
+                buffer.skip(count);
+                _ = tx.send(HostResult {
+                    buffer,
+                    closed: false,
+                });
                 count
             }
             Reader::Host { accept } => {
-                assert!(offset == 0); // todo: do we need to handle offset != 0?
-                let count = values.len();
-                accept(Box::new(values))?;
-                _ = tx.send(());
+                let count = accept(buffer.as_ptr().cast(), buffer.remaining());
+                buffer.forget(count);
+                _ = tx.send(HostResult {
+                    buffer,
+                    closed: false,
+                });
                 count
             }
-            Reader::End => 0,
+            Reader::End => {
+                _ = tx.send(HostResult {
+                    buffer,
+                    closed: true,
+                });
+                CLOSED
+            }
+        };
+
+        Ok(count)
+    }
+}
+
+fn accept_writer<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
+    mut buffer: B,
+    tx: oneshot::Sender<HostResult<B>>,
+) -> impl FnOnce(Writer) -> Result<usize> + Send + Sync + 'static {
+    move |writer| {
+        let count = match writer {
+            Writer::Guest {
+                lift,
+                ty,
+                address,
+                count,
+            } => {
+                let count = count.min(buffer.remaining_capacity());
+                if T::IS_RUST_UNIT_TYPE {
+                    buffer.extend(
+                        iter::repeat_with(|| unsafe { MaybeUninit::uninit().assume_init() })
+                            .take(count),
+                    )
+                } else {
+                    let ty = ty.unwrap();
+                    if address % usize::try_from(T::ALIGN32)? != 0 {
+                        bail!("write pointer not aligned");
+                    }
+                    lift.memory()
+                        .get(address..)
+                        .and_then(|b| b.get(..T::SIZE32 * count))
+                        .ok_or_else(|| anyhow::anyhow!("write pointer out of bounds of memory"))?;
+
+                    let list = &WasmList::new(address, count, lift, ty)?;
+                    T::load_into(lift, list, &mut buffer, count)?
+                }
+                _ = tx.send(HostResult {
+                    buffer,
+                    closed: false,
+                });
+                count
+            }
+            Writer::Host { pointer, count } => {
+                let count = count.min(buffer.remaining_capacity());
+                unsafe { buffer.copy_from(pointer.cast(), count) };
+                _ = tx.send(HostResult {
+                    buffer,
+                    closed: false,
+                });
+                count
+            }
+            Writer::End => {
+                _ = tx.send(HostResult {
+                    buffer,
+                    closed: true,
+                });
+                CLOSED
+            }
         };
 
         Ok(count)
@@ -202,21 +258,24 @@ pub(super) struct FlatAbi {
     pub(super) align: u32,
 }
 
-enum StreamOrFutureEvent<B> {
+enum WriteEvent<B> {
     Write {
-        values: B,
-        post_write: PostWrite,
+        buffer: B,
+        tx: oneshot::Sender<HostResult<B>>,
+    },
+    Close,
+    Watch {
         tx: oneshot::Sender<()>,
     },
-    CloseWriter,
-    WatchWriter {
-        tx: oneshot::Sender<()>,
-    },
+}
+
+enum ReadEvent<B> {
     Read {
-        tx: oneshot::Sender<HostReadResult<B>>,
+        buffer: B,
+        tx: oneshot::Sender<HostResult<B>>,
     },
-    CloseReader,
-    WatchReader {
+    Close,
+    Watch {
         tx: oneshot::Sender<()>,
     },
 }
@@ -234,34 +293,6 @@ fn send<T>(tx: &mut mpsc::Sender<T>, value: T) {
         }
     }
 }
-
-/// Trivial container type for sending exactly one element at a time to a
-/// `StringWriter`.
-pub struct Single<T>(pub T);
-
-impl<T> Deref for Single<T> {
-    type Target = [T];
-
-    fn deref(&self) -> &[T] {
-        // TODO: Is there a safe way to do this?
-        unsafe { std::slice::from_raw_parts(&self.0, 1) }
-    }
-}
-
-impl<T> From<Vec<T>> for Single<T> {
-    fn from(vec: Vec<T>) -> Self {
-        assert_eq!(vec.len(), 1);
-        Self(vec.into_iter().next().unwrap())
-    }
-}
-
-pub trait Buffer<T>: Deref<Target = [T]> + From<Vec<T>> + Send + Sync + 'static {}
-
-impl<T: Send + Sync + 'static> Buffer<T> for Vec<T> {}
-
-impl Buffer<u8> for Bytes {}
-
-impl<T: Send + Sync + 'static> Buffer<T> for Single<T> {}
 
 pub trait Ready {
     fn ready(&mut self) -> impl Future<Output = ()> + Send;
@@ -336,12 +367,12 @@ fn watch<T: Send + 'static>(
 pub struct FutureWriter<T> {
     instance: SendSyncPtr<ComponentInstance>,
     id: StoreId,
-    tx: Option<mpsc::Sender<StreamOrFutureEvent<Single<T>>>>,
+    tx: Option<mpsc::Sender<WriteEvent<Single<T>>>>,
 }
 
 impl<T> FutureWriter<T> {
     fn new(
-        tx: Option<mpsc::Sender<StreamOrFutureEvent<Single<T>>>>,
+        tx: Option<mpsc::Sender<WriteEvent<Single<T>>>>,
         instance: &mut ComponentInstance,
     ) -> Self {
         Self {
@@ -363,9 +394,8 @@ impl<T> FutureWriter<T> {
         let (tx, rx) = oneshot::channel();
         send(
             &mut self.tx.as_mut().unwrap(),
-            StreamOrFutureEvent::Write {
-                values: Single(value),
-                post_write: PostWrite::Continue,
+            WriteEvent::Write {
+                buffer: Single::new(value),
                 tx,
             },
         );
@@ -374,7 +404,10 @@ impl<T> FutureWriter<T> {
         Promise {
             inner: Box::pin(rx.map(move |v| {
                 drop(self);
-                v.is_ok()
+                match v {
+                    Ok(HostResult { closed, .. }) => !closed,
+                    Err(_) => todo!("guarantee buffer recovery if event loop errors or panics"),
+                }
             })),
             instance,
             id,
@@ -393,10 +426,7 @@ impl<T> FutureWriter<T> {
         T: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
-        send(
-            &mut self.tx.as_mut().unwrap(),
-            StreamOrFutureEvent::WatchReader { tx },
-        );
+        send(&mut self.tx.as_mut().unwrap(), WriteEvent::Watch { tx });
         let instance = self.instance;
         let id = self.id;
         watch(instance, id, rx, self)
@@ -412,7 +442,7 @@ impl<T: Send> Ready for FutureWriter<T> {
 impl<T> Drop for FutureWriter<T> {
     fn drop(&mut self) {
         if let Some(mut tx) = self.tx.take() {
-            send(&mut tx, StreamOrFutureEvent::CloseWriter);
+            send(&mut tx, WriteEvent::Close);
         }
     }
 }
@@ -454,7 +484,7 @@ impl<T> HostFuture<T> {
             instance: self.instance,
             id: self.id,
             rep: self.rep,
-            tx: Some(instance.start_event_loop::<_, _, U>(self.rep)),
+            tx: Some(instance.start_read_event_loop::<_, _, U>(self.rep)),
         }
     }
 
@@ -587,13 +617,13 @@ pub struct FutureReader<T> {
     instance: SendSyncPtr<ComponentInstance>,
     id: StoreId,
     rep: u32,
-    tx: Option<mpsc::Sender<StreamOrFutureEvent<Single<T>>>>,
+    tx: Option<mpsc::Sender<ReadEvent<Single<T>>>>,
 }
 
 impl<T> FutureReader<T> {
     fn new(
         rep: u32,
-        tx: Option<mpsc::Sender<StreamOrFutureEvent<Single<T>>>>,
+        tx: Option<mpsc::Sender<ReadEvent<Single<T>>>>,
         instance: &mut ComponentInstance,
     ) -> Self {
         Self {
@@ -606,27 +636,35 @@ impl<T> FutureReader<T> {
 
     /// Read the value from this `future`.
     ///
-    /// The returned `Promise` will yield `Err(None)` if the guest has trapped
-    /// before it could produce a result.
-    pub fn read(mut self) -> Promise<Result<T, Option<ErrorContext>>>
+    /// The returned `Promise` will yield `None` if the guest has trapped
+    /// before it could produce a result or if the write end belonged to the
+    /// host and was dropped without writing a result.
+    pub fn read(mut self) -> Promise<Option<T>>
     where
         T: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
         send(
             &mut self.tx.as_mut().unwrap(),
-            StreamOrFutureEvent::Read { tx },
+            ReadEvent::Read {
+                buffer: Single::default(),
+                tx,
+            },
         );
         let instance = self.instance;
         let id = self.id;
         Promise {
             inner: Box::pin(rx.map(move |v| {
                 drop(self);
-                match v {
-                    Ok(HostReadResult::Values(v)) => Ok(v.0),
-                    Ok(HostReadResult::EndOfStream(None)) => unreachable!(),
-                    Err(_) => Err(None),
-                    Ok(HostReadResult::EndOfStream(s)) => Err(s),
+
+                if let Ok(HostResult {
+                    mut buffer,
+                    closed: false,
+                }) = v
+                {
+                    buffer.take()
+                } else {
+                    None
                 }
             })),
             instance,
@@ -646,10 +684,7 @@ impl<T> FutureReader<T> {
         T: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
-        send(
-            &mut self.tx.as_mut().unwrap(),
-            StreamOrFutureEvent::WatchWriter { tx },
-        );
+        send(&mut self.tx.as_mut().unwrap(), ReadEvent::Watch { tx });
         let instance = self.instance;
         let id = self.id;
         watch(instance, id, rx, self)
@@ -665,7 +700,7 @@ impl<T: Send> Ready for FutureReader<T> {
 impl<T> Drop for FutureReader<T> {
     fn drop(&mut self) {
         if let Some(mut tx) = self.tx.take() {
-            send(&mut tx, StreamOrFutureEvent::CloseReader);
+            send(&mut tx, ReadEvent::Close);
         }
     }
 }
@@ -674,14 +709,11 @@ impl<T> Drop for FutureReader<T> {
 pub struct StreamWriter<B> {
     instance: SendSyncPtr<ComponentInstance>,
     id: StoreId,
-    tx: Option<mpsc::Sender<StreamOrFutureEvent<B>>>,
+    tx: Option<mpsc::Sender<WriteEvent<B>>>,
 }
 
 impl<B> StreamWriter<B> {
-    fn new(
-        tx: Option<mpsc::Sender<StreamOrFutureEvent<B>>>,
-        instance: &mut ComponentInstance,
-    ) -> Self {
+    fn new(tx: Option<mpsc::Sender<WriteEvent<B>>>, instance: &mut ComponentInstance) -> Self {
         Self {
             instance: SendSyncPtr::new(NonNull::new(instance).unwrap()),
             id: unsafe { (*instance.store()).store_opaque().id() },
@@ -689,30 +721,61 @@ impl<B> StreamWriter<B> {
         }
     }
 
-    /// Write the specified values to the `stream`.
+    /// Write the specified items to the `stream`.
     ///
-    /// The returned `Promise` will yield `None` if the read end has been closed
-    /// before it could accept all of the values; otherwise it will yield
-    /// `self`.
-    pub fn write(mut self, values: B) -> Promise<Option<StreamWriter<B>>>
+    /// Note that this will only write as many items as the reader accepts
+    /// during its current or next read.  Use `write_all` to loop until the
+    /// buffer is drained or the read end is closed.
+    ///
+    /// The returned `Promise` will yield a `(Some(_), _)` if the write
+    /// completed (possibly consuming a subset of the items or nothing depending
+    /// on the number of items the reader accepted).  It will return `(None, _)`
+    /// if the write failed due to the closure of the read end.  In either case,
+    /// the returned buffer will be the same one passed as a parameter, possibly
+    /// mutated to consume any written values.
+    pub fn write(mut self, buffer: B) -> Promise<(Option<StreamWriter<B>>, B)>
     where
         B: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
-        send(
-            self.tx.as_mut().unwrap(),
-            StreamOrFutureEvent::Write {
-                values,
-                post_write: PostWrite::Continue,
-                tx,
-            },
-        );
+        send(self.tx.as_mut().unwrap(), WriteEvent::Write { buffer, tx });
         let instance = self.instance;
         let id = self.id;
         Promise {
-            inner: Box::pin(rx.map(|v| match v {
-                Ok(()) => Some(self),
-                Err(_) => None,
+            inner: Box::pin(rx.map(move |v| match v {
+                Ok(HostResult { buffer, closed }) => ((!closed).then_some(self), buffer),
+                Err(_) => todo!("guarantee buffer recovery if event loop errors or panics"),
+            })),
+            instance,
+            id,
+        }
+    }
+
+    /// Write the specified values until either the buffer is drained or the
+    /// read end is closed.
+    ///
+    /// The returned `Promise` will yield a `(Some(_), _)` if the write
+    /// completed (i.e. all the items were accepted).  It will return `(None,
+    /// _)` if the write failed due to the closure of the read end.  In either
+    /// case, the returned buffer will be the same one passed as a parameter,
+    /// possibly mutated to consume any written values.
+    pub fn write_all<T>(self, buffer: B) -> Promise<(Option<StreamWriter<B>>, B)>
+    where
+        B: WriteBuffer<T>,
+    {
+        let instance = self.instance;
+        let id = self.id;
+        Promise {
+            inner: Box::pin(self.write(buffer).inner.then(|(me, buffer)| async move {
+                if let Some(me) = me {
+                    if buffer.remaining() > 0 {
+                        me.write_all(buffer).inner.await
+                    } else {
+                        (Some(me), buffer)
+                    }
+                } else {
+                    (None, buffer)
+                }
             })),
             instance,
             id,
@@ -731,10 +794,7 @@ impl<B> StreamWriter<B> {
         B: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
-        send(
-            &mut self.tx.as_mut().unwrap(),
-            StreamOrFutureEvent::WatchReader { tx },
-        );
+        send(&mut self.tx.as_mut().unwrap(), WriteEvent::Watch { tx });
         let instance = self.instance;
         let id = self.id;
         watch(instance, id, rx, self)
@@ -750,7 +810,7 @@ impl<T: Send> Ready for StreamWriter<T> {
 impl<T> Drop for StreamWriter<T> {
     fn drop(&mut self) {
         if let Some(mut tx) = self.tx.take() {
-            send(&mut tx, StreamOrFutureEvent::CloseWriter);
+            send(&mut tx, WriteEvent::Close);
         }
     }
 }
@@ -783,8 +843,8 @@ impl<T> HostStream<T> {
     /// Convert this object into a [`StreamReader`].
     pub fn into_reader<B, U, S: AsContextMut<Data = U>>(self, mut store: S) -> StreamReader<B>
     where
-        T: func::Lower + func::Lift + Sync + Send + 'static,
-        B: Buffer<T>,
+        T: func::Lower + func::Lift + Send + 'static,
+        B: ReadBuffer<T>,
     {
         let store = store.as_context_mut();
         assert_eq!(store.0.id(), self.id);
@@ -793,7 +853,7 @@ impl<T> HostStream<T> {
             instance: self.instance,
             id: self.id,
             rep: self.rep,
-            tx: Some(instance.start_event_loop::<_, _, U>(self.rep)),
+            tx: Some(instance.start_read_event_loop::<_, _, U>(self.rep)),
         }
     }
 
@@ -905,7 +965,7 @@ unsafe impl<T> func::Lift for HostStream<T> {
     }
 }
 
-impl<T, B: Buffer<T>> From<StreamReader<B>> for HostStream<T> {
+impl<T, B> From<StreamReader<B>> for HostStream<T> {
     fn from(mut value: StreamReader<B>) -> Self {
         value.tx.take();
 
@@ -926,13 +986,13 @@ pub struct StreamReader<B> {
     instance: SendSyncPtr<ComponentInstance>,
     id: StoreId,
     rep: u32,
-    tx: Option<mpsc::Sender<StreamOrFutureEvent<B>>>,
+    tx: Option<mpsc::Sender<ReadEvent<B>>>,
 }
 
 impl<B> StreamReader<B> {
     fn new(
         rep: u32,
-        tx: Option<mpsc::Sender<StreamOrFutureEvent<B>>>,
+        tx: Option<mpsc::Sender<ReadEvent<B>>>,
         instance: &mut ComponentInstance,
     ) -> Self {
         Self {
@@ -943,20 +1003,27 @@ impl<B> StreamReader<B> {
         }
     }
 
-    /// Read the value from this `stream`.
-    pub fn read(mut self) -> Promise<Result<(StreamReader<B>, B), Option<ErrorContext>>>
+    /// Read values from this `stream`.
+    ///
+    /// The returned `Promise` will yield a `(Some(_), _)` if the read completed
+    /// (possibly with zero items if the write was empty).  It will return
+    /// `(None, _)` if the read failed due to the closure of the write end.  In
+    /// either case, the returned buffer will be the same one passed as a
+    /// parameter, with zero or more items added.
+    pub fn read(mut self, buffer: B) -> Promise<(Option<StreamReader<B>>, B)>
     where
         B: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
-        send(self.tx.as_mut().unwrap(), StreamOrFutureEvent::Read { tx });
+        send(self.tx.as_mut().unwrap(), ReadEvent::Read { buffer, tx });
         let instance = self.instance;
         let id = self.id;
         Promise {
-            inner: Box::pin(rx.map(|v| match v {
-                Ok(HostReadResult::Values(v)) => Ok((self, v)),
-                Err(_) => Err(None),
-                Ok(HostReadResult::EndOfStream(s)) => Err(s),
+            inner: Box::pin(rx.map(move |v| match v {
+                Ok(HostResult { buffer, closed }) => ((!closed).then_some(self), buffer),
+                Err(_) => {
+                    todo!("guarantee buffer recovery if event loop errors or panics")
+                }
             })),
             instance,
             id,
@@ -975,10 +1042,7 @@ impl<B> StreamReader<B> {
         B: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
-        send(
-            &mut self.tx.as_mut().unwrap(),
-            StreamOrFutureEvent::WatchWriter { tx },
-        );
+        send(&mut self.tx.as_mut().unwrap(), ReadEvent::Watch { tx });
         let instance = self.instance;
         let id = self.id;
         watch(instance, id, rx, self)
@@ -994,7 +1058,7 @@ impl<B: Send> Ready for StreamReader<B> {
 impl<B> Drop for StreamReader<B> {
     fn drop(&mut self) {
         if let Some(mut tx) = self.tx.take() {
-            send(&mut tx, StreamOrFutureEvent::CloseReader);
+            send(&mut tx, ReadEvent::Close);
         }
     }
 }
@@ -1196,7 +1260,8 @@ enum Writer<'a> {
         count: usize,
     },
     Host {
-        values: Box<dyn Any>,
+        pointer: *const u8,
+        count: usize,
     },
     End,
 }
@@ -1213,7 +1278,7 @@ enum Reader<'a> {
         count: usize,
     },
     Host {
-        accept: Box<dyn FnOnce(Box<dyn Any>) -> Result<()>>,
+        accept: Box<dyn FnOnce(*const u8, usize) -> usize>,
     },
     End,
 }
@@ -1222,7 +1287,7 @@ impl Instance {
     /// Create a new Component Model `future` as pair of writable and readable ends,
     /// the latter of which may be passed to guest code.
     pub fn future<
-        T: func::Lower + func::Lift + Sync + Send + 'static,
+        T: func::Lower + func::Lift + Send + Sync + 'static,
         U,
         S: AsContextMut<Data = U>,
     >(
@@ -1235,12 +1300,12 @@ impl Instance {
 
         Ok((
             FutureWriter::new(
-                Some(instance.start_event_loop::<_, _, U>(write.rep())),
+                Some(instance.start_write_event_loop::<_, _, U>(write.rep())),
                 instance,
             ),
             FutureReader::new(
                 read.rep(),
-                Some(instance.start_event_loop::<_, _, U>(read.rep())),
+                Some(instance.start_read_event_loop::<_, _, U>(read.rep())),
                 instance,
             ),
         ))
@@ -1249,83 +1314,87 @@ impl Instance {
     /// Create a new Component Model `stream` as pair of writable and readable ends,
     /// the latter of which may be passed to guest code.
     pub fn stream<
-        T: func::Lower + func::Lift + Sync + Send + 'static,
-        B: Buffer<T>,
+        T: func::Lower + func::Lift + Send + 'static,
+        W: WriteBuffer<T>,
+        R: ReadBuffer<T>,
         U,
         S: AsContextMut<Data = U>,
     >(
         &self,
         mut store: S,
-    ) -> Result<(StreamWriter<B>, StreamReader<B>)> {
+    ) -> Result<(StreamWriter<W>, StreamReader<R>)> {
         let store = store.as_context_mut();
         let instance = unsafe { &mut *store.0[self.0].as_ref().unwrap().instance_ptr() };
         let (write, read) = instance.new_transmit()?;
 
         Ok((
             StreamWriter::new(
-                Some(instance.start_event_loop::<_, _, U>(write.rep())),
+                Some(instance.start_write_event_loop::<_, _, U>(write.rep())),
                 instance,
             ),
             StreamReader::new(
                 read.rep(),
-                Some(instance.start_event_loop::<_, _, U>(read.rep())),
+                Some(instance.start_read_event_loop::<_, _, U>(read.rep())),
                 instance,
             ),
         ))
     }
 }
 
+fn get_state_rep(instance: SendSyncPtr<ComponentInstance>, rep: u32) -> Result<u32> {
+    let instance = unsafe { &mut *instance.as_ptr() };
+    Ok(instance
+        .get(TableId::<TransmitHandle>::new(rep))
+        .with_context(|| format!("stream or future rep {rep} not found"))?
+        .state
+        .rep())
+}
+
+struct RunOnDrop<F: FnOnce()>(Option<F>);
+
+impl<F: FnOnce()> RunOnDrop<F> {
+    fn new(fun: F) -> Self {
+        Self(Some(fun))
+    }
+
+    fn cancel(mut self) {
+        self.0 = None;
+    }
+}
+
+impl<F: FnOnce()> Drop for RunOnDrop<F> {
+    fn drop(&mut self) {
+        if let Some(fun) = self.0.take() {
+            fun();
+        }
+    }
+}
+
 impl ComponentInstance {
-    fn start_event_loop<T: func::Lower + func::Lift + Sync + Send + 'static, B: Buffer<T>, U>(
+    fn start_write_event_loop<
+        T: func::Lower + func::Lift + Send + 'static,
+        B: WriteBuffer<T>,
+        U,
+    >(
         &mut self,
         rep: u32,
-    ) -> mpsc::Sender<StreamOrFutureEvent<B>> {
-        fn write<T: func::Lower + Sync + Send + 'static, B: Buffer<T>, U>(
+    ) -> mpsc::Sender<WriteEvent<B>> {
+        fn write<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U>(
             instance: SendSyncPtr<ComponentInstance>,
             rep: u32,
-            values: B,
-            post_write: PostWrite,
-            tx: oneshot::Sender<()>,
+            buffer: B,
+            tx: oneshot::Sender<HostResult<B>>,
         ) -> Result<()> {
             let instance = unsafe { &mut *instance.as_ptr() };
-            let store = unsafe { StoreContextMut::<U>(&mut *instance.store().cast()) };
-            instance.host_write(store, rep, values, post_write, tx)
+            instance.host_write::<_, _, U>(rep, buffer, PostWrite::Continue, tx)
         }
 
-        fn close_writer(instance: SendSyncPtr<ComponentInstance>, rep: u32) -> Result<()> {
+        fn close(instance: SendSyncPtr<ComponentInstance>, rep: u32) -> Result<()> {
             let instance = unsafe { &mut *instance.as_ptr() };
             instance.host_close_writer(rep)
         }
 
-        fn watch_writer(
-            instance: SendSyncPtr<ComponentInstance>,
-            rep: u32,
-            tx: oneshot::Sender<()>,
-        ) -> Result<()> {
-            let instance = unsafe { &mut *instance.as_ptr() };
-            let state = instance.get_mut(TableId::<TransmitState>::new(rep))?;
-            if !matches!(&state.write, WriteState::Closed) {
-                state.writer_watcher = Some(tx);
-            }
-            Ok(())
-        }
-
-        fn read<T: func::Lift + Sync + Send + 'static, B: Buffer<T>, U>(
-            instance: SendSyncPtr<ComponentInstance>,
-            rep: u32,
-            tx: oneshot::Sender<HostReadResult<B>>,
-        ) -> Result<()> {
-            let instance = unsafe { &mut *instance.as_ptr() };
-            let store = unsafe { StoreContextMut::<U>(&mut *instance.store().cast()) };
-            instance.host_read::<T, B, _, _>(store, rep, tx)
-        }
-
-        fn close_reader(instance: SendSyncPtr<ComponentInstance>, rep: u32) -> Result<()> {
-            let instance = unsafe { &mut *instance.as_ptr() };
-            instance.host_close_reader(rep)
-        }
-
-        fn watch_reader(
+        fn watch(
             instance: SendSyncPtr<ComponentInstance>,
             rep: u32,
             tx: oneshot::Sender<()>,
@@ -1338,20 +1407,13 @@ impl ComponentInstance {
             Ok(())
         }
 
-        fn get_state_rep(instance: SendSyncPtr<ComponentInstance>, rep: u32) -> Result<u32> {
-            let instance = unsafe { &mut *instance.as_ptr() };
-            Ok(instance
-                .get(TableId::<TransmitHandle>::new(rep))
-                .with_context(|| format!("stream or future rep {rep} not found"))?
-                .state
-                .rep())
-        }
-
         let (tx, mut rx) = mpsc::channel(1);
+        let run_on_drop = RunOnDrop::new(move || log::trace!("write event loop for {rep} dropped"));
         let task = Box::pin(
             {
                 let instance = SendSyncPtr::new(NonNull::new(self).unwrap());
                 async move {
+                    log::trace!("write event loop for {rep} started");
                     let mut my_rep = None;
                     while let Some(event) = rx.next().await {
                         if my_rep.is_none() {
@@ -1359,26 +1421,88 @@ impl ComponentInstance {
                         }
                         let rep = my_rep.unwrap();
                         match event {
-                            StreamOrFutureEvent::Write {
-                                values,
-                                post_write,
-                                tx,
-                            } => write::<T, B, U>(instance, rep, values, post_write, tx)?,
-                            StreamOrFutureEvent::CloseWriter => close_writer(instance, rep)?,
-                            StreamOrFutureEvent::WatchWriter { tx } => {
-                                watch_writer(instance, rep, tx)?
+                            WriteEvent::Write { buffer, tx } => {
+                                write::<T, B, U>(instance, rep, buffer, tx)?
                             }
-                            StreamOrFutureEvent::Read { tx } => read::<T, B, U>(instance, rep, tx)?,
-                            StreamOrFutureEvent::CloseReader => close_reader(instance, rep)?,
-                            StreamOrFutureEvent::WatchReader { tx } => {
-                                watch_reader(instance, rep, tx)?
-                            }
+                            WriteEvent::Close => close(instance, rep)?,
+                            WriteEvent::Watch { tx } => watch(instance, rep, tx)?,
                         }
                     }
                     Ok(())
                 }
             }
-            .map(HostTaskOutput::Background),
+            .map(move |v| {
+                run_on_drop.cancel();
+                log::trace!("write event loop for {rep} finished: {v:?}");
+                HostTaskOutput::Background(v)
+            }),
+        );
+        self.push_future(task);
+        tx
+    }
+
+    fn start_read_event_loop<T: func::Lower + func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
+        &mut self,
+        rep: u32,
+    ) -> mpsc::Sender<ReadEvent<B>> {
+        fn read<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
+            instance: SendSyncPtr<ComponentInstance>,
+            rep: u32,
+            buffer: B,
+            tx: oneshot::Sender<HostResult<B>>,
+        ) -> Result<()> {
+            let instance = unsafe { &mut *instance.as_ptr() };
+            let store = unsafe { StoreContextMut::<U>(&mut *instance.store().cast()) };
+            instance.host_read::<T, B, _, _>(store, rep, buffer, tx)
+        }
+
+        fn close(instance: SendSyncPtr<ComponentInstance>, rep: u32) -> Result<()> {
+            let instance = unsafe { &mut *instance.as_ptr() };
+            instance.host_close_reader(rep)
+        }
+
+        fn watch(
+            instance: SendSyncPtr<ComponentInstance>,
+            rep: u32,
+            tx: oneshot::Sender<()>,
+        ) -> Result<()> {
+            let instance = unsafe { &mut *instance.as_ptr() };
+            let state = instance.get_mut(TableId::<TransmitState>::new(rep))?;
+            if !matches!(&state.write, WriteState::Closed) {
+                state.writer_watcher = Some(tx);
+            }
+            Ok(())
+        }
+
+        let (tx, mut rx) = mpsc::channel(1);
+        let run_on_drop = RunOnDrop::new(move || log::trace!("read event loop for {rep} dropped"));
+        let task = Box::pin(
+            {
+                let instance = SendSyncPtr::new(NonNull::new(self).unwrap());
+                async move {
+                    log::trace!("read event loop for {rep} started");
+                    let mut my_rep = None;
+                    while let Some(event) = rx.next().await {
+                        if my_rep.is_none() {
+                            my_rep = Some(get_state_rep(instance, rep)?);
+                        }
+                        let rep = my_rep.unwrap();
+                        match event {
+                            ReadEvent::Read { buffer, tx } => {
+                                read::<T, B, U>(instance, rep, buffer, tx)?
+                            }
+                            ReadEvent::Close => close(instance, rep)?,
+                            ReadEvent::Watch { tx } => watch(instance, rep, tx)?,
+                        }
+                    }
+                    Ok(())
+                }
+            }
+            .map(move |v| {
+                run_on_drop.cancel();
+                log::trace!("read event loop for {rep} finished: {v:?}");
+                HostTaskOutput::Background(v)
+            }),
         );
         self.push_future(task);
         tx
@@ -1472,133 +1596,99 @@ impl ComponentInstance {
     /// * `post_write` - Whether the transmit should be closed after write, possibly with an error context
     /// * `tx` - Oneshot channel to notify when operation completes (or drop on error)
     ///
-    fn host_write<
-        T: func::Lower + Send + Sync + 'static,
-        B: Buffer<T>,
-        U,
-        S: AsContextMut<Data = U>,
-    >(
+    fn host_write<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U>(
         &mut self,
-        mut store: S,
         transmit_rep: u32,
-        values: B,
+        mut buffer: B,
         mut post_write: PostWrite,
-        tx: oneshot::Sender<()>,
+        tx: oneshot::Sender<HostResult<B>>,
     ) -> Result<()> {
-        let mut store = store.as_context_mut();
         let transmit_id = TableId::<TransmitState>::new(transmit_rep);
-        let mut offset = 0;
 
-        let mut tx = Some(tx);
+        let transmit = self
+            .get_mut(transmit_id)
+            .with_context(|| format!("retrieving state for transmit [{transmit_rep}]"))?;
 
-        loop {
-            let transmit = self
-                .get_mut(transmit_id)
-                .with_context(|| format!("retrieving state for transmit [{transmit_rep}]"))?;
+        let new_state = if let ReadState::Closed = &transmit.read {
+            ReadState::Closed
+        } else {
+            ReadState::Open
+        };
 
-            let new_state = if let ReadState::Closed = &transmit.read {
-                ReadState::Closed
-            } else {
-                ReadState::Open
-            };
+        match mem::replace(&mut transmit.read, new_state) {
+            ReadState::Open => {
+                assert!(matches!(&transmit.write, WriteState::Open));
 
-            match mem::replace(&mut transmit.read, new_state) {
-                ReadState::Open => {
-                    assert!(matches!(&transmit.write, WriteState::Open));
-
-                    transmit.write = WriteState::HostReady {
-                        accept: Box::new(accept::<T, B, U>(
-                            values,
-                            offset,
-                            transmit_id,
-                            tx.take().unwrap(),
-                        )),
-                        post_write,
-                    };
-                    post_write = PostWrite::Continue;
-                }
-
-                ReadState::GuestReady {
-                    ty,
-                    flat_abi: _,
-                    options,
-                    address,
-                    count,
-                    handle,
-                    ..
-                } => {
-                    let read_handle = transmit.read_handle;
-                    let instance = self as *mut _;
-                    let types = self.component_types();
-                    let lower = unsafe {
-                        &mut LowerContext::new(store.as_context_mut(), &options, types, instance)
-                    };
-                    if address % usize::try_from(T::ALIGN32)? != 0 {
-                        bail!(
-                            "read pointer not aligned: {address} not aligned to {} for {}",
-                            T::ALIGN32,
-                            transmit_id.rep()
-                        );
-                    }
-                    lower
-                        .as_slice_mut()
-                        .get_mut(address..)
-                        .and_then(|b| b.get_mut(..T::SIZE32 * count))
-                        .ok_or_else(|| anyhow::anyhow!("read pointer out of bounds of memory"))?;
-
-                    let count = values.len().min(count);
-                    if let Some(ty) = payload(ty, types) {
-                        T::store_list(lower, ty, address, &values[offset..][..count])?;
-                    }
-                    offset += count;
-
-                    let count = u32::try_from(count).unwrap();
-                    self.push_event(
-                        read_handle.rep(),
-                        match ty {
-                            TableIndex::Future(ty) => Event::FutureRead { count, ty, handle },
-                            TableIndex::Stream(ty) => Event::StreamRead { count, ty, handle },
-                        },
-                    )?;
-
-                    if offset < values.len() {
-                        continue;
-                    }
-                }
-
-                ReadState::HostReady { accept } => {
-                    accept(Writer::Host {
-                        values: Box::new(values),
-                    })?;
-                }
-
-                ReadState::Closed => {
-                    break Ok(());
-                }
+                transmit.write = WriteState::HostReady {
+                    accept: Box::new(accept_reader::<T, B, U>(buffer, tx)),
+                    post_write,
+                };
+                post_write = PostWrite::Continue;
             }
 
-            if let PostWrite::Close = post_write {
-                self.host_close_writer(transmit_rep)?;
+            ReadState::GuestReady {
+                ty,
+                flat_abi: _,
+                options,
+                address,
+                count,
+                handle,
+                ..
+            } => {
+                let read_handle = transmit.read_handle;
+                let count = accept_reader::<T, B, U>(buffer, tx)(
+                    self,
+                    Reader::Guest {
+                        lower: RawLowerContext { options: &options },
+                        ty,
+                        address,
+                        count,
+                    },
+                )?;
+
+                let count = u32::try_from(count).unwrap();
+                self.push_event(
+                    read_handle.rep(),
+                    match ty {
+                        TableIndex::Future(ty) => Event::FutureRead { count, ty, handle },
+                        TableIndex::Stream(ty) => Event::StreamRead { count, ty, handle },
+                    },
+                )?;
             }
 
-            if let Some(tx) = tx.take() {
-                _ = tx.send(());
+            ReadState::HostReady { accept } => {
+                let count = accept(Writer::Host {
+                    pointer: buffer.as_ptr().cast(),
+                    count: buffer.remaining(),
+                })?;
+                buffer.forget(count);
+                _ = tx.send(HostResult {
+                    buffer,
+                    closed: false,
+                });
             }
 
-            break Ok(());
+            ReadState::Closed => {
+                _ = tx.send(HostResult {
+                    buffer,
+                    closed: true,
+                });
+            }
         }
+
+        if let PostWrite::Close = post_write {
+            self.host_close_writer(transmit_rep)?;
+        }
+
+        Ok(())
     }
 
-    fn host_read<
-        T: func::Lift + Sync + Send + 'static,
-        B: Buffer<T>,
-        U,
-        S: AsContextMut<Data = U>,
-    >(
+    fn host_read<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U, S: AsContextMut<Data = U>>(
         &mut self,
         mut store: S,
         rep: u32,
-        tx: oneshot::Sender<HostReadResult<B>>,
+        mut buffer: B,
+        tx: oneshot::Sender<HostResult<B>>,
     ) -> Result<()> {
         let store = store.as_context_mut();
         let transmit_id = TableId::<TransmitState>::new(rep);
@@ -1615,53 +1705,7 @@ impl ComponentInstance {
                 assert!(matches!(&transmit.read, ReadState::Open));
 
                 transmit.read = ReadState::HostReady {
-                    accept: Box::new(move |writer| {
-                        Ok(match writer {
-                            Writer::Guest {
-                                lift,
-                                ty,
-                                address,
-                                count,
-                            } => {
-                                _ = tx.send(HostReadResult::Values(if T::IS_RUST_UNIT_TYPE {
-                                    B::from(
-                                        iter::repeat_with(|| unsafe {
-                                            MaybeUninit::uninit().assume_init()
-                                        })
-                                        .take(count)
-                                        .collect(),
-                                    )
-                                } else {
-                                    let ty = ty.unwrap();
-                                    if address % usize::try_from(T::ALIGN32)? != 0 {
-                                        bail!("write pointer not aligned");
-                                    }
-                                    lift.memory()
-                                        .get(address..)
-                                        .and_then(|b| b.get(..T::SIZE32 * count))
-                                        .ok_or_else(|| {
-                                            anyhow::anyhow!("write pointer out of bounds of memory")
-                                        })?;
-
-                                    let list = &WasmList::new(address, count, lift, ty)?;
-                                    B::from(T::load_list(lift, list)?)
-                                }));
-                                count
-                            }
-                            Writer::Host { values } => {
-                                let values = *values
-                                    .downcast::<B>()
-                                    .map_err(|_| anyhow!("transmit type mismatch"))?;
-                                let count = values.len();
-                                _ = tx.send(HostReadResult::Values(values));
-                                count
-                            }
-                            Writer::End => {
-                                _ = tx.send(HostReadResult::EndOfStream(None));
-                                CLOSED
-                            }
-                        })
-                    }),
+                    accept: Box::new(accept_writer::<T, B, U>(buffer, tx)),
                 };
             }
 
@@ -1679,17 +1723,12 @@ impl ComponentInstance {
                 let instance = self as *mut _;
                 let types = self.component_types();
                 let lift = unsafe { &mut LiftContext::new(store.0, &options, types, instance) };
-                _ = tx.send(HostReadResult::Values(if T::IS_RUST_UNIT_TYPE {
-                    B::from(
-                        iter::repeat_with(|| unsafe { MaybeUninit::uninit().assume_init() })
-                            .take(count)
-                            .collect(),
-                    )
-                } else {
-                    let ty = payload(ty, types).unwrap();
-                    let list = &WasmList::new(address, count, lift, ty)?;
-                    B::from(T::load_list(lift, list)?)
-                }));
+                let count = accept_writer::<T, B, U>(buffer, tx)(Writer::Guest {
+                    lift,
+                    ty: payload(ty, types),
+                    address,
+                    count,
+                })?;
 
                 let pending = if let PostWrite::Close = post_write {
                     self.get_mut(transmit_id)?.write = WriteState::Closed;
@@ -1718,12 +1757,14 @@ impl ComponentInstance {
                 accept(
                     self,
                     Reader::Host {
-                        accept: Box::new(move |any| {
-                            _ = tx.send(HostReadResult::Values(
-                                *any.downcast()
-                                    .map_err(|_| anyhow!("transmit type mismatch"))?,
-                            ));
-                            Ok(())
+                        accept: Box::new(move |pointer, count| {
+                            let count = count.min(buffer.remaining_capacity());
+                            unsafe { buffer.copy_from(pointer.cast(), count) };
+                            _ = tx.send(HostResult {
+                                buffer,
+                                closed: false,
+                            });
+                            count
                         }),
                     },
                 )?;
@@ -1733,7 +1774,12 @@ impl ComponentInstance {
                 }
             }
 
-            WriteState::Closed => {}
+            WriteState::Closed => {
+                _ = tx.send(HostResult {
+                    buffer,
+                    closed: true,
+                });
+            }
         }
 
         Ok(())

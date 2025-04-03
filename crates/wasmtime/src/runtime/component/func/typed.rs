@@ -868,18 +868,37 @@ pub unsafe trait Lift: Sized + ComponentType {
     fn load(cx: &mut LiftContext<'_>, ty: InterfaceType, bytes: &[u8]) -> Result<Self>;
 
     /// Converts `list` into a `Vec<T>`, used in `Lift for Vec<T>`.
-    ///
-    /// This is primarily here to get overridden for implementations of integers
-    /// which can avoid some extra fluff and use a pattern that's more easily
-    /// optimizable by LLVM.
     #[doc(hidden)]
     fn load_list(cx: &mut LiftContext<'_>, list: &WasmList<Self>) -> Result<Vec<Self>>
     where
         Self: Sized,
     {
-        (0..list.len)
-            .map(|index| list.get_from_store(cx, index).unwrap())
-            .collect()
+        let mut dst = Vec::with_capacity(list.len);
+        Self::load_into(cx, list, &mut dst, list.len)?;
+        Ok(dst)
+    }
+
+    /// Load no more than `max_count` items from `list` into `dst`.
+    ///
+    /// This is primarily here to get overridden for implementations of integers
+    /// which can avoid some extra fluff and use a pattern that's more easily
+    /// optimizable by LLVM.
+    #[doc(hidden)]
+    fn load_into(
+        cx: &mut LiftContext<'_>,
+        list: &WasmList<Self>,
+        dst: &mut impl Extend<Self>,
+        max_count: usize,
+    ) -> Result<()>
+    where
+        Self: Sized,
+    {
+        dst.extend(
+            (0..list.len.min(max_count))
+                .map(|index| list.get_from_store(cx, index).unwrap())
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        Ok(())
     }
 }
 
@@ -1087,13 +1106,19 @@ macro_rules! integers {
                 Ok($primitive::from_le_bytes(bytes.try_into().unwrap()))
             }
 
-            fn load_list(cx: &mut LiftContext<'_>, list: &WasmList<Self>) -> Result<Vec<Self>> {
-                Ok(
-                    list._as_le_slice(cx.memory())
-                        .iter()
-                        .map(|i| Self::from_le(*i))
-                        .collect(),
-                )
+            fn load_into(
+                cx: &mut LiftContext<'_>,
+                list: &WasmList<Self>,
+                dst: &mut impl Extend<Self>,
+                max_count: usize
+            ) -> Result<()>
+            where
+                Self: Sized,
+            {
+                dst.extend(list._as_le_slice(cx.memory())
+                           .iter()
+                           .map(|i| Self::from_le(*i)).take(max_count));
+                Ok(())
             }
         }
     )*)

@@ -58,7 +58,7 @@ where
         store.with(|mut view| {
             let instance = view.instance();
             let (data_tx, data_rx) = instance
-                .stream(&mut view)
+                .stream::<_, _, Vec<_>, _, _>(&mut view)
                 .context("failed to create stream")?;
             let (res_tx, res_rx) = instance
                 .future(&mut view)
@@ -144,9 +144,10 @@ where
         data: HostStream<u8>,
         mut offset: Filesize,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
+        let mut buf = Vec::with_capacity(8096);
         let (fd, fut) = store.with(|mut view| {
             let data = data.into_reader::<Vec<u8>, _, _>(&mut view);
-            let fut = data.read();
+            let fut = data.read(buf);
             let fd = get_descriptor(view.table(), &fd)?;
             anyhow::Ok((fd.clone(), fut))
         })?;
@@ -159,28 +160,30 @@ where
         }
         let mut fut = fut.into_future();
         loop {
-            let Ok((tail, buf)) = fut.await else {
+            let (Some(tail), buf_again) = fut.await else {
                 return Ok(Ok(()));
             };
             match f
                 .spawn_blocking(move |f| {
-                    let mut buf = buf.as_slice();
+                    let mut buf = buf_again.as_slice();
                     while !buf.is_empty() {
                         let n = f.write_at(buf, offset)?;
                         buf = &buf[n..];
                         let n = n.try_into().or(Err(ErrorCode::Overflow))?;
                         offset = offset.checked_add(n).ok_or(ErrorCode::Overflow)?;
                     }
-                    Ok(offset)
+                    Ok((offset, buf_again))
                 })
                 .await
             {
-                Ok(n) => {
+                Ok((n, buf_again)) => {
                     offset = n;
+                    buf = buf_again;
+                    buf.clear();
                 }
                 Err(err) => return Ok(Err(err)),
             }
-            fut = tail.read().into_future();
+            fut = tail.read(buf).into_future();
         }
     }
 
@@ -189,9 +192,10 @@ where
         fd: Resource<Descriptor>,
         data: HostStream<u8>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
+        let mut buf = Vec::with_capacity(8096);
         let (fd, fut) = store.with(|mut view| {
             let data = data.into_reader::<Vec<u8>, _, _>(&mut view);
-            let fut = data.read();
+            let fut = data.read(buf);
             let fd = get_descriptor(view.table(), &fd)?;
             anyhow::Ok((fd.clone(), fut))
         })?;
@@ -204,25 +208,29 @@ where
         }
         let mut fut = fut.into_future();
         loop {
-            let Ok((tail, buf)) = fut.await else {
+            let (Some(tail), buf_again) = fut.await else {
                 return Ok(Ok(()));
             };
-            if let Err(err) = f
+            match f
                 .spawn_blocking(move |f| {
-                    let mut buf = buf.as_slice();
+                    let mut buf = buf_again.as_slice();
                     loop {
                         let n = f.append(buf)?;
                         if buf.len() == n {
-                            return Ok(());
+                            return Ok(buf_again);
                         }
                         buf = &buf[n..];
                     }
                 })
                 .await
             {
-                return Ok(Err(err));
+                Ok(buf_again) => {
+                    buf = buf_again;
+                    buf.clear();
+                }
+                Err(err) => return Ok(Err(err)),
             }
-            fut = tail.read().into_future()
+            fut = tail.read(buf).into_future()
         }
     }
 
@@ -302,7 +310,7 @@ where
         store.with(|mut view| {
             let instance = view.instance();
             let (data_tx, data_rx) = instance
-                .stream(&mut view)
+                .stream::<_, _, Vec<_>, _, _>(&mut view)
                 .context("failed to create stream")?;
             let (res_tx, res_rx) = instance
                 .future(&mut view)

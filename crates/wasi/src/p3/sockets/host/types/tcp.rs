@@ -170,9 +170,9 @@ impl<T, U: WasiSocketsView> AccessorTask<T, U, wasmtime::Result<()>> for ListenT
                     .table()
                     .push(TcpSocket::from_state(state, self.family))
                     .context("failed to push socket to table")?;
-                Ok::<_, wasmtime::Error>(tx.write(Single(socket)))
+                Ok::<_, wasmtime::Error>(tx.write(Single::new(socket)))
             })?;
-            let Some(tail) = fut.into_future().await else {
+            let (Some(tail), _) = fut.into_future().await else {
                 return Ok(());
             };
             tx = tail;
@@ -285,7 +285,7 @@ where
             };
             let instance = view.instance();
             let (tx, rx) = instance
-                .stream(&mut view)
+                .stream::<_, _, Vec<_>, _, _>(&mut view)
                 .context("failed to create stream")?;
             let &TcpSocket {
                 listen_backlog_size,
@@ -372,9 +372,10 @@ where
         socket: Resource<TcpSocket>,
         data: HostStream<u8>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
+        let mut buf = Vec::with_capacity(8096);
         let (stream, fut) = match store.with(|mut view| {
             let data = data.into_reader::<Vec<u8>, _, _>(&mut view);
-            let fut = data.read();
+            let fut = data.read(buf);
             let sock = get_socket(view.table(), &socket)?;
             if let TcpState::Connected { stream, .. } = &sock.tcp_state {
                 Ok(Ok((Arc::clone(&stream), fut)))
@@ -388,21 +389,23 @@ where
         };
         let mut fut = fut.into_future();
         'outer: loop {
-            let Ok((tail, buf)) = fut.await else {
+            let (Some(tail), buf_again) = fut.await else {
                 _ = stream
                     .as_socketlike_view::<std::net::TcpStream>()
                     .shutdown(Shutdown::Write);
                 return Ok(Ok(()));
             };
-            let mut buf = buf.as_slice();
+            let mut slice = buf_again.as_slice();
             loop {
-                match stream.try_write(&buf) {
+                match stream.try_write(&slice) {
                     Ok(n) => {
-                        if n == buf.len() {
-                            fut = tail.read().into_future();
+                        if n == slice.len() {
+                            buf = buf_again;
+                            buf.clear();
+                            fut = tail.read(buf).into_future();
                             continue 'outer;
                         } else {
-                            buf = &buf[n..];
+                            slice = &slice[n..];
                         }
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
@@ -431,7 +434,7 @@ where
         store.with(|mut view| {
             let instance = view.instance();
             let (data_tx, data_rx) = instance
-                .stream(&mut view)
+                .stream::<_, _, Vec<_>, _, _>(&mut view)
                 .context("failed to create stream")?;
             let (res_tx, res_rx) = instance
                 .future(&mut view)
