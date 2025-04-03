@@ -5,6 +5,7 @@ use core::pin::Pin;
 use core::str;
 use core::task::Poll;
 
+use std::io::Cursor;
 use std::sync::Arc;
 
 use anyhow::{bail, Context as _};
@@ -13,8 +14,7 @@ use futures::join;
 use http::header::CONTENT_LENGTH;
 use http_body::Body as _;
 use wasmtime::component::{
-    Accessor, AccessorTask, BytesBuffer, FutureWriter, HostFuture, HostStream, Resource,
-    StreamWriter,
+    Accessor, AccessorTask, FutureWriter, HostFuture, HostStream, Resource, StreamWriter,
 };
 use wasmtime_wasi::p3::bindings::clocks::monotonic_clock::Duration;
 use wasmtime_wasi::p3::{ResourceView as _, WithChildren};
@@ -113,7 +113,7 @@ type TrailerFuture = HostFuture<Result<Option<Resource<Trailers>>, ErrorCode>>;
 struct BodyTask {
     cx: BodyContext,
     body: Arc<std::sync::Mutex<Body>>,
-    contents_tx: StreamWriter<BytesBuffer>,
+    contents_tx: StreamWriter<Cursor<Bytes>>,
     trailers_tx: FutureWriter<Result<Option<Resource<Trailers>>, ErrorCode>>,
 }
 
@@ -240,14 +240,11 @@ where
                 let mut contents_tx = self.contents_tx;
                 match buffer {
                     Some(BodyFrame::Data(buf)) => {
-                        let (tx_tail, buf) = contents_tx.write_all(buf.into()).into_future().await;
+                        let (tx_tail, buf) = contents_tx.write_all(buf).into_future().await;
                         let Some(tx_tail) = tx_tail else {
                             let Ok(mut body) = self.body.lock() else {
                                 bail!("lock poisoned");
                             };
-                            // TODO: split
-                            //buf = buf.into_inner();
-                            let buf = Bytes::copy_from_slice(&buf);
                             *body = Body::Guest {
                                 contents: Some(contents_rx),
                                 trailers: Some(trailers_rx),
@@ -341,15 +338,13 @@ where
                         }
                     }
                     let buf = rx_buffer.split().freeze();
+                    assert!(rx_buffer.capacity() > 0);
                     contents_rx = rx_tail.read(rx_buffer).into_future();
-                    let (tx_tail, buf) = tx_tail.write_all(buf.into()).into_future().await;
+                    let (tx_tail, buf) = tx_tail.write_all(Cursor::new(buf)).into_future().await;
                     let Some(tx_tail) = tx_tail else {
                         let Ok(mut body) = self.body.lock() else {
                             bail!("lock poisoned");
                         };
-                        // TODO: split
-                        //buf = buf.into_inner();
-                        let buf = Bytes::copy_from_slice(&buf);
                         *body = Body::Guest {
                             contents: Some(contents_rx),
                             trailers: Some(trailers_rx),
@@ -413,14 +408,11 @@ where
                 let mut contents_tx = self.contents_tx;
                 match buffer {
                     Some(BodyFrame::Data(buf)) => {
-                        let (tx_tail, buf) = contents_tx.write_all(buf.into()).into_future().await;
+                        let (tx_tail, buf) = contents_tx.write_all(buf).into_future().await;
                         let Some(tx_tail) = tx_tail else {
                             let Ok(mut body) = self.body.lock() else {
                                 bail!("lock poisoned");
                             };
-                            // TODO: split
-                            //buf = buf.into_inner();
-                            let buf = Bytes::copy_from_slice(&buf);
                             *body = Body::Host {
                                 stream: Some(stream),
                                 buffer: Some(BodyFrame::Data(buf)),
@@ -470,14 +462,11 @@ where
                                 Ok(buf) => {
                                     let tx_tail = contents_tx.into_inner();
                                     let (tx_tail, buf) =
-                                        tx_tail.write_all(buf.into()).into_future().await;
+                                        tx_tail.write_all(Cursor::new(buf)).into_future().await;
                                     let Some(tx_tail) = tx_tail else {
                                         let Ok(mut body) = self.body.lock() else {
                                             bail!("lock poisoned");
                                         };
-                                        // TODO: split
-                                        //buf = buf.into_inner();
-                                        let buf = Bytes::copy_from_slice(&buf);
                                         *body = Body::Host {
                                             stream: Some(stream),
                                             buffer: Some(BodyFrame::Data(buf)),
