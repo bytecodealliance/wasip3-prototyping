@@ -134,6 +134,9 @@ const EXIT_FLAG_ASYNC_CALLEE: u32 = fact::EXIT_FLAG_ASYNC_CALLEE as u32;
 /// operation which requires exclusive access to a store in order to make
 /// progress -- without monopolizing that store for the lifetime of the
 /// operation.
+///
+/// See also `Instance::promise` for wrapping an arbitrary `Future` in a
+/// `Promise` so it can be polled as part of an `Instance`'s event loop.
 pub struct Promise<T> {
     inner: Pin<Box<dyn Future<Output = T> + Send + 'static>>,
     instance: SendSyncPtr<ComponentInstance>,
@@ -153,6 +156,11 @@ impl<T: Send + Sync + 'static> Promise<T> {
     /// Convert this `Promise` to a future which may be `await`ed for its
     /// result.
     ///
+    /// This will poll the inner `Future` as part of the associated `Instance`'s
+    /// event loop, ensuring that any other tasks managed by that event loop
+    /// (which the `Future` might depend on directly or indirectly) make
+    /// progress concurrently.
+    ///
     /// The returned future will require exclusive use of the store until it
     /// completes.  If you need to await more than one `Promise` concurrently,
     /// use [`PromisesUnordered`].
@@ -169,25 +177,12 @@ impl<T: Send + Sync + 'static> Promise<T> {
     ///
     /// Unlike [`Self::get`], this does _not_ take a store parameter, meaning
     /// the returned future will not make progress until and unless the event
-    /// loop for the store it came from is polled.  Thus, this method should
-    /// only be used from within host functions and not from top-level embedder
-    /// code.
+    /// loop for the `Instance` it came from is polled.  Thus, this method
+    /// should only be used from within host functions and not from top-level
+    /// embedder code unless that top-level code is itself wrapped in a
+    /// `Promise` using `Instance::promise`.
     pub fn into_future(self) -> Pin<Box<dyn Future<Output = T> + Send + 'static>> {
         self.inner
-    }
-}
-
-impl Instance {
-    /// Poll the specified future until it yields a result _or_ there are no more
-    /// tasks to run in the `Store`.
-    pub async fn get<U: Send, V: Send + Sync + 'static>(
-        &self,
-        mut store: impl AsContextMut<Data = U>,
-        fut: impl Future<Output = V> + Send,
-    ) -> Result<V> {
-        let store = store.as_context_mut();
-        let instance = unsafe { &mut *store.0[self.0].as_ref().unwrap().instance_ptr() };
-        instance.poll_until(store, Box::pin(fut)).await
     }
 }
 
@@ -2357,6 +2352,53 @@ impl ComponentInstance {
     }
 }
 
+impl Instance {
+    /// Poll the specified future until it yields a result _or_ there are no more
+    /// tasks to run in the `Store`.
+    pub async fn get<U: Send, V: Send + Sync + 'static>(
+        &self,
+        mut store: impl AsContextMut<Data = U>,
+        fut: impl Future<Output = V> + Send,
+    ) -> Result<V> {
+        let store = store.as_context_mut();
+        let instance = unsafe { &mut *store.0[self.0].as_ref().unwrap().instance_ptr() };
+        instance.poll_until(store, Box::pin(fut)).await
+    }
+
+    /// Wrap the specified future in a `Promise`.
+    pub fn promise<U: Send, V: Send + Sync + 'static>(
+        &self,
+        mut store: impl AsContextMut<Data = U>,
+        fut: impl Future<Output = V> + Send + 'static,
+    ) -> Promise<V> {
+        let store = store.as_context_mut();
+        let instance = SendSyncPtr::new(
+            NonNull::new(store.0[self.0].as_ref().unwrap().instance_ptr()).unwrap(),
+        );
+        let id = store.0.id();
+        Promise {
+            inner: Box::pin(fut),
+            instance,
+            id,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn spawn(
+        &self,
+        mut store: impl AsContextMut,
+        task: impl std::future::Future<Output = Result<()>> + Send + 'static,
+    ) {
+        let instance = unsafe {
+            &mut *store.as_context_mut().0[self.0]
+                .as_ref()
+                .unwrap()
+                .instance_ptr()
+        };
+        instance.spawn(task)
+    }
+}
+
 /// Trait representing component model ABI async intrinsics and fused adapter
 /// helper functions.
 pub unsafe trait VMComponentAsyncStore {
@@ -3315,23 +3357,6 @@ impl AsyncCx {
             mpk::allow(previous_mask);
         }
         store
-    }
-}
-
-impl Instance {
-    #[doc(hidden)]
-    pub fn spawn(
-        &self,
-        mut store: impl AsContextMut,
-        task: impl std::future::Future<Output = Result<()>> + Send + 'static,
-    ) {
-        let instance = unsafe {
-            &mut *store.as_context_mut().0[self.0]
-                .as_ref()
-                .unwrap()
-                .instance_ptr()
-        };
-        instance.spawn(task)
     }
 }
 
