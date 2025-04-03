@@ -15,7 +15,7 @@ impl bindings::Guest for Component {
     async fn foo(s: String) -> String {
         format!(
             "{} - exited guest",
-            bindings::foo(&format!("{s} - entered guest")).await
+            bindings::foo(format!("{s} - entered guest")).await
         )
     }
 }

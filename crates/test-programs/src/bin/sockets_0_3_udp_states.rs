@@ -12,7 +12,7 @@ async fn test_udp_unbound_state_invariants(family: IpAddressFamily) {
     // Skipping: udp::start_bind
 
     assert_eq!(
-        sock.send(b"test", None).await,
+        sock.send(b"test".into(), None).await,
         Err(ErrorCode::InvalidArgument)
     );
     assert_eq!(sock.disconnect(), Err(ErrorCode::InvalidState));

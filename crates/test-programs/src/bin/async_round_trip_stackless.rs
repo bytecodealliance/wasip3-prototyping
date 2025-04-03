@@ -17,7 +17,7 @@ impl Baz for Component {
     async fn foo(s: String) -> String {
         format!(
             "{} - exited guest",
-            baz::foo(&format!("{s} - entered guest")).await
+            baz::foo(format!("{s} - entered guest")).await
         )
     }
 }

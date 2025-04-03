@@ -25,8 +25,11 @@ async fn test_udp_sample_application(family: IpAddressFamily, bind_address: IpSo
     let client_addr = client.local_address().unwrap();
     join!(
         async {
-            client.send(first_message, None).await.unwrap();
-            client.send(second_message, Some(addr)).await.unwrap();
+            client.send(first_message.to_vec(), None).await.unwrap();
+            client
+                .send(second_message.to_vec(), Some(addr))
+                .await
+                .unwrap();
         },
         async {
             // Check that we've received our sent messages.
@@ -44,7 +47,10 @@ async fn test_udp_sample_application(family: IpAddressFamily, bind_address: IpSo
             // Another client
             let client = UdpSocket::new(family);
             client.bind(unspecified_addr).unwrap();
-            client.send(third_message, Some(addr)).await.unwrap();
+            client
+                .send(third_message.to_vec(), Some(addr))
+                .await
+                .unwrap();
         },
         async {
             // Check that we sent and received our message!
