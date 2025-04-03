@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use tokio::fs;
 use wasmtime::component::{
     Component, HostFuture, HostStream, Instance, Linker, Promise, PromisesUnordered, ResourceTable,
-    Single, StreamReader, StreamWriter, Val,
+    StreamReader, StreamWriter, Val,
 };
 use wasmtime::{AsContextMut, Config, Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;
@@ -226,20 +226,20 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
     #[allow(clippy::type_complexity)]
     enum Event<Test: TransmitTest> {
         Result(Test::Result),
-        ControlWriteA(Option<StreamWriter<Single<Control>>>),
-        ControlWriteB(Option<StreamWriter<Single<Control>>>),
-        ControlWriteC(Option<StreamWriter<Single<Control>>>),
+        ControlWriteA(Option<StreamWriter<Option<Control>>>),
+        ControlWriteB(Option<StreamWriter<Option<Control>>>),
+        ControlWriteC(Option<StreamWriter<Option<Control>>>),
         ControlWriteD,
         WriteA,
         WriteB(bool),
-        ReadC(Option<StreamReader<Single<String>>>, Single<String>),
+        ReadC(Option<StreamReader<Option<String>>>, Option<String>),
         ReadD(Option<String>),
-        ReadNone(Option<StreamReader<Single<String>>>),
+        ReadNone(Option<StreamReader<Option<String>>>),
     }
 
-    let (control_tx, control_rx) = instance.stream::<_, _, Single<_>, _, _>(&mut store)?;
+    let (control_tx, control_rx) = instance.stream::<_, _, Option<_>, _, _>(&mut store)?;
     let (caller_stream_tx, caller_stream_rx) =
-        instance.stream::<_, _, Single<_>, _, _>(&mut store)?;
+        instance.stream::<_, _, Option<_>, _, _>(&mut store)?;
     let (caller_future1_tx, caller_future1_rx) = instance.future(&mut store)?;
     let (_caller_future2_tx, caller_future2_rx) = instance.future(&mut store)?;
 
@@ -251,13 +251,13 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
 
     promises.push(
         control_tx
-            .write_all(Single::new(Control::ReadStream("a".into())))
+            .write_all(Some(Control::ReadStream("a".into())))
             .map(|(w, _)| Event::ControlWriteA(w)),
     );
 
     promises.push(
         caller_stream_tx
-            .write_all(Single::new(String::from("a")))
+            .write_all(Some(String::from("a")))
             .map(|_| Event::WriteA),
     );
 
@@ -286,7 +286,7 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
             Event::ControlWriteA(tx) => {
                 promises.push(
                     tx.unwrap()
-                        .write_all(Single::new(Control::ReadFuture("b".into())))
+                        .write_all(Some(Control::ReadFuture("b".into())))
                         .map(|(w, _)| Event::ControlWriteB(w)),
                 );
             }
@@ -302,7 +302,7 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
             Event::ControlWriteB(tx) => {
                 promises.push(
                     tx.unwrap()
-                        .write_all(Single::new(Control::WriteStream("c".into())))
+                        .write_all(Some(Control::WriteStream("c".into())))
                         .map(|(w, _)| Event::ControlWriteC(w)),
                 );
             }
@@ -312,14 +312,14 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
                     callee_stream_rx
                         .take()
                         .unwrap()
-                        .read(Single::default())
+                        .read(None)
                         .map(|(r, b)| Event::ReadC(r, b)),
                 );
             }
             Event::ControlWriteC(tx) => {
                 promises.push(
                     tx.unwrap()
-                        .write_all(Single::new(Control::WriteFuture("d".into())))
+                        .write_all(Some(Control::WriteFuture("d".into())))
                         .map(|_| Event::ControlWriteD),
                 );
             }
@@ -337,7 +337,7 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
                     callee_stream_rx
                         .take()
                         .unwrap()
-                        .read(Single::default())
+                        .read(None)
                         .map(|(r, _)| Event::ReadNone(r)),
                 );
             }

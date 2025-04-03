@@ -60,8 +60,8 @@ pub(crate) use futures_and_streams::{
     lower_error_context_to_index, lower_future_to_index, lower_stream_to_index, ResourcePair,
 };
 pub use futures_and_streams::{
-    BytesBuffer, BytesMutBuffer, ErrorContext, FutureReader, FutureWriter, HostFuture, HostStream,
-    ReadBuffer, Single, StreamReader, StreamWriter, VecBuffer, Watch, WriteBuffer,
+    ErrorContext, FutureReader, FutureWriter, HostFuture, HostStream, ReadBuffer, StreamReader,
+    StreamWriter, VecBuffer, Watch, WriteBuffer,
 };
 
 mod error_contexts;
@@ -2369,7 +2369,7 @@ impl Instance {
     pub fn promise<U: Send, V: Send + Sync + 'static>(
         &self,
         mut store: impl AsContextMut<Data = U>,
-        fut: impl Future<Output = V> + Send + 'static,
+        inner: Pin<Box<dyn Future<Output = V> + Send + 'static>>,
     ) -> Promise<V> {
         let store = store.as_context_mut();
         let instance = SendSyncPtr::new(
@@ -2377,7 +2377,7 @@ impl Instance {
         );
         let id = store.0.id();
         Promise {
-            inner: Box::pin(fut),
+            inner,
             instance,
             id,
         }

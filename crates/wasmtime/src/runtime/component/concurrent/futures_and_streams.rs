@@ -15,6 +15,7 @@ use {
         AsContextMut, StoreContextMut, ValRaw,
     },
     anyhow::{anyhow, bail, Context, Result},
+    buffers::Extender,
     futures::{
         channel::{mpsc, oneshot},
         future::{self, FutureExt},
@@ -43,7 +44,7 @@ use {
     },
 };
 
-pub use buffers::{BytesBuffer, BytesMutBuffer, ReadBuffer, Single, VecBuffer, WriteBuffer};
+pub use buffers::{ReadBuffer, VecBuffer, WriteBuffer};
 
 mod buffers;
 
@@ -140,10 +141,13 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U>(
                     .and_then(|b| b.get_mut(..T::SIZE32 * count))
                     .ok_or_else(|| anyhow::anyhow!("read pointer out of bounds of memory"))?;
 
-                let count = buffer.remaining().min(usize::try_from(count).unwrap());
+                let count = buffer
+                    .remaining()
+                    .len()
+                    .min(usize::try_from(count).unwrap());
 
                 if let Some(ty) = payload(ty, types) {
-                    T::store_list(lower, ty, address, &buffer[..count])?;
+                    T::store_list(lower, ty, address, &buffer.remaining()[..count])?;
                 }
 
                 buffer.skip(count);
@@ -154,7 +158,7 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U>(
                 count
             }
             Reader::Host { accept } => {
-                let count = accept(buffer.as_ptr().cast(), buffer.remaining());
+                let count = accept(buffer.remaining().as_ptr().cast(), buffer.remaining().len());
                 buffer.forget(count);
                 _ = tx.send(HostResult {
                     buffer,
@@ -204,7 +208,7 @@ fn accept_writer<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
                         .ok_or_else(|| anyhow::anyhow!("write pointer out of bounds of memory"))?;
 
                     let list = &WasmList::new(address, count, lift, ty)?;
-                    T::load_into(lift, list, &mut buffer, count)?
+                    T::load_into(lift, list, &mut Extender(&mut buffer), count)?
                 }
                 _ = tx.send(HostResult {
                     buffer,
@@ -367,12 +371,12 @@ fn watch<T: Send + 'static>(
 pub struct FutureWriter<T> {
     instance: SendSyncPtr<ComponentInstance>,
     id: StoreId,
-    tx: Option<mpsc::Sender<WriteEvent<Single<T>>>>,
+    tx: Option<mpsc::Sender<WriteEvent<Option<T>>>>,
 }
 
 impl<T> FutureWriter<T> {
     fn new(
-        tx: Option<mpsc::Sender<WriteEvent<Single<T>>>>,
+        tx: Option<mpsc::Sender<WriteEvent<Option<T>>>>,
         instance: &mut ComponentInstance,
     ) -> Self {
         Self {
@@ -395,7 +399,7 @@ impl<T> FutureWriter<T> {
         send(
             &mut self.tx.as_mut().unwrap(),
             WriteEvent::Write {
-                buffer: Single::new(value),
+                buffer: Some(value),
                 tx,
             },
         );
@@ -617,13 +621,13 @@ pub struct FutureReader<T> {
     instance: SendSyncPtr<ComponentInstance>,
     id: StoreId,
     rep: u32,
-    tx: Option<mpsc::Sender<ReadEvent<Single<T>>>>,
+    tx: Option<mpsc::Sender<ReadEvent<Option<T>>>>,
 }
 
 impl<T> FutureReader<T> {
     fn new(
         rep: u32,
-        tx: Option<mpsc::Sender<ReadEvent<Single<T>>>>,
+        tx: Option<mpsc::Sender<ReadEvent<Option<T>>>>,
         instance: &mut ComponentInstance,
     ) -> Self {
         Self {
@@ -646,10 +650,7 @@ impl<T> FutureReader<T> {
         let (tx, rx) = oneshot::channel();
         send(
             &mut self.tx.as_mut().unwrap(),
-            ReadEvent::Read {
-                buffer: Single::default(),
-                tx,
-            },
+            ReadEvent::Read { buffer: None, tx },
         );
         let instance = self.instance;
         let id = self.id;
@@ -768,7 +769,7 @@ impl<B> StreamWriter<B> {
         Promise {
             inner: Box::pin(self.write(buffer).inner.then(|(me, buffer)| async move {
                 if let Some(me) = me {
-                    if buffer.remaining() > 0 {
+                    if buffer.remaining().len() > 0 {
                         me.write_all(buffer).inner.await
                     } else {
                         (Some(me), buffer)
@@ -1658,8 +1659,8 @@ impl ComponentInstance {
 
             ReadState::HostReady { accept } => {
                 let count = accept(Writer::Host {
-                    pointer: buffer.as_ptr().cast(),
-                    count: buffer.remaining(),
+                    pointer: buffer.remaining().as_ptr().cast(),
+                    count: buffer.remaining().len(),
                 })?;
                 buffer.forget(count);
                 _ = tx.send(HostResult {
