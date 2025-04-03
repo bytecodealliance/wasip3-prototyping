@@ -3,6 +3,8 @@ use core::mem;
 use core::pin::Pin;
 use core::task::{ready, Context, Poll};
 
+use std::io::Cursor;
+
 use anyhow::Context as _;
 use bytes::{Bytes, BytesMut};
 use http::HeaderMap;
@@ -10,8 +12,7 @@ use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::BodyExt as _;
 use tokio::sync::oneshot;
 use wasmtime::component::{
-    AbortOnDropHandle, BytesBuffer, ErrorContext, FutureWriter, PromisesUnordered, Resource,
-    StreamReader,
+    AbortOnDropHandle, ErrorContext, FutureWriter, PromisesUnordered, Resource, StreamReader,
 };
 use wasmtime::AsContextMut;
 use wasmtime_wasi::p3::{ResourceView, WithChildren};
@@ -43,7 +44,7 @@ pub(crate) fn empty_body() -> impl http_body::Body<Data = Bytes, Error = Option<
 /// A body frame
 pub enum BodyFrame {
     /// Data frame
-    Data(Bytes),
+    Data(Cursor<Bytes>),
     /// Trailer frame, this is the last frame of the body and it includes the transmit/receipt result
     Trailers(Result<Option<Resource<WithChildren<HeaderMap>>>, ErrorCode>),
 }
@@ -392,6 +393,7 @@ impl http_body::Body for OutgoingRequestBody {
         match tail {
             Some(tail) => {
                 let frame = buf.split();
+                assert!(buf.capacity() > 0);
                 self.contents = Some(tail.read(buf).into_future());
                 if let Some(ContentLength { limit, sent }) = &mut self.content_length {
                     let Ok(n) = frame.len().try_into() else {
