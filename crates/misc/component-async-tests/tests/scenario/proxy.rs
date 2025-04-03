@@ -1,3 +1,4 @@
+use std::io::Cursor;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -9,8 +10,8 @@ use tokio::fs;
 use wasi_http_draft::wasi::http::types::{ErrorCode, Method, Scheme};
 use wasi_http_draft::{Body, Fields, Request, Response};
 use wasmtime::component::{
-    Accessor, BytesBuffer, Component, Linker, PromisesUnordered, Resource, ResourceTable,
-    StreamReader, StreamWriter,
+    Accessor, Component, Linker, PromisesUnordered, Resource, ResourceTable, StreamReader,
+    StreamWriter,
 };
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{IoView, WasiCtxBuilder};
@@ -157,7 +158,7 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
     let body = b"And the mome raths outgrabe";
 
     enum Event {
-        RequestBodyWrite(Option<StreamWriter<BytesBuffer>>),
+        RequestBodyWrite(Option<StreamWriter<Cursor<Bytes>>>),
         RequestTrailersWrite(bool),
         Response(Result<Resource<Response>, ErrorCode>),
         ResponseBodyRead(Option<StreamReader<BytesMut>>, BytesMut),
@@ -173,9 +174,9 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
             .write_all(if use_compression {
                 let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
                 encoder.write_all(body)?;
-                Bytes::from(encoder.finish()?).into()
+                Cursor::new(Bytes::from(encoder.finish()?))
             } else {
-                Bytes::copy_from_slice(body).into()
+                Cursor::new(Bytes::copy_from_slice(body))
             })
             .map(|(w, _)| Event::RequestBodyWrite(w)),
     );

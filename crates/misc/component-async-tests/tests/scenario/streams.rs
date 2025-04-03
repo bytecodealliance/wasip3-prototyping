@@ -6,8 +6,8 @@ use {
     tokio::fs,
     wasmtime::{
         component::{
-            Component, Linker, PromisesUnordered, ResourceTable, Single, StreamReader,
-            StreamWriter, VecBuffer,
+            Component, Linker, PromisesUnordered, ResourceTable, StreamReader, StreamWriter,
+            VecBuffer,
         },
         Config, Engine, Store,
     },
@@ -47,24 +47,24 @@ pub async fn async_watch_streams() -> Result<()> {
     let instance = linker.instantiate_async(&mut store, &component).await?;
 
     // Test watching and then dropping the read end of a stream.
-    let (tx, rx) = instance.stream::<u8, Single<_>, Single<_>, _, _>(&mut store)?;
+    let (tx, rx) = instance.stream::<u8, Option<_>, Option<_>, _, _>(&mut store)?;
     let watch = tx.watch_reader().0;
     drop(rx);
     watch.get(&mut store).await?;
 
     // Test dropping and then watching the read end of a stream.
-    let (tx, rx) = instance.stream::<u8, Single<_>, Single<_>, _, _>(&mut store)?;
+    let (tx, rx) = instance.stream::<u8, Option<_>, Option<_>, _, _>(&mut store)?;
     drop(rx);
     tx.watch_reader().0.get(&mut store).await?;
 
     // Test watching and then dropping the write end of a stream.
-    let (tx, rx) = instance.stream::<u8, Single<_>, Single<_>, _, _>(&mut store)?;
+    let (tx, rx) = instance.stream::<u8, Option<_>, Option<_>, _, _>(&mut store)?;
     let watch = rx.watch_writer().0;
     drop(tx);
     watch.get(&mut store).await?;
 
     // Test dropping and then watching the write end of a stream.
-    let (tx, rx) = instance.stream::<u8, Single<_>, Single<_>, _, _>(&mut store)?;
+    let (tx, rx) = instance.stream::<u8, Option<_>, Option<_>, _, _>(&mut store)?;
     drop(tx);
     rx.watch_writer().0.get(&mut store).await?;
 
@@ -92,8 +92,8 @@ pub async fn async_watch_streams() -> Result<()> {
 
     #[allow(clippy::type_complexity)]
     enum Event {
-        Write(Option<StreamWriter<Single<u8>>>),
-        Read(Option<StreamReader<Single<u8>>>, Single<u8>),
+        Write(Option<StreamWriter<Option<u8>>>),
+        Read(Option<StreamReader<Option<u8>>>, Option<u8>),
     }
 
     // Test watching, then writing to, then dropping, then writing again to the
@@ -104,10 +104,10 @@ pub async fn async_watch_streams() -> Result<()> {
     promises.push(
         watch
             .into_inner()
-            .write_all(Single::new(42))
+            .write_all(Some(42))
             .map(|(w, _)| Event::Write(w)),
     );
-    promises.push(rx.read(Single::default()).map(|(r, b)| Event::Read(r, b)));
+    promises.push(rx.read(None).map(|(r, b)| Event::Read(r, b)));
     let mut rx = None;
     let mut tx = None;
     while let Some(event) = promises.next(&mut store).await? {
@@ -129,7 +129,7 @@ pub async fn async_watch_streams() -> Result<()> {
         .await?;
     assert!(watch
         .into_inner()
-        .write_all(Single::new(42))
+        .write_all(Some(42))
         .get(&mut store)
         .await?
         .0

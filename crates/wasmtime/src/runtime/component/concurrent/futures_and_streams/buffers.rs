@@ -1,8 +1,8 @@
 use {
     bytes::{Bytes, BytesMut},
     std::{
+        io::Cursor,
         mem::{self, MaybeUninit},
-        ops::Deref,
         ptr, slice,
         vec::Vec,
     },
@@ -10,68 +10,40 @@ use {
 
 /// Trait representing a buffer which may be written to a `StreamWriter`.
 #[doc(hidden)]
-pub trait WriteBuffer<T>: Deref<Target = [T]> + Send + Sync + 'static {
-    /// Number of items remaining to be read.
-    fn remaining(&self) -> usize;
+pub trait WriteBuffer<T>: Send + Sync + 'static {
+    /// Slice of items remaining to be read.
+    fn remaining(&self) -> &[T];
     /// Skip and drop the specified number of items.
     fn skip(&mut self, count: usize);
-    /// Get a pointer to the next item to be read, if any.
-    fn as_ptr(&self) -> *const T;
     /// Skip and forget (i.e. do _not_ drop) the specified number of items.
     fn forget(&mut self, count: usize);
 }
 
 /// Trait representing a buffer which may be used to read from a `StreamReader`.
 #[doc(hidden)]
-pub trait ReadBuffer<T>: Extend<T> + Send + Sync + 'static {
+pub trait ReadBuffer<T>: Send + Sync + 'static {
+    /// Move the specified items into this buffer.
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I);
     /// Number of items which may be read before this buffer is full.
     fn remaining_capacity(&self) -> usize;
     /// Move (i.e. take ownership of) the specified items into this buffer.
     unsafe fn copy_from(&mut self, input: *const T, count: usize);
 }
 
-/// Container type for sending or receiving at most one element at a time.
-///
-/// This is functionally equivalent to `Option<T>`, plus some additional trait
-/// implementations.
-pub struct Single<T>(Option<T>);
+pub(super) struct Extender<'a, B>(pub(super) &'a mut B);
 
-impl<T> Single<T> {
-    /// Create a new instance containing the specified value.
-    pub fn new(value: T) -> Self {
-        Self(Some(value))
-    }
-
-    /// Remove the value (if any) from this instance, leaving it empty.
-    pub fn take(&mut self) -> Option<T> {
-        self.0.take()
+impl<T, B: ReadBuffer<T>> Extend<T> for Extender<'_, B> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        self.0.extend(iter)
     }
 }
 
-impl<T> Default for Single<T> {
-    fn default() -> Self {
-        Self(None)
-    }
-}
-
-impl<T> Deref for Single<T> {
-    type Target = [T];
-
-    fn deref(&self) -> &[T] {
-        if let Some(me) = &self.0 {
+impl<T: Send + Sync + 'static> WriteBuffer<T> for Option<T> {
+    fn remaining(&self) -> &[T] {
+        if let Some(me) = self {
             unsafe { slice::from_raw_parts(me, 1) }
         } else {
             &[]
-        }
-    }
-}
-
-impl<T: Send + Sync + 'static> WriteBuffer<T> for Single<T> {
-    fn remaining(&self) -> usize {
-        if self.0.is_some() {
-            1
-        } else {
-            0
         }
     }
 
@@ -79,18 +51,10 @@ impl<T: Send + Sync + 'static> WriteBuffer<T> for Single<T> {
         match count {
             0 => {}
             1 => {
-                assert!(self.0.is_some());
-                self.0 = None;
+                assert!(self.is_some());
+                *self = None;
             }
-            _ => panic!("cannot skip more than {} item(s)", self.remaining()),
-        }
-    }
-
-    fn as_ptr(&self) -> *const T {
-        if let Some(me) = &self.0 {
-            me
-        } else {
-            ptr::null()
+            _ => panic!("cannot skip more than {} item(s)", self.remaining().len()),
         }
     }
 
@@ -98,30 +62,25 @@ impl<T: Send + Sync + 'static> WriteBuffer<T> for Single<T> {
         match count {
             0 => {}
             1 => {
-                assert!(self.0.is_some());
+                assert!(self.is_some());
                 mem::forget(self.take());
             }
-            _ => panic!("cannot forget more than {} item(s)", self.remaining()),
+            _ => panic!("cannot forget more than {} item(s)", self.remaining().len()),
         }
     }
 }
 
-impl<T> Extend<T> for Single<T> {
-    fn extend<I>(&mut self, iter: I)
-    where
-        I: IntoIterator<Item = T>,
-    {
+impl<T: Send + Sync + 'static> ReadBuffer<T> for Option<T> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         let mut iter = iter.into_iter();
-        if self.0.is_none() {
-            self.0 = iter.next();
+        if self.is_none() {
+            *self = iter.next();
         }
         assert!(iter.next().is_none());
     }
-}
 
-impl<T: Send + Sync + 'static> ReadBuffer<T> for Single<T> {
     fn remaining_capacity(&self) -> usize {
-        if self.0.is_some() {
+        if self.is_some() {
             0
         } else {
             1
@@ -132,8 +91,8 @@ impl<T: Send + Sync + 'static> ReadBuffer<T> for Single<T> {
         match count {
             0 => {}
             1 => {
-                assert!(self.0.is_none());
-                self.0 = Some(input.read());
+                assert!(self.is_none());
+                *self = Some(input.read());
             }
             _ => panic!(
                 "cannot take more than {} item(s)",
@@ -161,17 +120,17 @@ impl<T> VecBuffer<T> {
     /// Reset the state of this buffer, removing all items and preserving its
     /// capacity.
     pub fn reset(&mut self) {
-        self.skip_(self.remaining_());
+        self.skip_(self.remaining_().len());
         self.buffer.clear();
         self.offset = 0;
     }
 
-    fn remaining_(&self) -> usize {
-        self.buffer.len().checked_sub(self.offset).unwrap()
+    fn remaining_(&self) -> &[T] {
+        unsafe { mem::transmute::<&[MaybeUninit<T>], &[T]>(&self.buffer[self.offset..]) }
     }
 
     fn skip_(&mut self, count: usize) {
-        assert!(count <= self.remaining_());
+        assert!(count <= self.remaining_().len());
         for item in &mut self.buffer[self.offset..][..count] {
             drop(unsafe { item.as_mut_ptr().read() })
         }
@@ -179,16 +138,8 @@ impl<T> VecBuffer<T> {
     }
 }
 
-impl<T> Deref for VecBuffer<T> {
-    type Target = [T];
-
-    fn deref(&self) -> &[T] {
-        unsafe { mem::transmute::<&[MaybeUninit<T>], &[T]>(&self.buffer[self.offset..]) }
-    }
-}
-
 impl<T: Send + Sync + 'static> WriteBuffer<T> for VecBuffer<T> {
-    fn remaining(&self) -> usize {
+    fn remaining(&self) -> &[T] {
         self.remaining_()
     }
 
@@ -196,12 +147,8 @@ impl<T: Send + Sync + 'static> WriteBuffer<T> for VecBuffer<T> {
         self.skip_(count)
     }
 
-    fn as_ptr(&self) -> *const T {
-        self.buffer[self.offset].as_ptr()
-    }
-
     fn forget(&mut self, count: usize) {
-        assert!(count <= self.remaining());
+        assert!(count <= self.remaining().len());
         self.offset = self.offset.checked_add(count).unwrap();
     }
 }
@@ -217,11 +164,15 @@ impl<T> From<Vec<T>> for VecBuffer<T> {
 
 impl<T> Drop for VecBuffer<T> {
     fn drop(&mut self) {
-        self.skip_(self.remaining_());
+        self.skip_(self.remaining_().len());
     }
 }
 
 impl<T: Send + Sync + 'static> ReadBuffer<T> for Vec<T> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        Extend::extend(self, iter)
+    }
+
     fn remaining_capacity(&self) -> usize {
         self.capacity().checked_sub(self.len()).unwrap()
     }
@@ -233,38 +184,18 @@ impl<T: Send + Sync + 'static> ReadBuffer<T> for Vec<T> {
     }
 }
 
-/// A `WriteBuffer` implementation, backed by a `Bytes`.
-pub struct BytesBuffer {
-    buffer: Bytes,
-    offset: usize,
-}
-
-impl From<Bytes> for BytesBuffer {
-    fn from(buffer: Bytes) -> Self {
-        Self { buffer, offset: 0 }
-    }
-}
-
-impl Deref for BytesBuffer {
-    type Target = [u8];
-
-    fn deref(&self) -> &[u8] {
-        &self.buffer[self.offset..]
-    }
-}
-
-impl WriteBuffer<u8> for BytesBuffer {
-    fn remaining(&self) -> usize {
-        self.buffer.len().checked_sub(self.offset).unwrap()
+impl WriteBuffer<u8> for Cursor<Bytes> {
+    fn remaining(&self) -> &[u8] {
+        &self.get_ref()[usize::try_from(self.position()).unwrap()..]
     }
 
     fn skip(&mut self, count: usize) {
-        assert!(count <= self.remaining());
-        self.offset = self.offset.checked_add(count).unwrap();
-    }
-
-    fn as_ptr(&self) -> *const u8 {
-        unsafe { self.buffer.as_ptr().add(self.offset) }
+        assert!(count <= self.remaining().len());
+        self.set_position(
+            self.position()
+                .checked_add(u64::try_from(count).unwrap())
+                .unwrap(),
+        );
     }
 
     fn forget(&mut self, count: usize) {
@@ -272,45 +203,18 @@ impl WriteBuffer<u8> for BytesBuffer {
     }
 }
 
-/// A `WriteBuffer` implementation, backed by a `BytesMut`.
-pub struct BytesMutBuffer {
-    buffer: BytesMut,
-    offset: usize,
-}
-
-impl BytesMutBuffer {
-    /// Convert this instance into the wrapped `BytesMut`.
-    pub fn into_inner(self) -> BytesMut {
-        self.buffer
-    }
-}
-
-impl From<BytesMut> for BytesMutBuffer {
-    fn from(buffer: BytesMut) -> Self {
-        Self { buffer, offset: 0 }
-    }
-}
-
-impl Deref for BytesMutBuffer {
-    type Target = [u8];
-
-    fn deref(&self) -> &[u8] {
-        &self.buffer[self.offset..]
-    }
-}
-
-impl WriteBuffer<u8> for BytesMutBuffer {
-    fn remaining(&self) -> usize {
-        self.buffer.len().checked_sub(self.offset).unwrap()
+impl WriteBuffer<u8> for Cursor<BytesMut> {
+    fn remaining(&self) -> &[u8] {
+        &self.get_ref()[usize::try_from(self.position()).unwrap()..]
     }
 
     fn skip(&mut self, count: usize) {
-        assert!(count <= self.remaining());
-        self.offset = self.offset.checked_add(count).unwrap();
-    }
-
-    fn as_ptr(&self) -> *const u8 {
-        unsafe { self.buffer.as_ptr().add(self.offset) }
+        assert!(count <= self.remaining().len());
+        self.set_position(
+            self.position()
+                .checked_add(u64::try_from(count).unwrap())
+                .unwrap(),
+        );
     }
 
     fn forget(&mut self, count: usize) {
@@ -319,6 +223,10 @@ impl WriteBuffer<u8> for BytesMutBuffer {
 }
 
 impl ReadBuffer<u8> for BytesMut {
+    fn extend<I: IntoIterator<Item = u8>>(&mut self, iter: I) {
+        Extend::extend(self, iter)
+    }
+
     fn remaining_capacity(&self) -> usize {
         self.capacity().checked_sub(self.len()).unwrap()
     }

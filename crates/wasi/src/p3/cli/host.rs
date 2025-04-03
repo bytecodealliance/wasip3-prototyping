@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Context as _};
 use bytes::BytesMut;
+use std::io::Cursor;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use wasmtime::component::{
-    Accessor, AccessorTask, BytesMutBuffer, HostStream, Resource, StreamReader, StreamWriter,
+    Accessor, AccessorTask, HostStream, Resource, StreamReader, StreamWriter,
 };
 
 use crate::p3::bindings::cli::{
@@ -14,7 +15,7 @@ use crate::p3::ResourceView as _;
 
 struct InputTask<T> {
     input: T,
-    tx: StreamWriter<BytesMutBuffer>,
+    tx: StreamWriter<Cursor<BytesMut>>,
 }
 
 impl<T, U, V> AccessorTask<T, U, wasmtime::Result<()>> for InputTask<V>
@@ -29,7 +30,7 @@ where
                 Ok(0) => return Ok(()),
                 Ok(_) => {
                     let (Some(tail), buf_again) =
-                        tx.write_all(BytesMutBuffer::from(buf)).into_future().await
+                        tx.write_all(Cursor::new(buf)).into_future().await
                     else {
                         break Ok(());
                     };
