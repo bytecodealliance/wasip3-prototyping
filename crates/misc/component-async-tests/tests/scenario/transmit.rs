@@ -251,13 +251,13 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
 
     promises.push(
         control_tx
-            .write(Single::new(Control::ReadStream("a".into())))
+            .write_all(Single::new(Control::ReadStream("a".into())))
             .map(|(w, _)| Event::ControlWriteA(w)),
     );
 
     promises.push(
         caller_stream_tx
-            .write(Single::new(String::from("a")))
+            .write_all(Single::new(String::from("a")))
             .map(|_| Event::WriteA),
     );
 
@@ -286,7 +286,7 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
             Event::ControlWriteA(tx) => {
                 promises.push(
                     tx.unwrap()
-                        .write(Single::new(Control::ReadFuture("b".into())))
+                        .write_all(Single::new(Control::ReadFuture("b".into())))
                         .map(|(w, _)| Event::ControlWriteB(w)),
                 );
             }
@@ -302,7 +302,7 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
             Event::ControlWriteB(tx) => {
                 promises.push(
                     tx.unwrap()
-                        .write(Single::new(Control::WriteStream("c".into())))
+                        .write_all(Single::new(Control::WriteStream("c".into())))
                         .map(|(w, _)| Event::ControlWriteC(w)),
                 );
             }
@@ -319,7 +319,7 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
             Event::ControlWriteC(tx) => {
                 promises.push(
                     tx.unwrap()
-                        .write(Single::new(Control::WriteFuture("d".into())))
+                        .write_all(Single::new(Control::WriteFuture("d".into())))
                         .map(|_| Event::ControlWriteD),
                 );
             }

@@ -104,7 +104,7 @@ pub async fn async_watch_streams() -> Result<()> {
     promises.push(
         watch
             .into_inner()
-            .write(Single::new(42))
+            .write_all(Single::new(42))
             .map(|(w, _)| Event::Write(w)),
     );
     promises.push(rx.read(Single::default()).map(|(r, b)| Event::Read(r, b)));
@@ -129,7 +129,7 @@ pub async fn async_watch_streams() -> Result<()> {
         .await?;
     assert!(watch
         .into_inner()
-        .write(Single::new(42))
+        .write_all(Single::new(42))
         .get(&mut store)
         .await?
         .0
@@ -208,7 +208,7 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
 
         let mut promises = PromisesUnordered::new();
         promises.push(
-            tx.write(values.clone().into())
+            tx.write_all(values.clone().into())
                 .map(|(w, _)| StreamEvent::FirstWrite(w)),
         );
         promises.push(
@@ -229,7 +229,7 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
                         );
                     } else {
                         promises.push(
-                            tx.write(values.clone().into())
+                            tx.write_all(values.clone().into())
                                 .map(|(w, _)| StreamEvent::SecondWrite(w)),
                         );
                     }
@@ -304,7 +304,7 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
                 .map(|()| StreamEvent::GuestCompleted),
         );
         promises.push(
-            tx.write(values.clone().into())
+            tx.write_all(values.clone().into())
                 .map(|(w, _)| StreamEvent::FirstWrite(w)),
         );
 
@@ -317,7 +317,7 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
                         promises.push(tx.watch_reader().0.map(|()| StreamEvent::SecondWrite(None)));
                     } else {
                         promises.push(
-                            tx.write(values.clone().into())
+                            tx.write_all(values.clone().into())
                                 .map(|(w, _)| StreamEvent::SecondWrite(w)),
                         );
                     }
