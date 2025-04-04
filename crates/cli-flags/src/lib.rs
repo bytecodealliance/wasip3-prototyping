@@ -370,6 +370,8 @@ wasmtime_option_group! {
         /// Component model support for async lifting/lowering: this corresponds
         /// to the 🚟 emoji in the component model specification.
         pub component_model_async_stackful: Option<bool>,
+        /// TODO
+        pub component_model_error_context: Option<bool>,
         /// Configure support for the function-references proposal.
         pub function_references: Option<bool>,
         /// Configure support for the GC proposal.
@@ -982,6 +984,9 @@ impl CommonOptions {
         }
         if let Some(enable) = self.wasm.extended_const.or(all) {
             config.wasm_extended_const(enable);
+        }
+        if let Some(enable) = self.wasm.component_model_error_context.or(all) {
+            config.wasm_component_model_error_context(enable);
         }
 
         macro_rules! handle_conditionally_compiled {

@@ -1,4 +1,4 @@
-;;! cm_async = true
+;;! component_model_async = true
 ;;! reference_types = true
 ;;! gc_types = true
 ;;! multi_memory = true
@@ -29,7 +29,7 @@
         (export "waitable-set-new" (func $waitable-set-new))
       ))
     ))
-    
+
     (func (export "run")
       (canon lift (core func $i "run") async (callback (func $i "cb"))))
   )

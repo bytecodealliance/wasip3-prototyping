@@ -1151,6 +1151,13 @@ impl Config {
         self
     }
 
+    /// TODO
+    #[cfg(feature = "component-model-async")]
+    pub fn wasm_component_model_error_context(&mut self, enable: bool) -> &mut Self {
+        self.wasm_feature(WasmFeatures::CM_ERROR_CONTEXT, enable);
+        self
+    }
+
     /// Configures which compilation strategy will be used for wasm modules.
     ///
     /// This method can be used to configure which compiler is used for wasm

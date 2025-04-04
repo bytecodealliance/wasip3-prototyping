@@ -1,5 +1,5 @@
-;;! cm_async = true
-;;! cm_async_builtins = true
+;;! component_model_async = true
+;;! component_model_async_builtins = true
 
 ;; stream.new
 (component
