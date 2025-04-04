@@ -1152,7 +1152,6 @@ impl Config {
     }
 
     /// TODO
-    #[cfg(feature = "component-model-async")]
     pub fn wasm_component_model_error_context(&mut self, enable: bool) -> &mut Self {
         self.wasm_feature(WasmFeatures::CM_ERROR_CONTEXT, enable);
         self
