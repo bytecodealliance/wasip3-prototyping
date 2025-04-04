@@ -1447,7 +1447,7 @@ impl StoreOpaque {
             );
             let (index, heap) = engine
                 .allocator()
-                .allocate_gc_heap(&**engine.gc_runtime()?)?;
+                .allocate_gc_heap(engine, &**engine.gc_runtime()?)?;
             Ok(GcStore::new(index, heap))
         }
 
@@ -1477,15 +1477,30 @@ impl StoreOpaque {
     /// If this store is configured with a GC heap, return a mutable reference
     /// to it. Otherwise, return `None`.
     #[inline]
-    pub(crate) fn optional_gc_store_mut(&mut self) -> Result<Option<&mut GcStore>> {
+    pub(crate) fn optional_gc_store_mut(&mut self) -> Option<&mut GcStore> {
         if cfg!(not(feature = "gc")) || !self.engine.features().gc_types() {
-            Ok(None)
+            debug_assert!(self.gc_store.is_none());
+            None
         } else {
-            Ok(Some(self.gc_store_mut()?))
+            self.gc_store.as_mut()
+        }
+    }
+
+    /// If this store is configured with a GC heap, return a shared reference to
+    /// it. Otherwise, return `None`.
+    #[inline]
+    #[cfg(feature = "gc")]
+    pub(crate) fn optional_gc_store(&self) -> Option<&GcStore> {
+        if cfg!(not(feature = "gc")) || !self.engine.features().gc_types() {
+            debug_assert!(self.gc_store.is_none());
+            None
+        } else {
+            self.gc_store.as_ref()
         }
     }
 
     #[inline]
+    #[track_caller]
     #[cfg(feature = "gc")]
     pub(crate) fn unwrap_gc_store(&self) -> &GcStore {
         self.gc_store
@@ -1494,6 +1509,7 @@ impl StoreOpaque {
     }
 
     #[inline]
+    #[track_caller]
     pub(crate) fn unwrap_gc_store_mut(&mut self) -> &mut GcStore {
         self.gc_store
             .as_mut()
@@ -2280,7 +2296,7 @@ impl Drop for StoreOpaque {
     }
 }
 
-impl<T> StoreContextMut<'_, T> {
+impl StoreOpaque {
     #[cfg(not(feature = "async"))]
     pub(crate) fn async_guard_range(&self) -> core::ops::Range<*mut u8> {
         core::ptr::null_mut()..core::ptr::null_mut()

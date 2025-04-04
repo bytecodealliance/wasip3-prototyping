@@ -2,7 +2,7 @@ use crate::linker::{Definition, DefinitionType};
 use crate::prelude::*;
 use crate::runtime::vm::{
     Imports, InstanceAllocationRequest, ModuleRuntimeInfo, StorePtr, VMFuncRef, VMFunctionImport,
-    VMGlobalImport, VMMemoryImport, VMOpaqueContext, VMTableImport, VMTagImport,
+    VMGlobalImport, VMMemoryImport, VMOpaqueContext, VMTable, VMTagImport,
 };
 use crate::store::{InstanceId, StoreOpaque, Stored};
 use crate::types::matching;
@@ -269,7 +269,7 @@ impl Instance {
         store.bump_resource_counts(module)?;
 
         // Allocate the GC heap, if necessary.
-        if store.engine().features().gc_types() {
+        if module.env_module().needs_gc_heap {
             let _ = store.gc_store_mut()?;
         }
 
@@ -666,7 +666,7 @@ impl Instance {
 
 pub(crate) struct OwnedImports {
     functions: PrimaryMap<FuncIndex, VMFunctionImport>,
-    tables: PrimaryMap<TableIndex, VMTableImport>,
+    tables: PrimaryMap<TableIndex, VMTable>,
     memories: PrimaryMap<MemoryIndex, VMMemoryImport>,
     globals: PrimaryMap<GlobalIndex, VMGlobalImport>,
     tags: PrimaryMap<TagIndex, VMTagImport>,
@@ -749,7 +749,7 @@ impl OwnedImports {
                 });
             }
             crate::runtime::vm::Export::Table(t) => {
-                self.tables.push(VMTableImport {
+                self.tables.push(VMTable {
                     from: t.definition.into(),
                     vmctx: t.vmctx.into(),
                 });

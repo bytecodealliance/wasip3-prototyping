@@ -8,8 +8,9 @@
 
 use crate::prelude::*;
 use crate::runtime::vm::{
-    SendSyncPtr, VMArrayCallFunction, VMFuncRef, VMGlobalDefinition, VMMemoryDefinition,
-    VMOpaqueContext, VMStore, VMStoreRawPtr, VMWasmCallFunction, ValRaw, VmPtr, VmSafe,
+    SendSyncPtr, VMArrayCallFunction, VMContext, VMFuncRef, VMGlobalDefinition, VMMemoryDefinition,
+    VMOpaqueContext, VMStore, VMStoreRawPtr, VMTable, VMTableDefinition, VMWasmCallFunction,
+    ValRaw, VmPtr, VmSafe,
 };
 use alloc::alloc::Layout;
 use alloc::sync::Arc;
@@ -312,6 +313,20 @@ impl ComponentInstance {
         }
     }
 
+    /// Returns the runtime table definition and associated instance `VMContext`
+    /// corresponding to the index of the table provided.
+    ///
+    /// This can only be called after `idx` has been initialized at runtime
+    /// during the instantiation process of a component.
+    pub fn runtime_table(&self, idx: RuntimeTableIndex) -> VMTable {
+        unsafe {
+            let ret = *self.vmctx_plus_offset::<VMTable>(self.offsets.runtime_table(idx));
+            debug_assert!(ret.from.as_ptr() as usize != INVALID_PTR);
+            debug_assert!(ret.vmctx.as_ptr() as usize != INVALID_PTR);
+            ret
+        }
+    }
+
     /// Returns the realloc pointer corresponding to the index provided.
     ///
     /// This can only be called after `idx` has been initialized at runtime
@@ -439,6 +454,31 @@ impl ComponentInstance {
         }
     }
 
+    /// Stores the runtime table pointer at the index specified.
+    ///
+    /// This is intended to be called during the instantiation process of a
+    /// component once a table is available, which may not be until part-way
+    /// through component instantiation.
+    ///
+    /// Note that it should be a property of the component model that the `ptr`
+    /// here is never needed prior to it being configured here in the instance.
+    pub fn set_runtime_table(
+        &mut self,
+        idx: RuntimeTableIndex,
+        ptr: NonNull<VMTableDefinition>,
+        vmctx: NonNull<VMContext>,
+    ) {
+        unsafe {
+            let storage = self.vmctx_plus_offset_mut::<VMTable>(self.offsets.runtime_table(idx));
+            debug_assert!((*storage).vmctx.as_ptr() as usize == INVALID_PTR);
+            debug_assert!((*storage).from.as_ptr() as usize == INVALID_PTR);
+            *storage = VMTable {
+                vmctx: vmctx.into(),
+                from: ptr.into(),
+            };
+        }
+    }
+
     /// Configures host runtime lowering information associated with imported f
     /// functions for the `idx` specified.
     pub fn set_lowering(&mut self, idx: LoweredIndex, lowering: VMLowering) {
@@ -556,6 +596,11 @@ impl ComponentInstance {
             for i in 0..self.offsets.num_resources {
                 let i = ResourceIndex::from_u32(i);
                 let offset = self.offsets.resource_destructor(i);
+                *self.vmctx_plus_offset_mut(offset) = INVALID_PTR;
+            }
+            for i in 0..self.offsets.num_runtime_tables {
+                let i = RuntimeTableIndex::from_u32(i);
+                let offset = self.offsets.runtime_table(i);
                 *self.vmctx_plus_offset_mut(offset) = INVALID_PTR;
             }
         }
@@ -801,6 +846,16 @@ impl OwnedComponentInstance {
         ptr: NonNull<VMFuncRef>,
     ) {
         unsafe { self.instance_mut().set_runtime_post_return(idx, ptr) }
+    }
+
+    /// See `ComponentInstance::set_runtime_table`
+    pub fn set_runtime_table(
+        &mut self,
+        idx: RuntimeTableIndex,
+        ptr: NonNull<VMTableDefinition>,
+        vmctx: NonNull<VMContext>,
+    ) {
+        unsafe { self.instance_mut().set_runtime_table(idx, ptr, vmctx) }
     }
 
     /// See `ComponentInstance::set_lowering`

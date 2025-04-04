@@ -68,7 +68,7 @@ pub fn check_compatible(engine: &Engine, mmap: &[u8], expected: ObjectKind) -> R
             os_abi: obj::ELFOSABI_WASMTIME,
             abi_version: 0,
             e_flags,
-        } if e_flags == expected_e_flags => {}
+        } if e_flags & expected_e_flags == expected_e_flags => {}
         _ => bail!("incompatible object file format"),
     }
 
@@ -149,13 +149,13 @@ fn detect_precompiled<'data, R: object::ReadRef<'data>>(
         FileFlags::Elf {
             os_abi: obj::ELFOSABI_WASMTIME,
             abi_version: 0,
-            e_flags: obj::EF_WASMTIME_MODULE,
-        } => Some(Precompiled::Module),
+            e_flags,
+        } if e_flags & obj::EF_WASMTIME_MODULE != 0 => Some(Precompiled::Module),
         FileFlags::Elf {
             os_abi: obj::ELFOSABI_WASMTIME,
             abi_version: 0,
-            e_flags: obj::EF_WASMTIME_COMPONENT,
-        } => Some(Precompiled::Component),
+            e_flags,
+        } if e_flags & obj::EF_WASMTIME_COMPONENT != 0 => Some(Precompiled::Component),
         _ => None,
     }
 }
@@ -200,9 +200,10 @@ struct WasmFeatures {
     function_references: bool,
     gc: bool,
     custom_page_sizes: bool,
-    cm_async: bool,
-    cm_async_builtins: bool,
-    cm_async_stackful: bool,
+    component_model_async: bool,
+    component_model_async_builtins: bool,
+    component_model_async_stackful: bool,
+    component_model_error_context: bool,
     gc_types: bool,
     wide_arithmetic: bool,
     stack_switching: bool,
@@ -229,11 +230,12 @@ impl Metadata<'_> {
             gc,
             custom_page_sizes,
             shared_everything_threads,
-            cm_values,
-            cm_nested_names,
             cm_async,
-            cm_async_stackful,
             cm_async_builtins,
+            cm_async_stackful,
+            cm_error_context,
+            cm_nested_names,
+            cm_values,
             legacy_exceptions,
             gc_types,
             stack_switching,
@@ -250,8 +252,8 @@ impl Metadata<'_> {
         // above so that once we do implement support for them, we won't
         // silently ignore them during serialization.
         assert!(!memory_control);
-        assert!(!cm_values);
         assert!(!cm_nested_names);
+        assert!(!cm_values);
         assert!(!shared_everything_threads);
         assert!(!legacy_exceptions);
 
@@ -276,12 +278,13 @@ impl Metadata<'_> {
                 function_references,
                 gc,
                 custom_page_sizes,
-                cm_async,
                 gc_types,
                 wide_arithmetic,
                 stack_switching,
-                cm_async_builtins,
-                cm_async_stackful,
+                component_model_async: cm_async,
+                component_model_async_builtins: cm_async_builtins,
+                component_model_async_stackful: cm_async_stackful,
+                component_model_error_context: cm_error_context,
             },
         }
     }
@@ -488,12 +491,13 @@ impl Metadata<'_> {
             function_references,
             gc,
             custom_page_sizes,
-            cm_async,
+            component_model_async,
+            component_model_async_builtins,
+            component_model_async_stackful,
+            component_model_error_context,
             gc_types,
             wide_arithmetic,
             stack_switching,
-            cm_async_builtins,
-            cm_async_stackful,
         } = self.features;
 
         use wasmparser::WasmFeatures as F;
@@ -569,9 +573,24 @@ impl Metadata<'_> {
             "WebAssembly custom-page-sizes support",
         )?;
         Self::check_bool(
-            cm_async,
+            component_model_async,
             other.contains(F::CM_ASYNC),
             "WebAssembly component model support for async lifts/lowers, futures, streams, and errors",
+        )?;
+        Self::check_bool(
+            component_model_async_builtins,
+            other.contains(F::CM_ASYNC_BUILTINS),
+            "WebAssembly component model support for async builtins",
+        )?;
+        Self::check_bool(
+            component_model_async_stackful,
+            other.contains(F::CM_ASYNC_STACKFUL),
+            "WebAssembly component model support for async stackful",
+        )?;
+        Self::check_bool(
+            component_model_error_context,
+            other.contains(F::CM_ERROR_CONTEXT),
+            "WebAssembly component model support for error-context",
         )?;
         Self::check_cfg_bool(
             cfg!(feature = "gc"),
@@ -589,16 +608,6 @@ impl Metadata<'_> {
             stack_switching,
             other.contains(F::STACK_SWITCHING),
             "WebAssembly stack switching support",
-        )?;
-        Self::check_bool(
-            cm_async_builtins,
-            other.contains(F::CM_ASYNC_BUILTINS),
-            "TODO better error message",
-        )?;
-        Self::check_bool(
-            cm_async_stackful,
-            other.contains(F::CM_ASYNC_STACKFUL),
-            "TODO better error message",
         )?;
         Ok(())
     }

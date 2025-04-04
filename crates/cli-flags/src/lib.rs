@@ -364,6 +364,14 @@ wasmtime_option_group! {
         pub component_model: Option<bool>,
         /// Component model support for async lifting/lowering.
         pub component_model_async: Option<bool>,
+        /// Component model support for async lifting/lowering: this corresponds
+        /// to the 🚝 emoji in the component model specification.
+        pub component_model_async_builtins: Option<bool>,
+        /// Component model support for async lifting/lowering: this corresponds
+        /// to the 🚟 emoji in the component model specification.
+        pub component_model_async_stackful: Option<bool>,
+        /// TODO
+        pub component_model_error_context: Option<bool>,
         /// Configure support for the function-references proposal.
         pub function_references: Option<bool>,
         /// Configure support for the GC proposal.
@@ -414,6 +422,8 @@ wasmtime_option_group! {
         /// Grant access to the given TCP listen socket
         #[serde(default)]
         pub tcplisten: Vec<String>,
+        /// Enable support for WASI TLS (Transport Layer Security) imports (experimental)
+        pub tls: Option<bool>,
         /// Implement WASI Preview1 using new Preview2 implementation (true, default) or legacy
         /// implementation (false)
         pub preview2: Option<bool>,
@@ -824,7 +834,9 @@ impl CommonOptions {
                     if let Some(limit) = self.opts.pooling_total_tables {
                         cfg.total_tables(limit);
                     }
-                    if let Some(limit) = self.opts.pooling_table_elements {
+                    if let Some(limit) = self.opts.pooling_table_elements
+                        .or(self.wasm.max_table_elements)
+                    {
                         cfg.table_elements(limit);
                     }
                     if let Some(limit) = self.opts.pooling_max_core_instance_size {
@@ -835,7 +847,9 @@ impl CommonOptions {
                         limit => cfg.total_stacks(limit),
                         _ => err,
                     }
-                    if let Some(max) = self.opts.pooling_max_memory_size {
+                    if let Some(max) = self.opts.pooling_max_memory_size
+                        .or(self.wasm.max_memory_size)
+                    {
                         cfg.max_memory_size(max);
                     }
                     if let Some(size) = self.opts.pooling_decommit_batch_size {
@@ -971,6 +985,9 @@ impl CommonOptions {
         if let Some(enable) = self.wasm.extended_const.or(all) {
             config.wasm_extended_const(enable);
         }
+        if let Some(enable) = self.wasm.component_model_error_context.or(all) {
+            config.wasm_component_model_error_context(enable);
+        }
 
         macro_rules! handle_conditionally_compiled {
             ($(($feature:tt, $field:tt, $method:tt))*) => ($(
@@ -988,6 +1005,8 @@ impl CommonOptions {
         handle_conditionally_compiled! {
             ("component-model", component_model, wasm_component_model)
             ("component-model-async", component_model_async, wasm_component_model_async)
+            ("component-model-async", component_model_async_builtins, wasm_component_model_async_builtins)
+            ("component-model-async", component_model_async_stackful, wasm_component_model_async_stackful)
             ("threads", threads, wasm_threads)
             ("gc", gc, wasm_gc)
             ("gc", reference_types, wasm_reference_types)

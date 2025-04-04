@@ -166,7 +166,7 @@ pub enum SideEffect {
 macro_rules! id {
     ($(pub struct $name:ident(u32);)*) => ($(
         #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
-        #[allow(missing_docs, reason = "tedious to document")]
+        #[expect(missing_docs, reason = "tedious to document")]
         pub struct $name(u32);
         cranelift_entity::entity_impl!($name);
     )*)
@@ -175,6 +175,7 @@ macro_rules! id {
 id! {
     pub struct InstanceId(u32);
     pub struct MemoryId(u32);
+    pub struct TableId(u32);
     pub struct ReallocId(u32);
     pub struct CallbackId(u32);
     pub struct AdapterId(u32);
@@ -183,7 +184,7 @@ id! {
 }
 
 /// Same as `info::InstantiateModule`
-#[allow(missing_docs, reason = "tedious to document variants")]
+#[expect(missing_docs, reason = "tedious to document variants")]
 pub enum Instance {
     Static(StaticModuleIndex, Box<[CoreDef]>),
     Import(
@@ -193,7 +194,7 @@ pub enum Instance {
 }
 
 /// Same as `info::Export`
-#[allow(missing_docs, reason = "tedious to document variants")]
+#[expect(missing_docs, reason = "tedious to document variants")]
 pub enum Export {
     LiftedFunction {
         ty: TypeFuncIndex,
@@ -217,7 +218,7 @@ pub enum Export {
 
 /// Same as `info::CoreDef`, except has an extra `Adapter` variant.
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
-#[allow(missing_docs, reason = "tedious to document variants")]
+#[expect(missing_docs, reason = "tedious to document variants")]
 pub enum CoreDef {
     Export(CoreExport<EntityIndex>),
     InstanceFlags(RuntimeComponentInstanceIndex),
@@ -244,14 +245,14 @@ where
 
 /// Same as `info::CoreExport`
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
-#[allow(missing_docs, reason = "self-describing fields")]
+#[expect(missing_docs, reason = "self-describing fields")]
 pub struct CoreExport<T> {
     pub instance: InstanceId,
     pub item: ExportItem<T>,
 }
 
 impl<T> CoreExport<T> {
-    #[allow(missing_docs, reason = "self-describing function")]
+    #[expect(missing_docs, reason = "self-describing function")]
     pub fn map_index<U>(self, f: impl FnOnce(T) -> U) -> CoreExport<U> {
         CoreExport {
             instance: self.instance,
@@ -265,7 +266,7 @@ impl<T> CoreExport<T> {
 
 /// Same as `info::Trampoline`
 #[derive(Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs, reason = "self-describing fields")]
+#[expect(missing_docs, reason = "self-describing fields")]
 pub enum Trampoline {
     LowerImport {
         import: RuntimeImportIndex,
@@ -401,14 +402,14 @@ pub enum Trampoline {
 }
 
 #[derive(Copy, Clone, Hash, Eq, PartialEq)]
-#[allow(missing_docs, reason = "self-describing fields")]
+#[expect(missing_docs, reason = "self-describing fields")]
 pub struct FutureInfo {
     pub instance: RuntimeComponentInstanceIndex,
     pub payload_type: Option<InterfaceType>,
 }
 
 #[derive(Copy, Clone, Hash, Eq, PartialEq)]
-#[allow(missing_docs, reason = "self-describing fields")]
+#[expect(missing_docs, reason = "self-describing fields")]
 pub struct StreamInfo {
     pub instance: RuntimeComponentInstanceIndex,
     pub payload_type: InterfaceType,
@@ -416,7 +417,7 @@ pub struct StreamInfo {
 
 /// Same as `info::CanonicalOptions`
 #[derive(Clone, Hash, Eq, PartialEq)]
-#[allow(missing_docs, reason = "self-describing fields")]
+#[expect(missing_docs, reason = "self-describing fields")]
 pub struct CanonicalOptions {
     pub instance: RuntimeComponentInstanceIndex,
     pub string_encoding: StringEncoding,
@@ -428,7 +429,7 @@ pub struct CanonicalOptions {
 }
 
 /// Same as `info::Resource`
-#[allow(missing_docs, reason = "self-describing fields")]
+#[expect(missing_docs, reason = "self-describing fields")]
 pub struct Resource {
     pub rep: WasmValType,
     pub dtor: Option<CoreDef>,
@@ -499,6 +500,7 @@ impl ComponentDfg {
             dfg: &self,
             initializers: Vec::new(),
             runtime_memories: Default::default(),
+            runtime_tables: Default::default(),
             runtime_post_return: Default::default(),
             runtime_reallocs: Default::default(),
             runtime_callbacks: Default::default(),
@@ -540,6 +542,7 @@ impl ComponentDfg {
                 num_lowerings: linearize.num_lowerings,
 
                 num_runtime_memories: linearize.runtime_memories.len() as u32,
+                num_runtime_tables: linearize.runtime_tables.len() as u32,
                 num_runtime_post_returns: linearize.runtime_post_return.len() as u32,
                 num_runtime_reallocs: linearize.runtime_reallocs.len() as u32,
                 num_runtime_callbacks: linearize.runtime_callbacks.len() as u32,
@@ -576,6 +579,7 @@ struct LinearizeDfg<'a> {
     trampoline_defs: PrimaryMap<TrampolineIndex, info::Trampoline>,
     trampoline_map: HashMap<TrampolineIndex, TrampolineIndex>,
     runtime_memories: HashMap<MemoryId, RuntimeMemoryIndex>,
+    runtime_tables: HashMap<TableId, RuntimeTableIndex>,
     runtime_reallocs: HashMap<ReallocId, RuntimeReallocIndex>,
     runtime_callbacks: HashMap<CallbackId, RuntimeCallbackIndex>,
     runtime_post_return: HashMap<PostReturnId, RuntimePostReturnIndex>,

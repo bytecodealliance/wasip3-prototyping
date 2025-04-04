@@ -915,15 +915,6 @@ pub(crate) enum V128ExtAddKind {
     I16x8U,
 }
 
-impl From<V128ExtAddKind> for V128AddKind {
-    fn from(value: V128ExtAddKind) -> Self {
-        match value {
-            V128ExtAddKind::I8x16S | V128ExtAddKind::I8x16U => Self::I16x8,
-            V128ExtAddKind::I16x8S | V128ExtAddKind::I16x8U => Self::I32x4,
-        }
-    }
-}
-
 /// Kinds of vector extended multiplication supported by WebAssembly.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum V128ExtMulKind {
@@ -1480,31 +1471,60 @@ pub(crate) trait MacroAssembler {
         let word_bytes = <Self::ABI as abi::ABI>::word_bytes();
         let scratch = scratch!(Self);
 
-        let mut dst_offs = dst.as_u32() - bytes;
-        let mut src_offs = src.as_u32() - bytes;
-
         let word_bytes = word_bytes as u32;
-        while remaining >= word_bytes {
-            remaining -= word_bytes;
-            dst_offs += word_bytes;
-            src_offs += word_bytes;
 
-            self.load_ptr(
-                self.address_from_sp(SPOffset::from_u32(src_offs))?,
-                writable!(scratch),
-            )?;
-            self.store_ptr(
-                scratch.into(),
-                self.address_from_sp(SPOffset::from_u32(dst_offs))?,
-            )?;
+        let mut dst_offs;
+        let mut src_offs;
+        match direction {
+            MemMoveDirection::LowToHigh => {
+                dst_offs = dst.as_u32() - bytes;
+                src_offs = src.as_u32() - bytes;
+                while remaining >= word_bytes {
+                    remaining -= word_bytes;
+                    dst_offs += word_bytes;
+                    src_offs += word_bytes;
+
+                    self.load_ptr(
+                        self.address_from_sp(SPOffset::from_u32(src_offs))?,
+                        writable!(scratch),
+                    )?;
+                    self.store_ptr(
+                        scratch.into(),
+                        self.address_from_sp(SPOffset::from_u32(dst_offs))?,
+                    )?;
+                }
+            }
+            MemMoveDirection::HighToLow => {
+                // Go from the end to the beginning to handle overlapping addresses.
+                src_offs = src.as_u32();
+                dst_offs = dst.as_u32();
+                while remaining >= word_bytes {
+                    self.load_ptr(
+                        self.address_from_sp(SPOffset::from_u32(src_offs))?,
+                        writable!(scratch),
+                    )?;
+                    self.store_ptr(
+                        scratch.into(),
+                        self.address_from_sp(SPOffset::from_u32(dst_offs))?,
+                    )?;
+
+                    remaining -= word_bytes;
+                    src_offs -= word_bytes;
+                    dst_offs -= word_bytes;
+                }
+            }
         }
 
         if remaining > 0 {
             let half_word = word_bytes / 2;
             let ptr_size = OperandSize::from_bytes(half_word as u8);
             debug_assert!(remaining == half_word);
-            dst_offs += half_word;
-            src_offs += half_word;
+            // Need to move the offsets ahead in the `LowToHigh` case to
+            // compensate for the initial subtraction of `bytes`.
+            if direction == MemMoveDirection::LowToHigh {
+                dst_offs += half_word;
+                src_offs += half_word;
+            }
 
             self.load(
                 self.address_from_sp(SPOffset::from_u32(src_offs))?,
@@ -2119,7 +2139,7 @@ pub(crate) trait MacroAssembler {
     fn v128_neg(&mut self, op: WritableReg, kind: V128NegKind) -> Result<()>;
 
     /// Perform the shift operation specified by `kind`, by the shift amount specified by the 32-bit
-    /// integer at the top the the stack, on the 128-bit vector specified by the second value
+    /// integer at the top of the stack, on the 128-bit vector specified by the second value
     /// from the top of the stack, interpreted as packed integers of size `lane_width`.
     ///
     /// The shift amount is taken modulo `lane_width`.

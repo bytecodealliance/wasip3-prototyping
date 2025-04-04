@@ -115,7 +115,7 @@ impl ABIMachineSpec for X64ABIMachineSpec {
             // the four initial in-arg parameters.
             //
             // (See:
-            // https://docs.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-160)
+            // https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170)
             next_stack = 32;
         }
 
@@ -1142,12 +1142,7 @@ fn get_intreg_for_retval(
             _ => None,
         },
 
-        CallConv::Winch => {
-            // TODO: Once Winch supports SIMD, this will need to be updated to support values
-            // returned in more than one register.
-            // https://github.com/bytecodealliance/wasmtime/issues/8093
-            is_last.then(|| regs::rax())
-        }
+        CallConv::Winch => is_last.then(|| regs::rax()),
         CallConv::Probestack => todo!(),
         CallConv::AppleAarch64 => unreachable!(),
     }

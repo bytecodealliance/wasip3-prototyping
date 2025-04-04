@@ -20,13 +20,6 @@
                 (src2 GprMemImm)
                 (dst WritableGpr))
 
-       ;; Integer arithmetic read-modify-write on memory.
-       (AluRM (size OperandSize) ;; 1, 2, 4 or 8
-              (op AluRmiROpcode)
-              (src1_dst SyntheticAmode)
-              (src2 Gpr)
-              (lock bool))
-
        ;; Integer arithmetic binary op that relies on the VEX prefix.
        ;; NOTE: we don't currently support emitting VEX instructions with memory
        ;; arguments, so `src2` is artificially constrained to be a Gpr.
@@ -3564,19 +3557,17 @@
 
 ;; Helper for creating `andps` instructions.
 (decl x64_andps (Xmm XmmMem) Xmm)
-(rule 0 (x64_andps src1 src2)
-      (xmm_rm_r (SseOpcode.Andps) src1 src2))
 (rule 1 (x64_andps src1 src2)
       (if-let true (use_avx))
       (xmm_rmir_vex (AvxOpcode.Vandps) src1 src2))
+(rule 0 (x64_andps src1 src2) (x64_andps_a src1 src2))
 
 ;; Helper for creating `andpd` instructions.
 (decl x64_andpd (Xmm XmmMem) Xmm)
-(rule 0 (x64_andpd src1 src2)
-      (xmm_rm_r (SseOpcode.Andpd) src1 src2))
 (rule 1 (x64_andpd src1 src2)
       (if-let true (use_avx))
       (xmm_rmir_vex (AvxOpcode.Vandpd) src1 src2))
+(rule 0 (x64_andpd src1 src2) (x64_andpd_a src1 src2))
 
 ;; Helper for creating `por` instructions.
 (decl x64_por (Xmm XmmMem) Xmm)
@@ -3588,11 +3579,10 @@
 
 ;; Helper for creating `orps` instructions.
 (decl x64_orps (Xmm XmmMem) Xmm)
-(rule 0 (x64_orps src1 src2)
-      (xmm_rm_r (SseOpcode.Orps) src1 src2))
 (rule 1 (x64_orps src1 src2)
       (if-let true (use_avx))
       (xmm_rmir_vex (AvxOpcode.Vorps) src1 src2))
+(rule 0 (x64_orps src1 src2) (x64_orps_a src1 src2))
 
 ;; Helper for creating `orpd` instructions.
 (decl x64_orpd (Xmm XmmMem) Xmm)
@@ -3613,19 +3603,17 @@
 
 ;; Helper fxor creating `xorps` instructions.
 (decl x64_xorps (Xmm XmmMem) Xmm)
-(rule 0 (x64_xorps src1 src2)
-      (xmm_rm_r (SseOpcode.Xorps) src1 src2))
 (rule 1 (x64_xorps src1 src2)
       (if-let true (use_avx))
       (xmm_rmir_vex (AvxOpcode.Vxorps) src1 src2))
+(rule 0 (x64_xorps src1 src2) (x64_xorps_a src1 src2))
 
 ;; Helper fxor creating `xorpd` instructions.
 (decl x64_xorpd (Xmm XmmMem) Xmm)
-(rule 0 (x64_xorpd src1 src2)
-      (xmm_rm_r (SseOpcode.Xorpd) src1 src2))
 (rule 1 (x64_xorpd src1 src2)
       (if-let true (use_avx))
       (xmm_rmir_vex (AvxOpcode.Vxorpd) src1 src2))
+(rule 0 (x64_xorpd src1 src2) (x64_xorpd_a src1 src2))
 
 ;; Helper for creating `pmullw` instructions.
 (decl x64_pmullw (Xmm XmmMem) Xmm)
@@ -3797,19 +3785,17 @@
 
 ;; Helper for creating `addps` instructions.
 (decl x64_addps (Xmm XmmMem) Xmm)
-(rule 0 (x64_addps src1 src2)
-      (xmm_rm_r (SseOpcode.Addps) src1 src2))
 (rule 1 (x64_addps src1 src2)
       (if-let true (use_avx))
       (xmm_rmir_vex (AvxOpcode.Vaddps) src1 src2))
+(rule 0 (x64_addps src1 src2) (x64_addps_a src1 src2))
 
 ;; Helper for creating `addpd` instructions.
 (decl x64_addpd (Xmm XmmMem) Xmm)
-(rule 0 (x64_addpd src1 src2)
-      (xmm_rm_r (SseOpcode.Addpd) src1 src2))
 (rule 1 (x64_addpd src1 src2)
       (if-let true (use_avx))
       (xmm_rmir_vex (AvxOpcode.Vaddpd) src1 src2))
+(rule 0 (x64_addpd src1 src2) (x64_addpd_a src1 src2))
 
 ;; Helper for creating `subss` instructions.
 (decl x64_subss (Xmm XmmMem) Xmm)
@@ -3829,19 +3815,17 @@
 
 ;; Helper for creating `subps` instructions.
 (decl x64_subps (Xmm XmmMem) Xmm)
-(rule 0 (x64_subps src1 src2)
-      (xmm_rm_r (SseOpcode.Subps) src1 src2))
 (rule 1 (x64_subps src1 src2)
       (if-let true (use_avx))
       (xmm_rmir_vex (AvxOpcode.Vsubps) src1 src2))
+(rule 0 (x64_subps src1 src2) (x64_subps_a src1 src2))
 
 ;; Helper for creating `subpd` instructions.
 (decl x64_subpd (Xmm XmmMem) Xmm)
-(rule 0 (x64_subpd src1 src2)
-      (xmm_rm_r (SseOpcode.Subpd) src1 src2))
 (rule 1 (x64_subpd src1 src2)
       (if-let true (use_avx))
       (xmm_rmir_vex (AvxOpcode.Vsubpd) src1 src2))
+(rule 0 (x64_subpd src1 src2) (x64_subpd_a src1 src2))
 
 ;; Helper for creating `mulss` instructions.
 (decl x64_mulss (Xmm XmmMem) Xmm)
@@ -5041,12 +5025,6 @@
         (if-let true (use_avx))
         (xmm_rmir_vex (AvxOpcode.Vpcmpgtq) x y))
 
-;; Helpers for read-modify-write ALU form (AluRM).
-(decl alu_rm (Type AluRmiROpcode Amode Gpr) SideEffectNoResult)
-(rule (alu_rm ty opcode src1_dst src2)
-      (let ((size OperandSize (operand_size_of_type_32_64 ty)))
-        (SideEffectNoResult.Inst (MInst.AluRM size opcode src1_dst src2 false))))
-
 (decl x64_add_mem (Type Amode Gpr) SideEffectNoResult)
 (spec (x64_add_mem ty addr val)
       (provide (= result (store_effect
@@ -5465,30 +5443,35 @@
             (_ Unit (emit (MInst.Xchg size operand addr dst))))
         dst))
 
-(decl lock_alu_rm (OperandSize AluRmiROpcode SyntheticAmode Gpr) Reg)
-(rule (lock_alu_rm size opcode addr operand)
-      (let ((_ Unit (emit (MInst.AluRM size opcode addr operand true))))
-        (invalid_reg)))
+(decl x64_lock_add (OperandSize Amode Gpr) SideEffectNoResult)
+(rule (x64_lock_add (OperandSize.Size8) addr reg)   (x64_lock_addb_mr_mem addr reg))
+(rule (x64_lock_add (OperandSize.Size16) addr reg)  (x64_lock_addw_mr_mem addr reg))
+(rule (x64_lock_add (OperandSize.Size32) addr reg)  (x64_lock_addl_mr_mem addr reg))
+(rule (x64_lock_add (OperandSize.Size64) addr reg)  (x64_lock_addq_mr_mem addr reg))
 
-(decl x64_lock_add (OperandSize SyntheticAmode Gpr) Reg)
-(rule (x64_lock_add size addr operand)
-      (lock_alu_rm size (AluRmiROpcode.Add) addr operand))
+(decl x64_lock_sub (OperandSize Amode Gpr) SideEffectNoResult)
+(rule (x64_lock_sub (OperandSize.Size8) addr reg)   (x64_lock_subb_mr_mem addr reg))
+(rule (x64_lock_sub (OperandSize.Size16) addr reg)  (x64_lock_subw_mr_mem addr reg))
+(rule (x64_lock_sub (OperandSize.Size32) addr reg)  (x64_lock_subl_mr_mem addr reg))
+(rule (x64_lock_sub (OperandSize.Size64) addr reg)  (x64_lock_subq_mr_mem addr reg))
 
-(decl x64_lock_sub (OperandSize SyntheticAmode Gpr) Reg)
-(rule (x64_lock_sub size addr operand)
-      (lock_alu_rm size (AluRmiROpcode.Sub) addr operand))
+(decl x64_lock_and (OperandSize Amode Gpr) SideEffectNoResult)
+(rule (x64_lock_and (OperandSize.Size8) addr reg)   (x64_lock_andb_mr_mem addr reg))
+(rule (x64_lock_and (OperandSize.Size16) addr reg)  (x64_lock_andw_mr_mem addr reg))
+(rule (x64_lock_and (OperandSize.Size32) addr reg)  (x64_lock_andl_mr_mem addr reg))
+(rule (x64_lock_and (OperandSize.Size64) addr reg)  (x64_lock_andq_mr_mem addr reg))
 
-(decl x64_lock_and (OperandSize SyntheticAmode Gpr) Reg)
-(rule (x64_lock_and size addr operand)
-      (lock_alu_rm size (AluRmiROpcode.And) addr operand))
+(decl x64_lock_or (OperandSize Amode Gpr) SideEffectNoResult)
+(rule (x64_lock_or (OperandSize.Size8) addr reg)   (x64_lock_orb_mr_mem addr reg))
+(rule (x64_lock_or (OperandSize.Size16) addr reg)  (x64_lock_orw_mr_mem addr reg))
+(rule (x64_lock_or (OperandSize.Size32) addr reg)  (x64_lock_orl_mr_mem addr reg))
+(rule (x64_lock_or (OperandSize.Size64) addr reg)  (x64_lock_orq_mr_mem addr reg))
 
-(decl x64_lock_or (OperandSize SyntheticAmode Gpr) Reg)
-(rule (x64_lock_or size addr operand)
-      (lock_alu_rm size (AluRmiROpcode.Or) addr operand))
-
-(decl x64_lock_xor (OperandSize SyntheticAmode Gpr) Reg)
-(rule (x64_lock_xor size addr operand)
-      (lock_alu_rm size (AluRmiROpcode.Xor) addr operand))
+(decl x64_lock_xor (OperandSize Amode Gpr) SideEffectNoResult)
+(rule (x64_lock_xor (OperandSize.Size8) addr reg)   (x64_lock_xorb_mr_mem addr reg))
+(rule (x64_lock_xor (OperandSize.Size16) addr reg)  (x64_lock_xorw_mr_mem addr reg))
+(rule (x64_lock_xor (OperandSize.Size32) addr reg)  (x64_lock_xorl_mr_mem addr reg))
+(rule (x64_lock_xor (OperandSize.Size64) addr reg)  (x64_lock_xorq_mr_mem addr reg))
 
 (decl x64_atomic_rmw_seq (Type AtomicRmwSeqOp SyntheticAmode Gpr) Gpr)
 (rule (x64_atomic_rmw_seq ty op mem input)

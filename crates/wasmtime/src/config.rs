@@ -491,9 +491,9 @@ impl Config {
             WasmBacktraceDetails::Enable => Some(true),
             WasmBacktraceDetails::Disable => Some(false),
             WasmBacktraceDetails::Environment => {
-                self.wasm_backtrace_details_env_used = true;
                 #[cfg(feature = "std")]
                 {
+                    self.wasm_backtrace_details_env_used = true;
                     std::env::var("WASMTIME_BACKTRACE_DETAILS")
                         .map(|s| Some(s == "1"))
                         .unwrap_or(Some(false))
@@ -1115,24 +1115,45 @@ impl Config {
     /// lifting and lowering functions, as well as `stream`, `future`, and
     /// `error-context` types.
     ///
-    /// [proposal]: https://github.com/WebAssembly/component-model/blob/main/design/mvp/Async.md
+    /// Please note that Wasmtime's support for this feature is _very_
+    /// incomplete.
+    ///
+    /// [proposal]:
+    ///     https://github.com/WebAssembly/component-model/blob/main/design/mvp/Async.md
     #[cfg(feature = "component-model-async")]
     pub fn wasm_component_model_async(&mut self, enable: bool) -> &mut Self {
         self.wasm_feature(WasmFeatures::CM_ASYNC, enable);
         self
     }
 
-    /// TODO
+    /// This corresponds to the 🚝 emoji in the component model specification.
+    ///
+    /// Please note that Wasmtime's support for this feature is _very_
+    /// incomplete.
+    ///
+    /// [proposal]:
+    ///     https://github.com/WebAssembly/component-model/blob/main/design/mvp/Async.md
     #[cfg(feature = "component-model-async")]
     pub fn wasm_component_model_async_builtins(&mut self, enable: bool) -> &mut Self {
         self.wasm_feature(WasmFeatures::CM_ASYNC_BUILTINS, enable);
         self
     }
 
-    /// TODO
+    /// This corresponds to the 🚟 emoji in the component model specification.
+    ///
+    /// Please note that Wasmtime's support for this feature is _very_
+    /// incomplete.
+    ///
+    /// [proposal]: https://github.com/WebAssembly/component-model/blob/main/design/mvp/Async.md
     #[cfg(feature = "component-model-async")]
     pub fn wasm_component_model_async_stackful(&mut self, enable: bool) -> &mut Self {
         self.wasm_feature(WasmFeatures::CM_ASYNC_STACKFUL, enable);
+        self
+    }
+
+    /// TODO
+    pub fn wasm_component_model_error_context(&mut self, enable: bool) -> &mut Self {
+        self.wasm_feature(WasmFeatures::CM_ERROR_CONTEXT, enable);
         self
     }
 
@@ -1204,7 +1225,7 @@ impl Config {
     /// optimization level used for generated code in a few various ways. For
     /// more information see the documentation of [`OptLevel`].
     ///
-    /// The default value for this is `OptLevel::None`.
+    /// The default value for this is `OptLevel::Speed`.
     #[cfg(any(feature = "cranelift", feature = "winch"))]
     pub fn cranelift_opt_level(&mut self, level: OptLevel) -> &mut Self {
         let val = match level {
