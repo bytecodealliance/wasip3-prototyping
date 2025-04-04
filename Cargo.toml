@@ -362,7 +362,7 @@ tokio = { version = "1.43.0", features = [ "rt", "time" ] }
 hyper = "1.0.1"
 http = "1.0.0"
 http-body = "1.0.0"
-http-body-util = "0.1.0"
+http-body-util = "0.1.1"
 bytes = { version = "1.4", default-features = false }
 futures = { version = "0.3.27", default-features = false }
 indexmap = { version = "2.0.0", default-features = false }
@@ -462,7 +462,7 @@ disable-logging = ["log/max_level_off", "tracing/max_level_off"]
 # the internal mapping for what they enable in Wasmtime itself.
 wasi-nn = ["dep:wasmtime-wasi-nn"]
 wasi-threads = ["dep:wasmtime-wasi-threads", "threads"]
-wasi-http = ["component-model", "dep:wasmtime-wasi-http", "dep:tokio", "dep:hyper"]
+wasi-http = ["component-model", "dep:wasmtime-wasi-http", "wasmtime-wasi-http/p3", "dep:tokio", "dep:hyper"]
 wasi-config = ["dep:wasmtime-wasi-config"]
 wasi-keyvalue = ["dep:wasmtime-wasi-keyvalue"]
 pooling-allocator = ["wasmtime/pooling-allocator", "wasmtime-cli-flags/pooling-allocator"]
