@@ -2252,6 +2252,20 @@ impl<T> Drop for Store<T> {
 
         // for documentation on this `unsafe`, see `into_data`.
         unsafe {
+            // We need to drop the tables of each component instance before
+            // attempting to drop the instances themselves since the tables may
+            // contain tasks which have fibers which need to be resumed and
+            // allowed to exit cleanly before we yank the state out from under
+            // them.
+            #[cfg(feature = "component-model-async")]
+            for instance in self.inner.store_data.components.instances.iter_mut() {
+                let Some(instance) = instance.as_mut() else {
+                    continue;
+                };
+
+                instance.state.drop_table();
+            }
+
             ManuallyDrop::drop(&mut self.inner.data);
             ManuallyDrop::drop(&mut self.inner);
         }
