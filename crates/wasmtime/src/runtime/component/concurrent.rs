@@ -1675,8 +1675,12 @@ impl ComponentInstance {
         let mut status = if task.lower_params.is_some() {
             Status::Starting
         } else if task.lift_result.is_some() {
+            let event = Waitable::Guest(guest_task).take_event(self)?;
+            assert!(matches!(event, Some(Event::CallStarted)));
             Status::Started
         } else {
+            let event = Waitable::Guest(guest_task).take_event(self)?;
+            assert!(matches!(event, Some(Event::CallReturned)));
             Status::Returned
         };
 
@@ -1689,7 +1693,7 @@ impl ComponentInstance {
                 self.waitable_tables()[caller_instance]
                     .insert(guest_task.rep(), WaitableState::GuestTask)?
             } else {
-                let caller = if let Caller::Guest { task, .. } = &task.caller {
+                let caller = if let Caller::Guest { task, .. } = &self.get(guest_task)?.caller {
                     *task
                 } else {
                     unreachable!()
@@ -3106,6 +3110,15 @@ impl Waitable {
             Self::Guest(id) => &mut instance.get_mut(*id)?.common,
             Self::Transmit(id) => &mut instance.get_mut(*id)?.common,
         })
+    }
+
+    fn take_event(&self, instance: &mut ComponentInstance) -> Result<Option<Event>> {
+        let common = self.common(instance)?;
+        let event = common.event.take();
+        if let Some(set) = self.common(instance)?.set {
+            instance.get_mut(set)?.ready.remove(self);
+        }
+        Ok(event)
     }
 
     fn mark_ready(&self, instance: &mut ComponentInstance) -> Result<()> {
