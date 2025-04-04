@@ -666,9 +666,14 @@ impl StoreOpaque {
         }
     }
 
-    pub(crate) fn async_guard_range(&self) -> Range<*mut u8> {
+    pub(crate) fn async_guard_range(&mut self) -> Range<*mut u8> {
+        #[cfg(feature = "component-model-async")]
+        {
+            self.concurrent_async_state().async_guard_range()
+        }
+        #[cfg(not(feature = "component-model-async"))]
         unsafe {
-            let ptr = self.async_state.current_poll_cx.get();
+            let ptr = self.0.inner.async_state.current_poll_cx.get();
             (*ptr).guard_range_start..(*ptr).guard_range_end
         }
     }
