@@ -11,7 +11,7 @@ use std::{
     },
 };
 use tokio::io::{stderr, stdin, stdout};
-use wasmtime::component::Linker;
+use wasmtime::{component::Linker, AsContextMut as _};
 use wasmtime::{Engine, Store, StoreLimits};
 use wasmtime_wasi::{IoView, StreamError, StreamResult, WasiCtx, WasiCtxBuilder, WasiView};
 use wasmtime_wasi_http::bindings::http::types::Scheme;
@@ -429,8 +429,10 @@ impl ServeCommand {
             let link_options = self.run.compute_wasi_features();
             wasmtime_wasi::add_to_linker_with_options_async(linker, &link_options)?;
             wasmtime_wasi_http::add_only_http_to_linker_async(linker)?;
+            wasmtime_wasi_http::p3::add_only_http_to_linker(linker)?;
         } else {
             wasmtime_wasi_http::add_to_linker_async(linker)?;
+            wasmtime_wasi_http::p3::add_to_linker(linker)?;
         }
 
         if self.run.common.wasi.nn == Some(true) {
@@ -549,36 +551,80 @@ impl ServeCommand {
 
         log::info!("Listening on {}", self.addr);
 
-        if let Ok(instance) = wasmtime_wasi_http::p3::bindings::ProxyPre::new(instance.clone()) {
-            let next_id = AtomicU64::default();
+        if let Ok(..) = wasmtime_wasi_http::p3::bindings::ProxyPre::new(instance.clone()) {
+            let next_id = Arc::new(AtomicU64::default());
+            let cmd = Arc::new(self);
             loop {
                 let (stream, _) = listener.accept().await?;
+                let engine = engine.clone();
+                let cmd = Arc::clone(&cmd);
+                let next_id = Arc::clone(&next_id);
+                let instance = instance.clone();
+                tokio::task::spawn(async {
+                    let service = hyper::service::service_fn(
+                        move |req: hyper::Request<hyper::body::Incoming>| {
+                            let req_id = next_id.fetch_add(1, Ordering::Relaxed);
+                            let engine = engine.clone();
+                            let cmd = Arc::clone(&cmd);
+                            let instance = instance.clone();
+                            async move {
+                                let mut store = cmd
+                                    .new_store(&engine, req_id)
+                                    .context("failed to create new store")?;
+                                let instance = instance.instantiate_async(&mut store).await?;
+                                let proxy = wasmtime_wasi_http::p3::bindings::Proxy::new(
+                                    &mut store, &instance,
+                                )?;
+                                let (req, body) = req.into_parts();
+                                let body = body.map_err(wasmtime_wasi_http::p3::bindings::http::types::ErrorCode::from_hyper_request_error);
+                                let handle = proxy
+                                    .handle(&mut store, http::Request::from_parts(req, body))
+                                    .await
+                                    .context("failed to call `handle`")?;
+                                let res = handle.get(&mut store).await??;
+                                let (res, tx, io) =
+                                    wasmtime_wasi_http::p3::Response::resource_into_http(
+                                        &mut store, &instance, res,
+                                    )?;
+                                tokio::task::spawn(async move {
+                                    if let Some(io) = io {
+                                        let closure = io.get(&mut store).await?;
+                                        closure(store.as_context_mut())?;
+                                    }
+                                    // TODO: Report transmit errors
+                                    if let Some(tx) = tx {
+                                        tx.write(Ok(())).get(&mut store).await?;
+                                    }
+                                    anyhow::Ok(())
+                                });
+                                anyhow::Ok(res.map(|body| body.map_err(|err| err.unwrap_or(wasmtime_wasi_http::p3::bindings::http::types::ErrorCode::InternalError(None)))))
+                            }
+                        },
+                    );
+                    if let Err(e) = http1::Builder::new()
+                        .keep_alive(true)
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await
+                    {
+                        eprintln!("error: {e:?}");
+                    }
+                });
+            }
+        } else {
+            let instance = wasmtime_wasi_http::bindings::ProxyPre::new(instance)?;
+
+            let handler = ProxyHandler::new(self, engine, instance);
+
+            loop {
+                let (stream, _) = listener.accept().await?;
+                let stream = TokioIo::new(stream);
+                let h = handler.clone();
                 tokio::task::spawn(async {
                     if let Err(e) = http1::Builder::new()
                         .keep_alive(true)
                         .serve_connection(
-                            TokioIo::new(stream),
-                            hyper::service::service_fn(move |req| {
-let instance = instance.clone();
-                                let engine = engine.clone();
-async move {
-                                let req_id = next_id.fetch_add(1, Ordering::Relaxed);
-                                let mut store = self.new_store(&engine, req_id).context("failed")?;
-                                let proxy = instance.instantiate_async(&mut store).await?;
-                                let res = proxy
-                                    .handle(
-                                        store,
-                                        req.map(|body: hyper::body::Incoming| {
-                                            body.map_err(|err| {
-                                                eprintln!("TODO: convert error {err:?}");
-                                                wasmtime_wasi_http::p3::bindings::http::types::ErrorCode::InternalError(None)
-                                            })
-                                        }),
-                                    )
-                                    .await.context("failed")?.context("failed")?;
-                                anyhow::Ok(res.map(|body| body.map_err(|err| err.unwrap())))
-                            }
-                            }),
+                            stream,
+                            hyper::service::service_fn(move |req| handle_request(h.clone(), req)),
                         )
                         .await
                     {
@@ -586,28 +632,6 @@ async move {
                     }
                 });
             }
-        }
-
-        let instance = wasmtime_wasi_http::bindings::ProxyPre::new(instance)?;
-
-        let handler = ProxyHandler::new(self, engine, instance);
-
-        loop {
-            let (stream, _) = listener.accept().await?;
-            let stream = TokioIo::new(stream);
-            let h = handler.clone();
-            tokio::task::spawn(async {
-                if let Err(e) = http1::Builder::new()
-                    .keep_alive(true)
-                    .serve_connection(
-                        stream,
-                        hyper::service::service_fn(move |req| handle_request(h.clone(), req)),
-                    )
-                    .await
-                {
-                    eprintln!("error: {e:?}");
-                }
-            });
         }
     }
 }
