@@ -408,7 +408,7 @@ pub trait WasiHttpView: ResourceView + Send {
 }
 
 /// Capture the state necessary for use in the wasi-http API implementation.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct WasiHttpCtx<C = DefaultClient>
 where
     C: Client,
