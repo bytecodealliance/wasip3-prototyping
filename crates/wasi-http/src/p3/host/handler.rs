@@ -96,8 +96,6 @@ where
         };
         if let Some(path_with_query) = path_with_query {
             uri = uri.path_and_query(path_with_query)
-        } else {
-            uri = uri.path_and_query("/")
         };
         let uri = match uri.build() {
             Ok(uri) => uri,
