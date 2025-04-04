@@ -373,6 +373,9 @@ impl<T: ResourceView> ResourceView for WasiHttpImpl<T> {
     }
 }
 
+/// Default byte buffer capacity to use
+const DEFAULT_BUFFER_CAPACITY: usize = 1 << 13;
+
 /// Set of [http::header::HeaderName], that are forbidden by default
 /// for requests and responses originating in the guest.
 pub const DEFAULT_FORBIDDEN_HEADERS: [http::header::HeaderName; 10] = [

@@ -127,11 +127,7 @@ impl Response {
                 content_length,
             } => {
                 let buffer = match buffer {
-                    Some(BodyFrame::Data(buf)) => {
-                        let position = buf.position();
-                        buf.into_inner()
-                            .split_off(usize::try_from(position).unwrap())
-                    }
+                    Some(BodyFrame::Data(buffer)) => buffer,
                     Some(BodyFrame::Trailers(..)) => bail!("guest body is corrupted"),
                     None => Bytes::default(),
                 };
@@ -180,20 +176,13 @@ impl Response {
             Body::Host {
                 stream: Some(stream),
                 buffer: Some(BodyFrame::Data(buffer)),
-            } => {
-                let position = buffer.position();
-                let buffer = futures::stream::iter(iter::once(Ok(http_body::Frame::data(
-                    buffer
-                        .into_inner()
-                        .split_off(usize::try_from(position).unwrap()),
-                ))));
-                (
-                    BodyExt::boxed_unsync(StreamBody::new(
-                        buffer.chain(BodyStream::new(stream.map_err(Some))),
-                    )),
-                    None,
-                )
-            }
+            } => (
+                BodyExt::boxed_unsync(StreamBody::new(
+                    futures::stream::iter(iter::once(Ok(http_body::Frame::data(buffer))))
+                        .chain(BodyStream::new(stream.map_err(Some))),
+                )),
+                None,
+            ),
             Body::Host { .. } => bail!("host body is corrupted"),
         };
         Ok((response.map(|()| body), tx))

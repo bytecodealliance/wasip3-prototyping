@@ -18,6 +18,7 @@ use wasmtime::AsContextMut;
 use wasmtime_wasi::p3::{ResourceView, WithChildren};
 
 use crate::p3::bindings::http::types::ErrorCode;
+use crate::p3::DEFAULT_BUFFER_CAPACITY;
 
 pub(crate) type OutgoingContentsStreamFuture =
     Pin<Box<dyn Future<Output = (Option<StreamReader<BytesMut>>, BytesMut)> + Send + 'static>>;
@@ -44,7 +45,7 @@ pub(crate) fn empty_body() -> impl http_body::Body<Data = Bytes, Error = Option<
 /// A body frame
 pub enum BodyFrame {
     /// Data frame
-    Data(Cursor<Bytes>),
+    Data(Bytes),
     /// Trailer frame, this is the last frame of the body and it includes the transmit/receipt result
     Trailers(Result<Option<Resource<WithChildren<HeaderMap>>>, ErrorCode>),
 }
@@ -389,14 +390,14 @@ impl http_body::Body for OutgoingRequestBody {
         let Some(stream) = &mut self.contents else {
             return Poll::Ready(None);
         };
-        let (tail, mut buf) = ready!(Pin::new(stream).poll(cx));
+        let (tail, mut rx_buffer) = ready!(Pin::new(stream).poll(cx));
         match tail {
             Some(tail) => {
-                let frame = buf.split();
-                assert!(buf.capacity() > 0);
-                self.contents = Some(tail.read(buf).into_future());
+                let buffer = rx_buffer.split();
+                rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
+                self.contents = Some(tail.read(rx_buffer).into_future());
                 if let Some(ContentLength { limit, sent }) = &mut self.content_length {
-                    let Ok(n) = frame.len().try_into() else {
+                    let Ok(n) = buffer.len().try_into() else {
                         return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(None)))));
                     };
                     let Some(n) = sent.checked_add(n) else {
@@ -409,10 +410,10 @@ impl http_body::Body for OutgoingRequestBody {
                     }
                     *sent = n;
                 }
-                Poll::Ready(Some(Ok(http_body::Frame::data(frame.freeze()))))
+                Poll::Ready(Some(Ok(http_body::Frame::data(buffer.freeze()))))
             }
             None => {
-                debug_assert!(buf.is_empty());
+                debug_assert!(rx_buffer.is_empty());
                 self.contents = None;
                 if let Some(ContentLength { limit, sent }) = self.content_length {
                     if limit != sent {

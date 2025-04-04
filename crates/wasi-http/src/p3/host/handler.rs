@@ -1,6 +1,5 @@
 use core::iter;
 
-use std::io::Cursor;
 use std::sync::Arc;
 
 use anyhow::bail;
@@ -253,11 +252,7 @@ where
                     tx: trailers_tx,
                 });
                 let buffer = match buffer {
-                    Some(BodyFrame::Data(buf)) => {
-                        let position = buf.position();
-                        buf.into_inner()
-                            .split_off(usize::try_from(position).unwrap())
-                    }
+                    Some(BodyFrame::Data(buffer)) => buffer,
                     Some(BodyFrame::Trailers(..)) => bail!("guest body is corrupted"),
                     None => Bytes::default(),
                 };
@@ -312,12 +307,7 @@ where
                 stream: Some(stream),
                 buffer: Some(BodyFrame::Data(buffer)),
             } => {
-                let position = buffer.position();
-                let buffer = futures::stream::iter(iter::once(Ok(http_body::Frame::data(
-                    buffer
-                        .into_inner()
-                        .split_off(usize::try_from(position).unwrap()),
-                ))));
+                let buffer = futures::stream::iter(iter::once(Ok(http_body::Frame::data(buffer))));
                 let body = StreamBody::new(buffer.chain(BodyStream::new(stream.map_err(Some))));
                 let request = request.map(|()| body);
                 match client.send_request(request, options).await? {
