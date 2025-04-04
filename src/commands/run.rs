@@ -872,10 +872,12 @@ impl RunCommand {
                     }
                     CliLinker::Component(linker) => {
                         wasmtime_wasi_http::add_only_http_to_linker_sync(linker)?;
+                        wasmtime_wasi_http::p3::add_only_http_to_linker(linker)?;
                     }
                 }
 
                 store.data_mut().wasi_http = Some(Arc::new(WasiHttpCtx::new()));
+                store.data_mut().p3_http = Some(wasmtime_wasi_http::p3::WasiHttpCtx::default());
             }
         }
 
@@ -1067,6 +1069,7 @@ struct Host {
     p3_filesystem: Option<wasmtime_wasi::p3::filesystem::WasiFilesystemCtx>,
     p3_random: Option<Arc<Mutex<wasmtime_wasi::p3::random::WasiRandomCtx>>>,
     p3_sockets: Option<wasmtime_wasi::p3::sockets::WasiSocketsCtx>,
+    p3_http: Option<wasmtime_wasi_http::p3::WasiHttpCtx>,
 
     #[cfg(feature = "wasi-nn")]
     wasi_nn_wit: Option<Arc<wasmtime_wasi_nn::wit::WasiNnCtx>>,
@@ -1183,6 +1186,17 @@ impl wasmtime_wasi_http::types::WasiHttpView for Host {
     fn outgoing_body_chunk_size(&mut self) -> usize {
         self.wasi_http_outgoing_body_chunk_size
             .unwrap_or_else(|| DEFAULT_OUTGOING_BODY_CHUNK_SIZE)
+    }
+}
+
+#[cfg(feature = "wasi-http")]
+impl wasmtime_wasi_http::p3::WasiHttpView for Host {
+    type Client = wasmtime_wasi_http::p3::DefaultClient;
+
+    fn http(&self) -> &wasmtime_wasi_http::p3::WasiHttpCtx {
+        self.p3_http
+            .as_ref()
+            .expect("`wasi:http@0.3` not configured")
     }
 }
 
