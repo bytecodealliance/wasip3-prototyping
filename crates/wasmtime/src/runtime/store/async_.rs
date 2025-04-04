@@ -673,7 +673,7 @@ impl StoreOpaque {
         }
         #[cfg(not(feature = "component-model-async"))]
         unsafe {
-            let ptr = self.0.inner.async_state.current_poll_cx.get();
+            let ptr = self.async_state.current_poll_cx.get();
             (*ptr).guard_range_start..(*ptr).guard_range_end
         }
     }
