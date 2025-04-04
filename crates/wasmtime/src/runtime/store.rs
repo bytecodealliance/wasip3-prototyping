@@ -2296,7 +2296,7 @@ impl Drop for StoreOpaque {
     }
 }
 
-impl<T> StoreContextMut<'_, T> {
+impl StoreOpaque {
     #[cfg(not(feature = "async"))]
     pub(crate) fn async_guard_range(&self) -> core::ops::Range<*mut u8> {
         core::ptr::null_mut()..core::ptr::null_mut()
