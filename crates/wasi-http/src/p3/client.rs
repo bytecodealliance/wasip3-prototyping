@@ -6,7 +6,6 @@ use http::uri::Scheme;
 use http_body_util::BodyExt as _;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-use tracing::warn;
 
 use crate::p3::bindings::http::types::{DnsErrorPayload, ErrorCode};
 use crate::p3::RequestOptions;
@@ -214,12 +213,12 @@ pub async fn default_send_request(
             let host = parts.next().unwrap_or(&authority);
             let domain = ServerName::try_from(host)
                 .map_err(|e| {
-                    warn!("dns lookup error: {e:?}");
+                    tracing::warn!("dns lookup error: {e:?}");
                     dns_error("invalid dns name".to_string(), 0)
                 })?
                 .to_owned();
             let stream = connector.connect(domain, stream).await.map_err(|e| {
-                warn!("tls protocol error: {e:?}");
+                tracing::warn!("tls protocol error: {e:?}");
                 ErrorCode::TlsProtocolError
             })?;
             stream.boxed()
