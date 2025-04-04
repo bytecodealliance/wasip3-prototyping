@@ -1246,9 +1246,8 @@ impl Func {
             let num_gc_refs = ty.as_wasm_func_type().non_i31_gc_ref_params_count();
             if let Some(num_gc_refs) = core::num::NonZeroUsize::new(num_gc_refs) {
                 return Ok(opaque
-                    .gc_store()?
-                    .gc_heap
-                    .need_gc_before_entering_wasm(num_gc_refs));
+                    .optional_gc_store()
+                    .is_some_and(|s| s.gc_heap.need_gc_before_entering_wasm(num_gc_refs)));
             }
         }
 
@@ -2018,7 +2017,7 @@ pub unsafe trait WasmTyList {
 }
 
 macro_rules! impl_wasm_ty_list {
-    ($num:tt $($args:ident)*) => (paste::paste!{
+    ($num:tt $($args:ident)*) => (
         #[allow(non_snake_case)]
         unsafe impl<$($args),*> WasmTyList for ($($args,)*)
         where
@@ -2042,7 +2041,7 @@ macro_rules! impl_wasm_ty_list {
                 $( $args::may_gc() || )* false
             }
         }
-    });
+    );
 }
 
 for_each_function_signature!(impl_wasm_ty_list);

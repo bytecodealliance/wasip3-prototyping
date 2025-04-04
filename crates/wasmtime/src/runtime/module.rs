@@ -402,6 +402,24 @@ impl Module {
         Module::from_parts(engine, code, None)
     }
 
+    /// In-place deserialization of an in-memory compiled module previously
+    /// created with [`Module::serialize`] or [`Engine::precompile_module`].
+    ///
+    /// See [`Self::deserialize`] for additional information; this method
+    /// works identically except that it will not create a copy of the provided
+    /// memory but will use it directly.
+    ///
+    /// # Unsafety
+    ///
+    /// All of the safety notes from [`Self::deserialize`] apply here as well
+    /// with the additional constraint that the code memory provide by `memory`
+    /// lives for as long as the module and is nevery externally modified for
+    /// the lifetime of the deserialized module.
+    pub unsafe fn deserialize_raw(engine: &Engine, memory: NonNull<[u8]>) -> Result<Module> {
+        let code = engine.load_code_raw(memory, ObjectKind::Module)?;
+        Module::from_parts(engine, code, None)
+    }
+
     /// Same as [`deserialize`], except that the contents of `path` are read to
     /// deserialize into a [`Module`].
     ///
@@ -1099,28 +1117,10 @@ impl Module {
 
     /// Lookup the stack map at a program counter value.
     #[cfg(feature = "gc")]
-    pub(crate) fn lookup_stack_map(&self, pc: usize) -> Option<&wasmtime_environ::StackMap> {
-        let text_offset = pc - self.inner.module.text().as_ptr() as usize;
-        let (index, func_offset) = self.inner.module.func_by_text_offset(text_offset)?;
-        let info = self.inner.module.wasm_func_info(index);
-
-        // Do a binary search to find the stack map for the given offset.
-        let index = match info
-            .stack_maps
-            .binary_search_by_key(&func_offset, |i| i.code_offset)
-        {
-            // Found it.
-            Ok(i) => i,
-
-            // No stack map associated with this PC.
-            //
-            // Because we know we are in Wasm code, and we must be at some kind
-            // of call/safepoint, then the Cranelift backend must have avoided
-            // emitting a stack map for this location because no refs were live.
-            Err(_) => return None,
-        };
-
-        Some(&info.stack_maps[index].stack_map)
+    pub(crate) fn lookup_stack_map(&self, pc: usize) -> Option<wasmtime_environ::StackMap<'_>> {
+        let text_offset = u32::try_from(pc - self.inner.module.text().as_ptr() as usize).unwrap();
+        let info = self.inner.code.code_memory().stack_map_data();
+        wasmtime_environ::StackMap::lookup(text_offset, info)
     }
 }
 

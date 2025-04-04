@@ -270,7 +270,7 @@ unsafe fn table_fill_func_ref(
     match table.element_type() {
         TableElementType::Func => {
             let val = NonNull::new(val.cast::<VMFuncRef>());
-            table.fill(store.optional_gc_store_mut()?, dst, val.into(), len)?;
+            table.fill(store.optional_gc_store_mut(), dst, val.into(), len)?;
             Ok(())
         }
         TableElementType::GcRef => unreachable!(),
@@ -317,7 +317,7 @@ unsafe fn table_copy(
     // Lazy-initialize the whole range in the source table first.
     let src_range = src..(src.checked_add(len).unwrap_or(u64::MAX));
     let src_table = instance.get_table_with_lazy_init(src_table_index, src_range);
-    let gc_store = store.optional_gc_store_mut()?;
+    let gc_store = store.optional_gc_store_mut();
     Table::copy(gc_store, dst_table, src_table, dst, src, len)?;
     Ok(())
 }
@@ -460,18 +460,17 @@ unsafe fn gc(store: &mut dyn VMStore, _instance: &mut Instance, gc_ref: u32) -> 
         // GC.
         let gc_store = store.store_opaque_mut().unwrap_gc_store_mut();
         let gc_ref = gc_store.clone_gc_ref(gc_ref);
-        gc_store.expose_gc_ref_to_wasm(gc_ref);
+        let _ = gc_store.expose_gc_ref_to_wasm(gc_ref);
     }
 
     match store.maybe_async_gc(gc_ref)? {
         None => Ok(0),
         Some(r) => {
-            let raw = r.as_raw_u32();
-            store
+            let raw = store
                 .store_opaque_mut()
                 .unwrap_gc_store_mut()
                 .expose_gc_ref_to_wasm(r);
-            Ok(raw)
+            Ok(raw.get())
         }
     }
 }
@@ -483,16 +482,16 @@ unsafe fn gc(store: &mut dyn VMStore, _instance: &mut Instance, gc_ref: u32) -> 
 unsafe fn gc_alloc_raw(
     store: &mut dyn VMStore,
     instance: &mut Instance,
-    kind: u32,
+    kind_and_reserved: u32,
     module_interned_type_index: u32,
     size: u32,
     align: u32,
-) -> Result<u32> {
+) -> Result<core::num::NonZeroU32> {
     use crate::{vm::VMGcHeader, GcHeapOutOfMemory};
     use core::alloc::Layout;
     use wasmtime_environ::{ModuleInternedTypeIndex, VMGcKind};
 
-    let kind = VMGcKind::from_high_bits_of_u32(kind);
+    let kind = VMGcKind::from_high_bits_of_u32(kind_and_reserved);
     log::trace!("gc_alloc_raw(kind={kind:?}, size={size}, align={align})",);
 
     let module = instance
@@ -505,11 +504,16 @@ unsafe fn gc_alloc_raw(
         .shared_type(module_interned_type_index)
         .expect("should have engine type index for module type index");
 
-    let header = VMGcHeader::from_kind_and_index(kind, shared_type_index);
+    let mut header = VMGcHeader::from_kind_and_index(kind, shared_type_index);
+    header.set_reserved_u27(kind_and_reserved & VMGcKind::UNUSED_MASK);
 
     let size = usize::try_from(size).unwrap();
     let align = usize::try_from(align).unwrap();
-    let layout = Layout::from_size_align(size, align).unwrap();
+    assert!(align.is_power_of_two());
+    let layout = Layout::from_size_align(size, align).map_err(|e| {
+        let err = Error::from(crate::Trap::AllocationTooLarge);
+        err.context(e)
+    })?;
 
     let gc_ref = match store
         .store_opaque_mut()
@@ -529,9 +533,7 @@ unsafe fn gc_alloc_raw(
         }
     };
 
-    let raw = gc_ref.as_raw_u32();
-
-    store
+    let raw = store
         .store_opaque_mut()
         .unwrap_gc_store_mut()
         .expose_gc_ref_to_wasm(gc_ref);
@@ -606,7 +608,7 @@ unsafe fn array_new_data(
     data_index: u32,
     src: u32,
     len: u32,
-) -> Result<u32> {
+) -> Result<core::num::NonZeroU32> {
     use crate::{ArrayType, GcHeapOutOfMemory};
     use wasmtime_environ::ModuleInternedTypeIndex;
 
@@ -669,8 +671,7 @@ unsafe fn array_new_data(
         .copy_from_slice(array_layout.base_size, data);
 
     // Return the array to Wasm!
-    let raw = array_ref.as_gc_ref().as_raw_u32();
-    store
+    let raw = store
         .store_opaque_mut()
         .unwrap_gc_store_mut()
         .expose_gc_ref_to_wasm(array_ref.into());
@@ -767,7 +768,7 @@ unsafe fn array_new_elem(
     elem_index: u32,
     src: u32,
     len: u32,
-) -> Result<u32> {
+) -> Result<core::num::NonZeroU32> {
     use crate::{
         store::AutoAssertNoGc,
         vm::const_expr::{ConstEvalContext, ConstExprEvaluator},
@@ -839,8 +840,7 @@ unsafe fn array_new_elem(
 
         let mut store = AutoAssertNoGc::new(store);
         let gc_ref = array.try_clone_gc_ref(&mut store)?;
-        let raw = gc_ref.as_raw_u32();
-        store.unwrap_gc_store_mut().expose_gc_ref_to_wasm(gc_ref);
+        let raw = store.unwrap_gc_store_mut().expose_gc_ref_to_wasm(gc_ref);
         Ok(raw)
     })
 }

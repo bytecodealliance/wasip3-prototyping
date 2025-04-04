@@ -214,6 +214,23 @@ impl Component {
         Component::from_parts(engine, code, None)
     }
 
+    /// Same as [`Module::deserialize_raw`], but for components.
+    ///
+    /// See [`Component::deserialize`] for additional information; this method
+    /// works identically except that it will not create a copy of the provided
+    /// memory but will use it directly.
+    ///
+    /// # Unsafety
+    ///
+    /// All of the safety notes from [`Component::deserialize`] apply here as well
+    /// with the additional constraint that the code memory provide by `memory`
+    /// lives for as long as the module and is nevery externally modified for
+    /// the lifetime of the deserialized module.
+    pub unsafe fn deserialize_raw(engine: &Engine, memory: NonNull<[u8]>) -> Result<Component> {
+        let code = engine.load_code_raw(memory, ObjectKind::Component)?;
+        Component::from_parts(engine, code, None)
+    }
+
     /// Same as [`Module::deserialize_file`], but for components.
     ///
     /// Note that the file referenced here must contain contents previously
@@ -453,6 +470,11 @@ impl Component {
         &self.inner.static_modules[idx]
     }
 
+    #[cfg_attr(not(feature = "profiling"), allow(dead_code))]
+    pub(crate) fn static_modules(&self) -> impl Iterator<Item = &Module> {
+        self.inner.static_modules.values()
+    }
+
     #[inline]
     pub(crate) fn types(&self) -> &Arc<ComponentTypes> {
         self.inner.component_types()
@@ -606,6 +628,7 @@ impl Component {
                 },
                 GlobalInitializer::LowerImport { .. }
                 | GlobalInitializer::ExtractMemory(_)
+                | GlobalInitializer::ExtractTable(_)
                 | GlobalInitializer::ExtractRealloc(_)
                 | GlobalInitializer::ExtractCallback(_)
                 | GlobalInitializer::ExtractPostReturn(_)

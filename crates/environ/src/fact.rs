@@ -54,7 +54,6 @@ pub static SYNC_ENTER_FIXED_PARAMS: &[ValType] = &[
     ValType::I32,
     ValType::I32,
     ValType::I32,
-    ValType::I32,
 ];
 
 /// Representation of an adapter module.

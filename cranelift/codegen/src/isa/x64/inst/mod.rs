@@ -56,7 +56,7 @@ pub struct ReturnCallInfo<T> {
 fn inst_size_test() {
     // This test will help with unintentionally growing the size
     // of the Inst enum.
-    assert_eq!(48, std::mem::size_of::<Inst>());
+    assert_eq!(56, std::mem::size_of::<Inst>());
 }
 
 pub(crate) fn low32_will_sign_extend_to_64(x: u64) -> bool {
@@ -74,7 +74,6 @@ impl Inst {
             // These instructions are part of SSE2, which is a basic requirement in Cranelift, and
             // don't have to be checked.
             Inst::AluRmiR { .. }
-            | Inst::AluRM { .. }
             | Inst::AtomicRmwSeq { .. }
             | Inst::Bswap { .. }
             | Inst::CallKnown { .. }
@@ -193,10 +192,11 @@ impl Inst {
 
             Inst::External { inst } => {
                 use cranelift_assembler_x64::Feature::*;
-                let features = smallvec![];
+                let mut features = smallvec![];
                 for f in inst.features() {
                     match f {
                         _64b | compat => {}
+                        sse => features.push(InstructionSet::SSE),
                     }
                 }
                 features
@@ -711,20 +711,6 @@ impl PrettyPrint for Inst {
                 let dst = pretty_print_reg(dst.to_reg().to_reg(), size_bytes);
                 let op = ljustify2(op.to_string(), suffix_lqb(*size));
                 format!("{op} {dst}, {dst}, {dst}")
-            }
-            Inst::AluRM {
-                size,
-                op,
-                src1_dst,
-                src2,
-                lock,
-            } => {
-                let size_bytes = size.to_bytes();
-                let src2 = pretty_print_reg(src2.to_reg(), size_bytes);
-                let src1_dst = src1_dst.pretty_print(size_bytes);
-                let op = ljustify2(op.to_string(), suffix_bwlq(*size));
-                let prefix = if *lock { "lock " } else { "" };
-                format!("{prefix}{op} {src2}, {src1_dst}")
             }
             Inst::AluRmRVex {
                 size,
@@ -2011,10 +1997,6 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
             src2.get_operands(collector);
         }
         Inst::AluConstOp { dst, .. } => collector.reg_def(dst),
-        Inst::AluRM { src1_dst, src2, .. } => {
-            collector.reg_use(src2);
-            src1_dst.get_operands(collector);
-        }
         Inst::AluRmRVex {
             src1, src2, dst, ..
         } => {

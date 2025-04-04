@@ -8,8 +8,8 @@ use crate::runtime::vm::memory::{Memory, RuntimeMemoryCreator};
 use crate::runtime::vm::table::{Table, TableElement, TableElementType};
 use crate::runtime::vm::vmcontext::{
     VMBuiltinFunctionsArray, VMContext, VMFuncRef, VMFunctionImport, VMGlobalDefinition,
-    VMGlobalImport, VMMemoryDefinition, VMMemoryImport, VMOpaqueContext, VMStoreContext,
-    VMTableDefinition, VMTableImport, VMTagDefinition, VMTagImport,
+    VMGlobalImport, VMMemoryDefinition, VMMemoryImport, VMOpaqueContext, VMStoreContext, VMTable,
+    VMTableDefinition, VMTagDefinition, VMTagImport,
 };
 use crate::runtime::vm::{
     ExportFunction, ExportGlobal, ExportMemory, ExportTable, ExportTag, GcStore, Imports,
@@ -171,7 +171,7 @@ impl InstanceAndStore {
 /// A type that roughly corresponds to a WebAssembly instance, but is also used
 /// for host-defined objects.
 ///
-/// This structure is is never allocated directly but is instead managed through
+/// This structure is never allocated directly but is instead managed through
 /// an `InstanceHandle`. This structure ends with a `VMContext` which has a
 /// dynamic size corresponding to the `module` configured within. Memory
 /// management of this structure is always externalized.
@@ -428,8 +428,8 @@ impl Instance {
         unsafe { &*self.vmctx_plus_offset(self.offsets().vmctx_vmfunction_import(index)) }
     }
 
-    /// Return the index `VMTableImport`.
-    fn imported_table(&self, index: TableIndex) -> &VMTableImport {
+    /// Return the index `VMTable`.
+    fn imported_table(&self, index: TableIndex) -> &VMTable {
         unsafe { &*self.vmctx_plus_offset(self.offsets().vmctx_vmtable_import(index)) }
     }
 
@@ -583,7 +583,7 @@ impl Instance {
     /// Return a pointer to the interrupts structure
     #[inline]
     pub fn vm_store_context(&mut self) -> NonNull<Option<VmPtr<VMStoreContext>>> {
-        unsafe { self.vmctx_plus_offset_mut(self.offsets().ptr.vmctx_runtime_limits()) }
+        unsafe { self.vmctx_plus_offset_mut(self.offsets().ptr.vmctx_store_context()) }
     }
 
     /// Return a pointer to the global epoch counter used by this instance.
@@ -616,7 +616,15 @@ impl Instance {
             #[cfg(target_has_atomic = "64")]
             self.epoch_ptr()
                 .write(Some(NonNull::from(store.engine().epoch_counter()).into()));
-            self.set_gc_heap(store.gc_store_mut().ok());
+
+            if self.env_module().needs_gc_heap {
+                self.set_gc_heap(Some(store.gc_store_mut().expect(
+                    "if we need a GC heap, then `Instance::new_raw` should have already \
+                     allocated it for us",
+                )));
+            } else {
+                self.set_gc_heap(None);
+            }
         } else {
             self.vm_store_context().write(None);
             #[cfg(target_has_atomic = "64")]

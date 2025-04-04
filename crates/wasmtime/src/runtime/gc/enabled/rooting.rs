@@ -437,8 +437,8 @@ impl RootSet {
         for root in lifo_roots.drain(scope..) {
             // Only drop the GC reference if we actually have a GC store. How
             // can we have a GC reference but not a GC store? If we've only
-            // create `i31refs`, we never force a GC store's allocation. This is
-            // fine because `i31ref`s never need drop barriers.
+            // created `i31refs`, we never force a GC store's allocation. This
+            // is fine because `i31ref`s never need drop barriers.
             if let Some(gc_store) = &mut gc_store {
                 gc_store.drop_gc_ref(root.gc_ref);
             }
@@ -968,10 +968,18 @@ impl<T: GcRef> Rooted<T> {
         val_raw: impl Fn(u32) -> ValRaw,
     ) -> Result<()> {
         let gc_ref = self.inner.try_clone_gc_ref(store)?;
-        let raw = gc_ref.as_raw_u32();
-        debug_assert_ne!(raw, 0);
-        store.gc_store_mut()?.expose_gc_ref_to_wasm(gc_ref);
-        ptr.write(val_raw(raw));
+
+        let raw = match store.optional_gc_store_mut() {
+            Some(s) => s.expose_gc_ref_to_wasm(gc_ref),
+            None => {
+                // NB: do not force the allocation of a GC heap just because the
+                // program is using `i31ref`s.
+                debug_assert!(gc_ref.is_i31());
+                gc_ref.as_raw_non_zero_u32()
+            }
+        };
+
+        ptr.write(val_raw(raw.get()));
         Ok(())
     }
 
@@ -984,7 +992,17 @@ impl<T: GcRef> Rooted<T> {
     ) -> Self {
         debug_assert_ne!(raw_gc_ref, 0);
         let gc_ref = VMGcRef::from_raw_u32(raw_gc_ref).expect("non-null");
-        let gc_ref = store.unwrap_gc_store_mut().clone_gc_ref(&gc_ref);
+
+        let gc_ref = match store.optional_gc_store_mut() {
+            Some(s) => s.clone_gc_ref(&gc_ref),
+            None => {
+                // NB: do not force the allocation of a GC heap just because the
+                // program is using `i31ref`s.
+                debug_assert!(gc_ref.is_i31());
+                gc_ref.unchecked_copy()
+            }
+        };
+
         from_cloned_gc_ref(store, gc_ref)
     }
 
@@ -1758,10 +1776,8 @@ where
         val_raw: impl Fn(u32) -> ValRaw,
     ) -> Result<()> {
         let gc_ref = self.try_clone_gc_ref(store)?;
-        let raw = gc_ref.as_raw_u32();
-        debug_assert_ne!(raw, 0);
-        store.gc_store_mut()?.expose_gc_ref_to_wasm(gc_ref);
-        ptr.write(val_raw(raw));
+        let raw = store.gc_store_mut()?.expose_gc_ref_to_wasm(gc_ref);
+        ptr.write(val_raw(raw.get()));
         Ok(())
     }
 

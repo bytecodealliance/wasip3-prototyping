@@ -234,7 +234,7 @@ impl TcpSocket {
 
     pub fn keep_alive_enabled(&self) -> Result<bool, ErrorCode> {
         let fd = &*self.as_std_view()?;
-        let v = sockopt::get_socket_keepalive(fd)?;
+        let v = sockopt::socket_keepalive(fd)?;
         Ok(v)
     }
 
@@ -246,7 +246,7 @@ impl TcpSocket {
 
     pub fn keep_alive_idle_time(&self) -> Result<Duration, ErrorCode> {
         let fd = &*self.as_std_view()?;
-        let v = sockopt::get_tcp_keepidle(fd)?;
+        let v = sockopt::tcp_keepidle(fd)?;
         Ok(v.as_nanos().try_into().unwrap_or(u64::MAX))
     }
 
@@ -276,7 +276,7 @@ impl TcpSocket {
 
     pub fn keep_alive_interval(&self) -> Result<Duration, ErrorCode> {
         let fd = &*self.as_std_view()?;
-        let v = sockopt::get_tcp_keepintvl(fd)?;
+        let v = sockopt::tcp_keepintvl(fd)?;
         Ok(v.as_nanos().try_into().unwrap_or(u64::MAX))
     }
 
@@ -301,7 +301,7 @@ impl TcpSocket {
 
     pub fn keep_alive_count(&self) -> Result<u32, ErrorCode> {
         let fd = &*self.as_std_view()?;
-        let v = sockopt::get_tcp_keepcnt(fd)?;
+        let v = sockopt::tcp_keepcnt(fd)?;
         Ok(v)
     }
 

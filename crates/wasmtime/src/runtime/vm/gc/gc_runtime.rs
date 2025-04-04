@@ -3,12 +3,10 @@
 use crate::prelude::*;
 use crate::runtime::vm::{
     ExternRefHostDataId, ExternRefHostDataTable, GcHeapObject, SendSyncPtr, TypedGcRef, VMArrayRef,
-    VMExternRef, VMGcHeader, VMGcObjectDataMut, VMGcRef, VMStructRef,
+    VMExternRef, VMGcHeader, VMGcObjectData, VMGcRef, VMStructRef,
 };
 use core::ptr::NonNull;
-use core::{
-    alloc::Layout, any::Any, cell::UnsafeCell, marker, mem, num::NonZeroUsize, ops::Range, ptr,
-};
+use core::{alloc::Layout, any::Any, marker, mem, num::NonZeroUsize, ops::Range, ptr};
 use wasmtime_environ::{GcArrayLayout, GcStructLayout, GcTypeLayouts, VMSharedTypeIndex};
 
 /// Trait for integrating a garbage collector with the runtime.
@@ -38,7 +36,7 @@ pub unsafe trait GcRuntime: 'static + Send + Sync {
 
     /// Construct a new GC heap.
     #[cfg(feature = "gc")]
-    fn new_gc_heap(&self) -> Result<Box<dyn GcHeap>>;
+    fn new_gc_heap(&self, engine: &crate::Engine) -> Result<Box<dyn GcHeap>>;
 }
 
 /// A heap that manages garbage-collected objects.
@@ -387,7 +385,7 @@ pub unsafe trait GcHeap: 'static + Send + Sync {
     /// The heap slice must be the GC heap region, and the region must remain
     /// valid (i.e. not moved or resized) for JIT code until `self` is dropped
     /// or `self.reset()` is called.
-    fn heap_slice(&self) -> &[UnsafeCell<u8>];
+    fn heap_slice(&self) -> &[u8];
 
     /// Get a mutable slice of the raw bytes of the GC heap.
     ///
@@ -454,15 +452,26 @@ pub unsafe trait GcHeap: 'static + Send + Sync {
         start..end
     }
 
-    /// Get a mutable borrow of the the given object's data.
+    /// Get a mutable borrow of the given object's data.
     ///
     /// # Panics
     ///
     /// Panics on out-of-bounds accesses or if the `gc_ref` is an `i31ref`.
-    fn gc_object_data(&mut self, gc_ref: &VMGcRef) -> VMGcObjectDataMut<'_> {
+    fn gc_object_data(&self, gc_ref: &VMGcRef) -> &VMGcObjectData {
+        let range = self.object_range(gc_ref);
+        let data = &self.heap_slice()[range];
+        data.into()
+    }
+
+    /// Get a mutable borrow of the given object's data.
+    ///
+    /// # Panics
+    ///
+    /// Panics on out-of-bounds accesses or if the `gc_ref` is an `i31ref`.
+    fn gc_object_data_mut(&mut self, gc_ref: &VMGcRef) -> &mut VMGcObjectData {
         let range = self.object_range(gc_ref);
         let data = &mut self.heap_slice_mut()[range];
-        VMGcObjectDataMut::new(data)
+        data.into()
     }
 
     /// Get a pair of mutable borrows of the given objects' data.
@@ -475,7 +484,7 @@ pub unsafe trait GcHeap: 'static + Send + Sync {
         &mut self,
         a: &VMGcRef,
         b: &VMGcRef,
-    ) -> (VMGcObjectDataMut<'_>, VMGcObjectDataMut<'_>) {
+    ) -> (&mut VMGcObjectData, &mut VMGcObjectData) {
         assert_ne!(a, b);
 
         let a_range = self.object_range(a);
@@ -496,10 +505,7 @@ pub unsafe trait GcHeap: 'static + Send + Sync {
             (&mut a_half[..a_len], &mut b_half[b_range])
         };
 
-        (
-            VMGcObjectDataMut::new(a_data),
-            VMGcObjectDataMut::new(b_data),
-        )
+        (a_data.into(), b_data.into())
     }
 }
 

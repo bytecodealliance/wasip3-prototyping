@@ -9,11 +9,6 @@ on:
     - main
     - 'release-*'
 
-  # Run full CI on the `main` branch once a day to prime the GitHub Actions
-  # caches used by PRs and the merge queue.
-  schedule:
-  - cron: '13 4 * * *'
-
   # This is the CI that runs for PRs-to-merge.
   merge_group:
 
@@ -25,6 +20,9 @@ on:
     # tag at the end of CI if successful and the tag will trigger the artifact
     # uploads as well as publication to crates.io.
     - 'release-*'
+
+  # Allow manually triggering this request via a button or another workflow.
+  workflow_dispatch:
 
 defaults:
   run:
@@ -393,6 +391,7 @@ jobs:
               -p wasmtime-cli --no-default-features --features compile
               -p wasmtime-cli --no-default-features --features compile,cranelift
               -p wasmtime-cli --no-default-features --features compile,cranelift,component-model
+              -p wasmtime-cli --no-default-features --features objdump
               -p wasmtime-cli --all-features
               -p wasmtime-cli --features component-model
 
@@ -400,6 +399,11 @@ jobs:
             checks: |
               -p cranelift-codegen --benches
               -p cranelift-codegen --no-default-features --features std,unwind,pulley
+
+          - name: cranelift-entity
+            checks: |
+              -p cranelift-entity --no-default-features
+              -p cranelift-entity --no-default-features --features enable-serde
 
           - name: wasmtime-bench-api
             checks: |
@@ -650,7 +654,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-14, windows-2025]
 
     steps:
     - uses: actions/checkout@v4
@@ -808,10 +812,10 @@ jobs:
   test_wasi_nn:
     strategy:
       matrix:
-        feature: ["openvino", "onnx"]
-        os: ["ubuntu-latest", "windows-latest"]
+        feature: ["openvino"]
+        os: ["ubuntu-24.04", "windows-2025"]
         include:
-          - os: windows-latest
+          - os: windows-2025
             feature: winml
     name: Test wasi-nn (${{ matrix.feature }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -879,7 +883,12 @@ jobs:
       with:
         submodules: true
     - uses: ./.github/actions/install-rust
-    - run: rustup target add wasm32-wasip1 wasm32-unknown-unknown
+    - run: |
+        rustup target add wasm32-wasip1 wasm32-unknown-unknown
+        cd /tmp
+        curl -OL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-x86_64-linux.tar.gz
+        tar -xzf wasi-sdk-24.0-x86_64-linux.tar.gz
+        mv wasi-sdk-24.0-x86_64-linux wasi-sdk
     - run: |
         sudo apt-get update && sudo apt-get install -y gdb lldb-15 llvm
         # workaround for https://bugs.launchpad.net/ubuntu/+source/llvm-defaults/+bug/1972855
@@ -889,6 +898,7 @@ jobs:
         cargo test --release --test all -- --ignored --test-threads 1 debug::
       env:
         LLDB: lldb-15 # override default version, 14
+        WASI_SDK_PATH: /tmp/wasi-sdk
 
     # common logic to cancel the entire run if this job fails
     - uses: ./.github/actions/cancel-on-failure
@@ -1262,3 +1272,29 @@ jobs:
         }
         EOF
       if: steps.tag.outputs.push_tag == 'yes'
+
+  # File an issue on the repo if this run failed and was triggered via
+  # `workflow_dispatch`, which mostly means that
+  # `.github/workflows/trigger-release-branch-ci.yml` will file issues on
+  # failure so we get to see a notification when a build fails for a historical
+  # release branch.
+  file-issue-on-error:
+    name: File an issue if this build failed and was cron-triggered
+    runs-on: ubuntu-latest
+    needs: ci-status
+    if: |
+      always()
+      && needs.ci-status.result != 'success'
+      && github.event_name == 'workflow_dispatch'
+    permissions:
+      issues: write
+    steps:
+    - uses: actions/github-script@v7
+      with:
+        script: |
+          github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: `Failed CI build for ${context.ref}`,
+            body: `See https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+          })

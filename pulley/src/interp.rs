@@ -418,7 +418,7 @@ impl Default for XRegVal {
     }
 }
 
-#[allow(missing_docs, reason = "self-describing methods")]
+#[expect(missing_docs, reason = "self-describing methods")]
 impl XRegVal {
     pub fn new_i32(x: i32) -> Self {
         let mut val = XRegVal::default();
@@ -472,11 +472,7 @@ impl XRegVal {
 
     pub fn get_ptr<T>(&self) -> *mut T {
         let ptr = unsafe { self.0.ptr };
-        let ptr = usize::from_le(ptr);
-        #[cfg(has_provenance_apis)]
-        return core::ptr::with_exposed_provenance_mut(ptr);
-        #[cfg(not(has_provenance_apis))]
-        return ptr as *mut T;
+        core::ptr::with_exposed_provenance_mut(usize::from_le(ptr))
     }
 
     pub fn set_i32(&mut self, x: i32) {
@@ -496,11 +492,7 @@ impl XRegVal {
     }
 
     pub fn set_ptr<T>(&mut self, ptr: *mut T) {
-        #[cfg(has_provenance_apis)]
-        let ptr = ptr.expose_provenance();
-        #[cfg(not(has_provenance_apis))]
-        let ptr = ptr as usize;
-        self.0.ptr = ptr.to_le();
+        self.0.ptr = ptr.expose_provenance().to_le();
     }
 }
 
@@ -537,7 +529,7 @@ impl Default for FRegVal {
     }
 }
 
-#[allow(missing_docs, reason = "self-describing methods")]
+#[expect(missing_docs, reason = "self-describing methods")]
 impl FRegVal {
     pub fn new_f32(f: f32) -> Self {
         let mut val = Self::default();
@@ -620,7 +612,7 @@ impl Default for VRegVal {
     }
 }
 
-#[allow(missing_docs, reason = "self-describing methods")]
+#[expect(missing_docs, reason = "self-describing methods")]
 impl VRegVal {
     pub fn new_u128(i: u128) -> Self {
         let mut val = Self::default();
@@ -934,7 +926,7 @@ mod done {
     }
 
     /// Stored within `DoneReason::Trap`.
-    #[allow(missing_docs, reason = "self-describing variants")]
+    #[expect(missing_docs, reason = "self-describing variants")]
     pub enum TrapKind {
         DivideByZero,
         IntegerOverflow,
@@ -1317,16 +1309,14 @@ impl OpVisitor for Interpreter<'_> {
     fn call(&mut self, offset: PcRelOffset) -> ControlFlow<Done> {
         let return_addr = self.pc.as_ptr();
         self.state.lr = return_addr.as_ptr();
-        self.pc_rel_jump::<crate::Call>(offset);
-        ControlFlow::Continue(())
+        self.pc_rel_jump::<crate::Call>(offset)
     }
 
     fn call1(&mut self, arg1: XReg, offset: PcRelOffset) -> ControlFlow<Done> {
         let return_addr = self.pc.as_ptr();
         self.state.lr = return_addr.as_ptr();
         self.state[XReg::x0] = self.state[arg1];
-        self.pc_rel_jump::<crate::Call1>(offset);
-        ControlFlow::Continue(())
+        self.pc_rel_jump::<crate::Call1>(offset)
     }
 
     fn call2(&mut self, arg1: XReg, arg2: XReg, offset: PcRelOffset) -> ControlFlow<Done> {
@@ -1335,8 +1325,7 @@ impl OpVisitor for Interpreter<'_> {
         let (x0, x1) = (self.state[arg1], self.state[arg2]);
         self.state[XReg::x0] = x0;
         self.state[XReg::x1] = x1;
-        self.pc_rel_jump::<crate::Call2>(offset);
-        ControlFlow::Continue(())
+        self.pc_rel_jump::<crate::Call2>(offset)
     }
 
     fn call3(
@@ -1352,8 +1341,7 @@ impl OpVisitor for Interpreter<'_> {
         self.state[XReg::x0] = x0;
         self.state[XReg::x1] = x1;
         self.state[XReg::x2] = x2;
-        self.pc_rel_jump::<crate::Call3>(offset);
-        ControlFlow::Continue(())
+        self.pc_rel_jump::<crate::Call3>(offset)
     }
 
     fn call4(
@@ -1376,8 +1364,7 @@ impl OpVisitor for Interpreter<'_> {
         self.state[XReg::x1] = x1;
         self.state[XReg::x2] = x2;
         self.state[XReg::x3] = x3;
-        self.pc_rel_jump::<crate::Call4>(offset);
-        ControlFlow::Continue(())
+        self.pc_rel_jump::<crate::Call4>(offset)
     }
 
     fn call_indirect(&mut self, dst: XReg) -> ControlFlow<Done> {
@@ -1393,8 +1380,7 @@ impl OpVisitor for Interpreter<'_> {
     }
 
     fn jump(&mut self, offset: PcRelOffset) -> ControlFlow<Done> {
-        self.pc_rel_jump::<crate::Jump>(offset);
-        ControlFlow::Continue(())
+        self.pc_rel_jump::<crate::Jump>(offset)
     }
 
     fn xjump(&mut self, reg: XReg) -> ControlFlow<Done> {

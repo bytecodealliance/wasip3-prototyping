@@ -1,9 +1,11 @@
+mod gc;
+
 use crate::compiler::Compiler;
 use crate::translate::{
     FuncTranslationState, GlobalVariable, Heap, HeapData, StructFieldsVec, TableData, TableSize,
     TargetEnvironment,
 };
-use crate::{gc, BuiltinFunctionSignatures, TRAP_INTERNAL_ASSERT};
+use crate::{BuiltinFunctionSignatures, TRAP_INTERNAL_ASSERT};
 use cranelift_codegen::cursor::FuncCursor;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::immediates::{Imm64, Offset32};
@@ -12,7 +14,7 @@ use cranelift_codegen::ir::types::*;
 use cranelift_codegen::ir::{self, types};
 use cranelift_codegen::ir::{ArgumentPurpose, Function, InstBuilder, MemFlags};
 use cranelift_codegen::isa::{TargetFrontendConfig, TargetIsa};
-use cranelift_entity::packed_option::ReservedValue;
+use cranelift_entity::packed_option::ReservedValue as _;
 use cranelift_entity::{EntityRef, PrimaryMap, SecondaryMap};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_frontend::Variable;
@@ -92,13 +94,14 @@ wasmtime_environ::foreach_builtin_function!(declare_function_signatures);
 pub struct FuncEnvironment<'module_environment> {
     compiler: &'module_environment Compiler,
     isa: &'module_environment (dyn TargetIsa + 'module_environment),
-    pub(crate) module: &'module_environment Module,
-    pub(crate) types: &'module_environment ModuleTypesBuilder,
+    module: &'module_environment Module,
+    types: &'module_environment ModuleTypesBuilder,
     wasm_func_ty: &'module_environment WasmFuncType,
     sig_ref_to_ty: SecondaryMap<ir::SigRef, Option<&'module_environment WasmFuncType>>,
+    needs_gc_heap: bool,
 
     #[cfg(feature = "gc")]
-    pub(crate) ty_to_gc_layout: std::collections::HashMap<
+    ty_to_gc_layout: std::collections::HashMap<
         wasmtime_environ::ModuleInternedTypeIndex,
         wasmtime_environ::GcLayout,
     >,
@@ -120,12 +123,12 @@ pub struct FuncEnvironment<'module_environment> {
     pcc_vmctx_memtype: Option<ir::MemoryType>,
 
     /// Caches of signatures for builtin functions.
-    pub(crate) builtin_functions: BuiltinFunctions,
+    builtin_functions: BuiltinFunctions,
 
     /// Offsets to struct fields accessed by JIT code.
     pub(crate) offsets: VMOffsets<u8>,
 
-    pub(crate) tunables: &'module_environment Tunables,
+    tunables: &'module_environment Tunables,
 
     /// A function-local variable which stores the cached value of the amount of
     /// fuel remaining to execute. If used this is modified frequently so it's
@@ -185,6 +188,7 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
             types,
             wasm_func_ty,
             sig_ref_to_ty: SecondaryMap::default(),
+            needs_gc_heap: false,
 
             #[cfg(feature = "gc")]
             ty_to_gc_layout: std::collections::HashMap::new(),
@@ -298,7 +302,7 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
                 base: vmctx,
                 offset: Offset32::new(i32::try_from(from_offset).unwrap()),
                 global_type: pointer_type,
-                flags: MemFlags::trusted().with_readonly(),
+                flags: MemFlags::trusted().with_readonly().with_can_move(),
             });
             (global, 0)
         }
@@ -312,12 +316,14 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
         let pointer_type = self.pointer_type();
         let vmctx = self.vmctx(builder.func);
         let base = builder.ins().global_value(pointer_type, vmctx);
-        let offset = i32::from(self.offsets.ptr.vmctx_runtime_limits());
+        let offset = i32::from(self.offsets.ptr.vmctx_store_context());
         debug_assert!(self.vmstore_context_ptr.is_reserved_value());
-        self.vmstore_context_ptr =
-            builder
-                .ins()
-                .load(pointer_type, ir::MemFlags::trusted(), base, offset);
+        self.vmstore_context_ptr = builder.ins().load(
+            pointer_type,
+            ir::MemFlags::trusted().with_readonly().with_can_move(),
+            base,
+            offset,
+        );
     }
 
     fn fuel_function_entry(&mut self, builder: &mut FunctionBuilder<'_>) {
@@ -803,12 +809,12 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
                 .unwrap();
                 (vmctx, base_offset, current_elements_offset)
             } else {
-                let from_offset = self.offsets.vmctx_vmtable_import_from(index);
+                let from_offset = self.offsets.vmctx_vmtable_from(index);
                 let table = func.create_global_value(ir::GlobalValueData::Load {
                     base: vmctx,
                     offset: Offset32::new(i32::try_from(from_offset).unwrap()),
                     global_type: pointer_type,
-                    flags: MemFlags::trusted().with_readonly(),
+                    flags: MemFlags::trusted().with_readonly().with_can_move(),
                 });
                 let base_offset = i32::from(self.offsets.vmtable_definition_base());
                 let current_elements_offset =
@@ -832,7 +838,7 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
             flags: if Some(table.limits.min) == table.limits.max {
                 // A fixed-size table can't be resized so its base address won't
                 // change.
-                MemFlags::trusted().with_readonly()
+                MemFlags::trusted().with_readonly().with_can_move()
             } else {
                 MemFlags::trusted()
             },
@@ -1008,18 +1014,18 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
     /// memtypes are in use, add a field to the original struct and
     /// generate a new memtype for the pointee.
     fn load_pointer_with_memtypes(
-        &self,
+        &mut self,
         func: &mut ir::Function,
-        value: ir::GlobalValue,
         offset: u32,
         readonly: bool,
         memtype: Option<ir::MemoryType>,
     ) -> (ir::GlobalValue, Option<ir::MemoryType>) {
+        let vmctx = self.vmctx(func);
         let pointee = func.create_global_value(ir::GlobalValueData::Load {
-            base: value,
+            base: vmctx,
             offset: Offset32::new(i32::try_from(offset).unwrap()),
             global_type: self.pointer_type(),
-            flags: MemFlags::trusted().with_readonly(),
+            flags: MemFlags::trusted().with_readonly().with_can_move(),
         });
 
         let mt = memtype.map(|mt| {
@@ -1153,7 +1159,7 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
     ) -> ir::Value {
         let vmctx = self.vmctx_val(pos);
         let pointer_type = self.pointer_type();
-        let mem_flags = ir::MemFlags::trusted().with_readonly();
+        let mem_flags = ir::MemFlags::trusted().with_readonly().with_can_move();
 
         // Load the base pointer of the array of `VMSharedTypeIndex`es.
         let shared_indices = pos.ins().load(
@@ -1189,6 +1195,11 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
             funcref,
             i32::from(self.offsets.ptr.vm_func_ref_type_index()),
         )
+    }
+
+    /// Does this function need a GC heap?
+    pub fn needs_gc_heap(&self) -> bool {
+        self.needs_gc_heap
     }
 }
 
@@ -1270,7 +1281,7 @@ impl<'a, 'func, 'module_env> Call<'a, 'func, 'module_env> {
         let vmctx = self.env.vmctx(self.builder.func);
         let base = self.builder.ins().global_value(pointer_type, vmctx);
 
-        let mem_flags = ir::MemFlags::trusted().with_readonly();
+        let mem_flags = ir::MemFlags::trusted().with_readonly().with_can_move();
 
         // Load the callee address.
         let body_offset = i32::try_from(
@@ -1426,10 +1437,11 @@ impl<'a, 'func, 'module_env> Call<'a, 'func, 'module_env> {
                     // anyway.
                     if table.ref_type.nullable {
                         if self.env.clif_memory_traps_enabled() {
-                            let mem_flags = ir::MemFlags::trusted().with_readonly();
                             self.builder.ins().load(
                                 sig_id_type,
-                                mem_flags.with_trap_code(Some(crate::TRAP_INDIRECT_CALL_TO_NULL)),
+                                ir::MemFlags::trusted()
+                                    .with_readonly()
+                                    .with_trap_code(Some(crate::TRAP_INDIRECT_CALL_TO_NULL)),
                                 funcref_ptr,
                                 i32::from(self.env.offsets.ptr.vm_func_ref_type_index()),
                             );
@@ -2048,8 +2060,7 @@ impl FuncEnvironment<'_> {
             libcall,
             &[vmctx, interned_type_index, data_index, data_offset, len],
         );
-        let result = builder.func.dfg.first_result(call_inst);
-        Ok(builder.ins().ireduce(ir::types::I32, result))
+        Ok(builder.func.dfg.first_result(call_inst))
     }
 
     pub fn translate_array_new_elem(
@@ -2071,8 +2082,7 @@ impl FuncEnvironment<'_> {
             libcall,
             &[vmctx, interned_type_index, elem_index, elem_offset, len],
         );
-        let result = builder.func.dfg.first_result(call_inst);
-        Ok(builder.ins().ireduce(ir::types::I32, result))
+        Ok(builder.func.dfg.first_result(call_inst))
     }
 
     pub fn translate_array_copy(
@@ -2252,12 +2262,13 @@ impl FuncEnvironment<'_> {
         builder: &mut FunctionBuilder,
         index: GlobalIndex,
     ) -> WasmResult<ir::Value> {
-        let ty = self.module.globals[index].wasm_ty;
+        let global_ty = self.module.globals[index];
+        let wasm_ty = global_ty.wasm_ty;
         debug_assert!(
-            ty.is_vmgcref_type(),
+            wasm_ty.is_vmgcref_type(),
             "We only use GlobalVariable::Custom for VMGcRef types"
         );
-        let WasmValType::Ref(ty) = ty else {
+        let WasmValType::Ref(ref_ty) = wasm_ty else {
             unreachable!()
         };
 
@@ -2268,9 +2279,13 @@ impl FuncEnvironment<'_> {
         gc::gc_compiler(self)?.translate_read_gc_reference(
             self,
             builder,
-            ty,
+            ref_ty,
             src,
-            ir::MemFlags::trusted(),
+            if global_ty.mutability {
+                ir::MemFlags::trusted()
+            } else {
+                ir::MemFlags::trusted().with_readonly().with_can_move()
+            },
         )
     }
 
@@ -2319,7 +2334,6 @@ impl FuncEnvironment<'_> {
                     let from_offset = self.offsets.vmctx_vmmemory_pointer(def_index);
                     let (memory, def_mt) = self.load_pointer_with_memtypes(
                         func,
-                        vmctx,
                         from_offset,
                         true,
                         self.pcc_vmctx_memtype,
@@ -2348,7 +2362,6 @@ impl FuncEnvironment<'_> {
                 let from_offset = self.offsets.vmctx_vmmemory_import_from(index);
                 let (memory, def_mt) = self.load_pointer_with_memtypes(
                     func,
-                    vmctx,
                     from_offset,
                     true,
                     self.pcc_vmctx_memtype,
@@ -2474,7 +2487,7 @@ impl FuncEnvironment<'_> {
             }
         };
 
-        let mut flags = MemFlags::trusted().with_checked();
+        let mut flags = MemFlags::trusted().with_checked().with_can_move();
         if !memory.memory_may_move(self.tunables) {
             flags.set_readonly();
         }

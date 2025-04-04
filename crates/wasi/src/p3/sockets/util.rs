@@ -272,7 +272,7 @@ impl From<&Errno> for types::ErrorCode {
 }
 
 pub fn get_ip_ttl(fd: impl AsFd) -> Result<u8, ErrorCode> {
-    let v = sockopt::get_ip_ttl(fd)?;
+    let v = sockopt::ip_ttl(fd)?;
     let Ok(v) = v.try_into() else {
         return Err(ErrorCode::NotSupported);
     };
@@ -280,7 +280,7 @@ pub fn get_ip_ttl(fd: impl AsFd) -> Result<u8, ErrorCode> {
 }
 
 pub fn get_ipv6_unicast_hops(fd: impl AsFd) -> Result<u8, ErrorCode> {
-    let v = sockopt::get_ipv6_unicast_hops(fd)?;
+    let v = sockopt::ipv6_unicast_hops(fd)?;
     Ok(v)
 }
 
@@ -316,7 +316,7 @@ pub fn set_unicast_hop_limit(
 }
 
 pub fn receive_buffer_size(fd: impl AsFd) -> Result<u64, ErrorCode> {
-    let v = sockopt::get_socket_recv_buffer_size(fd)?;
+    let v = sockopt::socket_recv_buffer_size(fd)?;
     Ok(normalize_get_buffer_size(v).try_into().unwrap_or(u64::MAX))
 }
 
@@ -336,7 +336,7 @@ pub fn set_receive_buffer_size(fd: impl AsFd, value: u64) -> Result<usize, Error
 }
 
 pub fn send_buffer_size(fd: impl AsFd) -> Result<u64, ErrorCode> {
-    let v = sockopt::get_socket_send_buffer_size(fd)?;
+    let v = sockopt::socket_send_buffer_size(fd)?;
     Ok(normalize_get_buffer_size(v).try_into().unwrap_or(u64::MAX))
 }
 

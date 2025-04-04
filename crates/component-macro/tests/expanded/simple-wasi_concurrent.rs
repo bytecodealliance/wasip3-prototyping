@@ -527,8 +527,14 @@ pub mod foo {
                     1 == < WallClock as wasmtime::component::ComponentType >::ALIGN32
                 );
             };
+<<<<<<< HEAD
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send {}
+||||||| 89ebd4531
+            pub trait Host {}
+=======
+            pub trait Host {}
+>>>>>>> upstream/main
             pub trait GetHost<
                 T,
             >: Fn(T) -> <Self as GetHost<T>>::Host + Send + Sync + Copy + 'static {

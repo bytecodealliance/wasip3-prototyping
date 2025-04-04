@@ -22,6 +22,7 @@ use crate::runtime::vm::sys::traphandlers;
 use crate::runtime::vm::{Instance, InterpreterRef, VMContext, VMStoreContext};
 use crate::{StoreContextMut, WasmBacktrace};
 use core::cell::Cell;
+use core::num::NonZeroU32;
 use core::ops::Range;
 use core::ptr::{self, NonNull};
 
@@ -269,6 +270,14 @@ unsafe impl HostResultHasUnwindSentinel for () {
     }
 }
 
+unsafe impl HostResultHasUnwindSentinel for NonZeroU32 {
+    type Abi = u32;
+    const SENTINEL: Self::Abi = 0;
+    fn into_abi(self) -> Self::Abi {
+        self.get()
+    }
+}
+
 /// A 32-bit return value can be inflated to a 64-bit return value in the ABI.
 /// In this manner a successful result is a zero-extended 32-bit value and the
 /// failure sentinel is `u64::MAX` or -1 as a signed integer.
@@ -362,7 +371,7 @@ where
     F: FnMut(NonNull<VMContext>, Option<InterpreterRef<'_>>) -> bool,
 {
     let caller = store.0.default_caller();
-    let async_guard_range = store.async_guard_range();
+    let async_guard_range = store.0.async_guard_range();
     let result = CallThreadState::new(store.0, async_guard_range, caller).with(|cx| {
         match store.0.executor() {
             // In interpreted mode directly invoke the host closure since we won't

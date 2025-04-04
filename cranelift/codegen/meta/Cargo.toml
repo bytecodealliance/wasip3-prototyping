@@ -16,7 +16,8 @@ workspace = true
 rustdoc-args = ["--document-private-items"]
 
 [dependencies]
-cranelift-assembler-x64 = { path = "../../assembler-x64", version = "0.119.0" }
+cranelift-srcgen = { workspace = true }
+cranelift-assembler-x64-meta = { path = "../../assembler-x64/meta", version = "0.119.0" }
 cranelift-codegen-shared = { path = "../shared", version = "0.119.0" }
 pulley-interpreter = { workspace = true, optional = true }
 
