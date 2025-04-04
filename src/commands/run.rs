@@ -1069,6 +1069,7 @@ struct Host {
     p3_filesystem: Option<wasmtime_wasi::p3::filesystem::WasiFilesystemCtx>,
     p3_random: Option<Arc<Mutex<wasmtime_wasi::p3::random::WasiRandomCtx>>>,
     p3_sockets: Option<wasmtime_wasi::p3::sockets::WasiSocketsCtx>,
+    #[cfg(feature = "wasi-http")]
     p3_http: Option<wasmtime_wasi_http::p3::WasiHttpCtx>,
 
     #[cfg(feature = "wasi-nn")]
