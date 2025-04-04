@@ -31,7 +31,7 @@ use crate::p3::host::{
 };
 use crate::p3::{
     Body, BodyContext, BodyFrame, ContentLength, Request, RequestOptions, Response, WasiHttpImpl,
-    WasiHttpView,
+    WasiHttpView, DEFAULT_BUFFER_CAPACITY,
 };
 
 fn get_request_options<'a>(
@@ -239,16 +239,21 @@ where
             } => {
                 let mut contents_tx = self.contents_tx;
                 match buffer {
-                    Some(BodyFrame::Data(buf)) => {
-                        let (tx_tail, buf) = contents_tx.write_all(buf).into_future().await;
+                    Some(BodyFrame::Data(buffer)) => {
+                        let (tx_tail, buffer) = contents_tx
+                            .write_all(Cursor::new(buffer))
+                            .into_future()
+                            .await;
                         let Some(tx_tail) = tx_tail else {
                             let Ok(mut body) = self.body.lock() else {
                                 bail!("lock poisoned");
                             };
+                            let pos = buffer.position().try_into()?;
+                            let buffer = buffer.into_inner().split_off(pos);
                             *body = Body::Guest {
                                 contents: Some(contents_rx),
                                 trailers: Some(trailers_rx),
-                                buffer: Some(BodyFrame::Data(buf)),
+                                buffer: Some(BodyFrame::Data(buffer)),
                                 tx,
                                 content_length,
                             };
@@ -337,18 +342,21 @@ where
                             return Ok(());
                         }
                     }
-                    let buf = rx_buffer.split().freeze();
-                    assert!(rx_buffer.capacity() > 0);
+                    let buffer = rx_buffer.split().freeze();
+                    rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
                     contents_rx = rx_tail.read(rx_buffer).into_future();
-                    let (tx_tail, buf) = tx_tail.write_all(Cursor::new(buf)).into_future().await;
+                    let (tx_tail, buffer) =
+                        tx_tail.write_all(Cursor::new(buffer)).into_future().await;
                     let Some(tx_tail) = tx_tail else {
                         let Ok(mut body) = self.body.lock() else {
                             bail!("lock poisoned");
                         };
+                        let pos = buffer.position().try_into()?;
+                        let buffer = buffer.into_inner().split_off(pos);
                         *body = Body::Guest {
                             contents: Some(contents_rx),
                             trailers: Some(trailers_rx),
-                            buffer: Some(BodyFrame::Data(buf)),
+                            buffer: Some(BodyFrame::Data(buffer)),
                             tx,
                             content_length,
                         };
@@ -407,15 +415,20 @@ where
             } => {
                 let mut contents_tx = self.contents_tx;
                 match buffer {
-                    Some(BodyFrame::Data(buf)) => {
-                        let (tx_tail, buf) = contents_tx.write_all(buf).into_future().await;
+                    Some(BodyFrame::Data(buffer)) => {
+                        let (tx_tail, buffer) = contents_tx
+                            .write_all(Cursor::new(buffer))
+                            .into_future()
+                            .await;
                         let Some(tx_tail) = tx_tail else {
                             let Ok(mut body) = self.body.lock() else {
                                 bail!("lock poisoned");
                             };
+                            let pos = buffer.position().try_into()?;
+                            let buffer = buffer.into_inner().split_off(pos);
                             *body = Body::Host {
                                 stream: Some(stream),
-                                buffer: Some(BodyFrame::Data(buf)),
+                                buffer: Some(BodyFrame::Data(buffer)),
                             };
                             return Ok(());
                         };
@@ -459,17 +472,19 @@ where
                         }
                         Some(Some(Ok(frame))) => {
                             match frame.into_data().map_err(http_body::Frame::into_trailers) {
-                                Ok(buf) => {
+                                Ok(buffer) => {
                                     let tx_tail = contents_tx.into_inner();
-                                    let (tx_tail, buf) =
-                                        tx_tail.write_all(Cursor::new(buf)).into_future().await;
+                                    let (tx_tail, buffer) =
+                                        tx_tail.write_all(Cursor::new(buffer)).into_future().await;
                                     let Some(tx_tail) = tx_tail else {
                                         let Ok(mut body) = self.body.lock() else {
                                             bail!("lock poisoned");
                                         };
+                                        let pos = buffer.position().try_into()?;
+                                        let buffer = buffer.into_inner().split_off(pos);
                                         *body = Body::Host {
                                             stream: Some(stream),
-                                            buffer: Some(BodyFrame::Data(buf)),
+                                            buffer: Some(BodyFrame::Data(buffer)),
                                         };
                                         return Ok(());
                                     };
@@ -774,7 +789,7 @@ where
             let contents = contents.map(|contents| {
                 contents
                     .into_reader(&mut view)
-                    .read(BytesMut::with_capacity(8096))
+                    .read(BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY))
                     .into_future()
             });
             let trailers = trailers.into_reader(&mut view).read().into_future();
@@ -1093,7 +1108,7 @@ where
             let contents = contents.map(|contents| {
                 contents
                     .into_reader(&mut view)
-                    .read(BytesMut::with_capacity(8096))
+                    .read(BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY))
                     .into_future()
             });
             let trailers = trailers.into_reader(&mut view).read().into_future();
