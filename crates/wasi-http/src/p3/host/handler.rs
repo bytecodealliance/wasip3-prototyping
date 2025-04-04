@@ -9,6 +9,7 @@ use http::header::HOST;
 use http::{HeaderValue, Uri};
 use http_body_util::{BodyExt as _, BodyStream, StreamBody};
 use tokio::sync::oneshot;
+use tracing::debug;
 use wasmtime::component::{Accessor, AccessorTask, Resource};
 use wasmtime_wasi::p3::{AccessorTaskFn, ResourceView as _};
 
@@ -95,9 +96,15 @@ where
         };
         if let Some(path_with_query) = path_with_query {
             uri = uri.path_and_query(path_with_query)
+        } else {
+            uri = uri.path_and_query("/")
         };
-        let Ok(uri) = uri.build() else {
-            return Ok(Err(ErrorCode::HttpRequestUriInvalid));
+        let uri = match uri.build() {
+            Ok(uri) => uri,
+            Err(err) => {
+                debug!(?err, "failed to build request URI");
+                return Ok(Err(ErrorCode::HttpRequestUriInvalid));
+            }
         };
 
         let Some(body) = Arc::into_inner(body) else {
