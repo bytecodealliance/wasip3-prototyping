@@ -55,6 +55,7 @@ pub async fn test_run(component: &[u8]) -> Result<()> {
     config.cranelift_debug_verifier(true);
     config.wasm_component_model(true);
     config.wasm_component_model_async(true);
+    config.wasm_component_model_error_context(true);
     config.async_support(true);
     config.epoch_interruption(true);
 
