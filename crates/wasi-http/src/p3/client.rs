@@ -1,6 +1,4 @@
 use core::future::Future;
-use core::pin::Pin;
-use core::task::{ready, Context, Poll};
 use core::time::Duration;
 
 use bytes::Bytes;

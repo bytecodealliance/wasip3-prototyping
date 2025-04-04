@@ -42,7 +42,10 @@ impl test_programs::p3::proxy::exports::wasi::http::handler::Guest for T {
                     let remaining = contents_tx.write_all(b"hello, world!".to_vec()).await;
                     assert!(remaining.is_empty());
                     drop(contents_tx);
-                    trailers_tx.write(Ok(None));
+                    trailers_tx
+                        .write(Ok(None))
+                        .await
+                        .expect("failed to write trailers");
                 },
                 async {
                     transmit

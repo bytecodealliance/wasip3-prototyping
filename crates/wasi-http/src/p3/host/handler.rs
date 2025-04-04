@@ -115,6 +115,7 @@ where
             Ok(request) => request,
             Err(err) => return Ok(Err(ErrorCode::InternalError(Some(err.to_string())))),
         };
+        let (request, ()) = request.into_parts();
         let response = match body {
             Body::Guest {
                 contents: None,
@@ -141,7 +142,7 @@ where
                 content_length: None,
             } => {
                 let body = empty_body();
-                let request = request.map(|()| body);
+                let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
                         store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
@@ -171,7 +172,7 @@ where
                     anyhow::Ok(trailers.clone())
                 })?;
                 let body = empty_body().with_trailers(async move { Some(Ok(trailers)) });
-                let request = request.map(|()| body);
+                let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
                         store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
@@ -221,7 +222,7 @@ where
                     trailers: Some(trailers_rx),
                     trailer_task: task.abort_handle(),
                 });
-                let request = request.map(|()| body);
+                let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
                         store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
@@ -261,7 +262,7 @@ where
                         trailers: Some(trailers_rx),
                         trailer_task: task.abort_handle(),
                     });
-                let request = request.map(|()| body);
+                let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
                         store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
@@ -286,7 +287,7 @@ where
                 buffer: None,
             } => {
                 let body = stream.map_err(Some);
-                let request = request.map(|()| body);
+                let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
                         store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
@@ -309,7 +310,7 @@ where
             } => {
                 let buffer = futures::stream::iter(iter::once(Ok(http_body::Frame::data(buffer))));
                 let body = StreamBody::new(buffer.chain(BodyStream::new(stream.map_err(Some))));
-                let request = request.map(|()| body);
+                let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
                         store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
@@ -335,7 +336,7 @@ where
                     anyhow::Ok(trailers.clone())
                 })?;
                 let body = empty_body().with_trailers(async move { Some(Ok(trailers)) });
-                let request = request.map(|()| body);
+                let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
                         store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
@@ -357,7 +358,7 @@ where
                 buffer: Some(BodyFrame::Trailers(Ok(None))),
             } => {
                 let body = empty_body();
-                let request = request.map(|()| body);
+                let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
                         store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
@@ -381,7 +382,7 @@ where
             Body::Host { .. } => bail!("host body is corrupted"),
             Body::Consumed => {
                 let body = empty_body();
-                let request = request.map(|()| body);
+                let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
                         store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
