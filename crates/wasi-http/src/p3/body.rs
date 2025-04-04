@@ -1,21 +1,15 @@
-use core::future::{poll_fn, Future};
+use core::future::Future;
 use core::mem;
 use core::pin::Pin;
 use core::task::{ready, Context, Poll};
 
-use std::io::Cursor;
-
-use anyhow::Context as _;
 use bytes::{Bytes, BytesMut};
 use http::HeaderMap;
 use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::BodyExt as _;
-use tokio::sync::oneshot;
-use wasmtime::component::{
-    AbortOnDropHandle, ErrorContext, FutureWriter, PromisesUnordered, Resource, StreamReader,
-};
-use wasmtime::AsContextMut;
-use wasmtime_wasi::p3::{ResourceView, WithChildren};
+use tokio::sync::{mpsc, oneshot};
+use wasmtime::component::{AbortOnDropHandle, FutureWriter, Resource, StreamReader};
+use wasmtime_wasi::p3::WithChildren;
 
 use crate::p3::bindings::http::types::ErrorCode;
 use crate::p3::DEFAULT_BUFFER_CAPACITY;
@@ -29,13 +23,6 @@ pub(crate) type OutgoingTrailerFuture = Pin<
             + Send
             + 'static,
     >,
->;
-
-pub(crate) type OutgoingTrailerFutureMut<'a> = Pin<
-    &'a mut (dyn Future<
-        Output = Option<Result<Option<Resource<WithChildren<HeaderMap>>>, ErrorCode>>,
-    > + Send
-                 + 'static),
 >;
 
 pub(crate) fn empty_body() -> impl http_body::Body<Data = Bytes, Error = Option<ErrorCode>> {
@@ -148,75 +135,6 @@ impl Future for OutgoingRequestTrailers {
     }
 }
 
-fn poll_outgoing_response_trailers<T: ResourceView>(
-    cx: &mut Context<'_>,
-    mut store: impl AsContextMut<Data = T>,
-    trailers: OutgoingTrailerFutureMut<'_>,
-) -> Poll<Option<Result<HeaderMap, Option<ErrorCode>>>> {
-    match ready!(trailers.poll(cx)) {
-        Some(Ok(Some(trailers))) => {
-            let mut store = store.as_context_mut();
-            let table = store.data_mut().table();
-            match table
-                .delete(trailers)
-                .context("failed to delete trailers")
-                .map(WithChildren::unwrap_or_clone)
-            {
-                Ok(Ok(trailers)) => Poll::Ready(Some(Ok(trailers))),
-                Ok(Err(err)) => Poll::Ready(Some(Err(Some(ErrorCode::InternalError(Some(
-                    format!("{err:#}"),
-                )))))),
-                Err(err) => Poll::Ready(Some(Err(Some(ErrorCode::InternalError(Some(format!(
-                    "{err:#}"
-                ))))))),
-            }
-        }
-        Some(Ok(None)) => Poll::Ready(None),
-        Some(Err(err)) => Poll::Ready(Some(Err(Some(err)))),
-        None => Poll::Ready(Some(Err(None))),
-    }
-}
-
-pub(crate) async fn outgoing_response_trailers<T>(
-    mut store: impl AsContextMut<Data = T>,
-    mut trailers: OutgoingTrailerFuture,
-) -> Option<Result<HeaderMap, Option<ErrorCode>>>
-where
-    T: ResourceView,
-{
-    poll_fn(move |cx| poll_outgoing_response_trailers(cx, &mut store, trailers.as_mut())).await
-}
-
-pub(crate) struct OutgoingResponseTrailers<T> {
-    pub store: T,
-    pub trailers: Option<OutgoingTrailerFuture>,
-}
-
-impl<T> Future for OutgoingResponseTrailers<T>
-where
-    T: AsContextMut + Unpin,
-    T::Data: ResourceView,
-{
-    type Output = Option<Result<HeaderMap, Option<ErrorCode>>>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let &mut Self {
-            ref mut store,
-            trailers: Some(ref mut trailers),
-        } = &mut *self.as_mut()
-        else {
-            return Poll::Ready(None);
-        };
-        let trailers = ready!(poll_outgoing_response_trailers(
-            cx,
-            store,
-            trailers.as_mut()
-        ));
-        self.trailers = None;
-        Poll::Ready(trailers)
-    }
-}
-
 /// Represents `Content-Length` limit and state
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ContentLength {
@@ -234,39 +152,27 @@ impl ContentLength {
 }
 
 /// Response body constructed by the guest
-pub(crate) struct OutgoingResponseBody<T> {
-    store: T,
-    contents: Option<OutgoingContentsStreamFuture>,
-    trailers: Option<OutgoingTrailerFuture>,
+pub(crate) struct OutgoingResponseBody {
+    contents: Option<mpsc::Receiver<Bytes>>,
     buffer: Bytes,
     content_length: Option<ContentLength>,
-    promises: PromisesUnordered<Result<(StreamReader<Bytes>, Bytes), Option<ErrorContext>>>,
 }
 
-impl<T> OutgoingResponseBody<T> {
+impl OutgoingResponseBody {
     pub fn new(
-        store: T,
-        contents: OutgoingContentsStreamFuture,
-        trailers: OutgoingTrailerFuture,
+        contents: mpsc::Receiver<Bytes>,
         buffer: Bytes,
         content_length: Option<ContentLength>,
     ) -> Self {
         Self {
-            store,
             contents: Some(contents),
-            trailers: Some(trailers),
             buffer,
             content_length,
-            promises: PromisesUnordered::new(),
         }
     }
 }
 
-impl<T> http_body::Body for OutgoingResponseBody<T>
-where
-    T: AsContextMut + Send + Unpin,
-    T::Data: ResourceView + Send,
-{
+impl http_body::Body for OutgoingResponseBody {
     type Data = Bytes;
     type Error = Option<ErrorCode>;
 
@@ -293,40 +199,36 @@ where
         let Some(stream) = &mut self.contents else {
             return Poll::Ready(None);
         };
-        todo!()
-        //self.contents.poll_promise(cx, &mut self.store);
-        //core::pin::pin!(&mut self.promises.next(&mut self.store)).poll(cx);
-        //match ready!(Pin::new(stream).poll(cx)) {
-        //    Ok((tail, buf)) => {
-        //        core::pin::pin!(tail.read().get(&mut self.store)).poll(cx);
-        //        if let Some(ContentLength { limit, sent }) = &mut self.content_length {
-        //            let Ok(n) = buf.len().try_into() else {
-        //                return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(None)))));
-        //            };
-        //            let Some(n) = sent.checked_add(n) else {
-        //                return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(None)))));
-        //            };
-        //            if n > *limit {
-        //                return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(Some(
-        //                    n,
-        //                ))))));
-        //            }
-        //            *sent = n;
-        //        }
-        //        Poll::Ready(Some(Ok(http_body::Frame::data(buf))))
-        //    }
-        //    Err(..) => {
-        //        self.contents = None;
-        //        if let Some(ContentLength { limit, sent }) = self.content_length {
-        //            if limit != sent {
-        //                return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(Some(
-        //                    sent,
-        //                ))))));
-        //            }
-        //        }
-        //        Poll::Ready(None)
-        //    }
-        //}
+        match ready!(stream.poll_recv(cx)) {
+            Some(buf) => {
+                if let Some(ContentLength { limit, sent }) = &mut self.content_length {
+                    let Ok(n) = buf.len().try_into() else {
+                        return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(None)))));
+                    };
+                    let Some(n) = sent.checked_add(n) else {
+                        return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(None)))));
+                    };
+                    if n > *limit {
+                        return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(Some(
+                            n,
+                        ))))));
+                    }
+                    *sent = n;
+                }
+                Poll::Ready(Some(Ok(http_body::Frame::data(buf))))
+            }
+            None => {
+                self.contents = None;
+                if let Some(ContentLength { limit, sent }) = self.content_length {
+                    if limit != sent {
+                        return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(Some(
+                            sent,
+                        ))))));
+                    }
+                }
+                Poll::Ready(None)
+            }
+        }
     }
 
     fn is_end_stream(&self) -> bool {

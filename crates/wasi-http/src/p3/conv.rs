@@ -1,11 +1,13 @@
 use core::convert::Infallible;
 use core::error::Error as _;
+use std::sync::Arc;
 
+use anyhow::{bail, Context as _};
 use bytes::Bytes;
 use tracing::warn;
 
 use crate::p3::bindings::http::types::{ErrorCode, Method, Scheme};
-use crate::p3::{Body, Request};
+use crate::p3::{Body, Request, Response};
 
 impl ErrorCode {
     /// Translate a [`hyper::Error`] to a wasi-http [ErrorCode] in the context of a request.
@@ -184,5 +186,30 @@ where
 {
     fn from(body: T) -> Self {
         Self::new(body)
+    }
+}
+
+impl TryFrom<Response> for http::Response<Body> {
+    type Error = anyhow::Error;
+
+    fn try_from(
+        Response {
+            status,
+            headers,
+            body,
+            ..
+        }: Response,
+    ) -> Result<Self, Self::Error> {
+        let headers = headers.unwrap_or_clone()?;
+        let mut response = http::Response::builder().status(status);
+        *response.headers_mut().unwrap() = headers;
+
+        let Some(body) = Arc::into_inner(body) else {
+            bail!("body is borrowed")
+        };
+        let Ok(body) = body.into_inner() else {
+            bail!("lock poisoned");
+        };
+        response.body(body).context("failed to build response")
     }
 }

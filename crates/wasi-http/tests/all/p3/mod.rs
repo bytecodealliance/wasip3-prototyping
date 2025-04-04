@@ -1,10 +1,11 @@
 use core::future::Future;
 
 use bytes::Bytes;
+use futures::try_join;
 use http_body::Body;
 use http_body_util::{BodyExt as _, Collected, Empty};
 use wasmtime::component::{Component, Linker, ResourceTable};
-use wasmtime::Store;
+use wasmtime::{AsContextMut as _, Store};
 use wasmtime_wasi::p3::cli::{WasiCliCtx, WasiCliView};
 use wasmtime_wasi::p3::clocks::{WasiClocksCtx, WasiClocksView};
 use wasmtime_wasi::p3::filesystem::{WasiFilesystemCtx, WasiFilesystemView};
@@ -15,7 +16,7 @@ use wasmtime_wasi::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 use wasmtime_wasi_http::p3::bindings::http::types::ErrorCode;
 use wasmtime_wasi_http::p3::bindings::Proxy;
 use wasmtime_wasi_http::p3::{
-    default_send_request, Client, RequestOptions, WasiHttpCtx, WasiHttpView,
+    default_send_request, Client, RequestOptions, Response, WasiHttpCtx, WasiHttpView,
     DEFAULT_FORBIDDEN_HEADERS,
 };
 
@@ -156,7 +157,7 @@ async fn run_wasi_http<E: Into<ErrorCode> + 'static>(
     component_filename: &str,
     req: http::Request<impl Body<Data = Bytes, Error = E> + Send + Sync + 'static>,
     client: TestClient,
-) -> anyhow::Result<Result<http::Response<Collected<Bytes>>, ErrorCode>> {
+) -> anyhow::Result<Result<http::Response<Collected<Bytes>>, Option<ErrorCode>>> {
     let engine = test_programs_artifacts::engine(|config| {
         config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
         config.async_support(true);
@@ -178,30 +179,35 @@ async fn run_wasi_http<E: Into<ErrorCode> + 'static>(
     let mut linker = Linker::new(&engine);
     wasmtime_wasi::add_to_linker_async(&mut linker)?;
     wasmtime_wasi_http::p3::add_to_linker(&mut linker)?;
-    let proxy = Proxy::instantiate_async(&mut store, &component, &linker).await?;
-    eprintln!("call handle...");
-    match proxy.handle(store, req).await? {
-        Ok((resp, fut)) => {
-            eprintln!("got resp...");
-            let (parts, body) = resp.into_parts();
-            eprintln!("collect body...");
-            let body = body
-                .collect()
-                .await
-                .map_err(|err| err.expect("trailer future dropped"))?;
-            eprintln!("collected body");
-            if let Some(fut) = fut {
-                let _fut = fut.write(Ok(()));
-                // TODO: Should we await the future, if so, how do we do that after having moved
-                // the store?
+    let instance = linker.instantiate_async(&mut store, &component).await?;
+    let proxy = Proxy::new(&mut store, &instance)?;
+    let handle = proxy.handle(&mut store, req).await?;
+    let res = match handle.get(&mut store).await? {
+        Ok(res) => res,
+        Err(err) => return Ok(Err(Some(err))),
+    };
+    let (res, tx, io) = Response::resource_into_http(&mut store, &instance, res)?;
+    let (parts, body) = res.into_parts();
+    let ((), body) = try_join!(
+        async {
+            if let Some(io) = io {
+                let closure = io.get(&mut store).await?;
+                closure(store.as_context_mut())?;
             }
-            Ok(Ok(http::Response::from_parts(parts, body)))
-        }
-        Err(err) => Ok(Err(err)),
+            anyhow::Ok(())
+        },
+        async { Ok(body.collect().await) },
+    )?;
+    let body = match body {
+        Ok(body) => body,
+        Err(err) => return Ok(Err(err)),
+    };
+    if let Some(tx) = tx {
+        tx.write(Ok(())).get(store).await?;
     }
+    Ok(Ok(http::Response::from_parts(parts, body)))
 }
 
-#[ignore = "TODO"]
 #[test_log::test(tokio::test)]
 async fn wasi_http_proxy_tests() -> anyhow::Result<()> {
     let req = http::Request::builder()
