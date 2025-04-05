@@ -3446,6 +3446,10 @@ impl ConcurrentState {
             global_error_context_ref_counts: BTreeMap::new(),
         }
     }
+
+    pub fn drop_table(&mut self) {
+        self.table = Table::new();
+    }
 }
 
 fn dummy_waker() -> Waker {
