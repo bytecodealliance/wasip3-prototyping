@@ -1,4 +1,5 @@
 use super::*;
+use crate::http_server::Server;
 use crate::*;
 use anyhow::{anyhow, Context as _};
 use test_programs_artifacts::*;
