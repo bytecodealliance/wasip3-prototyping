@@ -1,10 +1,11 @@
 use super::*;
+use crate::http_server::Server;
 use crate::*;
 use anyhow::{anyhow, Context as _};
 use test_programs_artifacts::*;
 use wasmtime_wasi::p3::bindings::Command;
 
-foreach_http_0_3!(assert_test_exists);
+foreach_p3_http!(assert_test_exists);
 
 async fn run(path: &str, server: &Server) -> anyhow::Result<()> {
     let engine = test_programs_artifacts::engine(|config| {
@@ -40,39 +41,39 @@ async fn run(path: &str, server: &Server) -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn http_0_3_outbound_request_get() -> anyhow::Result<()> {
+async fn p3_http_outbound_request_get() -> anyhow::Result<()> {
     let server = Server::http1(1)?;
-    run(HTTP_0_3_OUTBOUND_REQUEST_GET_COMPONENT, &server).await
+    run(P3_HTTP_OUTBOUND_REQUEST_GET_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn http_0_3_outbound_request_timeout() -> anyhow::Result<()> {
+async fn p3_http_outbound_request_timeout() -> anyhow::Result<()> {
     let server = Server::http1(1)?;
-    run(HTTP_0_3_OUTBOUND_REQUEST_TIMEOUT_COMPONENT, &server).await
+    run(P3_HTTP_OUTBOUND_REQUEST_TIMEOUT_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn http_0_3_outbound_request_post() -> anyhow::Result<()> {
+async fn p3_http_outbound_request_post() -> anyhow::Result<()> {
     let server = Server::http1(1)?;
-    run(HTTP_0_3_OUTBOUND_REQUEST_POST_COMPONENT, &server).await
+    run(P3_HTTP_OUTBOUND_REQUEST_POST_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn http_0_3_outbound_request_large_post() -> anyhow::Result<()> {
+async fn p3_http_outbound_request_large_post() -> anyhow::Result<()> {
     let server = Server::http1(1)?;
-    run(HTTP_0_3_OUTBOUND_REQUEST_LARGE_POST_COMPONENT, &server).await
+    run(P3_HTTP_OUTBOUND_REQUEST_LARGE_POST_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn http_0_3_outbound_request_put() -> anyhow::Result<()> {
+async fn p3_http_outbound_request_put() -> anyhow::Result<()> {
     let server = Server::http1(1)?;
-    run(HTTP_0_3_OUTBOUND_REQUEST_PUT_COMPONENT, &server).await
+    run(P3_HTTP_OUTBOUND_REQUEST_PUT_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn http_0_3_outbound_request_invalid_version() -> anyhow::Result<()> {
+async fn p3_http_outbound_request_invalid_version() -> anyhow::Result<()> {
     let server = Server::http2(1)?;
-    run(HTTP_0_3_OUTBOUND_REQUEST_INVALID_VERSION_COMPONENT, &server).await
+    run(P3_HTTP_OUTBOUND_REQUEST_INVALID_VERSION_COMPONENT, &server).await
 }
 
 #[cfg_attr(
@@ -80,9 +81,9 @@ async fn http_0_3_outbound_request_invalid_version() -> anyhow::Result<()> {
     ignore = "https://github.com/bytecodealliance/wasip3-prototyping/issues/105"
 )]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn http_0_3_outbound_request_invalid_header() -> anyhow::Result<()> {
+async fn p3_http_outbound_request_invalid_header() -> anyhow::Result<()> {
     let server = Server::http2(1)?;
-    run(HTTP_0_3_OUTBOUND_REQUEST_INVALID_HEADER_COMPONENT, &server).await
+    run(P3_HTTP_OUTBOUND_REQUEST_INVALID_HEADER_COMPONENT, &server).await
 }
 
 #[cfg_attr(
@@ -90,16 +91,16 @@ async fn http_0_3_outbound_request_invalid_header() -> anyhow::Result<()> {
     ignore = "https://github.com/bytecodealliance/wasip3-prototyping/issues/105"
 )]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn http_0_3_outbound_request_unknown_method() -> anyhow::Result<()> {
+async fn p3_http_outbound_request_unknown_method() -> anyhow::Result<()> {
     let server = Server::http1(1)?;
-    run(HTTP_0_3_OUTBOUND_REQUEST_UNKNOWN_METHOD_COMPONENT, &server).await
+    run(P3_HTTP_OUTBOUND_REQUEST_UNKNOWN_METHOD_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn http_0_3_outbound_request_unsupported_scheme() -> anyhow::Result<()> {
+async fn p3_http_outbound_request_unsupported_scheme() -> anyhow::Result<()> {
     let server = Server::http1(1)?;
     run(
-        HTTP_0_3_OUTBOUND_REQUEST_UNSUPPORTED_SCHEME_COMPONENT,
+        P3_HTTP_OUTBOUND_REQUEST_UNSUPPORTED_SCHEME_COMPONENT,
         &server,
     )
     .await
@@ -110,15 +111,15 @@ async fn http_0_3_outbound_request_unsupported_scheme() -> anyhow::Result<()> {
     ignore = "https://github.com/bytecodealliance/wasip3-prototyping/issues/105"
 )]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn http_0_3_outbound_request_invalid_port() -> anyhow::Result<()> {
+async fn p3_http_outbound_request_invalid_port() -> anyhow::Result<()> {
     let server = Server::http1(1)?;
-    run(HTTP_0_3_OUTBOUND_REQUEST_INVALID_PORT_COMPONENT, &server).await
+    run(P3_HTTP_OUTBOUND_REQUEST_INVALID_PORT_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn http_0_3_outbound_request_invalid_dnsname() -> anyhow::Result<()> {
+async fn p3_http_outbound_request_invalid_dnsname() -> anyhow::Result<()> {
     let server = Server::http1(1)?;
-    run(HTTP_0_3_OUTBOUND_REQUEST_INVALID_DNSNAME_COMPONENT, &server).await
+    run(P3_HTTP_OUTBOUND_REQUEST_INVALID_DNSNAME_COMPONENT, &server).await
 }
 
 #[cfg_attr(
@@ -126,15 +127,15 @@ async fn http_0_3_outbound_request_invalid_dnsname() -> anyhow::Result<()> {
     ignore = "https://github.com/bytecodealliance/wasip3-prototyping/issues/105"
 )]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn http_0_3_outbound_request_response_build() -> anyhow::Result<()> {
+async fn p3_http_outbound_request_response_build() -> anyhow::Result<()> {
     let server = Server::http1(1)?;
-    run(HTTP_0_3_OUTBOUND_REQUEST_RESPONSE_BUILD_COMPONENT, &server).await
+    run(P3_HTTP_OUTBOUND_REQUEST_RESPONSE_BUILD_COMPONENT, &server).await
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn http_0_3_outbound_request_content_length() -> anyhow::Result<()> {
+async fn p3_http_outbound_request_content_length() -> anyhow::Result<()> {
     let server = Server::http1(3)?;
-    run(HTTP_0_3_OUTBOUND_REQUEST_CONTENT_LENGTH_COMPONENT, &server).await
+    run(P3_HTTP_OUTBOUND_REQUEST_CONTENT_LENGTH_COMPONENT, &server).await
 }
 
 #[cfg_attr(
@@ -142,10 +143,10 @@ async fn http_0_3_outbound_request_content_length() -> anyhow::Result<()> {
     ignore = "https://github.com/bytecodealliance/wasip3-prototyping/issues/105"
 )]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn http_0_3_outbound_request_missing_path_and_query() -> anyhow::Result<()> {
+async fn p3_http_outbound_request_missing_path_and_query() -> anyhow::Result<()> {
     let server = Server::http1(1)?;
     run(
-        HTTP_0_3_OUTBOUND_REQUEST_MISSING_PATH_AND_QUERY_COMPONENT,
+        P3_HTTP_OUTBOUND_REQUEST_MISSING_PATH_AND_QUERY_COMPONENT,
         &server,
     )
     .await
