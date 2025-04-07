@@ -405,14 +405,14 @@ where
     }
 
     fn gen_return(
-        _call_conv: isa::CallConv,
+        call_conv: isa::CallConv,
         _isa_flags: &PulleyFlags,
         frame_layout: &FrameLayout,
     ) -> SmallInstVec<Self::I> {
         let mut insts = SmallVec::new();
 
         // Handle final stack adjustments for the tail-call ABI.
-        if frame_layout.tail_args_size > 0 {
+        if call_conv == isa::CallConv::Tail && frame_layout.tail_args_size > 0 {
             insts.extend(Self::gen_sp_reg_adjust(
                 frame_layout.tail_args_size.try_into().unwrap(),
             ));
@@ -544,6 +544,7 @@ where
         is_leaf: bool,
         incoming_args_size: u32,
         tail_args_size: u32,
+        stackslots_size: u32,
         fixed_frame_storage_size: u32,
         outgoing_args_size: u32,
     ) -> FrameLayout {
@@ -578,6 +579,7 @@ where
             setup_area_size: setup_area_size.into(),
             clobber_size,
             fixed_frame_storage_size,
+            stackslots_size,
             outgoing_args_size,
             clobbered_callee_saves: regs,
         }
@@ -591,6 +593,12 @@ where
     ) {
         // Pulley doesn't need inline probestacks because it always checks stack
         // decrements.
+    }
+
+    fn retval_temp_reg(_call_conv_of_callee: isa::CallConv) -> Writable<Reg> {
+        // Use x15 as a temp if needed: clobbered, not a
+        // retval.
+        Writable::from_reg(regs::x_reg(15))
     }
 }
 

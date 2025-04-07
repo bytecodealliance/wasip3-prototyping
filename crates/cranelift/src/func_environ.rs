@@ -14,7 +14,6 @@ use cranelift_codegen::ir::types::*;
 use cranelift_codegen::ir::{self, types};
 use cranelift_codegen::ir::{ArgumentPurpose, Function, InstBuilder, MemFlags};
 use cranelift_codegen::isa::{TargetFrontendConfig, TargetIsa};
-use cranelift_entity::packed_option::ReservedValue as _;
 use cranelift_entity::{EntityRef, PrimaryMap, SecondaryMap};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_frontend::Variable;
@@ -118,6 +117,9 @@ pub struct FuncEnvironment<'module_environment> {
     /// The Cranelift global holding the vmctx address.
     vmctx: Option<ir::GlobalValue>,
 
+    /// The Cranelift global for our vmctx's `*mut VMStoreContext`.
+    vm_store_context: Option<ir::GlobalValue>,
+
     /// The PCC memory type describing the vmctx layout, if we're
     /// using PCC.
     pcc_vmctx_memtype: Option<ir::MemoryType>,
@@ -135,12 +137,6 @@ pub struct FuncEnvironment<'module_environment> {
     /// stored locally as a variable instead of always referenced from the field
     /// in `*const VMStoreContext`
     fuel_var: cranelift_frontend::Variable,
-
-    /// A function-local variable which caches the value of `*const
-    /// VMStoreContext` for this function's vmctx argument. This pointer is stored
-    /// in the vmctx itself, but never changes for the lifetime of the function,
-    /// so if we load it up front we can continue to use it throughout.
-    vmstore_context_ptr: ir::Value,
 
     /// A cached epoch deadline value, when performing epoch-based
     /// interruption. Loaded from `VMStoreContext` and reloaded after
@@ -196,6 +192,7 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
             heaps: PrimaryMap::default(),
             tables: SecondaryMap::default(),
             vmctx: None,
+            vm_store_context: None,
             pcc_vmctx_memtype: None,
             builtin_functions,
             offsets: VMOffsets::new(compiler.isa().pointer_bytes(), &translation.module),
@@ -203,7 +200,6 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
             fuel_var: Variable::new(0),
             epoch_deadline_var: Variable::new(0),
             epoch_ptr_var: Variable::new(0),
-            vmstore_context_ptr: ir::Value::reserved_value(),
 
             // Start with at least one fuel being consumed because even empty
             // functions should consume at least some fuel.
@@ -308,22 +304,29 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
         }
     }
 
-    fn declare_vmstore_context_ptr(&mut self, builder: &mut FunctionBuilder<'_>) {
-        // We load the `*const VMStoreContext` value stored within vmctx at the
-        // head of the function and reuse the same value across the entire
-        // function. This is possible since we know that the pointer never
-        // changes for the lifetime of the function.
-        let pointer_type = self.pointer_type();
-        let vmctx = self.vmctx(builder.func);
-        let base = builder.ins().global_value(pointer_type, vmctx);
-        let offset = i32::from(self.offsets.ptr.vmctx_store_context());
-        debug_assert!(self.vmstore_context_ptr.is_reserved_value());
-        self.vmstore_context_ptr = builder.ins().load(
-            pointer_type,
-            ir::MemFlags::trusted().with_readonly().with_can_move(),
+    /// Get or create the `ir::Global` for the `*mut VMStoreContext` in our
+    /// `VMContext`.
+    fn get_vmstore_context_ptr_global(&mut self, func: &mut ir::Function) -> ir::GlobalValue {
+        if let Some(ptr) = self.vm_store_context {
+            return ptr;
+        }
+
+        let offset = self.offsets.ptr.vmctx_store_context();
+        let base = self.vmctx(func);
+        let ptr = func.create_global_value(ir::GlobalValueData::Load {
             base,
-            offset,
-        );
+            offset: Offset32::new(offset.into()),
+            global_type: self.pointer_type(),
+            flags: ir::MemFlags::trusted().with_readonly().with_can_move(),
+        });
+        self.vm_store_context = Some(ptr);
+        ptr
+    }
+
+    /// Get the `*mut VMStoreContext` value for our `VMContext`.
+    fn get_vmstore_context_ptr(&mut self, builder: &mut FunctionBuilder) -> ir::Value {
+        let global = self.get_vmstore_context_ptr_global(&mut builder.func);
+        builder.ins().global_value(self.pointer_type(), global)
     }
 
     fn fuel_function_entry(&mut self, builder: &mut FunctionBuilder<'_>) {
@@ -471,7 +474,7 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
 
     /// Loads the fuel consumption value from `VMStoreContext` into `self.fuel_var`
     fn fuel_load_into_var(&mut self, builder: &mut FunctionBuilder<'_>) {
-        let (addr, offset) = self.fuel_addr_offset();
+        let (addr, offset) = self.fuel_addr_offset(builder);
         let fuel = builder
             .ins()
             .load(ir::types::I64, ir::MemFlags::trusted(), addr, offset);
@@ -481,7 +484,7 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
     /// Stores the fuel consumption value from `self.fuel_var` into
     /// `VMStoreContext`.
     fn fuel_save_from_var(&mut self, builder: &mut FunctionBuilder<'_>) {
-        let (addr, offset) = self.fuel_addr_offset();
+        let (addr, offset) = self.fuel_addr_offset(builder);
         let fuel_consumed = builder.use_var(self.fuel_var);
         builder
             .ins()
@@ -490,10 +493,13 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
 
     /// Returns the `(address, offset)` of the fuel consumption within
     /// `VMStoreContext`, used to perform loads/stores later.
-    fn fuel_addr_offset(&mut self) -> (ir::Value, ir::immediates::Offset32) {
-        debug_assert!(!self.vmstore_context_ptr.is_reserved_value());
+    fn fuel_addr_offset(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+    ) -> (ir::Value, ir::immediates::Offset32) {
+        let vmstore_ctx = self.get_vmstore_context_ptr(builder);
         (
-            self.vmstore_context_ptr,
+            vmstore_ctx,
             i32::from(self.offsets.ptr.vmstore_context_fuel_consumed()).into(),
         )
     }
@@ -678,10 +684,11 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
         // We keep the deadline cached in a register to speed the checks
         // in the common case (between epoch ticks) but we want to do a
         // precise check here by reloading the cache first.
+        let vmstore_ctx = self.get_vmstore_context_ptr(builder);
         let deadline = builder.ins().load(
             ir::types::I64,
             ir::MemFlags::trusted(),
-            self.vmstore_context_ptr,
+            vmstore_ctx,
             ir::immediates::Offset32::new(self.offsets.ptr.vmstore_context_epoch_deadline() as i32),
         );
         builder.def_var(self.epoch_deadline_var, deadline);
@@ -1009,37 +1016,49 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
         }
     }
 
-    /// Add one level of indirection to a pointer-and-memtype pair:
-    /// generate a load in the code at the specified offset, and if
-    /// memtypes are in use, add a field to the original struct and
-    /// generate a new memtype for the pointee.
-    fn load_pointer_with_memtypes(
+    /// Create an `ir::Global` that does `load(ptr + offset)` and, when PCC and
+    /// memory types are enabled, adds a field to the pointer's memory type for
+    /// this value we are loading.
+    pub(crate) fn global_load_with_memory_type(
         &mut self,
         func: &mut ir::Function,
+        ptr: ir::GlobalValue,
         offset: u32,
-        readonly: bool,
-        memtype: Option<ir::MemoryType>,
+        flags: ir::MemFlags,
+        ptr_mem_ty: Option<ir::MemoryType>,
     ) -> (ir::GlobalValue, Option<ir::MemoryType>) {
-        let vmctx = self.vmctx(func);
         let pointee = func.create_global_value(ir::GlobalValueData::Load {
-            base: vmctx,
+            base: ptr,
             offset: Offset32::new(i32::try_from(offset).unwrap()),
             global_type: self.pointer_type(),
-            flags: MemFlags::trusted().with_readonly().with_can_move(),
+            flags,
         });
 
-        let mt = memtype.map(|mt| {
-            let pointee_mt = self.create_empty_struct_memtype(func);
-            self.add_field_to_memtype(func, mt, offset, pointee_mt, readonly);
+        let pointee_mem_ty = ptr_mem_ty.map(|ptr_mem_ty| {
+            let pointee_mem_ty = self.create_empty_struct_memtype(func);
+            self.add_field_to_memtype(func, ptr_mem_ty, offset, pointee_mem_ty, flags.readonly());
             func.global_value_facts[pointee] = Some(Fact::Mem {
-                ty: pointee_mt,
+                ty: pointee_mem_ty,
                 min_offset: 0,
                 max_offset: 0,
                 nullable: false,
             });
-            pointee_mt
+            pointee_mem_ty
         });
-        (pointee, mt)
+
+        (pointee, pointee_mem_ty)
+    }
+
+    /// Like `global_load_with_memory_type` but specialized for loads out of the
+    /// `vmctx`.
+    pub(crate) fn global_load_from_vmctx_with_memory_type(
+        &mut self,
+        func: &mut ir::Function,
+        offset: u32,
+        flags: ir::MemFlags,
+    ) -> (ir::GlobalValue, Option<ir::MemoryType>) {
+        let vmctx = self.vmctx(func);
+        self.global_load_with_memory_type(func, vmctx, offset, flags, self.pcc_vmctx_memtype)
     }
 
     /// Helper to emit a conditional trap based on `trap_cond`.
@@ -2323,7 +2342,7 @@ impl FuncEnvironment<'_> {
         let memory = self.module.memories[index];
         let is_shared = memory.shared;
 
-        let (ptr, base_offset, current_length_offset, ptr_memtype) = {
+        let (base_ptr, base_offset, current_length_offset, ptr_memtype) = {
             let vmctx = self.vmctx(func);
             if let Some(def_index) = self.module.defined_memory_index(index) {
                 if is_shared {
@@ -2332,11 +2351,10 @@ impl FuncEnvironment<'_> {
                     // VMMemoryDefinition` to it and dereference that when
                     // atomically growing it.
                     let from_offset = self.offsets.vmctx_vmmemory_pointer(def_index);
-                    let (memory, def_mt) = self.load_pointer_with_memtypes(
+                    let (memory, def_mt) = self.global_load_from_vmctx_with_memory_type(
                         func,
                         from_offset,
-                        true,
-                        self.pcc_vmctx_memtype,
+                        ir::MemFlags::trusted().with_readonly().with_can_move(),
                     );
                     let base_offset = i32::from(self.offsets.ptr.vmmemory_definition_base());
                     let current_length_offset =
@@ -2360,11 +2378,10 @@ impl FuncEnvironment<'_> {
                 }
             } else {
                 let from_offset = self.offsets.vmctx_vmmemory_import_from(index);
-                let (memory, def_mt) = self.load_pointer_with_memtypes(
+                let (memory, def_mt) = self.global_load_from_vmctx_with_memory_type(
                     func,
                     from_offset,
-                    true,
-                    self.pcc_vmctx_memtype,
+                    ir::MemFlags::trusted().with_readonly().with_can_move(),
                 );
                 let base_offset = i32::from(self.offsets.ptr.vmmemory_definition_base());
                 let current_length_offset =
@@ -2373,13 +2390,66 @@ impl FuncEnvironment<'_> {
             }
         };
 
-        let heap_bound = func.create_global_value(ir::GlobalValueData::Load {
-            base: ptr,
+        let bound = func.create_global_value(ir::GlobalValueData::Load {
+            base: base_ptr,
             offset: Offset32::new(current_length_offset),
             global_type: pointer_type,
             flags: MemFlags::trusted(),
         });
 
+        let (base_fact, pcc_memory_type) = self.make_pcc_base_fact_and_type_for_memory(
+            func,
+            memory,
+            base_offset,
+            current_length_offset,
+            ptr_memtype,
+            bound,
+        );
+
+        let base = self.make_heap_base(func, memory, base_ptr, base_offset, base_fact);
+
+        Ok(self.heaps.push(HeapData {
+            base,
+            bound,
+            pcc_memory_type,
+            memory,
+        }))
+    }
+
+    pub(crate) fn make_heap_base(
+        &self,
+        func: &mut Function,
+        memory: Memory,
+        ptr: ir::GlobalValue,
+        offset: i32,
+        fact: Option<Fact>,
+    ) -> ir::GlobalValue {
+        let pointer_type = self.pointer_type();
+
+        let mut flags = ir::MemFlags::trusted().with_checked().with_can_move();
+        if !memory.memory_may_move(self.tunables) {
+            flags.set_readonly();
+        }
+
+        let heap_base = func.create_global_value(ir::GlobalValueData::Load {
+            base: ptr,
+            offset: Offset32::new(offset),
+            global_type: pointer_type,
+            flags,
+        });
+        func.global_value_facts[heap_base] = fact;
+        heap_base
+    }
+
+    pub(crate) fn make_pcc_base_fact_and_type_for_memory(
+        &mut self,
+        func: &mut Function,
+        memory: Memory,
+        base_offset: i32,
+        current_length_offset: i32,
+        ptr_memtype: Option<ir::MemoryType>,
+        heap_bound: ir::GlobalValue,
+    ) -> (Option<Fact>, Option<ir::MemoryType>) {
         // If we have a declared maximum, we can make this a "static" heap, which is
         // allocated up front and never moved.
         let host_page_size_log2 = self.target_config().page_size_align_log2;
@@ -2486,25 +2556,7 @@ impl FuncEnvironment<'_> {
                 (None, None)
             }
         };
-
-        let mut flags = MemFlags::trusted().with_checked().with_can_move();
-        if !memory.memory_may_move(self.tunables) {
-            flags.set_readonly();
-        }
-        let heap_base = func.create_global_value(ir::GlobalValueData::Load {
-            base: ptr,
-            offset: Offset32::new(base_offset),
-            global_type: pointer_type,
-            flags,
-        });
-        func.global_value_facts[heap_base] = base_fact;
-
-        Ok(self.heaps.push(HeapData {
-            base: heap_base,
-            bound: heap_bound,
-            pcc_memory_type: memory_type,
-            memory,
-        }))
+        (base_fact, memory_type)
     }
 
     pub fn make_global(
@@ -3073,15 +3125,11 @@ impl FuncEnvironment<'_> {
         Ok(())
     }
 
-    pub fn before_unconditionally_trapping_memory_access(
-        &mut self,
-        builder: &mut FunctionBuilder,
-    ) -> WasmResult<()> {
+    pub fn before_unconditionally_trapping_memory_access(&mut self, builder: &mut FunctionBuilder) {
         if self.tunables.consume_fuel {
             self.fuel_increment_var(builder);
             self.fuel_save_from_var(builder);
         }
-        Ok(())
     }
 
     pub fn before_translate_function(
@@ -3098,15 +3146,11 @@ impl FuncEnvironment<'_> {
             self.conditionally_trap(builder, overflow, ir::TrapCode::STACK_OVERFLOW);
         }
 
-        // If the `vmstore_context_ptr` variable will get used then we
-        // initialize it here.
-        if self.tunables.consume_fuel || self.tunables.epoch_interruption {
-            self.declare_vmstore_context_ptr(builder);
-        }
         // Additionally we initialize `fuel_var` if it will get used.
         if self.tunables.consume_fuel {
             self.fuel_function_entry(builder);
         }
+
         // Initialize `epoch_var` with the current epoch.
         if self.tunables.epoch_interruption {
             self.epoch_function_entry(builder);
