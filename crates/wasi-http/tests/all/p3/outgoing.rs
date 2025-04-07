@@ -75,12 +75,20 @@ async fn http_0_3_outbound_request_invalid_version() -> anyhow::Result<()> {
     run(HTTP_0_3_OUTBOUND_REQUEST_INVALID_VERSION_COMPONENT, &server).await
 }
 
+#[cfg_attr(
+    target_arch = "riscv64",
+    ignore = "https://github.com/bytecodealliance/wasip3-prototyping/issues/105"
+)]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_invalid_header() -> anyhow::Result<()> {
     let server = Server::http2(1)?;
     run(HTTP_0_3_OUTBOUND_REQUEST_INVALID_HEADER_COMPONENT, &server).await
 }
 
+#[cfg_attr(
+    target_arch = "riscv64",
+    ignore = "https://github.com/bytecodealliance/wasip3-prototyping/issues/105"
+)]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_unknown_method() -> anyhow::Result<()> {
     let server = Server::http1(1)?;
@@ -97,6 +105,10 @@ async fn http_0_3_outbound_request_unsupported_scheme() -> anyhow::Result<()> {
     .await
 }
 
+#[cfg_attr(
+    target_arch = "riscv64",
+    ignore = "https://github.com/bytecodealliance/wasip3-prototyping/issues/105"
+)]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_invalid_port() -> anyhow::Result<()> {
     let server = Server::http1(1)?;
@@ -109,6 +121,10 @@ async fn http_0_3_outbound_request_invalid_dnsname() -> anyhow::Result<()> {
     run(HTTP_0_3_OUTBOUND_REQUEST_INVALID_DNSNAME_COMPONENT, &server).await
 }
 
+#[cfg_attr(
+    target_arch = "riscv64",
+    ignore = "https://github.com/bytecodealliance/wasip3-prototyping/issues/105"
+)]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_response_build() -> anyhow::Result<()> {
     let server = Server::http1(1)?;
@@ -121,6 +137,10 @@ async fn http_0_3_outbound_request_content_length() -> anyhow::Result<()> {
     run(HTTP_0_3_OUTBOUND_REQUEST_CONTENT_LENGTH_COMPONENT, &server).await
 }
 
+#[cfg_attr(
+    target_arch = "riscv64",
+    ignore = "https://github.com/bytecodealliance/wasip3-prototyping/issues/105"
+)]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn http_0_3_outbound_request_missing_path_and_query() -> anyhow::Result<()> {
     let server = Server::http1(1)?;
