@@ -215,7 +215,7 @@ async fn wasi_http_proxy_tests() -> anyhow::Result<()> {
         .method(http::Method::GET);
 
     let resp = run_wasi_http(
-        test_programs_artifacts::API_0_3_PROXY_COMPONENT,
+        test_programs_artifacts::P3_API_PROXY_COMPONENT,
         req.body(Empty::new())?,
         TestClient::default(),
     )
