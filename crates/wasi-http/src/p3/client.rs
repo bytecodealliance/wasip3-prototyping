@@ -7,9 +7,9 @@ use http_body_util::BodyExt as _;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
+use crate::io::TokioIo;
 use crate::p3::bindings::http::types::{DnsErrorPayload, ErrorCode};
-use crate::p3::RequestOptions;
-use crate::{io::TokioIo, p3::IncomingResponseBody};
+use crate::p3::{IncomingResponseBody, RequestOptions};
 
 fn dns_error(rcode: String, info_code: u16) -> ErrorCode {
     ErrorCode::DnsError(DnsErrorPayload {
@@ -190,39 +190,29 @@ pub async fn default_send_request(
         Err(..) => return Err(ErrorCode::ConnectionTimeout),
     };
     let stream = if use_tls {
-        #[cfg(any(target_arch = "riscv64", target_arch = "s390x"))]
-        {
-            return Err(ErrorCode::InternalError(Some(
-                "unsupported architecture for SSL".to_string(),
-            )));
-        }
+        use rustls::pki_types::ServerName;
 
-        #[cfg(not(any(target_arch = "riscv64", target_arch = "s390x")))]
-        {
-            use rustls::pki_types::ServerName;
-
-            // derived from https://github.com/rustls/rustls/blob/main/examples/src/bin/simpleclient.rs
-            let root_cert_store = rustls::RootCertStore {
-                roots: webpki_roots::TLS_SERVER_ROOTS.into(),
-            };
-            let config = rustls::ClientConfig::builder()
-                .with_root_certificates(root_cert_store)
-                .with_no_client_auth();
-            let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
-            let mut parts = authority.split(":");
-            let host = parts.next().unwrap_or(&authority);
-            let domain = ServerName::try_from(host)
-                .map_err(|e| {
-                    tracing::warn!("dns lookup error: {e:?}");
-                    dns_error("invalid dns name".to_string(), 0)
-                })?
-                .to_owned();
-            let stream = connector.connect(domain, stream).await.map_err(|e| {
-                tracing::warn!("tls protocol error: {e:?}");
-                ErrorCode::TlsProtocolError
-            })?;
-            stream.boxed()
-        }
+        // derived from https://github.com/rustls/rustls/blob/main/examples/src/bin/simpleclient.rs
+        let root_cert_store = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.into(),
+        };
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_cert_store)
+            .with_no_client_auth();
+        let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
+        let mut parts = authority.split(":");
+        let host = parts.next().unwrap_or(&authority);
+        let domain = ServerName::try_from(host)
+            .map_err(|e| {
+                tracing::warn!("dns lookup error: {e:?}");
+                dns_error("invalid dns name".to_string(), 0)
+            })?
+            .to_owned();
+        let stream = connector.connect(domain, stream).await.map_err(|e| {
+            tracing::warn!("tls protocol error: {e:?}");
+            ErrorCode::TlsProtocolError
+        })?;
+        stream.boxed()
     } else {
         stream.boxed()
     };

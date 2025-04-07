@@ -538,8 +538,6 @@ async fn wasi_http_proxy_tests() -> anyhow::Result<()> {
 //}
 //
 //#[test_log::test(tokio::test)]
-//// test uses TLS but riscv/s390x don't support that yet
-//#[cfg_attr(any(target_arch = "riscv64", target_arch = "s390x"), ignore)]
 //async fn wasi_http_without_port() -> Result<()> {
 //    let req = hyper::Request::builder()
 //        .method(http::Method::GET)
