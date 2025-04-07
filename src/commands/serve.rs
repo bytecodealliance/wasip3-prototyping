@@ -564,7 +564,13 @@ impl ServeCommand {
             let next_id = Arc::new(AtomicU64::default());
             let cmd = Arc::new(self);
             loop {
-                let (stream, _) = listener.accept().await?;
+                // Wait for a socket, but also "race" against shutdown to break out
+                // of this loop. Once the graceful shutdown signal is received then
+                // this loop exits immediately.
+                let (stream, _) = tokio::select! {
+                    _ = shutdown.requested.notified() => break,
+                    v = listener.accept() => v?,
+                };
                 let engine = engine.clone();
                 let cmd = Arc::clone(&cmd);
                 let next_id = Arc::clone(&next_id);
