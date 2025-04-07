@@ -369,7 +369,7 @@ pub mod foo {
                 for spawned in spawned {
                     instance
                         .unwrap()
-                        .spawn(
+                        .spawn_raw(
                             &mut store_cx,
                             wasmtime::component::__internal::poll_fn(move |cx| {
                                 let mut spawned = spawned.try_lock().unwrap();
@@ -882,7 +882,7 @@ pub mod exports {
                     }
                 }
                 impl Guest {
-                    pub async fn call_many_args<S: wasmtime::AsContextMut>(
+                    pub fn call_many_args<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
                         arg0: u64,
@@ -901,7 +901,9 @@ pub mod exports {
                         arg13: u64,
                         arg14: u64,
                         arg15: u64,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<()>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<()>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -928,7 +930,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.many_args)
                         };
-                        let promise = callee
+                        callee
                             .call_concurrent(
                                 store.as_context_mut(),
                                 (
@@ -950,14 +952,14 @@ pub mod exports {
                                     arg15,
                                 ),
                             )
-                            .await?;
-                        Ok(promise)
                     }
-                    pub async fn call_big_argument<S: wasmtime::AsContextMut>(
+                    pub fn call_big_argument<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
                         arg0: BigStruct,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<()>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<()>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -967,10 +969,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.big_argument)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), (arg0,))
-                            .await?;
-                        Ok(promise)
+                        callee.call_concurrent(store.as_context_mut(), (arg0,))
                     }
                 }
             }

@@ -4,7 +4,7 @@ use {
             func::{self, Func, Options},
             Instance, Lift, Lower, Val,
         },
-        store::{StoreId, StoreInner, StoreOpaque},
+        store::{StoreInner, StoreOpaque},
         vm::{
             component::{CallContext, ComponentInstance, InstanceFlags, ResourceTables},
             mpk::{self, ProtectionMask},
@@ -28,7 +28,7 @@ use {
         any::Any,
         borrow::ToOwned,
         boxed::Box,
-        cell::{RefCell, UnsafeCell},
+        cell::{Cell, RefCell, UnsafeCell},
         collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
         future::Future,
         marker::PhantomData,
@@ -127,114 +127,6 @@ mod callback_code {
 }
 
 const EXIT_FLAG_ASYNC_CALLEE: u32 = fact::EXIT_FLAG_ASYNC_CALLEE as u32;
-
-/// Represents the result of a concurrent operation.
-///
-/// This is similar to a [`std::future::Future`] except that it represents an
-/// operation which requires exclusive access to a store in order to make
-/// progress -- without monopolizing that store for the lifetime of the
-/// operation.
-///
-/// See also `Instance::promise` for wrapping an arbitrary `Future` in a
-/// `Promise` so it can be polled as part of an `Instance`'s event loop.
-pub struct Promise<T> {
-    inner: Pin<Box<dyn Future<Output = T> + Send + 'static>>,
-    instance: SendSyncPtr<ComponentInstance>,
-    id: StoreId,
-}
-
-impl<T: Send + Sync + 'static> Promise<T> {
-    /// Map the result of this `Promise` from one value to another.
-    pub fn map<U>(self, fun: impl FnOnce(T) -> U + Send + Sync + 'static) -> Promise<U> {
-        Promise {
-            inner: Box::pin(self.inner.map(fun)),
-            instance: self.instance,
-            id: self.id,
-        }
-    }
-
-    /// Convert this `Promise` to a future which may be `await`ed for its
-    /// result.
-    ///
-    /// This will poll the inner `Future` as part of the associated `Instance`'s
-    /// event loop, ensuring that any other tasks managed by that event loop
-    /// (which the `Future` might depend on directly or indirectly) make
-    /// progress concurrently.
-    ///
-    /// The returned future will require exclusive use of the store until it
-    /// completes.  If you need to await more than one `Promise` concurrently,
-    /// use [`PromisesUnordered`].
-    pub async fn get<U: Send>(self, mut store: impl AsContextMut<Data = U>) -> Result<T> {
-        let store = store.as_context_mut();
-        assert_eq!(store.0.id(), self.id);
-        unsafe { &mut *self.instance.as_ptr() }
-            .poll_until(store, self.inner)
-            .await
-    }
-
-    /// Convert this `Promise` to a future which may be `await`ed for its
-    /// result.
-    ///
-    /// Unlike [`Self::get`], this does _not_ take a store parameter, meaning
-    /// the returned future will not make progress until and unless the event
-    /// loop for the `Instance` it came from is polled.  Thus, this method
-    /// should only be used from within host functions and not from top-level
-    /// embedder code unless that top-level code is itself wrapped in a
-    /// `Promise` using `Instance::promise`.
-    pub fn into_future(self) -> Pin<Box<dyn Future<Output = T> + Send + 'static>> {
-        self.inner
-    }
-}
-
-/// Represents a collection of zero or more concurrent operations.
-///
-/// Similar to [`futures::stream::FuturesUnordered`], this type supports
-/// `await`ing more than one [`Promise`]s concurrently.
-pub struct PromisesUnordered<T> {
-    inner: FuturesUnordered<Pin<Box<dyn Future<Output = T> + Send + 'static>>>,
-    instance: Option<(SendSyncPtr<ComponentInstance>, StoreId)>,
-}
-
-impl<T: Send + Sync + 'static> PromisesUnordered<T> {
-    /// Create a new `PromisesUnordered` with no entries.
-    pub fn new() -> Self {
-        Self {
-            inner: FuturesUnordered::new(),
-            instance: None,
-        }
-    }
-
-    /// Add the specified [`Promise`] to this collection.
-    pub fn push(&mut self, promise: Promise<T>) {
-        if let Some((instance, id)) = self.instance {
-            assert_eq!(instance, promise.instance);
-            assert_eq!(id, promise.id);
-        } else {
-            self.instance = Some((promise.instance, promise.id));
-        }
-        self.inner.push(promise.inner)
-    }
-
-    /// Get the next result from this collection, if any.
-    pub async fn next<U: Send>(
-        &mut self,
-        mut store: impl AsContextMut<Data = U>,
-    ) -> Result<Option<T>> {
-        if let Some((instance, id)) = self.instance {
-            let store = store.as_context_mut();
-            assert_eq!(store.0.id(), id);
-            unsafe { &mut *instance.as_ptr() }
-                .poll_until(
-                    store,
-                    Box::pin(self.inner.next())
-                        as Pin<Box<dyn Future<Output = Option<T>> + Send + '_>>,
-                )
-                .await
-        } else {
-            Ok(None)
-        }
-    }
-}
 
 /// Provides access to either store data (via the `get` method) or the store
 /// itself (via [`AsContext`]/[`AsContextMut`]).
@@ -363,10 +255,9 @@ impl<T, U> Accessor<T, U> {
     /// This is particularly useful for host functions which return a `stream`
     /// or `future` such that the code to write to the write end of that
     /// `stream` or `future` must run after the function returns.
-    pub fn spawn(&mut self, task: impl AccessorTask<T, U, Result<()>>) -> SpawnHandle
-    where
-        T: 'static,
-    {
+    ///
+    /// The returned [`SpawnHandle`] may be used to cancel the task.
+    pub fn spawn(&mut self, task: impl AccessorTask<T, U, Result<()>>) -> SpawnHandle {
         let mut accessor = Self {
             get: self.get.clone(),
             spawn: self.spawn,
@@ -454,8 +345,8 @@ impl Drop for AbortOnDropHandle {
     }
 }
 
-/// Represents a task which may be provided to `Accessor::spawn` or
-/// `Accessor::forward`.
+/// Represents a task which may be provided to `Accessor::spawn`,
+/// `Accessor::forward`, or `Instance::spawn`.
 // TODO: Replace this with `std::ops::AsyncFnOnce` when that becomes a viable
 // option.
 //
@@ -478,8 +369,8 @@ struct State {
 }
 
 thread_local! {
-    #[cfg(feature = "component-model-async")]
     static STATE: RefCell<Option<State>> = RefCell::new(None);
+    static INSTANCE: Cell<*mut ComponentInstance> = Cell::new(ptr::null_mut());
 }
 
 struct ResetState(Option<State>);
@@ -489,6 +380,16 @@ impl Drop for ResetState {
         STATE.with(|v| {
             *v.borrow_mut() = self.0.take();
         })
+    }
+}
+
+struct ResetInstance(Option<SendSyncPtr<ComponentInstance>>);
+
+impl Drop for ResetInstance {
+    fn drop(&mut self) {
+        eprintln!("reset to: {:?}", self.0);
+
+        INSTANCE.with(|v| v.set(self.0.map(|v| v.as_ptr()).unwrap_or_else(ptr::null_mut)))
     }
 }
 
@@ -516,14 +417,17 @@ fn poll_with_state<T, F: Future + ?Sized>(
 
     let (result, spawned) = {
         let host = store_cx.data_mut();
-        let old = STATE.with(|v| {
+        let old_state = STATE.with(|v| {
             v.replace(Some(State {
                 host: (host as *mut T).cast(),
                 store: store.0.as_ptr().cast(),
                 spawned: Vec::new(),
             }))
         });
-        let _reset = ResetState(old);
+        let _reset_state = ResetState(old_state);
+        eprintln!("set to: {:?}", instance.as_ptr());
+        let old_instance = INSTANCE.with(|v| v.replace(instance.as_ptr()));
+        let _reset_instance = ResetInstance(NonNull::new(old_instance).map(SendSyncPtr::new));
         (future.poll(cx), STATE.with(|v| v.take()).unwrap().spawned)
     };
 
@@ -1115,6 +1019,11 @@ impl ComponentInstance {
             }
         }
 
+        for fun in mem::take(&mut self.concurrent_state.deferred) {
+            resumed = true;
+            fun(self)?;
+        }
+
         Ok(resumed)
     }
 
@@ -1197,7 +1106,7 @@ impl ComponentInstance {
         }
     }
 
-    fn loop_until<R>(
+    pub(crate) fn loop_until<R>(
         &mut self,
         mut future: Pin<Box<dyn Future<Output = R> + Send + '_>>,
     ) -> Result<R> {
@@ -1205,24 +1114,38 @@ impl ComponentInstance {
         let poll = &mut {
             let result = result.clone();
             move |instance: &mut ComponentInstance| {
-                let ready = unsafe {
-                    let cx = AsyncCx::new((*instance.store()).store_opaque_mut());
-                    cx.poll(future.as_mut())
-                };
-                Ok(match ready {
-                    Poll::Ready(value) => {
-                        *result.lock().unwrap() = Some(value);
-                        false
+                Ok(if result.try_lock().unwrap().is_none() {
+                    let ready = unsafe {
+                        let cx = AsyncCx::new((*instance.store()).store_opaque_mut());
+                        cx.poll(future.as_mut())
+                    };
+                    match ready {
+                        Poll::Ready(value) => {
+                            *result.try_lock().unwrap() = Some(value);
+                            false
+                        }
+                        Poll::Pending => true,
                     }
-                    Poll::Pending => true,
+                } else {
+                    false
                 })
             }
         };
-        self.poll_loop(|instance| poll(instance))?;
 
-        // Poll once more to get the result if necessary:
-        if result.lock().unwrap().is_none() {
-            poll(self)?;
+        // Poll once outside the event loop for possible side effects
+        // (e.g. creating work for the event loop to do).
+        //
+        // If this yields a result, we will return it without running the event
+        // loop at all.
+        poll(self)?;
+
+        if result.try_lock().unwrap().is_none() {
+            self.poll_loop(|instance| poll(instance))?;
+
+            // Poll once more to get the result if necessary:
+            if result.try_lock().unwrap().is_none() {
+                poll(self)?;
+            }
         }
 
         let result = result
@@ -1957,6 +1880,9 @@ impl ComponentInstance {
         store: StoreContextMut<'_, T>,
         future: Pin<Box<dyn Future<Output = R> + Send + '_>>,
     ) -> Result<R> {
+        eprintln!("set to: {:?}", self as *mut _);
+        let old = INSTANCE.with(|v| v.replace(self));
+        let _reset_instance = ResetInstance(NonNull::new(old).map(SendSyncPtr::new));
         unsafe {
             on_fiber_raw(VMStoreRawPtr(store.traitobj()), None, move |_| {
                 self.loop_until(future)
@@ -2357,38 +2283,205 @@ impl ComponentInstance {
 }
 
 impl Instance {
-    /// Poll the specified future until it yields a result _or_ there are no more
-    /// tasks to run in the `Store`.
-    pub async fn get<U: Send, V: Send + Sync + 'static>(
+    /// Poll the specified future as part of this instance's event loop until it
+    /// yields a result _or_ there are no more tasks to run.
+    ///
+    /// This is intended for use in the top-level code of a host embedding with
+    /// `Future`s which depend (directly or indirectly) on previously-started
+    /// concurrent tasks: e.g. the `Future`s returned by
+    /// `TypedFunc::call_concurrent`, `StreamReader::read`, etc., or `Future`s
+    /// derived from those.
+    ///
+    /// Such `Future`s can only usefully be polled in the context of the event
+    /// loop of the instance from which they originated; they will panic if
+    /// polled elsewhere.  `Future`s returned by host functions registered using
+    /// `LinkerInstance::func_wrap_concurrent` are always polled as part of the
+    /// event loop, so this function is not needed in that case.  However,
+    /// top-level code which needs to poll `Future`s involving concurrent tasks
+    /// must use either this function, `Instance::with`, or `Instance::spawn` to
+    /// ensure they are polled as part of the correct event loop.
+    ///
+    /// Consider the following examples:
+    ///
+    /// ```
+    /// # use {
+    /// #   anyhow::{anyhow, Result},
+    /// #   wasmtime::{
+    /// #     component::{ Component, Linker, HostFuture },
+    /// #     Config, Engine, Store
+    /// #   },
+    /// # };
+    /// #
+    /// # async fn foo() -> Result<()> {
+    /// # let mut config = Config::new();
+    /// # config.wasm_component_model(true);
+    /// # config.wasm_component_model_async(true);
+    /// # config.async_support(true);
+    /// # let engine = Engine::new(&config)?;
+    /// # let mut store = Store::new(&engine, ());
+    /// # let mut linker = Linker::new(&engine);
+    /// # let component = Component::new(&engine, "")?;
+    /// linker.root().func_wrap_concurrent("foo", |accessor, (future,): (HostFuture<bool>,)| Box::pin(async move {
+    ///     let future = accessor.with(|view| future.into_reader(view));
+    ///     // We can `.await` this directly (i.e. without using
+    ///     // `Instance::{run,run_with,spawn}`) since we're running in a host
+    ///     // function:
+    ///     Ok((future.read().await.ok_or_else(|| anyhow!("read failed"))?,))
+    /// }))?;
+    /// let instance = linker.instantiate_async(&mut store, &component).await?;
+    /// let bar = instance.get_typed_func::<(), (HostFuture<bool>,)>(&mut store, "bar")?;
+    /// let call = bar.call_concurrent(&mut store, ());
+    ///
+    /// // // NOT OK; this will panic if polled outside the event loop:
+    /// // let (future,) = call.await?;
+    ///
+    /// // OK, since we use `Instance::run` to poll `call` inside the event loop:
+    /// let (future,) = instance.run(&mut store, call).await?;
+    ///
+    /// let future = future.into_reader(&mut store);
+    ///
+    /// // // NOT OK; this will panic if polled outside the event loop:
+    /// // let _result = future.read().await;
+    ///
+    /// // OK, since we use `Instance::run` to poll the `Future` returned by
+    /// // `FutureReader::read`. Here we wrap that future in an async block for
+    /// // illustration, although it's redundant for a simple case like this. In
+    /// // a more complex scenario, we could use composition, loops, conditionals,
+    /// // etc.
+    /// let _result = instance.run(&mut store, Box::pin(async move {
+    ///     future.read().await
+    /// })).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn run<U: Send, V: Send + Sync + 'static>(
         &self,
         mut store: impl AsContextMut<Data = U>,
         fut: impl Future<Output = V> + Send,
     ) -> Result<V> {
+        check_recursive_run();
         let store = store.as_context_mut();
         let instance = unsafe { &mut *store.0[self.0].as_ref().unwrap().instance_ptr() };
+        // TODO: can we avoid the `Box::pin` (which may be redundant if `fut` is
+        // already a `Pin<Box<_>>`) here?
         instance.poll_until(store, Box::pin(fut)).await
     }
 
-    /// Wrap the specified future in a `Promise`.
-    pub fn promise<U: Send, V: Send + Sync + 'static>(
+    /// Run the specified task as part of this instance's event loop.
+    ///
+    /// Like [`run`], this will poll a specified future as part of this
+    /// instance's event loop until it yields a result _or_ there are no more
+    /// tasks to run.  Unlike [`run`], the future may close over an
+    /// [`Accessor`], which provides controlled access to the `Store` and its
+    /// data.
+    ///
+    /// This enables a different control flow model than `run` in that the
+    /// future has arbitrary access to the `Store` between `await` operations,
+    /// whereas with `run` the future has no access to the `Store`.  Either one
+    /// can be used to interleave `await` operations and `Store` access;
+    /// i.e. you can either:
+    ///
+    /// - Call `run` multiple times with access to the `Store` in between,
+    /// possibly moving resources, streams, etc. between the `Store` and the
+    /// futures passed to `run`.
+    ///
+    /// ```
+    /// let resource = store.data_mut().table.push(MyResource(42))?;
+    /// let call = foo.call_concurrent(&mut store, (resource,));
+    /// let (another_resource,) = instance.run(&mut store, call).await?;
+    /// let value = store.data_mut().table.delete(another_resource)?;
+    /// let call = bar.call_concurrent(&mut store, (value.0,));
+    /// instance.run(&mut store, call).await?;
+    /// ```
+    ///
+    /// - Call `run_with` once and use `Accessor::with` to access the store from
+    /// within the future.
+    ///
+    /// ```
+    /// instance.run_with(&mut store, Box::pin(|accessor| async move {
+    ///    let another_resource = accessor.with(|store| {
+    ///        let resource = store.data_mut().table.push(MyResource(42))?;
+    ///        Ok(foo.call_concurrent(store, (resource,)))
+    ///    })?.await?;
+    ///    accessor.with(|store| {
+    ///        let value = store.data_mut().table.delete(another_resource)?;
+    ///        Ok(bar.call_concurrent(store, (value.0,)))
+    ///    })?.await
+    /// })).await?;
+    /// ```
+    pub async fn run_with<U: Send, V: Send + Sync + 'static, F>(
         &self,
         mut store: impl AsContextMut<Data = U>,
-        inner: Pin<Box<dyn Future<Output = V> + Send + 'static>>,
-    ) -> Promise<V> {
+        fun: F,
+    ) -> Result<V>
+    where
+        F: for<'a> FnOnce(&'a mut Accessor<U, U>) -> Pin<Box<dyn Future<Output = V> + Send + 'a>>
+            + Send
+            + 'static,
+    {
+        check_recursive_run();
+        let future = self.run_with_raw(&mut store, fun);
+        self.run(store, future).await
+    }
+
+    fn run_with_raw<U: Send, V: Send + Sync + 'static, F>(
+        &self,
+        mut store: impl AsContextMut<Data = U>,
+        fun: F,
+    ) -> Pin<Box<dyn Future<Output = V> + Send + 'static>>
+    where
+        F: for<'a> FnOnce(&'a mut Accessor<U, U>) -> Pin<Box<dyn Future<Output = V> + Send + 'a>>
+            + Send
+            + 'static,
+    {
         let store = store.as_context_mut();
-        let instance = SendSyncPtr::new(
-            NonNull::new(store.0[self.0].as_ref().unwrap().instance_ptr()).unwrap(),
-        );
-        let id = store.0.id();
-        Promise {
-            inner,
-            instance,
-            id,
+        let instance = unsafe { &mut *store.0[self.0].as_ref().unwrap().instance_ptr() };
+
+        let mut accessor =
+            unsafe { Accessor::new(get_host_and_store, spawn_task, instance.instance()) };
+        let mut future = Box::pin(async move { fun(&mut accessor).await });
+        let store = VMStoreRawPtr(store.traitobj());
+        let instance = SendSyncPtr::new(NonNull::new(instance).unwrap());
+        let future = future::poll_fn(move |cx| {
+            poll_with_state::<U, _>(store, instance, cx, future.as_mut())
+        });
+
+        unsafe {
+            mem::transmute::<
+                Pin<Box<dyn Future<Output = V> + Send>>,
+                Pin<Box<dyn Future<Output = V> + Send + 'static>>,
+            >(Box::pin(future))
+        }
+    }
+
+    /// Spawn a background task to run as part of this instance's event loop.
+    ///
+    /// The task will receive an `&mut Accessor<T, U>` and run concurrently with
+    /// any other tasks in progress for the instance.
+    ///
+    /// Note that the task will only make progress if and when the event loop
+    /// for this instance is run.
+    ///
+    /// The returned [`SpawnHandle`] may be used to cancel the task.
+    pub fn spawn<U: Send>(
+        &self,
+        store: impl AsContextMut<Data = U>,
+        task: impl AccessorTask<U, U, Result<()>>,
+    ) -> SpawnHandle {
+        let mut future = self.run_with_raw(store, move |accessor| {
+            Box::pin(future::ready(accessor.spawn(task)))
+        });
+        match future
+            .as_mut()
+            .poll(&mut Context::from_waker(&dummy_waker()))
+        {
+            Poll::Ready(handle) => handle,
+            Poll::Pending => unreachable!(),
         }
     }
 
     #[doc(hidden)]
-    pub fn spawn(
+    pub fn spawn_raw(
         &self,
         mut store: impl AsContextMut,
         task: impl std::future::Future<Output = Result<()>> + Send + 'static,
@@ -3389,6 +3482,7 @@ pub struct ConcurrentState {
     yielding: HashMap<TableId<GuestTask>, Option<TableId<WaitableSet>>>,
     unblocked: HashSet<RuntimeComponentInstanceIndex>,
     waitable_tables: PrimaryMap<RuntimeComponentInstanceIndex, StateTable<WaitableState>>,
+    deferred: Vec<Box<dyn FnOnce(&mut ComponentInstance) -> Result<()> + Send + Sync + 'static>>,
 
     /// (Sub)Component specific error context tracking
     ///
@@ -3444,10 +3538,11 @@ impl ConcurrentState {
             waitable_tables,
             error_context_tables,
             global_error_context_ref_counts: BTreeMap::new(),
+            deferred: Vec::new(),
         }
     }
 
-    pub fn drop_table(&mut self) {
+    pub fn drop_fibers(&mut self) {
         self.table = Table::new();
     }
 }
@@ -3478,6 +3573,36 @@ fn for_any_lift<
     fun: F,
 ) -> F {
     fun
+}
+
+fn checked<F: Future + Send + 'static>(
+    instance: SendSyncPtr<ComponentInstance>,
+    fut: F,
+) -> impl Future<Output = F::Output> + Send + 'static {
+    let mut fut = Box::pin(fut);
+    future::poll_fn(move |cx| {
+        let message = "\
+            `Future`s which depend on asynchronous component tasks, streams, or \
+            futures to complete may only be polled from the event loop of the \
+            instance from which they originated.  Please use \
+            `Instance::{get,with,spawn}` to poll or await them.\
+        ";
+        INSTANCE.with(|v| {
+            if v.get() != instance.as_ptr() {
+                panic!("{message}")
+            }
+        });
+        fut.as_mut().poll(cx)
+    })
+}
+
+fn check_recursive_run() {
+    INSTANCE.with(|v| {
+        eprintln!("v.get(): {:?}", v.get());
+        if !v.get().is_null() {
+            panic!("Recursive `Instance::run{{_with}}` calls not supported")
+        }
+    });
 }
 
 pub(crate) async fn on_fiber<R: Send + 'static, T: Send>(
@@ -3740,22 +3865,27 @@ fn make_call<T>(
     }
 }
 
-pub(crate) fn start_call<T: Send, LowerParams: Copy, R: 'static>(
-    mut store: StoreContextMut<T>,
+pub(crate) struct PreparedCall<R> {
+    handle: Func,
+    task: TableId<GuestTask>,
+    result_count: usize,
+    rx: oneshot::Receiver<LiftedResult>,
+    _phantom: PhantomData<R>,
+}
+
+pub(crate) fn prepare_call<T: Send, LowerParams: Copy, R>(
+    store: StoreContextMut<T>,
     lower_params: LowerFn,
     lower_context: LiftLowerContext,
     lift_result: LiftFn,
     lift_context: LiftLowerContext,
     handle: Func,
-) -> Result<Promise<R>> {
+) -> Result<PreparedCall<R>> {
     let func_data = &store.0[handle.0];
     let task_return_type = func_data.types[func_data.ty].results;
-    let is_concurrent = func_data.options.async_();
     let component_instance = func_data.component_instance;
     let instance = func_data.instance;
-    let callee = func_data.export.func_ref;
     let callback = func_data.options.callback;
-    let post_return = func_data.post_return;
     let memory = func_data.options.memory.map(SendSyncPtr::new);
     let string_encoding = func_data.options.string_encoding();
 
@@ -3786,12 +3916,74 @@ pub(crate) fn start_call<T: Send, LowerParams: Copy, R: 'static>(
         }),
     )?;
 
-    let guest_task = instance.push(task)?;
+    let task = instance.push(task)?;
     instance
-        .get_mut(guest_task)?
+        .get_mut(task)?
         .common
         .rep
-        .store(guest_task.rep(), Relaxed);
+        .store(task.rep(), Relaxed);
+
+    Ok(PreparedCall {
+        handle,
+        task,
+        result_count: mem::size_of::<LowerParams>() / mem::size_of::<ValRaw>(),
+        rx,
+        _phantom: PhantomData,
+    })
+}
+
+pub(crate) fn defer_call<T, R: Send + 'static>(
+    store: StoreContextMut<T>,
+    prepared: PreparedCall<R>,
+) -> impl Future<Output = Result<R>> + Send + 'static + use<T, R> {
+    let PreparedCall {
+        handle,
+        task,
+        result_count,
+        rx,
+        ..
+    } = prepared;
+    let func_data = &store[handle.0];
+    let instance = func_data.instance;
+    let instance_ptr = store.0[instance.0].as_ref().unwrap().instance_ptr();
+    let instance = unsafe { &mut *instance_ptr };
+    instance
+        .concurrent_state
+        .deferred
+        .push(Box::new(move |instance: &mut ComponentInstance| {
+            start_call(
+                unsafe { StoreContextMut::<T>(&mut *instance.store().cast()) },
+                handle,
+                task,
+                result_count,
+            )
+        }));
+
+    checked(
+        SendSyncPtr::new(NonNull::new(instance_ptr).unwrap()),
+        rx.map(|result| {
+            result
+                .map(|v| *v.downcast().unwrap())
+                .map_err(anyhow::Error::from)
+        }),
+    )
+}
+
+fn start_call<T>(
+    mut store: StoreContextMut<T>,
+    handle: Func,
+    guest_task: TableId<GuestTask>,
+    result_count: usize,
+) -> Result<()> {
+    let func_data = &store.0[handle.0];
+    let is_concurrent = func_data.options.async_();
+    let component_instance = func_data.component_instance;
+    let instance = func_data.instance;
+    let callee = func_data.export.func_ref;
+    let callback = func_data.options.callback;
+    let post_return = func_data.post_return;
+
+    let instance = unsafe { &mut *store.0[instance.0].as_ref().unwrap().instance_ptr() };
 
     log::trace!("starting call {}", guest_task.rep());
 
@@ -3799,7 +3991,7 @@ pub(crate) fn start_call<T: Send, LowerParams: Copy, R: 'static>(
         guest_task,
         SendSyncPtr::new(callee),
         component_instance,
-        mem::size_of::<LowerParams>() / mem::size_of::<ValRaw>(),
+        result_count,
         1,
         if callback.is_none() {
             None
@@ -3831,11 +4023,7 @@ pub(crate) fn start_call<T: Send, LowerParams: Copy, R: 'static>(
 
     log::trace!("started call {}", guest_task.rep());
 
-    Ok(Promise {
-        inner: Box::pin(rx.map(|result| *result.unwrap().downcast().unwrap())),
-        instance: SendSyncPtr::new(NonNull::new(instance).unwrap()),
-        id: store.0.id(),
-    })
+    Ok(())
 }
 
 pub(crate) fn call<T: Send, LowerParams: Copy, R: Send + Sync + 'static>(
@@ -3846,7 +4034,7 @@ pub(crate) fn call<T: Send, LowerParams: Copy, R: Send + Sync + 'static>(
     lift_context: LiftLowerContext,
     handle: Func,
 ) -> Result<R> {
-    let promise = start_call::<_, LowerParams, R>(
+    let prepared = prepare_call::<_, LowerParams, R>(
         store.as_context_mut(),
         lower_params,
         lower_context,
@@ -3855,13 +4043,24 @@ pub(crate) fn call<T: Send, LowerParams: Copy, R: Send + Sync + 'static>(
         handle,
     )?;
 
+    start_call(
+        store.as_context_mut(),
+        prepared.handle,
+        prepared.task,
+        prepared.result_count,
+    )?;
+
+    let future = prepared
+        .rx
+        .map(|result| *result.unwrap().downcast().unwrap());
+
     let instance = unsafe {
         &mut *store.0[store.0[handle.0].instance.0]
             .as_ref()
             .unwrap()
             .instance_ptr()
     };
-    instance.loop_until(promise.into_future())
+    instance.loop_until(Box::pin(future))
 }
 
 async unsafe fn poll_fn<R>(

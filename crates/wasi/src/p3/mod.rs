@@ -175,7 +175,7 @@ where
                 }
                 Some(Ok(buf)) => {
                     let fut = tx.write_all(buf.into());
-                    let (Some(tail), _) = fut.into_future().await else {
+                    let (Some(tail), _) = fut.await else {
                         break Ok(());
                     };
                     tx = tail;
@@ -187,7 +187,7 @@ where
                 }
             }
         };
-        self.result.write(res).into_future().await;
+        self.result.write(res).await;
         Ok(())
     }
 }

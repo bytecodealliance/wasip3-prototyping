@@ -29,9 +29,7 @@ where
             match self.input.read_buf(&mut buf).await {
                 Ok(0) => return Ok(()),
                 Ok(_) => {
-                    let (Some(tail), buf_again) =
-                        tx.write_all(Cursor::new(buf)).into_future().await
-                    else {
+                    let (Some(tail), buf_again) = tx.write_all(Cursor::new(buf)).await else {
                         break Ok(());
                     };
                     tx = tail;
@@ -59,7 +57,7 @@ where
 {
     async fn run(mut self, _: &mut Accessor<T, U>) -> wasmtime::Result<()> {
         let mut buf = BytesMut::with_capacity(8096);
-        let mut fut = self.data.read(buf).into_future();
+        let mut fut = self.data.read(buf);
         loop {
             let (Some(tail), buf_again) = fut.await else {
                 return Ok(());
@@ -69,7 +67,7 @@ where
             match self.output.write_all(&buf).await {
                 Ok(()) => {
                     buf.clear();
-                    fut = tail.read(buf).into_future();
+                    fut = tail.read(buf);
                     continue;
                 }
                 Err(_err) => {

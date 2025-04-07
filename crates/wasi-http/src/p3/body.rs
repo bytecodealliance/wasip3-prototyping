@@ -297,7 +297,7 @@ impl http_body::Body for OutgoingRequestBody {
             Some(tail) => {
                 let buffer = rx_buffer.split();
                 rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
-                self.contents = Some(tail.read(rx_buffer).into_future());
+                self.contents = Some(Box::pin(tail.read(rx_buffer)));
                 if let Some(ContentLength { limit, sent }) = &mut self.content_length {
                     let Ok(n) = buffer.len().try_into() else {
                         return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(None)))));

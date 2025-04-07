@@ -6,12 +6,15 @@ use std::time::Duration;
 use anyhow::Result;
 use bytes::{Bytes, BytesMut};
 use component_async_tests::Ctx;
+use futures::{
+    stream::{FuturesUnordered, TryStreamExt},
+    FutureExt,
+};
 use tokio::fs;
 use wasi_http_draft::wasi::http::types::{ErrorCode, Method, Scheme};
 use wasi_http_draft::{Body, Fields, Request, Response};
 use wasmtime::component::{
-    Accessor, Component, Linker, PromisesUnordered, Resource, ResourceTable, StreamReader,
-    StreamWriter,
+    Accessor, Component, Linker, Resource, ResourceTable, StreamReader, StreamWriter,
 };
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{IoView, WasiCtxBuilder};
@@ -165,11 +168,11 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
         ResponseTrailersRead(Option<Resource<Fields>>),
     }
 
-    let mut promises = PromisesUnordered::new();
+    let mut futures = FuturesUnordered::new();
 
     let (request_body_tx, request_body_rx) = instance.stream::<_, _, BytesMut, _, _>(&mut store)?;
 
-    promises.push(
+    futures.push(
         request_body_tx
             .write_all(if use_compression {
                 let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
@@ -178,7 +181,8 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
             } else {
                 Cursor::new(Bytes::copy_from_slice(body))
             })
-            .map(|(w, _)| Event::RequestBodyWrite(w)),
+            .map(|(w, _)| Ok(Event::RequestBodyWrite(w)))
+            .boxed(),
     );
 
     let trailers = vec![("fizz".into(), b"buzz".into())];
@@ -187,10 +191,12 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
 
     let request_trailers = IoView::table(store.data_mut()).push(Fields(trailers.clone()))?;
 
-    promises.push(
+    futures.push(
         request_trailers_tx
             .write(request_trailers)
-            .map(Event::RequestTrailersWrite),
+            .map(Event::RequestTrailersWrite)
+            .map(Ok)
+            .boxed(),
     );
 
     let request = IoView::table(store.data_mut()).push(Request {
@@ -222,18 +228,18 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
         options: None,
     })?;
 
-    promises.push(
+    futures.push(
         proxy
             .wasi_http_handler()
             .call_handle(&mut store, request)
-            .await?
-            .map(Event::Response),
+            .map(|v| v.map(Event::Response))
+            .boxed(),
     );
 
     let mut response_body = Vec::new();
     let mut response_trailers = None;
     let mut received_trailers = false;
-    while let Some(event) = promises.next(&mut store).await? {
+    while let Some(event) = instance.run(&mut store, futures.try_next()).await?? {
         match event {
             Event::RequestBodyWrite(Some(_)) => {}
             Event::RequestBodyWrite(None) => panic!("write should have been accepted"),
@@ -263,20 +269,25 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
 
                 response_trailers = response.body.trailers.take();
 
-                promises.push(
+                futures.push(
                     response
                         .body
                         .stream
                         .take()
                         .unwrap()
                         .read(BytesMut::with_capacity(8096))
-                        .map(|(r, b)| Event::ResponseBodyRead(r, b)),
+                        .map(|(r, b)| Ok(Event::ResponseBodyRead(r, b)))
+                        .boxed(),
                 );
             }
             Event::ResponseBodyRead(Some(rx), mut buffer) => {
                 response_body.extend(&buffer);
                 buffer.clear();
-                promises.push(rx.read(buffer).map(|(r, b)| Event::ResponseBodyRead(r, b)));
+                futures.push(
+                    rx.read(buffer)
+                        .map(|(r, b)| Ok(Event::ResponseBodyRead(r, b)))
+                        .boxed(),
+                );
             }
             Event::ResponseBodyRead(None, _) => {
                 let response_body = if use_compression {
@@ -289,12 +300,14 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
 
                 assert_eq!(body as &[_], &response_body);
 
-                promises.push(
+                futures.push(
                     response_trailers
                         .take()
                         .unwrap()
                         .read()
-                        .map(Event::ResponseTrailersRead),
+                        .map(Event::ResponseTrailersRead)
+                        .map(Ok)
+                        .boxed(),
                 );
             }
             Event::ResponseTrailersRead(Some(response_trailers)) => {

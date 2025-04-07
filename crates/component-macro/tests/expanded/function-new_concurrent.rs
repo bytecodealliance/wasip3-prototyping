@@ -173,18 +173,19 @@ const _: () = {
             let indices = FooIndices::new_instance(&mut store, instance)?;
             indices.load(store, instance)
         }
-        pub async fn call_new<S: wasmtime::AsContextMut>(
+        pub fn call_new<S: wasmtime::AsContextMut>(
             &self,
             mut store: S,
-        ) -> wasmtime::Result<wasmtime::component::Promise<()>>
+        ) -> impl wasmtime::component::__internal::Future<
+            Output = wasmtime::Result<()>,
+        > + Send + 'static + use<S>
         where
             <S as wasmtime::AsContext>::Data: Send,
         {
             let callee = unsafe {
                 wasmtime::component::TypedFunc::<(), ()>::new_unchecked(self.new)
             };
-            let promise = callee.call_concurrent(store.as_context_mut(), ()).await?;
-            Ok(promise)
+            callee.call_concurrent(store.as_context_mut(), ())
         }
     }
 };

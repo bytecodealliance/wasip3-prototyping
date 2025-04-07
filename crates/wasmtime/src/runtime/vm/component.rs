@@ -892,8 +892,8 @@ impl OwnedComponentInstance {
     }
 
     #[cfg(feature = "component-model-async")]
-    pub fn drop_table(&mut self) {
-        unsafe { self.instance_mut().concurrent_state.drop_table() }
+    pub fn drop_fibers(&mut self) {
+        unsafe { self.instance_mut().concurrent_state.drop_fibers() }
     }
 }
 

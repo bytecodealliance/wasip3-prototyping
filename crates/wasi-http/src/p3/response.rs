@@ -1,15 +1,17 @@
 use core::iter;
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::{bail, Context as _};
 use bytes::Bytes;
-use futures::StreamExt as _;
+use futures::{FutureExt as _, StreamExt as _};
 use http::{HeaderMap, StatusCode};
 use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::{BodyExt, BodyStream, StreamBody};
 use tokio::sync::{mpsc, oneshot};
-use wasmtime::component::{AbortOnDropHandle, FutureWriter, Instance, Promise, Resource};
+use wasmtime::component::{AbortOnDropHandle, FutureWriter, Resource};
 use wasmtime::{AsContextMut, StoreContextMut};
 use wasmtime_wasi::p3::{ResourceView, WithChildren};
 
@@ -94,12 +96,11 @@ impl Response {
     /// See [Self::into_http] for documentation on return values of this function.
     pub fn resource_into_http<T>(
         mut store: impl AsContextMut<Data = T>,
-        instance: &Instance,
         res: Resource<Response>,
     ) -> wasmtime::Result<(
         http::Response<UnsyncBoxBody<Bytes, Option<ErrorCode>>>,
         Option<FutureWriter<Result<(), ErrorCode>>>,
-        Option<Promise<ResponsePromiseClosure<T>>>,
+        Option<Pin<Box<dyn Future<Output = ResponsePromiseClosure<T>> + Send + 'static>>>,
     )>
     where
         T: ResourceView + Send + 'static,
@@ -110,7 +111,7 @@ impl Response {
             .table()
             .delete(res)
             .context("failed to delete response from table")?;
-        res.into_http(store, instance)
+        res.into_http(store)
     }
 
     /// Convert [Response] into [http::Response].
@@ -121,11 +122,10 @@ impl Response {
     pub fn into_http<T: ResourceView + Send + 'static>(
         self,
         mut store: impl AsContextMut<Data = T>,
-        instance: &Instance,
     ) -> anyhow::Result<(
         http::Response<UnsyncBoxBody<Bytes, Option<ErrorCode>>>,
         Option<FutureWriter<Result<(), ErrorCode>>>,
-        Option<Promise<ResponsePromiseClosure<T>>>,
+        Option<Pin<Box<dyn Future<Output = ResponsePromiseClosure<T>> + Send + 'static>>>,
     )> {
         let response = http::Response::try_from(self)?;
         let (response, body) = response.into_parts();
@@ -190,9 +190,8 @@ impl Response {
                 let body = empty_body()
                     .with_trailers(receive_trailers(trailers_rx))
                     .boxed_unsync();
-                let fut = Box::pin(handle_guest_trailers(trailers, trailers_tx));
-                let promise = instance.promise(store, fut);
-                (body, Some(tx), Some(promise))
+                let fut = handle_guest_trailers(trailers, trailers_tx).boxed();
+                (body, Some(tx), Some(fut))
             }
             Body::Guest {
                 contents: Some(mut contents),
@@ -211,7 +210,7 @@ impl Response {
                 let body = OutgoingResponseBody::new(contents_rx, buffer, content_length)
                     .with_trailers(receive_trailers(trailers_rx))
                     .boxed_unsync();
-                let fut = Box::pin(async move {
+                let fut = async move {
                     loop {
                         let (tail, mut rx_buffer) = contents.await;
                         if let Some(tail) = tail {
@@ -222,7 +221,7 @@ impl Response {
                                 }
                                 rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
                             }
-                            contents = tail.read(rx_buffer).into_future();
+                            contents = tail.read(rx_buffer).boxed();
                         } else {
                             debug_assert!(rx_buffer.is_empty());
                             break;
@@ -230,9 +229,9 @@ impl Response {
                     }
                     drop(contents_tx);
                     handle_guest_trailers(trailers, trailers_tx).await
-                });
-                let promise = instance.promise(store, fut);
-                (body, Some(tx), Some(promise))
+                }
+                .boxed();
+                (body, Some(tx), Some(fut))
             }
             Body::Guest { .. } => bail!("guest body is corrupted"),
             Body::Consumed

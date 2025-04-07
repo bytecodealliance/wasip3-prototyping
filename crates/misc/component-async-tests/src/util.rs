@@ -2,9 +2,10 @@ use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
 
 use anyhow::Result;
+use futures::stream::{FuturesUnordered, TryStreamExt};
 use tokio::fs;
 use wasm_compose::composer::ComponentComposer;
-use wasmtime::component::{Component, Linker, PromisesUnordered, ResourceTable};
+use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;
 
@@ -95,17 +96,16 @@ pub async fn test_run(component: &[u8]) -> Result<()> {
         engine.increment_epoch();
     });
 
-    let yield_host =
-        super::yield_host::bindings::YieldHost::instantiate_async(&mut store, &component, &linker)
-            .await?;
+    let instance = linker.instantiate_async(&mut store, &component).await?;
+    let yield_host = super::yield_host::bindings::YieldHost::new(&mut store, &instance)?;
 
     // Start three concurrent calls and then join them all:
-    let mut promises = PromisesUnordered::new();
+    let mut futures = FuturesUnordered::new();
     for _ in 0..3 {
-        promises.push(yield_host.local_local_run().call_run(&mut store).await?);
+        futures.push(yield_host.local_local_run().call_run(&mut store));
     }
 
-    while let Some(()) = promises.next(&mut store).await? {
+    while let Some(()) = instance.run(&mut store, futures.try_next()).await?? {
         // continue
     }
 

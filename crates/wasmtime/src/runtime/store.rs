@@ -2263,7 +2263,7 @@ impl<T> Drop for Store<T> {
                     continue;
                 };
 
-                instance.state.drop_table();
+                instance.state.drop_fibers();
             }
 
             ManuallyDrop::drop(&mut self.inner.data);

@@ -1,7 +1,7 @@
 use {
     super::{
         table::TableId, Event, GlobalErrorContextRefCount, HostTaskFuture, HostTaskOutput,
-        LocalErrorContextRefCount, Promise, StateTable, Waitable, WaitableCommon, WaitableState,
+        LocalErrorContextRefCount, StateTable, Waitable, WaitableCommon, WaitableState,
     },
     crate::{
         component::{
@@ -310,7 +310,7 @@ struct WatchInner<T> {
 
 /// Wrapper struct which may be converted to the inner value as needed.
 ///
-/// This object is normally paired with a `Promise<()>` which represents a state
+/// This object is normally paired with a `Future` which represents a state
 /// change on the inner value, resolving when that state change happens _or_
 /// when the `Watch` is converted back into the inner value -- whichever happens
 /// first.
@@ -319,7 +319,7 @@ pub struct Watch<T>(Arc<Mutex<Option<WatchInner<T>>>>);
 impl<T: Ready> Watch<T> {
     /// Convert this object into its inner value.
     ///
-    /// Calling this function will cause the associated `Promise<()>` to resolve
+    /// Calling this function will cause the associated `Future` to resolve
     /// immediately if it hasn't already.
     pub fn into_inner(self) -> T {
         let inner = self.0.try_lock().unwrap().take().unwrap();
@@ -332,18 +332,18 @@ impl<T: Ready> Watch<T> {
 
 fn watch<T: Send + 'static>(
     instance: SendSyncPtr<ComponentInstance>,
-    id: StoreId,
     rx: oneshot::Receiver<()>,
     inner: T,
-) -> (Promise<()>, Watch<T>) {
+) -> (impl Future<Output = ()> + Send + 'static, Watch<T>) {
     let inner = Arc::new(Mutex::new(Some(WatchInner {
         inner,
         rx,
         waker: None,
     })));
     (
-        Promise {
-            inner: Box::pin(future::poll_fn({
+        super::checked(
+            instance,
+            future::poll_fn({
                 let inner = inner.clone();
 
                 move |cx| {
@@ -359,10 +359,8 @@ fn watch<T: Send + 'static>(
                         Poll::Ready(())
                     }
                 }
-            })),
-            instance,
-            id,
-        },
+            }),
+        ),
         Watch(inner),
     )
 }
@@ -370,7 +368,6 @@ fn watch<T: Send + 'static>(
 /// Represents the writable end of a Component Model `future`.
 pub struct FutureWriter<T> {
     instance: SendSyncPtr<ComponentInstance>,
-    id: StoreId,
     tx: Option<mpsc::Sender<WriteEvent<Option<T>>>>,
 }
 
@@ -381,17 +378,20 @@ impl<T> FutureWriter<T> {
     ) -> Self {
         Self {
             instance: SendSyncPtr::new(NonNull::new(instance).unwrap()),
-            id: unsafe { (*instance.store()).store_opaque().id() },
             tx,
         }
     }
 
     /// Write the specified value to this `future`.
     ///
-    /// The returned `Promise` will yield `true` if the read end accepted the
+    /// The returned `Future` will yield `true` if the read end accepted the
     /// value; otherwise it will return `false`, meaning the read end was closed
     /// before the value could be delivered.
-    pub fn write(mut self, value: T) -> Promise<bool>
+    ///
+    /// Note that the returned `Future` must be polled from the event loop of
+    /// the component instance from which this `FutureWriter` originated.  See
+    /// [`Instance::run`] for details.
+    pub fn write(mut self, value: T) -> impl Future<Output = bool> + Send + 'static
     where
         T: Send + 'static,
     {
@@ -404,36 +404,37 @@ impl<T> FutureWriter<T> {
             },
         );
         let instance = self.instance;
-        let id = self.id;
-        Promise {
-            inner: Box::pin(rx.map(move |v| {
+        super::checked(
+            instance,
+            rx.map(move |v| {
                 drop(self);
                 match v {
                     Ok(HostResult { closed, .. }) => !closed,
                     Err(_) => todo!("guarantee buffer recovery if event loop errors or panics"),
                 }
-            })),
-            instance,
-            id,
-        }
+            }),
+        )
     }
 
-    /// Convert this object into a `Promise` which will resolve when the read
-    /// end of this `future` is closed, plus a `Watch` which can be used to
-    /// retrieve the `FutureWriter` again.
+    /// Convert this object into a `Future` which will resolve when the read end
+    /// of this `future` is closed, plus a `Watch` which can be used to retrieve
+    /// the `FutureWriter` again.
     ///
     /// Note that calling `Watch::into_inner` on the returned `Watch` will have
-    /// the side effect of causing the `Promise` to resolve immediately if it
+    /// the side effect of causing the `Future` to resolve immediately if it
     /// hasn't already.
-    pub fn watch_reader(mut self) -> (Promise<()>, Watch<Self>)
+    ///
+    /// Also note that the returned `Future` must be polled from the event loop
+    /// of the component instance from which this `FutureWriter` originated.
+    /// See [`Instance::run`] for details.
+    pub fn watch_reader(mut self) -> (impl Future<Output = ()> + Send + 'static, Watch<Self>)
     where
         T: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
         send(&mut self.tx.as_mut().unwrap(), WriteEvent::Watch { tx });
         let instance = self.instance;
-        let id = self.id;
-        watch(instance, id, rx, self)
+        watch(instance, rx, self)
     }
 }
 
@@ -640,10 +641,14 @@ impl<T> FutureReader<T> {
 
     /// Read the value from this `future`.
     ///
-    /// The returned `Promise` will yield `None` if the guest has trapped
+    /// The returned `Future` will yield `None` if the guest has trapped
     /// before it could produce a result or if the write end belonged to the
     /// host and was dropped without writing a result.
-    pub fn read(mut self) -> Promise<Option<T>>
+    ///
+    /// Note that the returned `Future` must be polled from the event loop of
+    /// the component instance from which this `FutureReader` originated.  See
+    /// [`Instance::run`] for details.
+    pub fn read(mut self) -> impl Future<Output = Option<T>> + Send + 'static
     where
         T: Send + 'static,
     {
@@ -653,9 +658,9 @@ impl<T> FutureReader<T> {
             ReadEvent::Read { buffer: None, tx },
         );
         let instance = self.instance;
-        let id = self.id;
-        Promise {
-            inner: Box::pin(rx.map(move |v| {
+        super::checked(
+            instance,
+            rx.map(move |v| {
                 drop(self);
 
                 if let Ok(HostResult {
@@ -667,28 +672,29 @@ impl<T> FutureReader<T> {
                 } else {
                     None
                 }
-            })),
-            instance,
-            id,
-        }
+            }),
+        )
     }
 
-    /// Convert this object into a `Promise` which will resolve when the write
+    /// Convert this object into a `Future` which will resolve when the write
     /// end of this `future` is closed, plus a `Watch` which can be used to
     /// retrieve the `FutureReader` again.
     ///
     /// Note that calling `Watch::into_inner` on the returned `Watch` will have
-    /// the side effect of causing the `Promise` to resolve immediately if it
+    /// the side effect of causing the `Future` to resolve immediately if it
     /// hasn't already.
-    pub fn watch_writer(mut self) -> (Promise<()>, Watch<Self>)
+    ///
+    /// Also note that the returned `Future` must be polled from the event loop
+    /// of the component instance from which this `FutureReader` originated.
+    /// See [`Instance::run`] for details.
+    pub fn watch_writer(mut self) -> (impl Future<Output = ()> + Send + 'static, Watch<Self>)
     where
         T: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
         send(&mut self.tx.as_mut().unwrap(), ReadEvent::Watch { tx });
         let instance = self.instance;
-        let id = self.id;
-        watch(instance, id, rx, self)
+        watch(instance, rx, self)
     }
 }
 
@@ -709,7 +715,6 @@ impl<T> Drop for FutureReader<T> {
 /// Represents the writable end of a Component Model `stream`.
 pub struct StreamWriter<B> {
     instance: SendSyncPtr<ComponentInstance>,
-    id: StoreId,
     tx: Option<mpsc::Sender<WriteEvent<B>>>,
 }
 
@@ -717,7 +722,6 @@ impl<B> StreamWriter<B> {
     fn new(tx: Option<mpsc::Sender<WriteEvent<B>>>, instance: &mut ComponentInstance) -> Self {
         Self {
             instance: SendSyncPtr::new(NonNull::new(instance).unwrap()),
-            id: unsafe { (*instance.store()).store_opaque().id() },
             tx,
         }
     }
@@ -728,77 +732,90 @@ impl<B> StreamWriter<B> {
     /// during its current or next read.  Use `write_all` to loop until the
     /// buffer is drained or the read end is closed.
     ///
-    /// The returned `Promise` will yield a `(Some(_), _)` if the write
-    /// completed (possibly consuming a subset of the items or nothing depending
-    /// on the number of items the reader accepted).  It will return `(None, _)`
-    /// if the write failed due to the closure of the read end.  In either case,
-    /// the returned buffer will be the same one passed as a parameter, possibly
+    /// The returned `Future` will yield a `(Some(_), _)` if the write completed
+    /// (possibly consuming a subset of the items or nothing depending on the
+    /// number of items the reader accepted).  It will return `(None, _)` if the
+    /// write failed due to the closure of the read end.  In either case, the
+    /// returned buffer will be the same one passed as a parameter, possibly
     /// mutated to consume any written values.
-    pub fn write(mut self, buffer: B) -> Promise<(Option<StreamWriter<B>>, B)>
+    ///
+    /// Note that the returned `Future` must be polled from the event loop of
+    /// the component instance from which this `StreamWriter` originated.  See
+    /// [`Instance::run`] for details.
+    pub fn write(
+        mut self,
+        buffer: B,
+    ) -> impl Future<Output = (Option<StreamWriter<B>>, B)> + Send + 'static
     where
         B: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
         send(self.tx.as_mut().unwrap(), WriteEvent::Write { buffer, tx });
         let instance = self.instance;
-        let id = self.id;
-        Promise {
-            inner: Box::pin(rx.map(move |v| match v {
+        super::checked(
+            instance,
+            rx.map(move |v| match v {
                 Ok(HostResult { buffer, closed }) => ((!closed).then_some(self), buffer),
                 Err(_) => todo!("guarantee buffer recovery if event loop errors or panics"),
-            })),
-            instance,
-            id,
-        }
+            }),
+        )
     }
 
     /// Write the specified values until either the buffer is drained or the
     /// read end is closed.
     ///
-    /// The returned `Promise` will yield a `(Some(_), _)` if the write
-    /// completed (i.e. all the items were accepted).  It will return `(None,
-    /// _)` if the write failed due to the closure of the read end.  In either
-    /// case, the returned buffer will be the same one passed as a parameter,
-    /// possibly mutated to consume any written values.
-    pub fn write_all<T>(self, buffer: B) -> Promise<(Option<StreamWriter<B>>, B)>
+    /// The returned `Future` will yield a `(Some(_), _)` if the write completed
+    /// (i.e. all the items were accepted).  It will return `(None, _)` if the
+    /// write failed due to the closure of the read end.  In either case, the
+    /// returned buffer will be the same one passed as a parameter, possibly
+    /// mutated to consume any written values.
+    ///
+    /// Note that the returned `Future` must be polled from the event loop of
+    /// the component instance from which this `StreamWriter` originated.  See
+    /// [`Instance::run`] for details.
+    pub fn write_all<T>(
+        self,
+        buffer: B,
+    ) -> impl Future<Output = (Option<StreamWriter<B>>, B)> + Send + 'static
     where
         B: WriteBuffer<T>,
     {
         let instance = self.instance;
-        let id = self.id;
-        Promise {
-            inner: Box::pin(self.write(buffer).inner.then(|(me, buffer)| async move {
+        super::checked(
+            instance,
+            self.write(buffer).then(|(me, buffer)| async move {
                 if let Some(me) = me {
                     if buffer.remaining().len() > 0 {
-                        me.write_all(buffer).inner.await
+                        me.write_all(buffer).await
                     } else {
                         (Some(me), buffer)
                     }
                 } else {
                     (None, buffer)
                 }
-            })),
-            instance,
-            id,
-        }
+            }),
+        )
     }
 
-    /// Convert this object into a `Promise` which will resolve when the read
-    /// end of this `stream` is closed, plus a `Watch` which can be used to
-    /// retrieve the `StreamWriter` again.
+    /// Convert this object into a `Future` which will resolve when the read end
+    /// of this `stream` is closed, plus a `Watch` which can be used to retrieve
+    /// the `StreamWriter` again.
     ///
     /// Note that calling `Watch::into_inner` on the returned `Watch` will have
-    /// the side effect of causing the `Promise` to resolve immediately if it
+    /// the side effect of causing the `Future` to resolve immediately if it
     /// hasn't already.
-    pub fn watch_reader(mut self) -> (Promise<()>, Watch<Self>)
+    ///
+    /// Also note that the returned `Future` must be polled from the event loop
+    /// of the component instance from which this `StreamWriter` originated.
+    /// See [`Instance::run`] for details.
+    pub fn watch_reader(mut self) -> (impl Future<Output = ()> + Send + 'static, Watch<Self>)
     where
         B: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
         send(&mut self.tx.as_mut().unwrap(), WriteEvent::Watch { tx });
         let instance = self.instance;
-        let id = self.id;
-        watch(instance, id, rx, self)
+        watch(instance, rx, self)
     }
 }
 
@@ -1006,47 +1023,55 @@ impl<B> StreamReader<B> {
 
     /// Read values from this `stream`.
     ///
-    /// The returned `Promise` will yield a `(Some(_), _)` if the read completed
+    /// The returned `Future` will yield a `(Some(_), _)` if the read completed
     /// (possibly with zero items if the write was empty).  It will return
     /// `(None, _)` if the read failed due to the closure of the write end.  In
     /// either case, the returned buffer will be the same one passed as a
     /// parameter, with zero or more items added.
-    pub fn read(mut self, buffer: B) -> Promise<(Option<StreamReader<B>>, B)>
+    ///
+    /// Note that the returned `Future` must be polled from the event loop of
+    /// the component instance from which this `StreamReader` originated.  See
+    /// [`Instance::run`] for details.
+    pub fn read(
+        mut self,
+        buffer: B,
+    ) -> impl Future<Output = (Option<StreamReader<B>>, B)> + Send + 'static
     where
         B: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
         send(self.tx.as_mut().unwrap(), ReadEvent::Read { buffer, tx });
         let instance = self.instance;
-        let id = self.id;
-        Promise {
-            inner: Box::pin(rx.map(move |v| match v {
+        super::checked(
+            instance,
+            rx.map(move |v| match v {
                 Ok(HostResult { buffer, closed }) => ((!closed).then_some(self), buffer),
                 Err(_) => {
                     todo!("guarantee buffer recovery if event loop errors or panics")
                 }
-            })),
-            instance,
-            id,
-        }
+            }),
+        )
     }
 
-    /// Convert this object into a `Promise` which will resolve when the write
+    /// Convert this object into a `Future` which will resolve when the write
     /// end of this `stream` is closed, plus a `Watch` which can be used to
     /// retrieve the `StreamReader` again.
     ///
     /// Note that calling `Watch::into_inner` on the returned `Watch` will have
-    /// the side effect of causing the `Promise` to resolve immediately if it
+    /// the side effect of causing the `Future` to resolve immediately if it
     /// hasn't already.
-    pub fn watch_writer(mut self) -> (Promise<()>, Watch<Self>)
+    ///
+    /// Also note that the returned `Future` must be polled from the event loop
+    /// of the component instance from which this `StreamReader` originated.
+    /// See [`Instance::run`] for details.
+    pub fn watch_writer(mut self) -> (impl Future<Output = ()> + Send + 'static, Watch<Self>)
     where
         B: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
         send(&mut self.tx.as_mut().unwrap(), ReadEvent::Watch { tx });
         let instance = self.instance;
-        let id = self.id;
-        watch(instance, id, rx, self)
+        watch(instance, rx, self)
     }
 }
 

@@ -837,8 +837,8 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
     let run = instance.get_typed_func::<(), ()>(&mut store, "run")?;
 
     if concurrent {
-        let promise = run.call_concurrent(&mut store, ()).await?;
-        promise.get(&mut store).await?;
+        let call = run.call_concurrent(&mut store, ());
+        instance.run(&mut store, call).await??;
     } else {
         run.call_async(&mut store, ()).await?;
     }
@@ -938,8 +938,8 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
     let run = instance.get_func(&mut store, "run").unwrap();
 
     if concurrent {
-        let promise = run.call_concurrent(&mut store, Vec::new()).await?;
-        promise.get(&mut store).await?;
+        let call = run.call_concurrent(&mut store, Vec::new());
+        instance.run(&mut store, call).await??;
     } else {
         run.call_async(&mut store, &[], &mut []).await?;
     }

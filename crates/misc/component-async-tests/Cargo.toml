@@ -33,3 +33,4 @@ wasmtime-wasi = { workspace = true }
 [dev-dependencies]
 test-programs-artifacts = { workspace = true }
 bytes = { workspace = true }
+once_cell = { version = "1.12.0" }

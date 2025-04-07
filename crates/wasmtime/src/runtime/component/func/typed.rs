@@ -19,7 +19,11 @@ use wasmtime_environ::component::{
 };
 
 #[cfg(feature = "component-model-async")]
-use crate::component::concurrent::{self, Promise};
+use crate::component::concurrent::{self, PreparedCall};
+#[cfg(feature = "component-model-async")]
+use core::future::{self, Future};
+#[cfg(feature = "component-model-async")]
+use core::pin::Pin;
 
 /// A statically-typed version of [`Func`] which takes `Params` as input and
 /// returns `Return`.
@@ -212,40 +216,46 @@ where
         }
     }
 
-    /// Start concurrent call to this function.
+    /// Start a concurrent call to this function.
     ///
     /// Unlike [`Self::call`] and [`Self::call_async`] (both of which require
     /// exclusive access to the store until the completion of the call), calls
     /// made using this method may run concurrently with other calls to the same
     /// instance.
+    ///
+    /// Note that the `Future` returned by this method will panic if polled or
+    /// `.await`ed outside of the event loop of the component instance this
+    /// function belongs to; use `Instance::run`, `Instance::run_with`, or
+    /// `Instance::spawn` to poll it from within the event loop.  See
+    /// [`Instance::run`] for examples.
     #[cfg(feature = "component-model-async")]
-    pub async fn call_concurrent<T: Send>(
+    pub fn call_concurrent<T: Send>(
         self,
         mut store: impl AsContextMut<Data = T>,
         params: Params,
-    ) -> Result<Promise<Return>>
+    ) -> Pin<Box<dyn Future<Output = Result<Return>> + Send + 'static>>
     where
         Params: Send + Sync + 'static,
         Return: Send + Sync + 'static,
     {
-        let store = store.as_context_mut();
+        let mut store = store.as_context_mut();
         assert!(
             store.0.async_support(),
             "cannot use `call_concurrent` when async support is not enabled on the config"
         );
-        let instance = store.0[self.func.0].component_instance;
-        concurrent::on_fiber(store, Some(instance), move |store| {
-            self.start_call(store.as_context_mut(), params)
-        })
-        .await?
+
+        match self.prepare_call(store.as_context_mut(), params) {
+            Ok(prepared) => Box::pin(concurrent::defer_call(store, prepared)),
+            Err(e) => Box::pin(future::ready(Err(e))),
+        }
     }
 
     #[cfg(feature = "component-model-async")]
-    fn start_call<'a, T: Send>(
+    fn prepare_call<'a, T: Send>(
         self,
         store: StoreContextMut<'a, T>,
         params: Params,
-    ) -> Result<Promise<Return>>
+    ) -> Result<PreparedCall<Return>>
     where
         Params: Send + Sync + 'static,
         Return: Send + Sync + 'static,
@@ -253,14 +263,14 @@ where
         if store.0[self.func.0].options.async_() {
             if Params::flatten_count() <= MAX_FLAT_PARAMS {
                 if Return::flatten_count() <= MAX_FLAT_PARAMS {
-                    self.func.start_call_raw_async(
+                    self.func.prepare_call_raw(
                         store,
                         params,
                         Self::lower_stack_args,
                         Self::lift_stack_result_raw,
                     )
                 } else {
-                    self.func.start_call_raw_async(
+                    self.func.prepare_call_raw(
                         store,
                         params,
                         Self::lower_stack_args,
@@ -269,14 +279,14 @@ where
                 }
             } else {
                 if Return::flatten_count() <= MAX_FLAT_PARAMS {
-                    self.func.start_call_raw_async(
+                    self.func.prepare_call_raw(
                         store,
                         params,
                         Self::lower_heap_args,
                         Self::lift_stack_result_raw,
                     )
                 } else {
-                    self.func.start_call_raw_async(
+                    self.func.prepare_call_raw(
                         store,
                         params,
                         Self::lower_heap_args,
@@ -286,14 +296,14 @@ where
             }
         } else if Params::flatten_count() <= MAX_FLAT_PARAMS {
             if Return::flatten_count() <= MAX_FLAT_RESULTS {
-                self.func.start_call_raw_async(
+                self.func.prepare_call_raw(
                     store,
                     params,
                     Self::lower_stack_args,
                     Self::lift_stack_result_raw,
                 )
             } else {
-                self.func.start_call_raw_async(
+                self.func.prepare_call_raw(
                     store,
                     params,
                     Self::lower_stack_args,
@@ -302,14 +312,14 @@ where
             }
         } else {
             if Return::flatten_count() <= MAX_FLAT_RESULTS {
-                self.func.start_call_raw_async(
+                self.func.prepare_call_raw(
                     store,
                     params,
                     Self::lower_heap_args,
                     Self::lift_stack_result_raw,
                 )
             } else {
-                self.func.start_call_raw_async(
+                self.func.prepare_call_raw(
                     store,
                     params,
                     Self::lower_heap_args,

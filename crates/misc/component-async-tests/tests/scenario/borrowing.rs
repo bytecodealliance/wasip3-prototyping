@@ -2,8 +2,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
+use futures::stream::{FuturesUnordered, TryStreamExt};
 use tokio::fs;
-use wasmtime::component::{Component, Linker, PromisesUnordered, ResourceTable};
+use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;
 
@@ -83,24 +84,21 @@ pub async fn test_run_bool(component: &[u8], v: bool) -> Result<()> {
         engine.increment_epoch();
     });
 
+    let instance = linker.instantiate_async(&mut store, &component).await?;
     let borrowing_host =
-        component_async_tests::borrowing_host::bindings::BorrowingHost::instantiate_async(
-            &mut store, &component, &linker,
-        )
-        .await?;
+        component_async_tests::borrowing_host::bindings::BorrowingHost::new(&mut store, &instance)?;
 
     // Start three concurrent calls and then join them all:
-    let mut promises = PromisesUnordered::new();
+    let mut futures = FuturesUnordered::new();
     for _ in 0..3 {
-        promises.push(
+        futures.push(
             borrowing_host
                 .local_local_run_bool()
-                .call_run(&mut store, v)
-                .await?,
+                .call_run(&mut store, v),
         );
     }
 
-    while let Some(()) = promises.next(&mut store).await? {
+    while let Some(()) = instance.run(&mut store, futures.try_next()).await?? {
         // continue
     }
 

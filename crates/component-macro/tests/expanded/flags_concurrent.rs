@@ -417,7 +417,7 @@ pub mod foo {
                 for spawned in spawned {
                     instance
                         .unwrap()
-                        .spawn(
+                        .spawn_raw(
                             &mut store_cx,
                             wasmtime::component::__internal::poll_fn(move |cx| {
                                 let mut spawned = spawned.try_lock().unwrap();
@@ -1242,11 +1242,13 @@ pub mod exports {
                     }
                 }
                 impl Guest {
-                    pub async fn call_roundtrip_flag1<S: wasmtime::AsContextMut>(
+                    pub fn call_roundtrip_flag1<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
                         arg0: Flag1,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<Flag1>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<Flag1>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -1256,16 +1258,18 @@ pub mod exports {
                                 (Flag1,),
                             >::new_unchecked(self.roundtrip_flag1)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), (arg0,))
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
-                    pub async fn call_roundtrip_flag2<S: wasmtime::AsContextMut>(
+                    pub fn call_roundtrip_flag2<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
                         arg0: Flag2,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<Flag2>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<Flag2>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -1275,16 +1279,18 @@ pub mod exports {
                                 (Flag2,),
                             >::new_unchecked(self.roundtrip_flag2)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), (arg0,))
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
-                    pub async fn call_roundtrip_flag4<S: wasmtime::AsContextMut>(
+                    pub fn call_roundtrip_flag4<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
                         arg0: Flag4,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<Flag4>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<Flag4>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -1294,16 +1300,18 @@ pub mod exports {
                                 (Flag4,),
                             >::new_unchecked(self.roundtrip_flag4)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), (arg0,))
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
-                    pub async fn call_roundtrip_flag8<S: wasmtime::AsContextMut>(
+                    pub fn call_roundtrip_flag8<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
                         arg0: Flag8,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<Flag8>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<Flag8>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -1313,16 +1321,18 @@ pub mod exports {
                                 (Flag8,),
                             >::new_unchecked(self.roundtrip_flag8)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), (arg0,))
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
-                    pub async fn call_roundtrip_flag16<S: wasmtime::AsContextMut>(
+                    pub fn call_roundtrip_flag16<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
                         arg0: Flag16,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<Flag16>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<Flag16>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -1332,16 +1342,18 @@ pub mod exports {
                                 (Flag16,),
                             >::new_unchecked(self.roundtrip_flag16)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), (arg0,))
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
-                    pub async fn call_roundtrip_flag32<S: wasmtime::AsContextMut>(
+                    pub fn call_roundtrip_flag32<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
                         arg0: Flag32,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<Flag32>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<Flag32>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -1351,16 +1363,18 @@ pub mod exports {
                                 (Flag32,),
                             >::new_unchecked(self.roundtrip_flag32)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), (arg0,))
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
-                    pub async fn call_roundtrip_flag64<S: wasmtime::AsContextMut>(
+                    pub fn call_roundtrip_flag64<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
                         arg0: Flag64,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<Flag64>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<Flag64>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -1370,10 +1384,10 @@ pub mod exports {
                                 (Flag64,),
                             >::new_unchecked(self.roundtrip_flag64)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), (arg0,))
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
                 }
             }

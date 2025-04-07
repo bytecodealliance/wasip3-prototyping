@@ -3,8 +3,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use futures::{
+    stream::{FuturesUnordered, TryStreamExt},
+    FutureExt,
+};
 use tokio::fs;
-use wasmtime::component::{Component, Linker, PromisesUnordered, ResourceTable, Val};
+use wasmtime::component::{Component, Linker, ResourceTable, Val};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;
 
@@ -230,17 +234,16 @@ async fn test_round_trip_many(component: &[u8], inputs_and_outputs: &[(&str, &st
 
         let mut store = make_store();
 
-        let round_trip_many =
-            component_async_tests::round_trip_many::bindings::RoundTripMany::instantiate_async(
-                &mut store, &component, &linker,
-            )
-            .await?;
+        let instance = linker.instantiate_async(&mut store, &component).await?;
+        let round_trip_many = component_async_tests::round_trip_many::bindings::RoundTripMany::new(
+            &mut store, &instance,
+        )?;
 
         // Start concurrent calls and then join them all:
-        let mut promises = PromisesUnordered::new();
+        let mut futures = FuturesUnordered::new();
         for (input, output) in inputs_and_outputs {
             let output = (*output).to_owned();
-            promises.push(
+            futures.push(
                 round_trip_many
                     .local_local_many()
                     .call_foo(
@@ -253,12 +256,11 @@ async fn test_round_trip_many(component: &[u8], inputs_and_outputs: &[(&str, &st
                         f.clone(),
                         g.clone(),
                     )
-                    .await?
-                    .map(move |v| (v, output)),
+                    .map(move |v| v.map(move |v| (v, output))),
             );
         }
 
-        while let Some((actual, expected)) = promises.next(&mut store).await? {
+        while let Some((actual, expected)) = instance.run(&mut store, futures.try_next()).await?? {
             assert_eq!(
                 (expected, b, c.clone(), d, e.clone(), f.clone(), g.clone()),
                 actual
@@ -364,18 +366,17 @@ async fn test_round_trip_many(component: &[u8], inputs_and_outputs: &[(&str, &st
         };
 
         // Start three concurrent calls and then join them all:
-        let mut promises = PromisesUnordered::new();
+        let mut futures = FuturesUnordered::new();
         for (input, output) in inputs_and_outputs {
             let output = (*output).to_owned();
-            promises.push(
+            futures.push(
                 foo_function
                     .call_concurrent(&mut store, make(input))
-                    .await?
-                    .map(move |v| (v, output)),
+                    .map(move |v| v.map(move |v| (v, output))),
             );
         }
 
-        while let Some((actual, expected)) = promises.next(&mut store).await? {
+        while let Some((actual, expected)) = instance.run(&mut store, futures.try_next()).await?? {
             let Some(Val::Tuple(actual)) = actual.into_iter().next() else {
                 unreachable!()
             };

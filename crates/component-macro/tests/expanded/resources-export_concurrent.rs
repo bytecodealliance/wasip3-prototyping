@@ -448,12 +448,12 @@ pub mod exports {
                     }
                 }
                 impl GuestA<'_> {
-                    pub async fn call_constructor<S: wasmtime::AsContextMut>(
+                    pub fn call_constructor<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<
-                        wasmtime::component::Promise<wasmtime::component::ResourceAny>,
-                    >
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<wasmtime::component::ResourceAny>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -463,15 +463,17 @@ pub mod exports {
                                 (wasmtime::component::ResourceAny,),
                             >::new_unchecked(self.funcs.constructor_a_constructor)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), ())
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee.call_concurrent(store.as_context_mut(), ()),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
-                    pub async fn call_static_a<S: wasmtime::AsContextMut>(
+                    pub fn call_static_a<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<u32>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<u32>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -481,16 +483,18 @@ pub mod exports {
                                 (u32,),
                             >::new_unchecked(self.funcs.static_a_static_a)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), ())
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee.call_concurrent(store.as_context_mut(), ()),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
-                    pub async fn call_method_a<S: wasmtime::AsContextMut>(
+                    pub fn call_method_a<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
                         arg0: wasmtime::component::ResourceAny,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<u32>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<u32>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -500,10 +504,10 @@ pub mod exports {
                                 (u32,),
                             >::new_unchecked(self.funcs.method_a_method_a)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), (arg0,))
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
                 }
             }
@@ -575,7 +579,7 @@ pub mod exports {
                                 .ok_or_else(|| {
                                     anyhow::anyhow!(
                                         "instance export `foo:foo/export-using-import` does \
-                  not have export `{name}`"
+                        not have export `{name}`"
                                     )
                                 })
                         };
@@ -631,13 +635,13 @@ pub mod exports {
                     }
                 }
                 impl GuestA<'_> {
-                    pub async fn call_constructor<S: wasmtime::AsContextMut>(
+                    pub fn call_constructor<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
                         arg0: wasmtime::component::Resource<Y>,
-                    ) -> wasmtime::Result<
-                        wasmtime::component::Promise<wasmtime::component::ResourceAny>,
-                    >
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<wasmtime::component::ResourceAny>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -647,17 +651,17 @@ pub mod exports {
                                 (wasmtime::component::ResourceAny,),
                             >::new_unchecked(self.funcs.constructor_a_constructor)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), (arg0,))
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
-                    pub async fn call_static_a<S: wasmtime::AsContextMut>(
+                    pub fn call_static_a<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<
-                        wasmtime::component::Promise<wasmtime::component::Resource<Y>>,
-                    >
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<wasmtime::component::Resource<Y>>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -667,19 +671,19 @@ pub mod exports {
                                 (wasmtime::component::Resource<Y>,),
                             >::new_unchecked(self.funcs.static_a_static_a)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), ())
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee.call_concurrent(store.as_context_mut(), ()),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
-                    pub async fn call_method_a<S: wasmtime::AsContextMut>(
+                    pub fn call_method_a<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
                         arg0: wasmtime::component::ResourceAny,
                         arg1: wasmtime::component::Resource<Y>,
-                    ) -> wasmtime::Result<
-                        wasmtime::component::Promise<wasmtime::component::Resource<Y>>,
-                    >
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<wasmtime::component::Resource<Y>>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -692,10 +696,10 @@ pub mod exports {
                                 (wasmtime::component::Resource<Y>,),
                             >::new_unchecked(self.funcs.method_a_method_a)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), (arg0, arg1))
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee.call_concurrent(store.as_context_mut(), (arg0, arg1)),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
                 }
             }
@@ -762,7 +766,7 @@ pub mod exports {
                                 .ok_or_else(|| {
                                     anyhow::anyhow!(
                                         "instance export `foo:foo/export-using-export1` does \
-                  not have export `{name}`"
+                              not have export `{name}`"
                                     )
                                 })
                         };
@@ -795,12 +799,12 @@ pub mod exports {
                     }
                 }
                 impl GuestA<'_> {
-                    pub async fn call_constructor<S: wasmtime::AsContextMut>(
+                    pub fn call_constructor<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<
-                        wasmtime::component::Promise<wasmtime::component::ResourceAny>,
-                    >
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<wasmtime::component::ResourceAny>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -810,10 +814,10 @@ pub mod exports {
                                 (wasmtime::component::ResourceAny,),
                             >::new_unchecked(self.funcs.constructor_a_constructor)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), ())
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee.call_concurrent(store.as_context_mut(), ()),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
                 }
             }
@@ -881,7 +885,7 @@ pub mod exports {
                                 .ok_or_else(|| {
                                     anyhow::anyhow!(
                                         "instance export `foo:foo/export-using-export2` does \
-                  not have export `{name}`"
+                                not have export `{name}`"
                                     )
                                 })
                         };
@@ -914,13 +918,13 @@ pub mod exports {
                     }
                 }
                 impl GuestB<'_> {
-                    pub async fn call_constructor<S: wasmtime::AsContextMut>(
+                    pub fn call_constructor<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
                         arg0: wasmtime::component::ResourceAny,
-                    ) -> wasmtime::Result<
-                        wasmtime::component::Promise<wasmtime::component::ResourceAny>,
-                    >
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<wasmtime::component::ResourceAny>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -930,10 +934,10 @@ pub mod exports {
                                 (wasmtime::component::ResourceAny,),
                             >::new_unchecked(self.funcs.constructor_b_constructor)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), (arg0,))
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
                 }
             }

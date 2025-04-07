@@ -16,7 +16,11 @@ use wasmtime_environ::component::{
 };
 
 #[cfg(feature = "component-model-async")]
-use crate::component::concurrent::{self, LiftLowerContext, Promise};
+use crate::component::concurrent::{self, LiftLowerContext, PreparedCall};
+#[cfg(feature = "component-model-async")]
+use core::future::{self, Future};
+#[cfg(feature = "component-model-async")]
+use core::pin::Pin;
 
 mod host;
 mod options;
@@ -344,36 +348,42 @@ impl Func {
         }
     }
 
-    /// Start concurrent call to this function.
+    /// Start a concurrent call to this function.
     ///
     /// Unlike [`Self::call`] and [`Self::call_async`] (both of which require
     /// exclusive access to the store until the completion of the call), calls
     /// made using this method may run concurrently with other calls to the same
     /// instance.
+    ///
+    /// Note that the `Future` returned by this method will panic if polled or
+    /// `.await`ed outside of the event loop of the component instance this
+    /// function belongs to; use `Instance::run`, `Instance::run_with`, or
+    /// `Instance::spawn` to poll it from within the event loop.  See
+    /// [`Instance::run`] for examples.
     #[cfg(feature = "component-model-async")]
-    pub async fn call_concurrent<T: Send>(
+    pub fn call_concurrent<T: Send>(
         self,
         mut store: impl AsContextMut<Data = T>,
         params: Vec<Val>,
-    ) -> Result<Promise<Vec<Val>>> {
-        let store = store.as_context_mut();
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Val>>> + Send + 'static>> {
+        let mut store = store.as_context_mut();
         assert!(
             store.0.async_support(),
             "cannot use `call_concurrent` when async support is not enabled on the config"
         );
-        let instance = store.0[self.0].component_instance;
-        concurrent::on_fiber(store, Some(instance), move |store| {
-            self.start_call(store.as_context_mut(), params)
-        })
-        .await?
+
+        match self.prepare_call(store.as_context_mut(), params) {
+            Ok(prepared) => Box::pin(concurrent::defer_call(store, prepared)),
+            Err(e) => Box::pin(future::ready(Err(e))),
+        }
     }
 
     #[cfg(feature = "component-model-async")]
-    fn start_call<'a, T: Send>(
+    fn prepare_call<'a, T: Send>(
         self,
         mut store: StoreContextMut<'a, T>,
         params: Vec<Val>,
-    ) -> Result<Promise<Vec<Val>>> {
+    ) -> Result<PreparedCall<Vec<Val>>> {
         let store = store.as_context_mut();
 
         let param_tys = self.params(&store);
@@ -392,7 +402,7 @@ impl Func {
             Self::lift_results_sync as LiftFn<_>
         };
 
-        self.start_call_raw_async(store, params, lower, lift)
+        self.prepare_call_raw(store, params, lower, lift)
     }
 
     fn call_impl<U: Send>(
@@ -504,7 +514,7 @@ impl Func {
     }
 
     #[cfg(feature = "component-model-async")]
-    fn start_call_raw_async<
+    fn prepare_call_raw<
         'a,
         T: Send,
         Params: Send + Sync + 'static,
@@ -516,12 +526,12 @@ impl Func {
         params: Params,
         lower: LowerFn<T, Params, LowerParams>,
         lift: LiftFn<Return>,
-    ) -> Result<Promise<Return>>
+    ) -> Result<PreparedCall<Return>>
     where
         LowerParams: Copy,
     {
         let me = self.0;
-        concurrent::start_call::<_, LowerParams, _>(
+        concurrent::prepare_call::<_, LowerParams, _>(
             store,
             lower_params_with_context::<Params, LowerParams, T, LowerFn<T, Params, LowerParams>>,
             concurrent::LiftLowerContext {

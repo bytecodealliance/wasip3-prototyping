@@ -248,7 +248,7 @@ pub mod imports {
         for spawned in spawned {
             instance
                 .unwrap()
-                .spawn(
+                .spawn_raw(
                     &mut store_cx,
                     wasmtime::component::__internal::poll_fn(move |cx| {
                         let mut spawned = spawned.try_lock().unwrap();

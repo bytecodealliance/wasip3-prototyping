@@ -2,8 +2,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use futures::stream::{FuturesUnordered, TryStreamExt};
 use tokio::fs;
-use wasmtime::component::{Component, Linker, PromisesUnordered, ResourceTable, Val};
+use wasmtime::component::{Component, Linker, ResourceTable, Val};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;
 
@@ -75,19 +76,18 @@ async fn test_round_trip_direct(
 
         let mut store = make_store();
 
-        let round_trip =
-            component_async_tests::round_trip_direct::bindings::RoundTripDirect::instantiate_async(
-                &mut store, &component, &linker,
-            )
-            .await?;
+        let instance = linker.instantiate_async(&mut store, &component).await?;
+        let round_trip = component_async_tests::round_trip_direct::bindings::RoundTripDirect::new(
+            &mut store, &instance,
+        )?;
 
         // Start three concurrent calls and then join them all:
-        let mut promises = PromisesUnordered::new();
+        let mut futures = FuturesUnordered::new();
         for _ in 0..3 {
-            promises.push(round_trip.call_foo(&mut store, input.to_owned()).await?);
+            futures.push(round_trip.call_foo(&mut store, input.to_owned()));
         }
 
-        while let Some(value) = promises.next(&mut store).await? {
+        while let Some(value) = instance.run(&mut store, futures.try_next()).await?? {
             assert_eq!(expected_output, &value);
         }
     }
@@ -120,16 +120,14 @@ async fn test_round_trip_direct(
             .ok_or_else(|| anyhow!("can't find `foo` in instance"))?;
 
         // Start three concurrent calls and then join them all:
-        let mut promises = PromisesUnordered::new();
+        let mut futures = FuturesUnordered::new();
         for _ in 0..3 {
-            promises.push(
-                foo_function
-                    .call_concurrent(&mut store, vec![Val::String(input.to_owned())])
-                    .await?,
+            futures.push(
+                foo_function.call_concurrent(&mut store, vec![Val::String(input.to_owned())]),
             );
         }
 
-        while let Some(value) = promises.next(&mut store).await? {
+        while let Some(value) = instance.run(&mut store, futures.try_next()).await?? {
             let Some(Val::String(value)) = value.into_iter().next() else {
                 unreachable!()
             };
