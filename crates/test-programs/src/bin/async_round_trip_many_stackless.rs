@@ -45,13 +45,13 @@ impl Guest for Component {
             c: v.c,
         };
         let (a, b, c, d, e, f, g) = many::foo(
-            &format!("{a} - entered guest"),
+            format!("{a} - entered guest"),
             b,
-            &c,
+            c,
             d,
-            &into(e),
-            f.map(into).as_ref(),
-            g.map(into).as_ref().map_err(drop),
+            into(e),
+            f.map(into),
+            g.map(into).map_err(drop),
         )
         .await;
         (

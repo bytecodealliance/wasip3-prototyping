@@ -26,7 +26,7 @@ struct Component;
 impl Guest for Component {
     async fn run() {
         let s = "All mimsy were the borogoves";
-        assert_eq!(s, &foo(s).await);
+        assert_eq!(s, foo(s.to_string()).await);
         assert_eq!(s, &get_post_return_value());
     }
 }

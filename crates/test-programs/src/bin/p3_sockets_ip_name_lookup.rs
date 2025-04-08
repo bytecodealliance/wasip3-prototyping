@@ -7,21 +7,25 @@ struct Component;
 test_programs::p3::export!(Component);
 
 async fn resolve_one(name: &str) -> Result<IpAddress, ErrorCode> {
-    Ok(resolve_addresses(name).await?.first().unwrap().to_owned())
+    Ok(resolve_addresses(name.into())
+        .await?
+        .first()
+        .unwrap()
+        .to_owned())
 }
 
 impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
     async fn run() -> Result<(), ()> {
         // Valid domains
         try_join!(
-            resolve_addresses("localhost"),
-            resolve_addresses("example.com")
+            resolve_addresses("localhost".into()),
+            resolve_addresses("example.com".into())
         )
         .unwrap();
 
         // NB: this is an actual real resolution, so it might time out, might cause
         // issues, etc. This result is ignored to prevent flaky failures in CI.
-        let _ = resolve_addresses("münchen.de").await;
+        let _ = resolve_addresses("münchen.de".into()).await;
 
         // Valid IP addresses
         assert_eq!(
@@ -64,27 +68,29 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
 
         // Invalid inputs
         assert_eq!(
-            resolve_addresses("").await.unwrap_err(),
+            resolve_addresses("".into()).await.unwrap_err(),
             ErrorCode::InvalidArgument
         );
         assert_eq!(
-            resolve_addresses(" ").await.unwrap_err(),
+            resolve_addresses(" ".into()).await.unwrap_err(),
             ErrorCode::InvalidArgument
         );
         assert_eq!(
-            resolve_addresses("a.b<&>").await.unwrap_err(),
+            resolve_addresses("a.b<&>".into()).await.unwrap_err(),
             ErrorCode::InvalidArgument
         );
         assert_eq!(
-            resolve_addresses("127.0.0.1:80").await.unwrap_err(),
+            resolve_addresses("127.0.0.1:80".into()).await.unwrap_err(),
             ErrorCode::InvalidArgument
         );
         assert_eq!(
-            resolve_addresses("[::]:80").await.unwrap_err(),
+            resolve_addresses("[::]:80".into()).await.unwrap_err(),
             ErrorCode::InvalidArgument
         );
         assert_eq!(
-            resolve_addresses("http://example.com/").await.unwrap_err(),
+            resolve_addresses("http://example.com/".into())
+                .await
+                .unwrap_err(),
             ErrorCode::InvalidArgument
         );
         Ok(())
