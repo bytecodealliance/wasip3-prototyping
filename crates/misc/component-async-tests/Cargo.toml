@@ -24,6 +24,7 @@ wasi-http-draft = { path = "http" }
 wasm-compose = { workspace = true }
 wasmparser = { workspace = true }
 wasmtime = { workspace = true, features = [
+  "default",
   "cranelift",
   "component-model-async",
 ] }

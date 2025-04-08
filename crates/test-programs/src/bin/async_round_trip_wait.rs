@@ -25,7 +25,7 @@ impl Baz for Component {
         async_support::block_on(async move {
             format!(
                 "{} - exited guest",
-                baz::foo(&format!("{s} - entered guest")).await
+                baz::foo(format!("{s} - entered guest")).await
             )
         })
     }
