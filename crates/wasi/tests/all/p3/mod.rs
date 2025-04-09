@@ -5,16 +5,17 @@ use std::path::Path;
 use anyhow::{anyhow, Context as _};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::Store;
+use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiView};
 use wasmtime_wasi::p3::bindings::Command;
 use wasmtime_wasi::p3::cli::{WasiCliCtx, WasiCliView};
 use wasmtime_wasi::p3::clocks::{WasiClocksCtx, WasiClocksView};
-use wasmtime_wasi::p3::filesystem::{DirPerms, FilePerms, WasiFilesystemCtx, WasiFilesystemView};
+use wasmtime_wasi::p3::filesystem::{WasiFilesystemCtx, WasiFilesystemView};
 use wasmtime_wasi::p3::random::{WasiRandomCtx, WasiRandomView};
 use wasmtime_wasi::p3::sockets::{
     AllowedNetworkUses, SocketAddrCheck, WasiSocketsCtx, WasiSocketsView,
 };
 use wasmtime_wasi::p3::ResourceView;
-use wasmtime_wasi::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::{DirPerms, FilePerms};
 
 macro_rules! assert_test_exists {
     ($name:ident) => {
@@ -30,7 +31,7 @@ struct Ctx {
     random: WasiRandomCtx,
     sockets: WasiSocketsCtx,
     table: ResourceTable,
-    wasip2: WasiCtx,
+    wasip2: WasiP2Ctx,
 }
 
 impl Default for Ctx {
@@ -49,13 +50,13 @@ impl Default for Ctx {
             },
             random: WasiRandomCtx::default(),
             table: ResourceTable::default(),
-            wasip2: WasiCtxBuilder::new().inherit_stdio().build(),
+            wasip2: WasiP2CtxBuilder::new().inherit_stdio().build(),
         }
     }
 }
 
 impl WasiView for Ctx {
-    fn ctx(&mut self) -> &mut WasiCtx {
+    fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.wasip2
     }
 }
