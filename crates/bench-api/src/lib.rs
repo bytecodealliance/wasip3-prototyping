@@ -141,7 +141,7 @@ use clap::Parser;
 use std::os::raw::{c_int, c_void};
 use std::slice;
 use std::{env, path::PathBuf};
-use wasi_common::{sync::WasiP2CtxBuilder, I32Exit, WasiP2Ctx};
+use wasi_common::{sync::WasiCtxBuilder, I32Exit, WasiCtx};
 use wasmtime::{Engine, Instance, Linker, Module, Store};
 use wasmtime_cli_flags::CommonOptions;
 
@@ -298,7 +298,7 @@ pub extern "C" fn wasm_bench_create(
             config.execution_start,
             config.execution_end,
             move || {
-                let mut cx = WasiP2CtxBuilder::new();
+                let mut cx = WasiCtxBuilder::new();
 
                 let stdout = std::fs::File::create(&stdout_path)
                     .with_context(|| format!("failed to create {}", stdout_path.display()))?;
@@ -407,7 +407,7 @@ struct BenchState {
     instantiation_timer: *mut u8,
     instantiation_start: extern "C" fn(*mut u8),
     instantiation_end: extern "C" fn(*mut u8),
-    make_wasi_cx: Box<dyn FnMut() -> Result<WasiP2Ctx>>,
+    make_wasi_cx: Box<dyn FnMut() -> Result<WasiCtx>>,
     module: Option<Module>,
     store_and_instance: Option<(Store<HostState>, Instance)>,
     epoch_interruption: bool,
@@ -415,7 +415,7 @@ struct BenchState {
 }
 
 struct HostState {
-    wasi: WasiP2Ctx,
+    wasi: WasiCtx,
     #[cfg(feature = "wasi-nn")]
     wasi_nn: wasmtime_wasi_nn::witx::WasiNnCtx,
 }
@@ -432,7 +432,7 @@ impl BenchState {
         execution_timer: *mut u8,
         execution_start: extern "C" fn(*mut u8),
         execution_end: extern "C" fn(*mut u8),
-        make_wasi_cx: impl FnMut() -> Result<WasiP2Ctx> + 'static,
+        make_wasi_cx: impl FnMut() -> Result<WasiCtx> + 'static,
     ) -> Result<Self> {
         let mut config = options.config(None)?;
         // NB: always disable the compilation cache.

@@ -1,6 +1,6 @@
 use super::*;
 use test_programs_artifacts::*;
-use wasi_common::sync::{add_to_linker, WasiP2CtxBuilder};
+use wasi_common::sync::{add_to_linker, WasiCtxBuilder};
 
 foreach_preview1!(assert_test_exists);
 
@@ -17,7 +17,7 @@ fn run(path: &str, inherit_stdio: bool) -> Result<()> {
 
         // Create our wasi context.
         // Additionally register any preopened directories if we have them.
-        let mut builder = WasiP2CtxBuilder::new();
+        let mut builder = WasiCtxBuilder::new();
 
         if inherit_stdio {
             builder.inherit_stdio();

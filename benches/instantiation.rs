@@ -6,15 +6,15 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
 use std::sync::Arc;
 use std::thread;
-use wasi_common::{sync::WasiP2CtxBuilder, WasiP2Ctx};
+use wasi_common::{sync::WasiCtxBuilder, WasiCtx};
 use wasmtime::*;
 
-fn store(engine: &Engine) -> Store<WasiP2Ctx> {
-    let wasi = WasiP2CtxBuilder::new().build();
+fn store(engine: &Engine) -> Store<WasiCtx> {
+    let wasi = WasiCtxBuilder::new().build();
     Store::new(engine, wasi)
 }
 
-fn instantiate(pre: &InstancePre<WasiP2Ctx>, engine: &Engine) -> Result<()> {
+fn instantiate(pre: &InstancePre<WasiCtx>, engine: &Engine) -> Result<()> {
     let mut store = store(engine);
     let _instance = pre.instantiate(&mut store)?;
     Ok(())

@@ -2,7 +2,7 @@
 
 // You can execute this example with `cargo run --example linking`
 
-use wasi_common::sync::WasiP2CtxBuilder;
+use wasi_common::sync::WasiCtxBuilder;
 use wasmtime::*;
 
 fn main() -> Result<()> {
@@ -18,7 +18,7 @@ fn main() -> Result<()> {
     let linking2 = Module::from_file(&engine, "examples/linking2.wat")?;
 
     // Configure WASI and insert it into a `Store`
-    let wasi = WasiP2CtxBuilder::new()
+    let wasi = WasiCtxBuilder::new()
         .inherit_stdio()
         .inherit_args()?
         .build();

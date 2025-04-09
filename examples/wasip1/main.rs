@@ -6,7 +6,7 @@ You can execute this example with:
     cargo run --example wasip1
 */
 
-use wasi_common::sync::WasiP2CtxBuilder;
+use wasi_common::sync::WasiCtxBuilder;
 use wasmtime::*;
 
 fn main() -> Result<()> {
@@ -18,7 +18,7 @@ fn main() -> Result<()> {
     // Create a WASI context and put it in a Store; all instances in the store
     // share this context. `WasiP2CtxBuilder` provides a number of ways to
     // configure what the target program will have access to.
-    let wasi = WasiP2CtxBuilder::new()
+    let wasi = WasiCtxBuilder::new()
         .inherit_stdio()
         .inherit_args()?
         .build();

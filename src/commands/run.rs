@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tokio::io::{stderr, stdin, stdout};
-use wasi_common::sync::{ambient_authority, Dir, TcpListener, WasiP2CtxBuilder};
+use wasi_common::sync::{ambient_authority, Dir, TcpListener, WasiCtxBuilder};
 use wasmtime::{Engine, Func, Module, Store, StoreLimits, Val, ValType};
 use wasmtime_wasi::p2::{IoView, WasiView};
 
@@ -911,7 +911,7 @@ impl RunCommand {
     }
 
     fn set_preview1_ctx(&self, store: &mut Store<Host>) -> Result<()> {
-        let mut builder = WasiP2CtxBuilder::new();
+        let mut builder = WasiCtxBuilder::new();
         builder.inherit_stdio().args(&self.compute_argv()?)?;
 
         if self.run.common.wasi.inherit_env == Some(true) {
@@ -1057,7 +1057,7 @@ impl RunCommand {
 
 #[derive(Default, Clone)]
 struct Host {
-    preview1_ctx: Option<wasi_common::WasiP2Ctx>,
+    preview1_ctx: Option<wasi_common::WasiCtx>,
 
     // The Mutex is only needed to satisfy the Sync constraint but we never
     // actually perform any locking on it as we use Mutex::get_mut for every
@@ -1202,12 +1202,12 @@ impl wasmtime_wasi_http::p3::WasiHttpView for Host {
 }
 
 #[cfg(not(unix))]
-fn ctx_set_listenfd(num_fd: usize, _builder: &mut WasiP2CtxBuilder) -> Result<usize> {
+fn ctx_set_listenfd(num_fd: usize, _builder: &mut WasiCtxBuilder) -> Result<usize> {
     Ok(num_fd)
 }
 
 #[cfg(unix)]
-fn ctx_set_listenfd(mut num_fd: usize, builder: &mut WasiP2CtxBuilder) -> Result<usize> {
+fn ctx_set_listenfd(mut num_fd: usize, builder: &mut WasiCtxBuilder) -> Result<usize> {
     use listenfd::ListenFd;
 
     for env in ["LISTEN_FDS", "LISTEN_FDNAMES"] {

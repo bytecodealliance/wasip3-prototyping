@@ -63,8 +63,8 @@
 //!   `sched_yield` and `poll_oneoff` functions.
 //!
 //! Users can provide implementations of each of these interfaces to the
-//! `WasiP2Ctx::builder(...)` function. The
-//! `wasi_cap_std_sync::WasiP2CtxBuilder::new()` function uses this public
+//! `WasiCtx::builder(...)` function. The
+//! `wasi_cap_std_sync::WasiCtxBuilder::new()` function uses this public
 //! interface to plug in its own implementations of each of these resources.
 
 #![warn(clippy::cast_sign_loss)]
@@ -91,7 +91,7 @@ pub mod tokio;
 
 pub use cap_rand::RngCore;
 pub use clocks::{SystemTimeSpec, WasiClocks, WasiMonotonicClock, WasiSystemClock};
-pub use ctx::WasiP2Ctx;
+pub use ctx::WasiCtx;
 pub use dir::WasiDir;
 pub use error::{Error, ErrorExt, I32Exit};
 pub use file::WasiFile;
