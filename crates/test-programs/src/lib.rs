@@ -22,7 +22,7 @@ wit_bindgen::generate!({
         "../wasi-http/wit",
         "../wasi-config/wit",
         "../wasi-keyvalue/wit",
-        "../wasi-tls/wit/deps/tls@v0.2.0-draft+d6fbdc7",
+        "../wasi-tls/wit/deps/tls",
     ],
     world: "wasmtime:test/test",
     features: ["cli-exit-with-code", "tls"],
