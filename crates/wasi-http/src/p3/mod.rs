@@ -71,7 +71,7 @@
 //! use tokio::net::TcpListener;
 //! use wasmtime::component::{Component, Linker, ResourceTable};
 //! use wasmtime::{Config, Engine, Result, Store};
-//! use wasmtime_wasi::{IoView, WasiP2Ctx, WasiP2CtxBuiler, WasiView};
+//! use wasmtime_wasi::{IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiView};
 //! use wasmtime_wasi_http::bindings::ProxyPre;
 //! use wasmtime_wasi_http::bindings::http::types::Scheme;
 //! use wasmtime_wasi_http::body::HyperOutgoingBody;
@@ -142,7 +142,7 @@
 //!             self.pre.engine(),
 //!             MyClientState {
 //!                 table: ResourceTable::new(),
-//!                 wasi: WasiP2CtxBuiler::new().inherit_stdio().build(),
+//!                 wasi: WasiP2CtxBuilder::new().inherit_stdio().build(),
 //!                 http: WasiHttpCtx::new(),
 //!             },
 //!         );

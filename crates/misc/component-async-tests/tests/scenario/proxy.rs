@@ -14,7 +14,7 @@ use wasmtime::component::{
     StreamWriter,
 };
 use wasmtime::{Config, Engine, Store};
-use wasmtime_wasi::{IoView, WasiP2CtxBuiler};
+use wasmtime_wasi::{IoView, WasiP2CtxBuilder};
 
 use component_async_tests::util::{annotate, compose, init_logger};
 
@@ -142,7 +142,7 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
     let mut store = Store::new(
         &engine,
         Ctx {
-            wasi: WasiP2CtxBuiler::new().inherit_stdio().build(),
+            wasi: WasiP2CtxBuilder::new().inherit_stdio().build(),
             table: ResourceTable::default(),
             continue_: false,
             wakers: Arc::new(Mutex::new(None)),

@@ -224,7 +224,7 @@ pub use self::generated::LinkOptions;
 /// ```no_run
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{Component, Linker, ResourceTable};
-/// use wasmtime_wasi::{IoView, WasiP2Ctx, WasiView, WasiP2CtxBuiler};
+/// use wasmtime_wasi::{IoView, WasiP2Ctx, WasiView, WasiP2CtxBuilder};
 /// use wasmtime_wasi::bindings::Command;
 ///
 /// // This example is an example shim of executing a component based on the
@@ -247,7 +247,7 @@ pub use self::generated::LinkOptions;
 ///
 ///     // Configure a `WasiP2Ctx` based on this program's environment. Then
 ///     // build a `Store` to instantiate into.
-///     let mut builder = WasiP2CtxBuiler::new();
+///     let mut builder = WasiP2CtxBuilder::new();
 ///     builder.inherit_stdio().inherit_env().args(&args);
 ///     let mut store = Store::new(
 ///         &engine,
@@ -292,7 +292,7 @@ pub use self::generated::Command;
 /// ```no_run
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{ResourceTable, Linker, Component};
-/// use wasmtime_wasi::{IoView, WasiP2Ctx, WasiView, WasiP2CtxBuiler};
+/// use wasmtime_wasi::{IoView, WasiP2Ctx, WasiView, WasiP2CtxBuilder};
 /// use wasmtime_wasi::bindings::CommandPre;
 ///
 /// // This example is an example shim of executing a component based on the
@@ -316,7 +316,7 @@ pub use self::generated::Command;
 ///
 ///     // Configure a `WasiP2Ctx` based on this program's environment. Then
 ///     // build a `Store` to instantiate into.
-///     let mut builder = WasiP2CtxBuiler::new();
+///     let mut builder = WasiP2CtxBuilder::new();
 ///     builder.inherit_stdio().inherit_env().args(&args);
 ///     let mut store = Store::new(
 ///         &engine,
