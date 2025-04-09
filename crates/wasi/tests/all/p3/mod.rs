@@ -111,7 +111,8 @@ async fn run(path: &str) -> anyhow::Result<()> {
     let component = Component::from_file(&engine, path).context("failed to compile component")?;
 
     let mut linker = Linker::new(&engine);
-    wasmtime_wasi::add_to_linker_async(&mut linker).context("failed to link `wasi:cli@0.2.x`")?;
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)
+        .context("failed to link `wasi:cli@0.2.x`")?;
     wasmtime_wasi::p3::add_to_linker(&mut linker).context("failed to link `wasi:cli@0.3.x`")?;
 
     let mut filesystem = WasiFilesystemCtx::default();

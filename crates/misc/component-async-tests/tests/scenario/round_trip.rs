@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use tokio::fs;
 use wasmtime::component::{Component, Linker, PromisesUnordered, ResourceTable, Val};
 use wasmtime::{Config, Engine, Store};
-use wasmtime_wasi::WasiCtxBuilder;
+use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::Ctx;
 
@@ -192,7 +192,7 @@ pub async fn test_round_trip(component: &[u8], inputs_and_outputs: &[(&str, &str
     {
         let mut linker = Linker::new(&engine);
 
-        wasmtime_wasi::add_to_linker_async(&mut linker)?;
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
         component_async_tests::round_trip::bindings::local::local::baz::add_to_linker_get_host(
             &mut linker,
             annotate(|ctx| ctx),
@@ -243,7 +243,7 @@ pub async fn test_round_trip(component: &[u8], inputs_and_outputs: &[(&str, &str
     {
         let mut linker = Linker::new(&engine);
 
-        wasmtime_wasi::add_to_linker_async(&mut linker)?;
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
         linker
             .root()
             .instance("local:local/baz")?

@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use tokio::fs;
 use wasmtime::component::{Component, Linker, PromisesUnordered, ResourceTable, Val};
 use wasmtime::{Config, Engine, Store};
-use wasmtime_wasi::WasiCtxBuilder;
+use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::util::{annotate, init_logger};
 use component_async_tests::Ctx;
@@ -67,7 +67,7 @@ async fn test_round_trip_direct(
     {
         let mut linker = Linker::new(&engine);
 
-        wasmtime_wasi::add_to_linker_async(&mut linker)?;
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
         component_async_tests::round_trip_direct::bindings::RoundTripDirect::add_to_linker_imports_get_host(
             &mut linker,
             annotate(|ctx| ctx),
@@ -96,7 +96,7 @@ async fn test_round_trip_direct(
     {
         let mut linker = Linker::new(&engine);
 
-        wasmtime_wasi::add_to_linker_async(&mut linker)?;
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
         linker.root().func_new_concurrent("foo", |_, params| {
             Box::pin(async move {
                 tokio::time::sleep(Duration::from_millis(10)).await;

@@ -53,7 +53,7 @@
 //!      `wasi:http/proxy` together
 //!    * Use [`add_only_http_to_linker_async`] to add only HTTP interfaces but
 //!      no others. This is useful when working with
-//!      [`wasmtime_wasi::add_to_linker_async`] for example.
+//!      [`wasmtime_wasi::p2::add_to_linker_async`] for example.
 //!    * Add individual interfaces such as with the
 //!      [`bindings::http::outgoing_handler::add_to_linker_get_host`] function.
 //! 3. Use [`ProxyPre`](bindings::ProxyPre) to pre-instantiate a component
@@ -318,7 +318,7 @@ where
 /// A slimmed down version of [`add_to_linker_async`] which only adds
 /// `wasi:http` interfaces to the linker.
 ///
-/// This is useful when using [`wasmtime_wasi::add_to_linker_async`] for
+/// This is useful when using [`wasmtime_wasi::p2::add_to_linker_async`] for
 /// example to avoid re-adding the same interfaces twice.
 pub fn add_only_http_to_linker<T>(l: &mut wasmtime::component::Linker<T>) -> anyhow::Result<()>
 where

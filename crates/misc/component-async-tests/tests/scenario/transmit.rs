@@ -8,7 +8,7 @@ use wasmtime::component::{
     StreamReader, StreamWriter, Val,
 };
 use wasmtime::{AsContextMut, Config, Engine, Store};
-use wasmtime_wasi::WasiCtxBuilder;
+use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::transmit::bindings::exports::local::local::transmit::Control;
 use component_async_tests::util::{compose, init_logger, test_run};
@@ -217,7 +217,7 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
 
     let mut linker = Linker::new(&engine);
 
-    wasmtime_wasi::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
 
     let mut store = make_store();
 

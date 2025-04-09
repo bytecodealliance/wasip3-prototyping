@@ -241,7 +241,7 @@ pub use self::generated::LinkOptions;
 ///     // Configure a `Linker` with WASI, compile a component based on
 ///     // command line arguments, and then pre-instantiate it.
 ///     let mut linker = Linker::<MyState>::new(&engine);
-///     wasmtime_wasi::add_to_linker_async(&mut linker)?;
+///     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
 ///     let component = Component::from_file(&engine, &args[0])?;
 ///
 ///
@@ -309,7 +309,7 @@ pub use self::generated::Command;
 ///     // Configure a `Linker` with WASI, compile a component based on
 ///     // command line arguments, and then pre-instantiate it.
 ///     let mut linker = Linker::<MyState>::new(&engine);
-///     wasmtime_wasi::add_to_linker_async(&mut linker)?;
+///     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
 ///     let component = Component::from_file(&engine, &args[0])?;
 ///     let pre = CommandPre::new(linker.instantiate_pre(&component)?)?;
 ///

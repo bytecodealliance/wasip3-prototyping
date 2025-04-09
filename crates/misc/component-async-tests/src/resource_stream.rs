@@ -1,6 +1,6 @@
 use anyhow::Result;
 use wasmtime::component::{Accessor, AccessorTask, HostStream, Resource, StreamWriter};
-use wasmtime_wasi::IoView;
+use wasmtime_wasi::p2::IoView;
 
 use super::Ctx;
 
@@ -44,7 +44,7 @@ impl bindings::local::local::resource_stream::Host for &mut Ctx {
             count: u32,
         }
 
-        impl<T, U: wasmtime_wasi::IoView> AccessorTask<T, U, Result<()>> for Task {
+        impl<T, U: wasmtime_wasi::p2::IoView> AccessorTask<T, U, Result<()>> for Task {
             async fn run(self, accessor: &mut Accessor<T, U>) -> Result<()> {
                 let mut tx = Some(self.tx);
                 for _ in 0..self.count {
