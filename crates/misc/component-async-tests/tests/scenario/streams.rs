@@ -11,7 +11,7 @@ use {
         },
         Config, Engine, Store,
     },
-    wasmtime_wasi::p2::WasiCtxBuilder,
+    wasmtime_wasi::p2::WasiP2CtxBuiler,
 };
 
 #[tokio::test]
@@ -28,7 +28,7 @@ pub async fn async_watch_streams() -> Result<()> {
     let mut store = Store::new(
         &engine,
         Ctx {
-            wasi: WasiCtxBuilder::new().inherit_stdio().build(),
+            wasi: WasiP2CtxBuiler::new().inherit_stdio().build(),
             table: ResourceTable::default(),
             continue_: false,
             wakers: Arc::new(Mutex::new(None)),
@@ -163,7 +163,7 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
     let mut store = Store::new(
         &engine,
         Ctx {
-            wasi: WasiCtxBuilder::new().inherit_stdio().build(),
+            wasi: WasiP2CtxBuiler::new().inherit_stdio().build(),
             table: ResourceTable::default(),
             continue_: false,
             wakers: Arc::new(Mutex::new(None)),

@@ -71,7 +71,7 @@
 //! use tokio::net::TcpListener;
 //! use wasmtime::component::{Component, Linker, ResourceTable};
 //! use wasmtime::{Config, Engine, Result, Store};
-//! use wasmtime_wasi::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
+//! use wasmtime_wasi::{IoView, WasiP2Ctx, WasiP2CtxBuiler, WasiView};
 //! use wasmtime_wasi_http::bindings::ProxyPre;
 //! use wasmtime_wasi_http::bindings::http::types::Scheme;
 //! use wasmtime_wasi_http::body::HyperOutgoingBody;
@@ -142,7 +142,7 @@
 //!             self.pre.engine(),
 //!             MyClientState {
 //!                 table: ResourceTable::new(),
-//!                 wasi: WasiCtxBuilder::new().inherit_stdio().build(),
+//!                 wasi: WasiP2CtxBuiler::new().inherit_stdio().build(),
 //!                 http: WasiHttpCtx::new(),
 //!             },
 //!         );
@@ -189,7 +189,7 @@
 //! }
 //!
 //! struct MyClientState {
-//!     wasi: WasiCtx,
+//!     wasi: WasiP2Ctx,
 //!     http: WasiHttpCtx,
 //!     table: ResourceTable,
 //! }
@@ -199,7 +199,7 @@
 //!     }
 //! }
 //! impl WasiView for MyClientState {
-//!     fn ctx(&mut self) -> &mut WasiCtx {
+//!     fn ctx(&mut self) -> &mut WasiP2Ctx {
 //!         &mut self.wasi
 //!     }
 //! }
@@ -242,7 +242,7 @@ use wasmtime_wasi::ResourceTable;
 /// ```
 /// use wasmtime::{Engine, Result, Config};
 /// use wasmtime::component::{ResourceTable, Linker};
-/// use wasmtime_wasi::{IoView, WasiCtx, WasiView};
+/// use wasmtime_wasi::{IoView, WasiP2Ctx, WasiView};
 /// use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 ///
 /// fn main() -> Result<()> {
@@ -258,7 +258,7 @@ use wasmtime_wasi::ResourceTable;
 /// }
 ///
 /// struct MyState {
-///     ctx: WasiCtx,
+///     ctx: WasiP2Ctx,
 ///     http_ctx: WasiHttpCtx,
 ///     table: ResourceTable,
 /// }
@@ -270,7 +270,7 @@ use wasmtime_wasi::ResourceTable;
 ///     fn ctx(&mut self) -> &mut WasiHttpCtx { &mut self.http_ctx }
 /// }
 /// impl WasiView for MyState {
-///     fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
+///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 /// ```
 pub fn add_to_linker<T>(l: &mut wasmtime::component::Linker<T>) -> anyhow::Result<()>

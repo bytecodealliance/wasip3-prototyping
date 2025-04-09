@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use tokio::fs;
 use wasmtime::component::{Component, Linker, PromisesUnordered, ResourceTable, Val};
 use wasmtime::{Config, Engine, Store};
-use wasmtime_wasi::p2::WasiCtxBuilder;
+use wasmtime_wasi::p2::WasiP2CtxBuiler;
 
 use component_async_tests::Ctx;
 
@@ -178,7 +178,7 @@ pub async fn test_round_trip(component: &[u8], inputs_and_outputs: &[(&str, &str
         Store::new(
             &engine,
             Ctx {
-                wasi: WasiCtxBuilder::new().inherit_stdio().build(),
+                wasi: WasiP2CtxBuiler::new().inherit_stdio().build(),
                 table: ResourceTable::default(),
                 continue_: false,
                 wakers: Arc::new(Mutex::new(None)),

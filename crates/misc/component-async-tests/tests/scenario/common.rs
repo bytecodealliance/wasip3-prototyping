@@ -6,7 +6,7 @@ use tokio::fs;
 use wasm_compose::composer::ComponentComposer;
 use wasmtime::component::{Component, Linker, PromisesUnordered, ResourceTable};
 use wasmtime::{Config, Engine, Store};
-use wasmtime_wasi::p2::WasiCtxBuilder;
+use wasmtime_wasi::p2::WasiP2CtxBuiler;
 
 use component_async_tests::Ctx;
 
@@ -81,7 +81,7 @@ pub async fn test_run(component: &[u8]) -> Result<()> {
     let mut store = Store::new(
         &engine,
         Ctx {
-            wasi: WasiCtxBuilder::new().inherit_stdio().build(),
+            wasi: WasiP2CtxBuiler::new().inherit_stdio().build(),
             table: ResourceTable::default(),
             continue_: false,
             wakers: Arc::new(Mutex::new(None)),

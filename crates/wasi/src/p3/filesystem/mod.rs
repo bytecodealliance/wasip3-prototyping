@@ -81,11 +81,11 @@ impl WasiFilesystemCtx {
     /// # Examples
     ///
     /// ```
-    /// use wasmtime_wasi::{WasiCtxBuilder, DirPerms, FilePerms};
+    /// use wasmtime_wasi::{WasiP2CtxBuiler, DirPerms, FilePerms};
     ///
     /// # fn main() {}
     /// # fn foo() -> wasmtime::Result<()> {
-    /// let mut wasi = WasiCtxBuilder::new();
+    /// let mut wasi = WasiP2CtxBuiler::new();
     ///
     /// // Make `./host-directory` available in the guest as `.`
     /// wasi.preopened_dir("./host-directory", ".", DirPerms::all(), FilePerms::all());
@@ -772,7 +772,7 @@ impl Descriptor {
             }
         }
 
-        // Now enforce this WasiCtx's permissions before letting the OS have
+        // Now enforce this WasiP2Ctx's permissions before letting the OS have
         // its shot:
         if !d.perms.contains(DirPerms::MUTATE) && create {
             return Err(ErrorCode::NotPermitted);
@@ -952,7 +952,7 @@ pub struct File {
     /// [`spawn_blocking`]: Self::spawn_blocking
     file: Arc<cap_std::fs::File>,
     /// Permissions to enforce on access to the file. These permissions are
-    /// specified by a user of the `crate::WasiCtxBuilder`, and are
+    /// specified by a user of the `crate::WasiP2CtxBuiler`, and are
     /// enforced prior to any enforced by the underlying operating system.
     perms: FilePerms,
     /// The mode the file was opened under: bits for reading, and writing.
@@ -984,7 +984,7 @@ impl File {
 
     /// Execute the blocking `body` function.
     ///
-    /// Depending on how the WasiCtx was configured, the body may either be:
+    /// Depending on how the WasiP2Ctx was configured, the body may either be:
     /// - Executed directly on the current thread. In this case the `async`
     ///   signature of this method is effectively a lie and the returned
     ///   Future will always be immediately Ready. Or:
@@ -993,7 +993,7 @@ impl File {
     ///
     /// Intentionally blocking the executor thread might seem unorthodox, but is
     /// not actually a problem for specific workloads. See:
-    /// - [`crate::WasiCtxBuilder::allow_blocking_current_thread`]
+    /// - [`crate::WasiP2CtxBuiler::allow_blocking_current_thread`]
     /// - [Poor performance of wasmtime file I/O maybe because tokio](https://github.com/bytecodealliance/wasmtime/issues/7973)
     /// - [Implement opt-in for enabling WASI to block the current thread](https://github.com/bytecodealliance/wasmtime/pull/8190)
     pub(crate) async fn run_blocking<F, R>(&self, body: F) -> R
@@ -1038,7 +1038,7 @@ pub struct Dir {
     /// [`spawn_blocking`]: Self::spawn_blocking
     dir: Arc<cap_std::fs::Dir>,
     /// Permissions to enforce on access to this directory. These permissions
-    /// are specified by a user of the `crate::WasiCtxBuilder`, and
+    /// are specified by a user of the `crate::WasiP2CtxBuiler`, and
     /// are enforced prior to any enforced by the underlying operating system.
     ///
     /// These permissions are also enforced on any directories opened under
@@ -1077,7 +1077,7 @@ impl Dir {
 
     /// Execute the blocking `body` function.
     ///
-    /// Depending on how the WasiCtx was configured, the body may either be:
+    /// Depending on how the WasiP2Ctx was configured, the body may either be:
     /// - Executed directly on the current thread. In this case the `async`
     ///   signature of this method is effectively a lie and the returned
     ///   Future will always be immediately Ready. Or:
@@ -1086,7 +1086,7 @@ impl Dir {
     ///
     /// Intentionally blocking the executor thread might seem unorthodox, but is
     /// not actually a problem for specific workloads. See:
-    /// - [`crate::WasiCtxBuilder::allow_blocking_current_thread`]
+    /// - [`crate::WasiP2CtxBuiler::allow_blocking_current_thread`]
     /// - [Poor performance of wasmtime file I/O maybe because tokio](https://github.com/bytecodealliance/wasmtime/issues/7973)
     /// - [Implement opt-in for enabling WASI to block the current thread](https://github.com/bytecodealliance/wasmtime/pull/8190)
     pub(crate) async fn run_blocking<F, R>(&self, body: F) -> R
