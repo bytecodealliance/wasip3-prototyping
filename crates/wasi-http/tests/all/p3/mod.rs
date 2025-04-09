@@ -3,13 +3,13 @@ use core::future::Future;
 use bytes::Bytes;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::Store;
+use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiView};
 use wasmtime_wasi::p3::cli::{WasiCliCtx, WasiCliView};
 use wasmtime_wasi::p3::clocks::{WasiClocksCtx, WasiClocksView};
 use wasmtime_wasi::p3::filesystem::{WasiFilesystemCtx, WasiFilesystemView};
 use wasmtime_wasi::p3::random::{WasiRandomCtx, WasiRandomView};
 use wasmtime_wasi::p3::sockets::{WasiSocketsCtx, WasiSocketsView};
 use wasmtime_wasi::p3::ResourceView;
-use wasmtime_wasi::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 use wasmtime_wasi_http::p3::bindings::http::types::ErrorCode;
 use wasmtime_wasi_http::p3::{
     default_send_request, Client, RequestOptions, WasiHttpCtx, WasiHttpView,
@@ -26,7 +26,7 @@ struct Ctx<C: Client = TestClient> {
     random: WasiRandomCtx,
     sockets: WasiSocketsCtx,
     table: ResourceTable,
-    wasip2: WasiCtx,
+    wasip2: WasiP2Ctx,
     http: WasiHttpCtx<C>,
 }
 
@@ -42,14 +42,14 @@ where
             sockets: WasiSocketsCtx::default(),
             random: WasiRandomCtx::default(),
             table: ResourceTable::default(),
-            wasip2: WasiCtxBuilder::new().inherit_stdio().build(),
+            wasip2: WasiP2CtxBuilder::new().inherit_stdio().build(),
             http: WasiHttpCtx::default(),
         }
     }
 }
 
 impl<C: Client> WasiView for Ctx<C> {
-    fn ctx(&mut self) -> &mut WasiCtx {
+    fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.wasip2
     }
 }
