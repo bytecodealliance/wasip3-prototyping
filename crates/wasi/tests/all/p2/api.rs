@@ -10,13 +10,13 @@ use wasmtime_wasi::p2::bindings::Command;
 use wasmtime_wasi::p2::{
     add_to_linker_async,
     bindings::{clocks::wall_clock, filesystem::types as filesystem},
-    IoView, WasiCtx, WasiCtxBuilder, WasiView,
+    IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiView,
 };
 use wasmtime_wasi::{DirPerms, FilePerms, HostMonotonicClock, HostWallClock};
 
 struct CommandCtx {
     table: ResourceTable,
-    wasi: WasiCtx,
+    wasi: WasiP2Ctx,
 }
 
 impl IoView for CommandCtx {
@@ -25,7 +25,7 @@ impl IoView for CommandCtx {
     }
 }
 impl WasiView for CommandCtx {
-    fn ctx(&mut self) -> &mut WasiCtx {
+    fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.wasi
     }
 }
@@ -79,7 +79,7 @@ async fn api_time() -> Result<()> {
     }
 
     let table = ResourceTable::new();
-    let wasi = WasiCtxBuilder::new()
+    let wasi = WasiP2CtxBuilder::new()
         .monotonic_clock(FakeMonotonicClock { now: Mutex::new(0) })
         .wall_clock(FakeWallClock)
         .build();
@@ -101,7 +101,7 @@ async fn api_read_only() -> Result<()> {
     std::fs::create_dir(dir.path().join("sub"))?;
 
     let table = ResourceTable::new();
-    let wasi = WasiCtxBuilder::new()
+    let wasi = WasiP2CtxBuilder::new()
         .preopened_dir(dir.path(), "/", DirPerms::READ, FilePerms::READ)?
         .build();
 
@@ -143,7 +143,7 @@ wasmtime::component::bindgen!({
 #[test_log::test(tokio::test)]
 async fn api_reactor() -> Result<()> {
     let table = ResourceTable::new();
-    let wasi = WasiCtxBuilder::new().env("GOOD_DOG", "gussie").build();
+    let wasi = WasiP2CtxBuilder::new().env("GOOD_DOG", "gussie").build();
     let engine = test_programs_artifacts::engine(|config| {
         config.async_support(true);
     });

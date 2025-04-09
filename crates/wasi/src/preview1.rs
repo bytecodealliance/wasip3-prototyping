@@ -10,17 +10,17 @@
 //! * [`WasiP1Ctx`]
 //! * [`add_to_linker_sync`] (or [`add_to_linker_async`])
 //!
-//! First a [`WasiCtxBuilder`] will be used and finalized with the [`build_p1`]
-//! method to create a [`WasiCtx`]. Next a [`wasmtime::Linker`] is configured
+//! First a [`WasiP2CtxBuilder`] will be used and finalized with the [`build_p1`]
+//! method to create a [`WasiP2Ctx`]. Next a [`wasmtime::Linker`] is configured
 //! with WASI imports by using the `add_to_linker_*` desired (sync or async
 //! depending on [`Config::async_support`]).
 //!
 //! Note that WASIp1 is not as extensible or configurable as WASIp2 so the
 //! support in this module is enough to run wasm modules but any customization
-//! beyond that [`WasiCtxBuilder`] already supports is not possible yet.
+//! beyond that [`WasiP2CtxBuilder`] already supports is not possible yet.
 //!
-//! [`WasiCtxBuilder`]: crate::p2::WasiCtxBuilder
-//! [`build_p1`]: crate::p2::WasiCtxBuilder::build_p1
+//! [`WasiP2CtxBuilder`]: crate::p2::WasiP2CtxBuilder
+//! [`build_p1`]: crate::p2::WasiP2CtxBuilder::build_p1
 //! [`Config::async_support`]: wasmtime::Config::async_support
 //!
 //! # Components vs Modules
@@ -36,7 +36,7 @@
 //! ```no_run
 //! use wasmtime::{Result, Engine, Linker, Module, Store};
 //! use wasmtime_wasi::preview1::{self, WasiP1Ctx};
-//! use wasmtime_wasi::p2::WasiCtxBuilder;
+//! use wasmtime_wasi::p2::WasiP2CtxBuilder;
 //!
 //! // An example of executing a WASIp1 "command"
 //! fn main() -> Result<()> {
@@ -48,7 +48,7 @@
 //!     preview1::add_to_linker_async(&mut linker, |t| t)?;
 //!     let pre = linker.instantiate_pre(&module)?;
 //!
-//!     let wasi_ctx = WasiCtxBuilder::new()
+//!     let wasi_ctx = WasiP2CtxBuilder::new()
 //!         .inherit_stdio()
 //!         .inherit_env()
 //!         .args(&args)
@@ -71,7 +71,7 @@ use crate::p2::bindings::{
     clocks::{monotonic_clock, wall_clock},
     filesystem::{preopens::Host as _, types as filesystem},
 };
-use crate::p2::{FsError, IsATTY, WasiCtx, WasiImpl, WasiView};
+use crate::p2::{FsError, IsATTY, WasiImpl, WasiP2Ctx, WasiView};
 use crate::ResourceTable;
 use anyhow::{bail, Context};
 use std::collections::{BTreeMap, HashSet};
@@ -98,23 +98,23 @@ use wasmtime_wasi_io::bindings::wasi::io::poll::Host as _;
 
 /// Structure containing state for WASIp1.
 ///
-/// This structure is created through [`WasiCtxBuilder::build_p1`] and is
-/// configured through the various methods of [`WasiCtxBuilder`]. This structure
+/// This structure is created through [`WasiP2CtxBuilder::build_p1`] and is
+/// configured through the various methods of [`WasiP2CtxBuilder`]. This structure
 /// itself implements generated traits for WASIp1 as well as [`WasiView`] to
 /// have access to WASIp2.
 ///
 /// Instances of [`WasiP1Ctx`] are typically stored within the `T` of
 /// [`Store<T>`](wasmtime::Store).
 ///
-/// [`WasiCtxBuilder::build_p1`]: crate::p2::WasiCtxBuilder::build_p1
-/// [`WasiCtxBuilder`]: crate::p2::WasiCtxBuilder
+/// [`WasiP2CtxBuilder::build_p1`]: crate::p2::WasiP2CtxBuilder::build_p1
+/// [`WasiP2CtxBuilder`]: crate::p2::WasiP2CtxBuilder
 ///
 /// # Examples
 ///
 /// ```no_run
 /// use wasmtime::{Result, Linker};
 /// use wasmtime_wasi::preview1::{self, WasiP1Ctx};
-/// use wasmtime_wasi::p2::WasiCtxBuilder;
+/// use wasmtime_wasi::p2::WasiP2CtxBuilder;
 ///
 /// struct MyState {
 ///     // ... custom state as necessary ...
@@ -127,7 +127,7 @@ use wasmtime_wasi_io::bindings::wasi::io::poll::Host as _;
 ///         MyState {
 ///             // .. initialize custom state if needed ..
 ///
-///             wasi: WasiCtxBuilder::new()
+///             wasi: WasiP2CtxBuilder::new()
 ///                 .arg("./foo.wasm")
 ///                 // .. more customization if necesssary ..
 ///                 .build_p1(),
@@ -142,12 +142,12 @@ use wasmtime_wasi_io::bindings::wasi::io::poll::Host as _;
 /// ```
 pub struct WasiP1Ctx {
     table: ResourceTable,
-    wasi: WasiCtx,
+    wasi: WasiP2Ctx,
     adapter: WasiPreview1Adapter,
 }
 
 impl WasiP1Ctx {
-    pub(crate) fn new(wasi: WasiCtx) -> Self {
+    pub(crate) fn new(wasi: WasiP2Ctx) -> Self {
         Self {
             table: ResourceTable::new(),
             wasi,
@@ -169,7 +169,7 @@ impl IoView for WasiP1Ctx {
     }
 }
 impl WasiView for WasiP1Ctx {
-    fn ctx(&mut self) -> &mut WasiCtx {
+    fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.wasi
     }
 }

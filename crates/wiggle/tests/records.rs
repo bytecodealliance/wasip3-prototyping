@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 use wiggle::{GuestMemory, GuestPtr};
-use wiggle_test::{impl_errno, HostMemory, MemArea, MemAreas, WasiCtx};
+use wiggle_test::{impl_errno, HostMemory, MemArea, MemAreas, WasiP2Ctx};
 
 wiggle::from_witx!({
     witx: ["$CARGO_MANIFEST_DIR/tests/records.witx"],
@@ -8,7 +8,7 @@ wiggle::from_witx!({
 
 impl_errno!(types::Errno);
 
-impl<'a> records::Records for WasiCtx<'a> {
+impl<'a> records::Records for WasiP2Ctx<'a> {
     fn sum_of_pair(
         &mut self,
         _memory: &mut GuestMemory<'_>,
@@ -119,7 +119,7 @@ impl SumOfPairExercise {
     }
 
     pub fn test(&self) {
-        let mut ctx = WasiCtx::new();
+        let mut ctx = WasiP2Ctx::new();
         let mut host_memory = HostMemory::new();
         let mut memory = host_memory.guest_memory();
 
@@ -206,7 +206,7 @@ impl SumPairPtrsExercise {
             .boxed()
     }
     pub fn test(&self) {
-        let mut ctx = WasiCtx::new();
+        let mut ctx = WasiP2Ctx::new();
         let mut host_memory = HostMemory::new();
         let mut memory = host_memory.guest_memory();
 
@@ -293,7 +293,7 @@ impl SumIntAndPtrExercise {
             .boxed()
     }
     pub fn test(&self) {
-        let mut ctx = WasiCtx::new();
+        let mut ctx = WasiP2Ctx::new();
         let mut host_memory = HostMemory::new();
         let mut memory = host_memory.guest_memory();
 
@@ -354,7 +354,7 @@ impl ReturnPairInts {
     }
 
     pub fn test(&self) {
-        let mut ctx = WasiCtx::new();
+        let mut ctx = WasiP2Ctx::new();
         let mut host_memory = HostMemory::new();
         let mut memory = host_memory.guest_memory();
 
@@ -420,7 +420,7 @@ impl ReturnPairPtrsExercise {
             .boxed()
     }
     pub fn test(&self) {
-        let mut ctx = WasiCtx::new();
+        let mut ctx = WasiP2Ctx::new();
         let mut host_memory = HostMemory::new();
         let mut memory = host_memory.guest_memory();
 
@@ -516,7 +516,7 @@ impl SumArrayExercise {
             .boxed()
     }
     pub fn test(&self) {
-        let mut ctx = WasiCtx::new();
+        let mut ctx = WasiP2Ctx::new();
         let mut host_memory = HostMemory::new();
         let mut memory = host_memory.guest_memory();
 

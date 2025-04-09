@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 /// The `Table` type is designed to map u32 handles to resources. The table is now part of the
-/// public interface to a `WasiCtx` - it is reference counted so that it can be shared beyond a
-/// `WasiCtx` with other WASI proposals (e.g. `wasi-crypto` and `wasi-nn`) to manage their
+/// public interface to a `WasiP2Ctx` - it is reference counted so that it can be shared beyond a
+/// `WasiP2Ctx` with other WASI proposals (e.g. `wasi-crypto` and `wasi-nn`) to manage their
 /// resources. Elements in the `Table` are `Any` typed.
 ///
 /// The `Table` type is intended to model how the Interface Types concept of Resources is shaping

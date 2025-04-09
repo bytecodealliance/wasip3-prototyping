@@ -253,7 +253,7 @@ pub struct Stdout;
 /// Returns a stream that represents the host's standard out.
 ///
 /// Suitable for passing to
-/// [`WasiCtxBuilder::stdout`](crate::p2::WasiCtxBuilder::stdout).
+/// [`WasiP2CtxBuilder::stdout`](crate::p2::WasiP2CtxBuilder::stdout).
 pub fn stdout() -> Stdout {
     Stdout
 }
@@ -277,7 +277,7 @@ pub struct Stderr;
 /// Returns a stream that represents the host's standard err.
 ///
 /// Suitable for passing to
-/// [`WasiCtxBuilder::stderr`](crate::p2::WasiCtxBuilder::stderr).
+/// [`WasiP2CtxBuilder::stderr`](crate::p2::WasiP2CtxBuilder::stderr).
 pub fn stderr() -> Stderr {
     Stderr
 }

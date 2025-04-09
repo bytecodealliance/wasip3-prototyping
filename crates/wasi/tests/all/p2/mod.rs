@@ -4,7 +4,7 @@ use wasmtime::{
     component::{Component, Linker, ResourceTable},
     Engine, Store,
 };
-use wasmtime_wasi::p2::{pipe::MemoryOutputPipe, IoView, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::p2::{pipe::MemoryOutputPipe, IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiView};
 use wasmtime_wasi::preview1::WasiP1Ctx;
 use wasmtime_wasi::{DirPerms, FilePerms};
 
@@ -20,7 +20,7 @@ impl IoView for Ctx {
     }
 }
 impl WasiView for Ctx {
-    fn ctx(&mut self) -> &mut WasiCtx {
+    fn ctx(&mut self) -> &mut WasiP2Ctx {
         self.wasi.ctx()
     }
 }
@@ -34,14 +34,14 @@ fn prepare_workspace(exe_name: &str) -> Result<TempDir> {
 fn store(
     engine: &Engine,
     name: &str,
-    configure: impl FnOnce(&mut WasiCtxBuilder),
+    configure: impl FnOnce(&mut WasiP2CtxBuilder),
 ) -> Result<(Store<Ctx>, TempDir)> {
     let stdout = MemoryOutputPipe::new(4096);
     let stderr = MemoryOutputPipe::new(4096);
     let workspace = prepare_workspace(name)?;
 
     // Create our wasi context.
-    let mut builder = WasiCtxBuilder::new();
+    let mut builder = WasiP2CtxBuilder::new();
     builder.stdout(stdout.clone()).stderr(stderr.clone());
 
     builder

@@ -11,7 +11,7 @@ use tokio::io::{stderr, stdin, stdout};
 use tokio::sync::Notify;
 use wasmtime::component::{Component, Linker};
 use wasmtime::{AsContextMut as _, Engine, Store, StoreLimits, UpdateDeadline};
-use wasmtime_wasi::p2::{IoView, StreamError, StreamResult, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::p2::{IoView, StreamError, StreamResult, WasiP2Ctx, WasiP2CtxBuilder, WasiView};
 use wasmtime_wasi_http::bindings::http::types::Scheme;
 use wasmtime_wasi_http::bindings::ProxyPre;
 use wasmtime_wasi_http::body::HyperOutgoingBody;
@@ -30,7 +30,7 @@ use wasmtime_wasi_nn::wit::WasiNnCtx;
 
 struct Host {
     table: wasmtime::component::ResourceTable,
-    ctx: WasiCtx,
+    ctx: WasiP2Ctx,
     http: WasiHttpCtx,
     http_outgoing_body_buffer_chunks: Option<usize>,
     http_outgoing_body_chunk_size: Option<usize>,
@@ -63,7 +63,7 @@ impl IoView for Host {
     }
 }
 impl WasiView for Host {
-    fn ctx(&mut self) -> &mut WasiCtx {
+    fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.ctx
     }
 }
@@ -289,7 +289,7 @@ impl ServeCommand {
     }
 
     fn new_store(&self, engine: &Engine, req_id: u64) -> Result<Store<Host>> {
-        let mut builder = WasiCtxBuilder::new();
+        let mut builder = WasiP2CtxBuilder::new();
         self.run.configure_wasip2(&mut builder)?;
 
         builder.env("REQUEST_ID", req_id.to_string());

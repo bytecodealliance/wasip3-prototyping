@@ -8,7 +8,7 @@
 //! # An example of how to configure [wasi-tls] is the following:
 //!
 //! ```rust
-//! use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
+//! use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiView};
 //! use wasmtime::{
 //!     component::{Linker, ResourceTable},
 //!     Store, Engine, Result, Config
@@ -17,7 +17,7 @@
 //!
 //! struct Ctx {
 //!     table: ResourceTable,
-//!     wasi_ctx: WasiCtx,
+//!     wasi_ctx: WasiP2Ctx,
 //! }
 //!
 //! impl IoView for Ctx {
@@ -27,7 +27,7 @@
 //! }
 //!
 //! impl WasiView for Ctx {
-//!     fn ctx(&mut self) -> &mut WasiCtx {
+//!     fn ctx(&mut self) -> &mut WasiP2Ctx {
 //!         &mut self.wasi_ctx
 //!     }
 //! }
@@ -36,7 +36,7 @@
 //! async fn main() -> Result<()> {
 //!     let ctx = Ctx {
 //!         table: ResourceTable::new(),
-//!         wasi_ctx: WasiCtxBuilder::new()
+//!         wasi_ctx: WasiP2CtxBuilder::new()
 //!             .inherit_stderr()
 //!             .inherit_network()
 //!             .allow_ip_name_lookup(true)

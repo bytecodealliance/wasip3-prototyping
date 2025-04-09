@@ -40,7 +40,7 @@
 //! * [`wasi:sockets/udp`]
 //!
 //! All traits are implemented in terms of a [`WasiView`] trait which provides
-//! access to [`WasiCtx`], which defines the configuration for WASI.
+//! access to [`WasiP2Ctx`], which defines the configuration for WASI.
 //! The [`WasiView`] trait imples [`IoView`], which provides access to a common
 //! [`ResourceTable`], which owns all host-defined component model resources.
 //!
@@ -95,16 +95,16 @@
 //! Somewhere within `T` you'll store:
 //!
 //! * [`ResourceTable`] - created through default constructors.
-//! * [`WasiCtx`] - created through [`WasiCtxBuilder`].
+//! * [`WasiP2Ctx`] - created through [`WasiP2CtxBuilder`].
 //!
 //! You'll then write implementations of the [`IoView`] and [`WasiView`]
 //! traits to access those items in your `T`. For example:
 //! ```
 //! use wasmtime::component::ResourceTable;
-//! use wasmtime_wasi::p2::{WasiCtx, IoView, WasiView};
+//! use wasmtime_wasi::p2::{WasiP2Ctx, IoView, WasiView};
 //! struct MyCtx {
 //!     table: ResourceTable,
-//!     wasi: WasiCtx,
+//!     wasi: WasiP2Ctx,
 //! }
 //! impl IoView for MyCtx {
 //!     fn table(&mut self) -> &mut ResourceTable {
@@ -112,7 +112,7 @@
 //!     }
 //! }
 //! impl WasiView for MyCtx {
-//!     fn ctx(&mut self) -> &mut WasiCtx {
+//!     fn ctx(&mut self) -> &mut WasiP2Ctx {
 //!         &mut self.wasi
 //!     }
 //! }
@@ -150,7 +150,7 @@
 //!
 //! This module's default implementation of WASI bindings to native primitives
 //! for the platform that it is compiled for. For example opening a TCP socket
-//! uses the native platform to open a TCP socket (so long as [`WasiCtxBuilder`]
+//! uses the native platform to open a TCP socket (so long as [`WasiP2CtxBuilder`]
 //! allows it). There are a few important traits, however, that are specific to
 //! this module.
 //!
@@ -166,7 +166,7 @@
 //!   created through the [`subscribe`] function.
 //!
 //! * [`HostWallClock`] and [`HostMonotonicClock`] are used in conjunction with
-//!   [`WasiCtxBuilder::wall_clock`] and [`WasiCtxBuilder::monotonic_clock`] if
+//!   [`WasiP2CtxBuilder::wall_clock`] and [`WasiP2CtxBuilder::monotonic_clock`] if
 //!   the defaults host's clock should not be used.
 //!
 //! * [`StdinStream`] and [`StdoutStream`] are used to provide custom
@@ -186,13 +186,13 @@
 //!    done through top-level functions like [`add_to_linker_sync`] or through
 //!    individual `add_to_linker` functions in generated bindings throughout
 //!    this module.
-//! 3. Create a [`WasiCtx`] for each `Store<T>` through [`WasiCtxBuilder`]. Each
+//! 3. Create a [`WasiP2Ctx`] for each `Store<T>` through [`WasiP2CtxBuilder`]. Each
 //!    WASI context is "null" or "empty" by default, so items must be explicitly
 //!    added to get accessed by wasm (such as env vars or program arguments).
 //! 4. Use the previous `Linker<T>` to instantiate a `Component` within a
 //!    `Store<T>`.
 //!
-//! For examples see each of [`WasiView`], [`WasiCtx`], [`WasiCtxBuilder`],
+//! For examples see each of [`WasiView`], [`WasiP2Ctx`], [`WasiP2CtxBuilder`],
 //! [`add_to_linker_sync`], and [`bindings::Command`].
 //!
 //! [`wasmtime::component::bindgen!`]: https://docs.rs/wasmtime/latest/wasmtime/component/macro.bindgen.html
@@ -245,7 +245,7 @@ mod udp;
 mod view;
 mod write_stream;
 
-pub use self::ctx::{WasiCtx, WasiCtxBuilder};
+pub use self::ctx::{WasiP2Ctx, WasiP2CtxBuilder};
 pub use self::filesystem::{FileInputStream, FsError, FsResult};
 pub use self::network::{SocketError, SocketResult};
 pub use self::stdio::{
@@ -281,7 +281,7 @@ pub use wasmtime_wasi_io::{IoImpl, IoView};
 /// ```
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{ResourceTable, Linker};
-/// use wasmtime_wasi::p2::{IoView, WasiCtx, WasiView, WasiCtxBuilder};
+/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiView, WasiP2CtxBuilder};
 ///
 /// fn main() -> Result<()> {
 ///     let mut config = Config::new();
@@ -292,7 +292,7 @@ pub use wasmtime_wasi_io::{IoImpl, IoView};
 ///     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
 ///     // ... add any further functionality to `linker` if desired ...
 ///
-///     let mut builder = WasiCtxBuilder::new();
+///     let mut builder = WasiP2CtxBuilder::new();
 ///
 ///     // ... configure `builder` more to add env vars, args, etc ...
 ///
@@ -310,7 +310,7 @@ pub use wasmtime_wasi_io::{IoImpl, IoView};
 /// }
 ///
 /// struct MyState {
-///     ctx: WasiCtx,
+///     ctx: WasiP2Ctx,
 ///     table: ResourceTable,
 /// }
 ///
@@ -318,7 +318,7 @@ pub use wasmtime_wasi_io::{IoImpl, IoView};
 ///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 /// }
 /// impl WasiView for MyState {
-///     fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
+///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 /// ```
 pub fn add_to_linker_async<T: WasiView>(linker: &mut Linker<T>) -> anyhow::Result<()> {
@@ -381,7 +381,7 @@ pub fn add_to_linker_with_options_async<T: WasiView>(
 /// ```
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{ResourceTable, Linker};
-/// use wasmtime_wasi::p2::{IoView, WasiCtx, WasiView, WasiCtxBuilder};
+/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiView, WasiP2CtxBuilder};
 ///
 /// fn main() -> Result<()> {
 ///     let engine = Engine::default();
@@ -390,7 +390,7 @@ pub fn add_to_linker_with_options_async<T: WasiView>(
 ///     wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
 ///     // ... add any further functionality to `linker` if desired ...
 ///
-///     let mut builder = WasiCtxBuilder::new();
+///     let mut builder = WasiP2CtxBuilder::new();
 ///
 ///     // ... configure `builder` more to add env vars, args, etc ...
 ///
@@ -408,14 +408,14 @@ pub fn add_to_linker_with_options_async<T: WasiView>(
 /// }
 ///
 /// struct MyState {
-///     ctx: WasiCtx,
+///     ctx: WasiP2Ctx,
 ///     table: ResourceTable,
 /// }
 /// impl IoView for MyState {
 ///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 /// }
 /// impl WasiView for MyState {
-///     fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
+///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 /// ```
 pub fn add_to_linker_sync<T: WasiView>(

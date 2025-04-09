@@ -40,11 +40,11 @@ impl WasiHttpCtx {
 ///
 /// ```
 /// use wasmtime::component::ResourceTable;
-/// use wasmtime_wasi::p2::{IoView, WasiCtx, WasiView, WasiCtxBuilder};
+/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiView, WasiP2CtxBuilder};
 /// use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 ///
 /// struct MyState {
-///     ctx: WasiCtx,
+///     ctx: WasiP2Ctx,
 ///     http_ctx: WasiHttpCtx,
 ///     table: ResourceTable,
 /// }
@@ -57,12 +57,12 @@ impl WasiHttpCtx {
 /// }
 ///
 /// impl WasiView for MyState {
-///     fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
+///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 ///
 /// impl MyState {
 ///     fn new() -> MyState {
-///         let mut wasi = WasiCtxBuilder::new();
+///         let mut wasi = WasiP2CtxBuilder::new();
 ///         wasi.arg("./foo.wasm");
 ///         wasi.arg("--help");
 ///         wasi.env("FOO", "bar");

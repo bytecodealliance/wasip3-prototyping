@@ -7,7 +7,7 @@ use std::{fs::File, path::Path, time::Duration};
 use wasmtime::{Engine, Module, Precompiled, StoreLimits, StoreLimitsBuilder};
 use wasmtime_cli_flags::{opt::WasmtimeOptionValue, CommonOptions};
 use wasmtime_wasi::p2::bindings::LinkOptions;
-use wasmtime_wasi::p2::WasiCtxBuilder;
+use wasmtime_wasi::p2::WasiP2CtxBuilder;
 
 #[cfg(feature = "component-model")]
 use wasmtime::component::Component;
@@ -258,7 +258,7 @@ impl RunCommon {
         })
     }
 
-    pub fn configure_wasip2(&self, builder: &mut WasiCtxBuilder) -> Result<()> {
+    pub fn configure_wasip2(&self, builder: &mut WasiP2CtxBuilder) -> Result<()> {
         // It's ok to block the current thread since we're the only thread in
         // the program as the CLI. This helps improve the performance of some
         // blocking operations in WASI, for example, by skipping the

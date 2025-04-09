@@ -1,12 +1,12 @@
-use crate::p2::ctx::WasiCtx;
+use crate::p2::ctx::WasiP2Ctx;
 use wasmtime::component::ResourceTable;
 pub use wasmtime_wasi_io::{IoImpl, IoView};
 
-/// A trait which provides access to the [`WasiCtx`] inside the embedder's `T`
+/// A trait which provides access to the [`WasiP2Ctx`] inside the embedder's `T`
 /// of [`Store<T>`][`Store`].
 ///
 /// This crate's WASI Host implementations depend on the contents of
-/// [`WasiCtx`]. The `T` type [`Store<T>`][`Store`] is defined in each
+/// [`WasiP2Ctx`]. The `T` type [`Store<T>`][`Store`] is defined in each
 /// embedding of Wasmtime. These implementations are connected to the
 /// [`Linker<T>`][`Linker`] by the
 /// [`add_to_linker_sync`](crate::p2::add_to_linker_sync) and
@@ -19,10 +19,10 @@ pub use wasmtime_wasi_io::{IoImpl, IoView};
 ///
 /// ```
 /// use wasmtime_wasi::ResourceTable;
-/// use wasmtime_wasi::p2::{WasiCtx, WasiView, IoView, WasiCtxBuilder};
+/// use wasmtime_wasi::p2::{WasiP2Ctx, WasiView, IoView, WasiP2CtxBuilder};
 ///
 /// struct MyState {
-///     ctx: WasiCtx,
+///     ctx: WasiP2Ctx,
 ///     table: ResourceTable,
 /// }
 ///
@@ -30,7 +30,7 @@ pub use wasmtime_wasi_io::{IoImpl, IoView};
 ///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 /// }
 /// impl WasiView for MyState {
-///     fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
+///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 /// ```
 /// [`Store`]: wasmtime::Store
@@ -38,19 +38,19 @@ pub use wasmtime_wasi_io::{IoImpl, IoView};
 /// [`ResourceTable`]: wasmtime::component::ResourceTable
 ///
 pub trait WasiView: IoView {
-    /// Yields mutable access to the [`WasiCtx`] configuration used for this
+    /// Yields mutable access to the [`WasiP2Ctx`] configuration used for this
     /// context.
-    fn ctx(&mut self) -> &mut WasiCtx;
+    fn ctx(&mut self) -> &mut WasiP2Ctx;
 }
 
 impl<T: ?Sized + WasiView> WasiView for &mut T {
-    fn ctx(&mut self) -> &mut WasiCtx {
+    fn ctx(&mut self) -> &mut WasiP2Ctx {
         T::ctx(self)
     }
 }
 
 impl<T: ?Sized + WasiView> WasiView for Box<T> {
-    fn ctx(&mut self) -> &mut WasiCtx {
+    fn ctx(&mut self) -> &mut WasiP2Ctx {
         T::ctx(self)
     }
 }
@@ -76,7 +76,7 @@ impl<T: IoView> IoView for WasiImpl<T> {
     }
 }
 impl<T: WasiView> WasiView for WasiImpl<T> {
-    fn ctx(&mut self) -> &mut WasiCtx {
+    fn ctx(&mut self) -> &mut WasiP2Ctx {
         T::ctx(&mut self.0 .0)
     }
 }

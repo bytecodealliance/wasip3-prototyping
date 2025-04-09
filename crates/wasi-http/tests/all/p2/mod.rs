@@ -12,7 +12,7 @@ use wasmtime::{
     component::{Component, Linker, ResourceTable},
     Config, Engine, Store,
 };
-use wasmtime_wasi::p2::{pipe::MemoryOutputPipe, IoView, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::p2::{pipe::MemoryOutputPipe, IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiView};
 use wasmtime_wasi_http::{
     bindings::http::types::{ErrorCode, Scheme},
     body::HyperOutgoingBody,
@@ -29,7 +29,7 @@ type RequestSender = Arc<
 
 struct Ctx {
     table: ResourceTable,
-    wasi: WasiCtx,
+    wasi: WasiP2Ctx,
     http: WasiHttpCtx,
     stdout: MemoryOutputPipe,
     stderr: MemoryOutputPipe,
@@ -43,7 +43,7 @@ impl IoView for Ctx {
     }
 }
 impl WasiView for Ctx {
-    fn ctx(&mut self) -> &mut WasiCtx {
+    fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.wasi
     }
 }
@@ -81,7 +81,7 @@ fn store(engine: &Engine, server: &Server) -> Store<Ctx> {
     let stderr = MemoryOutputPipe::new(4096);
 
     // Create our wasi context.
-    let mut builder = WasiCtxBuilder::new();
+    let mut builder = WasiP2CtxBuilder::new();
     builder.stdout(stdout.clone());
     builder.stderr(stderr.clone());
     builder.env("HTTP_SERVER", &server.addr());
@@ -132,7 +132,7 @@ async fn run_wasi_http(
     let component = Component::from_file(&engine, component_filename)?;
 
     // Create our wasi context.
-    let mut builder = WasiCtxBuilder::new();
+    let mut builder = WasiP2CtxBuilder::new();
     builder.stdout(stdout.clone());
     builder.stderr(stderr.clone());
     let wasi = builder.build();

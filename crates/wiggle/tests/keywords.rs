@@ -21,7 +21,7 @@ mod enum_test {
 /// We use `self` because the camel-cased trait name `Self` is *also* a strict keyword. This lets
 /// us simultaneously test the name of the module and the generated trait.
 mod module_trait_fn_and_arg_test {
-    use wiggle_test::WasiCtx;
+    use wiggle_test::WasiP2Ctx;
     wiggle::from_witx!({
         witx_literal:
             "(module $self
@@ -31,7 +31,7 @@ mod module_trait_fn_and_arg_test {
                  )
              )",
     });
-    impl<'a> self_::Self_ for WasiCtx<'a> {
+    impl<'a> self_::Self_ for WasiP2Ctx<'a> {
         fn fn_(&mut self, _memory: &mut wiggle::GuestMemory<'_>, _use_: u32, _virtual_: u32) {
             unimplemented!();
         }

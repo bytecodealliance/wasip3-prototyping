@@ -575,7 +575,7 @@ where
             }
         }
 
-        // Now enforce this WasiCtx's permissions before letting the OS have
+        // Now enforce this WasiP2Ctx's permissions before letting the OS have
         // its shot:
         if !d.perms.contains(DirPerms::MUTATE) && create {
             Err(ErrorCode::NotPermitted)?;

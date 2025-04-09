@@ -16,9 +16,9 @@ use std::sync::{Arc, Mutex};
 /// improvements that can be made (TODO:
 /// <https://github.com/bytecodealliance/wasmtime/issues/5643)>.
 #[derive(Clone)]
-pub struct WasiCtx(Arc<WasiCtxInner>);
+pub struct WasiP2Ctx(Arc<WasiP2CtxInner>);
 
-pub struct WasiCtxInner {
+pub struct WasiP2CtxInner {
     pub args: StringArray,
     pub env: StringArray,
     // TODO: this mutex should not be necessary, it forces threads to serialize
@@ -30,14 +30,14 @@ pub struct WasiCtxInner {
     pub table: Table,
 }
 
-impl WasiCtx {
+impl WasiP2Ctx {
     pub fn new(
         random: Box<dyn RngCore + Send + Sync>,
         clocks: WasiClocks,
         sched: Box<dyn WasiSched>,
         table: Table,
     ) -> Self {
-        let s = WasiCtx(Arc::new(WasiCtxInner {
+        let s = WasiP2Ctx(Arc::new(WasiP2CtxInner {
             args: StringArray::new(),
             env: StringArray::new(),
             random: Mutex::new(random),
@@ -120,8 +120,8 @@ impl WasiCtx {
     }
 }
 
-impl Deref for WasiCtx {
-    type Target = WasiCtxInner;
+impl Deref for WasiP2Ctx {
+    type Target = WasiP2CtxInner;
     fn deref(&self) -> &Self::Target {
         &self.0
     }

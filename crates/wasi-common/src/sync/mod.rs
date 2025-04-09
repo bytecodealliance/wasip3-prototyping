@@ -6,11 +6,11 @@
 //! exception of the `sched` implementation, which is provided for both unix
 //! and windows in separate modules.
 //!
-//! Any `wasi_common::{WasiCtx, WasiCtxBuilder}` is interoperable with the
+//! Any `wasi_common::{WasiP2Ctx, WasiP2CtxBuilder}` is interoperable with the
 //! implementations provided in `wasi_common::sync`. However, for convenience,
-//! this module provides its own `WasiCtxBuilder` that hooks up to all of the
+//! this module provides its own `WasiP2CtxBuilder` that hooks up to all of the
 //! crate's components, i.e. it fills in all of the arguments to
-//! `WasiCtx::builder(...)`, presents `preopen_dir` in terms of
+//! `WasiP2Ctx::builder(...)`, presents `preopen_dir` in terms of
 //! `cap_std::fs::Dir`, and provides convenience methods for inheriting the
 //! parent process's stdio, args, and env.
 
@@ -28,20 +28,20 @@ pub use clocks::clocks_ctx;
 pub use sched::sched_ctx;
 
 use self::net::Socket;
-use crate::{file::FileAccessMode, table::Table, Error, WasiCtx, WasiFile};
+use crate::{file::FileAccessMode, table::Table, Error, WasiFile, WasiP2Ctx};
 use cap_rand::{Rng, RngCore, SeedableRng};
 use std::mem;
 use std::path::Path;
 
-pub struct WasiCtxBuilder {
-    ctx: WasiCtx,
+pub struct WasiP2CtxBuilder {
+    ctx: WasiP2Ctx,
     built: bool,
 }
 
-impl WasiCtxBuilder {
+impl WasiP2CtxBuilder {
     pub fn new() -> Self {
-        WasiCtxBuilder {
-            ctx: WasiCtx::new(random_ctx(), clocks_ctx(), sched_ctx(), Table::new()),
+        WasiP2CtxBuilder {
+            ctx: WasiP2Ctx::new(random_ctx(), clocks_ctx(), sched_ctx(), Table::new()),
             built: false,
         }
     }
@@ -121,9 +121,9 @@ impl WasiCtxBuilder {
             .insert_file(fd, file, FileAccessMode::READ | FileAccessMode::WRITE);
         Ok(self)
     }
-    pub fn build(&mut self) -> WasiCtx {
+    pub fn build(&mut self) -> WasiP2Ctx {
         assert!(!self.built);
-        let WasiCtxBuilder { ctx, .. } = mem::replace(self, Self::new());
+        let WasiP2CtxBuilder { ctx, .. } = mem::replace(self, Self::new());
         self.built = true;
         ctx
     }

@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 use wiggle::{GuestMemory, GuestPtr};
-use wiggle_test::{impl_errno, HostMemory, MemArea, WasiCtx};
+use wiggle_test::{impl_errno, HostMemory, MemArea, WasiP2Ctx};
 
 wiggle::from_witx!({
     witx: ["$CARGO_MANIFEST_DIR/tests/flags.witx"],
@@ -8,7 +8,7 @@ wiggle::from_witx!({
 
 impl_errno!(types::Errno);
 
-impl<'a> flags::Flags for WasiCtx<'a> {
+impl<'a> flags::Flags for WasiP2Ctx<'a> {
     fn configure_car(
         &mut self,
         memory: &mut GuestMemory<'_>,
@@ -62,7 +62,7 @@ impl ConfigureCarExercise {
     }
 
     pub fn test(&self) {
-        let mut ctx = WasiCtx::new();
+        let mut ctx = WasiP2Ctx::new();
         let mut host_memory = HostMemory::new();
         let mut memory = host_memory.guest_memory();
 

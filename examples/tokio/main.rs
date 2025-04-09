@@ -5,7 +5,7 @@ use wasmtime::{Config, Engine, Linker, Module, Store};
 // For this example we want to use the async version of wasi_common.
 // Notably, this version of wasi uses a scheduler that will async yield
 // when sleeping in `poll_oneoff`.
-use wasi_common::{tokio::WasiCtxBuilder, WasiCtx};
+use wasi_common::{tokio::WasiP2CtxBuilder, WasiP2Ctx};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -42,7 +42,7 @@ async fn main() -> Result<(), Error> {
 struct Environment {
     engine: Engine,
     module: Module,
-    linker: Arc<Linker<WasiCtx>>,
+    linker: Arc<Linker<WasiP2Ctx>>,
 }
 
 impl Environment {
@@ -86,7 +86,7 @@ impl Inputs {
 }
 
 async fn run_wasm(inputs: Inputs) -> Result<(), Error> {
-    let wasi = WasiCtxBuilder::new()
+    let wasi = WasiP2CtxBuilder::new()
         // Let wasi print to this process's stdout.
         .inherit_stdout()
         // Set an environment variable so the wasm knows its name.

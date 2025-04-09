@@ -1,6 +1,6 @@
 use anyhow::Result;
 use wiggle::GuestMemory;
-use wiggle_test::{impl_errno, HostMemory, WasiCtx};
+use wiggle_test::{impl_errno, HostMemory, WasiP2Ctx};
 
 /// The `errors` argument to the wiggle gives us a hook to map a rich error
 /// type like this one (typical of wiggle use cases in wasi-common and beyond)
@@ -36,13 +36,13 @@ impl_errno!(types::Errno);
 
 /// When the `errors` mapping in witx is non-empty, we need to impl the
 /// types::UserErrorConversion trait that wiggle generates from that mapping.
-impl<'a> types::UserErrorConversion for WasiCtx<'a> {
+impl<'a> types::UserErrorConversion for WasiP2Ctx<'a> {
     fn errno_from_rich_error(&mut self, e: RichError) -> Result<types::Errno> {
         wiggle::tracing::debug!(
             rich_error = wiggle::tracing::field::debug(&e),
             "error conversion"
         );
-        // WasiCtx can collect a Vec<String> log so we can test this. We're
+        // WasiP2Ctx can collect a Vec<String> log so we can test this. We're
         // logging the Display impl that `thiserror::Error` provides us.
         self.log.borrow_mut().push(e.to_string());
         // Then do the trivial mapping down to the flat enum.
@@ -53,7 +53,7 @@ impl<'a> types::UserErrorConversion for WasiCtx<'a> {
     }
 }
 
-impl<'a> one_error_conversion::OneErrorConversion for WasiCtx<'a> {
+impl<'a> one_error_conversion::OneErrorConversion for WasiP2Ctx<'a> {
     fn foo(
         &mut self,
         _: &mut GuestMemory<'_>,
@@ -88,7 +88,7 @@ fn main() {
         env_logger::init();
     }
 
-    let mut ctx = WasiCtx::new();
+    let mut ctx = WasiP2Ctx::new();
     let mut host_memory = HostMemory::new();
     let mut memory = host_memory.guest_memory();
 

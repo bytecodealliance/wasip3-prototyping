@@ -6,7 +6,7 @@ use std::ffi::{c_char, CStr};
 use std::fs::File;
 use std::path::Path;
 use std::slice;
-use wasmtime_wasi::p2::WasiCtxBuilder;
+use wasmtime_wasi::p2::WasiP2CtxBuilder;
 use wasmtime_wasi::preview1::WasiP1Ctx;
 
 unsafe fn cstr_to_path<'a>(path: *const c_char) -> Option<&'a Path> {
@@ -27,7 +27,7 @@ unsafe fn create_file(path: *const c_char) -> Option<File> {
 
 #[repr(C)]
 pub struct wasi_config_t {
-    builder: WasiCtxBuilder,
+    builder: WasiP2CtxBuilder,
 }
 
 wasmtime_c_api_macros::declare_own!(wasi_config_t);
@@ -41,7 +41,7 @@ impl wasi_config_t {
 #[unsafe(no_mangle)]
 pub extern "C" fn wasi_config_new() -> Box<wasi_config_t> {
     Box::new(wasi_config_t {
-        builder: WasiCtxBuilder::new(),
+        builder: WasiP2CtxBuilder::new(),
     })
 }
 

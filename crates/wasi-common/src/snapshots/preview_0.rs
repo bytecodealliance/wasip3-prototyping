@@ -5,7 +5,7 @@ use crate::sched::{
 };
 use crate::snapshots::preview_1::types as snapshot1_types;
 use crate::snapshots::preview_1::wasi_snapshot_preview1::WasiSnapshotPreview1 as Snapshot1;
-use crate::{ErrorExt, WasiCtx};
+use crate::{ErrorExt, WasiP2Ctx};
 use cap_std::time::Duration;
 use std::collections::HashSet;
 use wiggle::{GuestMemory, GuestPtr};
@@ -384,7 +384,7 @@ convert_flags_bidirectional!(
 // This implementation, wherever possible, delegates directly to the Snapshot1 implementation,
 // performing the no-op type conversions along the way.
 #[wiggle::async_trait]
-impl wasi_unstable::WasiUnstable for WasiCtx {
+impl wasi_unstable::WasiUnstable for WasiP2Ctx {
     async fn args_get(
         &mut self,
         memory: &mut GuestMemory<'_>,

@@ -8,7 +8,7 @@ use crate::{
         subscription::{RwEventFlags, SubscriptionResult},
         Poll, Userdata,
     },
-    I32Exit, SystemTimeSpec, WasiCtx,
+    I32Exit, SystemTimeSpec, WasiP2Ctx,
 };
 use cap_std::time::{Duration, SystemClock};
 use std::borrow::Cow;
@@ -42,7 +42,7 @@ impl wiggle::GuestErrorType for types::Errno {
 }
 
 #[wiggle::async_trait]
-impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
+impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP2Ctx {
     async fn args_get(
         &mut self,
         memory: &mut GuestMemory<'_>,

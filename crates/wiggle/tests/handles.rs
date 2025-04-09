@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 use wiggle::{GuestMemory, GuestPtr, GuestType};
-use wiggle_test::{impl_errno, HostMemory, MemArea, WasiCtx};
+use wiggle_test::{impl_errno, HostMemory, MemArea, WasiP2Ctx};
 
 const FD_VAL: u32 = 123;
 
@@ -10,7 +10,7 @@ wiggle::from_witx!({
 
 impl_errno!(types::Errno);
 
-impl<'a> handle_examples::HandleExamples for WasiCtx<'a> {
+impl<'a> handle_examples::HandleExamples for WasiP2Ctx<'a> {
     fn fd_create(&mut self, _memory: &mut GuestMemory<'_>) -> Result<types::Fd, types::Errno> {
         Ok(types::Fd::from(FD_VAL))
     }
@@ -35,7 +35,7 @@ struct HandleExercise {
 
 impl HandleExercise {
     pub fn test(&self) {
-        let mut ctx = WasiCtx::new();
+        let mut ctx = WasiP2Ctx::new();
         let mut host_memory = HostMemory::new();
         let mut memory = host_memory.guest_memory();
 

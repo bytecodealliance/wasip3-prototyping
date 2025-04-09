@@ -7,7 +7,7 @@ pub mod stdio;
 use self::sched::sched_ctx;
 use crate::sync::net::Socket;
 pub use crate::sync::{clocks_ctx, random_ctx};
-use crate::{file::FileAccessMode, Error, Table, WasiCtx, WasiFile};
+use crate::{file::FileAccessMode, Error, Table, WasiFile, WasiP2Ctx};
 pub use dir::Dir;
 pub use file::File;
 pub use net::*;
@@ -15,15 +15,15 @@ use std::future::Future;
 use std::mem;
 use std::path::Path;
 
-pub struct WasiCtxBuilder {
-    ctx: WasiCtx,
+pub struct WasiP2CtxBuilder {
+    ctx: WasiP2Ctx,
     built: bool,
 }
 
-impl WasiCtxBuilder {
+impl WasiP2CtxBuilder {
     pub fn new() -> Self {
-        WasiCtxBuilder {
-            ctx: WasiCtx::new(random_ctx(), clocks_ctx(), sched_ctx(), Table::new()),
+        WasiP2CtxBuilder {
+            ctx: WasiP2Ctx::new(random_ctx(), clocks_ctx(), sched_ctx(), Table::new()),
             built: false,
         }
     }
@@ -104,9 +104,9 @@ impl WasiCtxBuilder {
         Ok(self)
     }
 
-    pub fn build(&mut self) -> WasiCtx {
+    pub fn build(&mut self) -> WasiP2Ctx {
         assert!(!self.built);
-        let WasiCtxBuilder { ctx, .. } = mem::replace(self, Self::new());
+        let WasiP2CtxBuilder { ctx, .. } = mem::replace(self, Self::new());
         self.built = true;
         ctx
     }

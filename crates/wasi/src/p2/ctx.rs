@@ -17,27 +17,27 @@ use std::sync::Arc;
 use std::{future::Future, pin::Pin};
 use std::{mem, net::SocketAddr};
 
-/// Builder-style structure used to create a [`WasiCtx`].
+/// Builder-style structure used to create a [`WasiP2Ctx`].
 ///
-/// This type is used to create a [`WasiCtx`] that is considered per-[`Store`]
-/// state. The [`build`][WasiCtxBuilder::build] method is used to finish the
-/// building process and produce a finalized [`WasiCtx`].
+/// This type is used to create a [`WasiP2Ctx`] that is considered per-[`Store`]
+/// state. The [`build`][WasiP2CtxBuilder::build] method is used to finish the
+/// building process and produce a finalized [`WasiP2Ctx`].
 ///
 /// # Examples
 ///
 /// ```
-/// use wasmtime_wasi::p2::{WasiCtxBuilder, WasiCtx};
+/// use wasmtime_wasi::p2::{WasiP2CtxBuilder, WasiP2Ctx};
 ///
-/// let mut wasi = WasiCtxBuilder::new();
+/// let mut wasi = WasiP2CtxBuilder::new();
 /// wasi.arg("./foo.wasm");
 /// wasi.arg("--help");
 /// wasi.env("FOO", "bar");
 ///
-/// let wasi: WasiCtx = wasi.build();
+/// let wasi: WasiP2Ctx = wasi.build();
 /// ```
 ///
 /// [`Store`]: wasmtime::Store
-pub struct WasiCtxBuilder {
+pub struct WasiP2CtxBuilder {
     stdin: Box<dyn StdinStream>,
     stdout: Box<dyn StdoutStream>,
     stderr: Box<dyn StdoutStream>,
@@ -55,7 +55,7 @@ pub struct WasiCtxBuilder {
     built: bool,
 }
 
-impl WasiCtxBuilder {
+impl WasiP2CtxBuilder {
     /// Creates a builder for a new context with default parameters set.
     ///
     /// The current defaults are:
@@ -111,26 +111,26 @@ impl WasiCtxBuilder {
     /// stdin looks like:
     ///
     /// ```
-    /// use wasmtime_wasi::p2::{stdin, WasiCtxBuilder};
+    /// use wasmtime_wasi::p2::{stdin, WasiP2CtxBuilder};
     ///
-    /// let mut wasi = WasiCtxBuilder::new();
+    /// let mut wasi = WasiP2CtxBuilder::new();
     /// wasi.stdin(stdin());
     /// ```
     ///
     /// Note that inheriting the process's stdin can also be done through
-    /// [`inherit_stdin`](WasiCtxBuilder::inherit_stdin).
+    /// [`inherit_stdin`](WasiP2CtxBuilder::inherit_stdin).
     pub fn stdin(&mut self, stdin: impl StdinStream + 'static) -> &mut Self {
         self.stdin = Box::new(stdin);
         self
     }
 
-    /// Same as [`stdin`](WasiCtxBuilder::stdin), but for stdout.
+    /// Same as [`stdin`](WasiP2CtxBuilder::stdin), but for stdout.
     pub fn stdout(&mut self, stdout: impl StdoutStream + 'static) -> &mut Self {
         self.stdout = Box::new(stdout);
         self
     }
 
-    /// Same as [`stdin`](WasiCtxBuilder::stdin), but for stderr.
+    /// Same as [`stdin`](WasiP2CtxBuilder::stdin), but for stderr.
     pub fn stderr(&mut self, stderr: impl StdoutStream + 'static) -> &mut Self {
         self.stderr = Box::new(stderr);
         self
@@ -149,7 +149,7 @@ impl WasiCtxBuilder {
     /// Configures this context's stdout stream to write to the host process's
     /// stdout.
     ///
-    /// Note that unlike [`inherit_stdin`](WasiCtxBuilder::inherit_stdin)
+    /// Note that unlike [`inherit_stdin`](WasiP2CtxBuilder::inherit_stdin)
     /// multiple instances printing to stdout works well.
     pub fn inherit_stdout(&mut self) -> &mut Self {
         self.stdout(stdio::stdout())
@@ -158,7 +158,7 @@ impl WasiCtxBuilder {
     /// Configures this context's stderr stream to write to the host process's
     /// stderr.
     ///
-    /// Note that unlike [`inherit_stdin`](WasiCtxBuilder::inherit_stdin)
+    /// Note that unlike [`inherit_stdin`](WasiP2CtxBuilder::inherit_stdin)
     /// multiple instances printing to stderr works well.
     pub fn inherit_stderr(&mut self) -> &mut Self {
         self.stderr(stdio::stderr())
@@ -167,7 +167,7 @@ impl WasiCtxBuilder {
     /// Configures all of stdin, stdout, and stderr to be inherited from the
     /// host process.
     ///
-    /// See [`inherit_stdin`](WasiCtxBuilder::inherit_stdin) for some rationale
+    /// See [`inherit_stdin`](WasiP2CtxBuilder::inherit_stdin) for some rationale
     /// on why this should only be done in situations of
     /// one-instance-per-process.
     pub fn inherit_stdio(&mut self) -> &mut Self {
@@ -175,7 +175,7 @@ impl WasiCtxBuilder {
     }
 
     /// Configures whether or not blocking operations made through this
-    /// `WasiCtx` are allowed to block the current thread.
+    /// `WasiP2Ctx` are allowed to block the current thread.
     ///
     /// WASI is currently implemented on top of the Rust
     /// [Tokio](https://tokio.rs/) library. While most WASI APIs are
@@ -216,9 +216,9 @@ impl WasiCtxBuilder {
     /// # Examples
     ///
     /// ```
-    /// use wasmtime_wasi::p2::{stdin, WasiCtxBuilder};
+    /// use wasmtime_wasi::p2::{stdin, WasiP2CtxBuilder};
     ///
-    /// let mut wasi = WasiCtxBuilder::new();
+    /// let mut wasi = WasiP2CtxBuilder::new();
     /// wasi.envs(&[
     ///     ("FOO", "bar"),
     ///     ("HOME", "/somewhere"),
@@ -240,9 +240,9 @@ impl WasiCtxBuilder {
     /// # Examples
     ///
     /// ```
-    /// use wasmtime_wasi::p2::{stdin, WasiCtxBuilder};
+    /// use wasmtime_wasi::p2::{stdin, WasiP2CtxBuilder};
     ///
-    /// let mut wasi = WasiCtxBuilder::new();
+    /// let mut wasi = WasiP2CtxBuilder::new();
     /// wasi.env("FOO", "bar");
     /// ```
     pub fn env(&mut self, k: impl AsRef<str>, v: impl AsRef<str>) -> &mut Self {
@@ -254,7 +254,7 @@ impl WasiCtxBuilder {
     /// Configures all environment variables to be inherited from the calling
     /// process into this configuration.
     ///
-    /// This will use [`envs`](WasiCtxBuilder::envs) to append all host-defined
+    /// This will use [`envs`](WasiP2CtxBuilder::envs) to append all host-defined
     /// environment variables.
     pub fn inherit_env(&mut self) -> &mut Self {
         self.envs(&std::env::vars().collect::<Vec<(String, String)>>())
@@ -309,11 +309,11 @@ impl WasiCtxBuilder {
     /// # Examples
     ///
     /// ```
-    /// use wasmtime_wasi::p2::{WasiCtxBuilder, DirPerms, FilePerms};
+    /// use wasmtime_wasi::p2::{WasiP2CtxBuilder, DirPerms, FilePerms};
     ///
     /// # fn main() {}
     /// # fn foo() -> wasmtime::Result<()> {
-    /// let mut wasi = WasiCtxBuilder::new();
+    /// let mut wasi = WasiP2CtxBuilder::new();
     ///
     /// // Make `./host-directory` available in the guest as `.`
     /// wasi.preopened_dir("./host-directory", ".", DirPerms::all(), FilePerms::all());
@@ -406,7 +406,7 @@ impl WasiCtxBuilder {
     /// can be bound by the guest or connected to by the guest using any
     /// protocol.
     ///
-    /// See also [`WasiCtxBuilder::socket_addr_check`].
+    /// See also [`WasiP2CtxBuilder::socket_addr_check`].
     pub fn inherit_network(&mut self) -> &mut Self {
         self.socket_addr_check(|_, _| Box::pin(async { true }))
     }
@@ -452,17 +452,17 @@ impl WasiCtxBuilder {
         self
     }
 
-    /// Uses the configured context so far to construct the final [`WasiCtx`].
+    /// Uses the configured context so far to construct the final [`WasiP2Ctx`].
     ///
-    /// Note that each `WasiCtxBuilder` can only be used to "build" once, and
+    /// Note that each `WasiP2CtxBuilder` can only be used to "build" once, and
     /// calling this method twice will panic.
     ///
     /// # Panics
     ///
-    /// Panics if this method is called twice. Each [`WasiCtxBuilder`] can be
-    /// used to create only a single [`WasiCtx`]. Repeated usage of this method
+    /// Panics if this method is called twice. Each [`WasiP2CtxBuilder`] can be
+    /// used to create only a single [`WasiP2Ctx`]. Repeated usage of this method
     /// is not allowed and should use a second builder instead.
-    pub fn build(&mut self) -> WasiCtx {
+    pub fn build(&mut self) -> WasiP2Ctx {
         assert!(!self.built);
 
         let Self {
@@ -484,7 +484,7 @@ impl WasiCtxBuilder {
         } = mem::replace(self, Self::new());
         self.built = true;
 
-        WasiCtx {
+        WasiP2Ctx {
             stdin,
             stdout,
             stderr,
@@ -502,9 +502,9 @@ impl WasiCtxBuilder {
         }
     }
 
-    /// Builds a WASIp1 context instead of a [`WasiCtx`].
+    /// Builds a WASIp1 context instead of a [`WasiP2Ctx`].
     ///
-    /// This method is the same as [`build`](WasiCtxBuilder::build) but it
+    /// This method is the same as [`build`](WasiP2CtxBuilder::build) but it
     /// creates a [`WasiP1Ctx`] instead. This is intended for use with the
     /// [`preview1`] module of this crate
     ///
@@ -513,8 +513,8 @@ impl WasiCtxBuilder {
     ///
     /// # Panics
     ///
-    /// Panics if this method is called twice. Each [`WasiCtxBuilder`] can be
-    /// used to create only a single [`WasiCtx`] or [`WasiP1Ctx`]. Repeated
+    /// Panics if this method is called twice. Each [`WasiP2CtxBuilder`] can be
+    /// used to create only a single [`WasiP2Ctx`] or [`WasiP1Ctx`]. Repeated
     /// usage of this method is not allowed and should use a second builder
     /// instead.
     #[cfg(feature = "preview1")]
@@ -527,7 +527,7 @@ impl WasiCtxBuilder {
 /// Per-[`Store`] state which holds state necessary to implement WASI from this
 /// crate.
 ///
-/// This structure is created through [`WasiCtxBuilder`] and is stored within
+/// This structure is created through [`WasiP2CtxBuilder`] and is stored within
 /// the `T` of [`Store<T>`][`Store`]. Access to the structure is provided
 /// through the [`WasiView`](crate::p2::WasiView) trait as an implementation on `T`.
 ///
@@ -541,10 +541,10 @@ impl WasiCtxBuilder {
 ///
 /// ```
 /// use wasmtime_wasi::ResourceTable;
-/// use wasmtime_wasi::p2::{WasiCtx, WasiView, IoView, WasiCtxBuilder};
+/// use wasmtime_wasi::p2::{WasiP2Ctx, WasiView, IoView, WasiP2CtxBuilder};
 ///
 /// struct MyState {
-///     ctx: WasiCtx,
+///     ctx: WasiP2Ctx,
 ///     table: ResourceTable,
 /// }
 ///
@@ -552,12 +552,12 @@ impl WasiCtxBuilder {
 ///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 /// }
 /// impl WasiView for MyState {
-///     fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
+///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 ///
 /// impl MyState {
 ///     fn new() -> MyState {
-///         let mut wasi = WasiCtxBuilder::new();
+///         let mut wasi = WasiP2CtxBuilder::new();
 ///         wasi.arg("./foo.wasm");
 ///         wasi.arg("--help");
 ///         wasi.env("FOO", "bar");
@@ -569,7 +569,7 @@ impl WasiCtxBuilder {
 ///     }
 /// }
 /// ```
-pub struct WasiCtx {
+pub struct WasiP2Ctx {
     pub(crate) random: Box<dyn RngCore + Send>,
     pub(crate) insecure_random: Box<dyn RngCore + Send>,
     pub(crate) insecure_random_seed: u128,
@@ -586,10 +586,10 @@ pub struct WasiCtx {
     pub(crate) allow_blocking_current_thread: bool,
 }
 
-impl WasiCtx {
-    /// Convenience function for calling [`WasiCtxBuilder::new`].
-    pub fn builder() -> WasiCtxBuilder {
-        WasiCtxBuilder::new()
+impl WasiP2Ctx {
+    /// Convenience function for calling [`WasiP2CtxBuilder::new`].
+    pub fn builder() -> WasiP2CtxBuilder {
+        WasiP2CtxBuilder::new()
     }
 }
 

@@ -105,7 +105,7 @@ pub struct Stdin;
 /// Returns a stream that represents the host's standard input.
 ///
 /// Suitable for passing to
-/// [`WasiCtxBuilder::stdin`](crate::p2::WasiCtxBuilder::stdin).
+/// [`WasiP2CtxBuilder::stdin`](crate::p2::WasiP2CtxBuilder::stdin).
 pub fn stdin() -> Stdin {
     Stdin
 }

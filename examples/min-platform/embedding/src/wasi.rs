@@ -100,7 +100,7 @@ fn run(wasi_component: &[u8]) -> Result<String> {
     // Ensure the exports of the component provide the Command world:
     let command_pre = CommandPre::new(instance_pre)?;
 
-    // Executor and WasiCtx share the same clock:
+    // Executor and WasiP2Ctx share the same clock:
     let clock = Clock::new();
 
     // Use our custom executor to run some async code here:
@@ -163,7 +163,7 @@ wasmtime::component::bindgen!({
 });
 
 /// A Ctx struct particular to this example. In library code designed to be
-/// reused and extended, this might be called a WasiCtx and not include a
+/// reused and extended, this might be called a WasiP2Ctx and not include a
 /// ResourceTable as a member, but for the sake of this example, we put
 /// everything that the bind
 pub struct ExampleCtx {
@@ -223,7 +223,7 @@ pub fn add_to_linker_async(linker: &mut Linker<ExampleCtx>) -> Result<()> {
     Ok(())
 }
 
-// WasiCtx and the Executor need to share a single clock, so make it reference
+// WasiP2Ctx and the Executor need to share a single clock, so make it reference
 // counted.
 #[derive(Clone)]
 struct Clock(Rc<Cell<u64>>);
@@ -483,7 +483,7 @@ fn block_on<R>(clock: Clock, f: impl Future<Output = Result<R>> + Send + 'static
 }
 
 // -------------- impls for the bindgen! Host traits ------------------
-// These impls are written directly for WasiCtx, which is fine because this
+// These impls are written directly for WasiP2Ctx, which is fine because this
 // example isn't trying to create reusable library code.
 
 impl wasi::clocks::monotonic_clock::Host for ExampleCtx {
