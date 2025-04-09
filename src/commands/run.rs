@@ -1007,8 +1007,8 @@ impl RunCommand {
             p3_filesystem.preopened_dir(
                 host,
                 guest,
-                wasmtime_wasi::p3::filesystem::DirPerms::all(),
-                wasmtime_wasi::p3::filesystem::FilePerms::all(),
+                wasmtime_wasi::DirPerms::all(),
+                wasmtime_wasi::FilePerms::all(),
             )?;
         }
         store.data_mut().p3_filesystem = Some(p3_filesystem);
