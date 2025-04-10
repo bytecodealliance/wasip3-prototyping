@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::{anyhow, Context as _};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::Store;
-use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiView};
+use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiP2View};
 use wasmtime_wasi::p3::bindings::Command;
 use wasmtime_wasi::p3::cli::{WasiCliCtx, WasiCliView};
 use wasmtime_wasi::p3::clocks::{WasiClocksCtx, WasiClocksView};
@@ -55,7 +55,7 @@ impl Default for Ctx {
     }
 }
 
-impl WasiView for Ctx {
+impl WasiP2View for Ctx {
     fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.wasip2
     }

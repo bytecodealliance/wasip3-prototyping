@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::task::Waker;
 
 use wasmtime::component::ResourceTable;
-use wasmtime_wasi::{IoView, WasiP2Ctx, WasiView};
+use wasmtime_wasi::{IoView, WasiP2Ctx, WasiP2View};
 
 pub mod borrowing_host;
 pub mod closed_streams;
@@ -29,7 +29,7 @@ impl IoView for Ctx {
     }
 }
 
-impl WasiView for Ctx {
+impl WasiP2View for Ctx {
     fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.wasi
     }

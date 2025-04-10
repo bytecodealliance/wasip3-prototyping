@@ -224,7 +224,7 @@ pub use self::generated::LinkOptions;
 /// ```no_run
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{Component, Linker, ResourceTable};
-/// use wasmtime_wasi::{IoView, WasiP2Ctx, WasiView, WasiP2CtxBuilder};
+/// use wasmtime_wasi::{IoView, WasiP2Ctx, WasiP2View, WasiP2CtxBuilder};
 /// use wasmtime_wasi::bindings::Command;
 ///
 /// // This example is an example shim of executing a component based on the
@@ -274,7 +274,7 @@ pub use self::generated::LinkOptions;
 /// impl IoView for MyState {
 ///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 /// }
-/// impl WasiView for MyState {
+/// impl WasiP2View for MyState {
 ///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 /// ```
@@ -292,7 +292,7 @@ pub use self::generated::Command;
 /// ```no_run
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{ResourceTable, Linker, Component};
-/// use wasmtime_wasi::{IoView, WasiP2Ctx, WasiView, WasiP2CtxBuilder};
+/// use wasmtime_wasi::{IoView, WasiP2Ctx, WasiP2View, WasiP2CtxBuilder};
 /// use wasmtime_wasi::bindings::CommandPre;
 ///
 /// // This example is an example shim of executing a component based on the
@@ -343,7 +343,7 @@ pub use self::generated::Command;
 /// impl IoView for MyState {
 ///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 /// }
-/// impl WasiView for MyState {
+/// impl WasiP2View for MyState {
 ///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 /// ```

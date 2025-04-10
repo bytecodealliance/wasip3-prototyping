@@ -3,7 +3,7 @@ use core::future::Future;
 use bytes::Bytes;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::Store;
-use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiView};
+use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiP2View};
 use wasmtime_wasi::p3::cli::{WasiCliCtx, WasiCliView};
 use wasmtime_wasi::p3::clocks::{WasiClocksCtx, WasiClocksView};
 use wasmtime_wasi::p3::filesystem::{WasiFilesystemCtx, WasiFilesystemView};
@@ -48,7 +48,7 @@ where
     }
 }
 
-impl<C: Client> WasiView for Ctx<C> {
+impl<C: Client> WasiP2View for Ctx<C> {
     fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.wasip2
     }
