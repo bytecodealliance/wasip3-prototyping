@@ -1,3 +1,5 @@
+#![expect(unsafe_op_in_unsafe_fn, reason = "old code, not worth updating yet")]
+
 // This tests callback-less (AKA stackful) async exports.
 //
 // Testing this case using Rust's LLVM-based toolchain is tricky because, as of

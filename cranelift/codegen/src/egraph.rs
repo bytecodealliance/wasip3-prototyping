@@ -12,9 +12,11 @@ use crate::ir::{
     ValueListPool,
 };
 use crate::loop_analysis::LoopAnalysis;
+use crate::opts::generated_code::SkeletonInstSimplification;
 use crate::opts::IsleContext;
 use crate::scoped_hash_map::{Entry as ScopedEntry, ScopedHashMap};
 use crate::settings::Flags;
+use crate::take_and_replace::TakeAndReplace;
 use crate::trace;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
@@ -95,6 +97,7 @@ where
     pub(crate) rewrite_depth: usize,
     pub(crate) subsume_values: FxHashSet<Value>,
     optimized_values: SmallVec<[Value; MATCHES_LIMIT]>,
+    optimized_insts: SmallVec<[SkeletonInstSimplification; MATCHES_LIMIT]>,
 }
 
 /// For passing to `insert_pure_enode`. Sometimes the enode already
@@ -296,7 +299,8 @@ where
         // A pure node always has exactly one result.
         let orig_value = self.func.dfg.first_result(inst);
 
-        let mut optimized_values = std::mem::take(&mut self.optimized_values);
+        let mut guard = TakeAndReplace::new(self, |x| &mut x.optimized_values);
+        let (ctx, optimized_values) = guard.get();
 
         // Limit rewrite depth. When we apply optimization rules, they
         // may create new nodes (values) and those are, recursively,
@@ -308,28 +312,28 @@ where
         // infinite or problematic recursion, we bound the rewrite
         // depth to a small constant here.
         const REWRITE_LIMIT: usize = 5;
-        if self.rewrite_depth > REWRITE_LIMIT {
-            self.stats.rewrite_depth_limit += 1;
+        if ctx.rewrite_depth > REWRITE_LIMIT {
+            ctx.stats.rewrite_depth_limit += 1;
             return orig_value;
         }
-        self.rewrite_depth += 1;
-        trace!("Incrementing rewrite depth; now {}", self.rewrite_depth);
+        ctx.rewrite_depth += 1;
+        trace!("Incrementing rewrite depth; now {}", ctx.rewrite_depth);
 
         // Invoke the ISLE toplevel constructor, getting all new
         // values produced as equivalents to this value.
         trace!("Calling into ISLE with original value {}", orig_value);
-        self.stats.rewrite_rule_invoked += 1;
+        ctx.stats.rewrite_rule_invoked += 1;
         debug_assert!(optimized_values.is_empty());
         crate::opts::generated_code::constructor_simplify(
-            &mut IsleContext { ctx: self },
+            &mut IsleContext { ctx },
             orig_value,
-            &mut optimized_values,
+            optimized_values,
         );
 
-        self.stats.rewrite_rule_results += optimized_values.len() as u64;
+        ctx.stats.rewrite_rule_results += optimized_values.len() as u64;
 
         // It's not supposed to matter what order `simplify` returns values in.
-        self.ctrl_plane.shuffle(&mut optimized_values);
+        ctx.ctrl_plane.shuffle(optimized_values);
 
         let num_matches = optimized_values.len();
         if num_matches > MATCHES_LIMIT {
@@ -349,10 +353,10 @@ where
         // all returned values.
         let result_value = if let Some(&subsuming_value) = optimized_values
             .iter()
-            .find(|&value| self.subsume_values.contains(value))
+            .find(|&value| ctx.subsume_values.contains(value))
         {
             optimized_values.clear();
-            self.stats.pure_inst_subsume += 1;
+            ctx.stats.pure_inst_subsume += 1;
             subsuming_value
         } else {
             let mut union_value = orig_value;
@@ -364,29 +368,27 @@ where
                 );
                 if optimized_value == orig_value {
                     trace!(" -> same as orig value; skipping");
-                    self.stats.pure_inst_rewrite_to_self += 1;
+                    ctx.stats.pure_inst_rewrite_to_self += 1;
                     continue;
                 }
                 let old_union_value = union_value;
-                union_value = self.func.dfg.union(old_union_value, optimized_value);
-                self.stats.union += 1;
+                union_value = ctx.func.dfg.union(old_union_value, optimized_value);
+                ctx.stats.union += 1;
                 trace!(" -> union: now {}", union_value);
-                self.func.dfg.merge_facts(old_union_value, optimized_value);
-                self.available_block[union_value] =
-                    self.merge_availability(old_union_value, optimized_value);
+                ctx.func.dfg.merge_facts(old_union_value, optimized_value);
+                ctx.available_block[union_value] =
+                    ctx.merge_availability(old_union_value, optimized_value);
             }
             union_value
         };
 
-        self.rewrite_depth -= 1;
-        trace!("Decrementing rewrite depth; now {}", self.rewrite_depth);
-        if self.rewrite_depth == 0 {
-            self.subsume_values.clear();
+        ctx.rewrite_depth -= 1;
+        trace!("Decrementing rewrite depth; now {}", ctx.rewrite_depth);
+        if ctx.rewrite_depth == 0 {
+            ctx.subsume_values.clear();
         }
 
-        debug_assert!(self.optimized_values.is_empty());
-        self.optimized_values = optimized_values;
-
+        debug_assert!(ctx.optimized_values.is_empty());
         result_value
     }
 
@@ -400,11 +402,24 @@ where
         }
     }
 
-    /// Optimize a "skeleton" instruction, possibly removing
-    /// it. Returns `true` if the instruction should be removed from
-    /// the layout.
-    fn optimize_skeleton_inst(&mut self, inst: Inst, block: Block) -> bool {
+    /// Optimize a "skeleton" instruction.
+    ///
+    /// Returns an optional command of how to continue processing the optimized
+    /// instruction (e.g. removing it or replacing it with a new instruction).
+    fn optimize_skeleton_inst(
+        &mut self,
+        inst: Inst,
+        block: Block,
+    ) -> Option<SkeletonInstSimplification> {
         self.stats.skeleton_inst += 1;
+
+        // If we have a rewrite rule for this instruction, do that first, so
+        // that GVN and alias analysis only see simplified skeleton
+        // instructions.
+        if let Some(cmd) = self.simplify_skeleton_inst(inst) {
+            self.stats.skeleton_inst_simplified += 1;
+            return Some(cmd);
+        }
 
         // First, can we try to deduplicate? We need to keep some copy
         // of the instruction around because it's side-effecting, but
@@ -447,7 +462,7 @@ where
                         }
                         (_, _) => unreachable!(),
                     }
-                    true
+                    Some(SkeletonInstSimplification::Remove)
                 }
                 ScopedEntry::Vacant(v) => {
                     // Otherwise, insert it into the value-map.
@@ -457,7 +472,7 @@ where
                     }
                     v.insert(result);
                     trace!(" -> inserts as new (no GVN)");
-                    false
+                    None
                 }
             }
         }
@@ -479,7 +494,7 @@ where
             self.value_to_opt_value[result] = new_result;
             self.available_block[result] = self.available_block[new_result];
             self.func.dfg.merge_facts(result, new_result);
-            true
+            Some(SkeletonInstSimplification::Remove)
         }
         // Otherwise, generic side-effecting op -- always keep it, and
         // set its results to identity-map to original values.
@@ -490,8 +505,185 @@ where
                 self.value_to_opt_value[result] = result;
                 self.available_block[result] = block;
             }
-            false
+            None
         }
+    }
+
+    /// Find the best simplification of the given skeleton instruction, if any,
+    /// by consulting our `simplify_skeleton` ISLE rules.
+    fn simplify_skeleton_inst(&mut self, inst: Inst) -> Option<SkeletonInstSimplification> {
+        // We cannot currently simplify terminators, or simplify into
+        // terminators. Anything that could change the control-flow graph is off
+        // limits.
+        //
+        // Consider the following CLIF snippet:
+        //
+        //     block0(v0: i64):
+        //         v1 = iconst.i32 0
+        //         trapz v1, user42
+        //         v2 = load.i32 v0
+        //         brif v1, block1, block2
+        //     block1:
+        //         return v2
+        //     block2:
+        //         v3 = iconst.i32 1
+        //         v4 = iadd v2, v3
+        //         return v4
+        //
+        // We would ideally like to perform simplifications like replacing the
+        // `trapz` with an unconditional `trap` and the conditional `brif`
+        // branch with an unconditional `jump`. Note, however, that blocks
+        // `block1` and `block2` are dominated by `block0` and therefore can and
+        // do use values defined in `block0`. This presents challenges:
+        //
+        // * If we replace the `brif` with a `jump`, then we've mutated the
+        //   control-flow graph and removed that domination property. The uses
+        //   of `v2` and `v3` in those blocks become invalid.
+        //
+        // * Even worse, if we turn the `trapz` into a `trap`, we are
+        //   introducing a terminator into the middle of the block, which leaves
+        //   us with two choices to fix up the IR so that there aren't any
+        //   instructions following the terminator in the block:
+        //
+        //   1. We can split the unreachable instructions off into a new
+        //      block. However, there is no control-flow edge from the current
+        //      block to this new block and so, again, the new block isn't
+        //      dominated by the current block, and therefore the can't use
+        //      values defined in this block or any dominating it. The `load`
+        //      instruction uses `v0` but is not dominated by `v0`'s
+        //      definition.
+        //
+        //   2. Alternatively, we can simply delete the trailing instructions,
+        //      since they are unreachable. But then not only are the old
+        //      instructions' uses no longer dominated by their definitions, but
+        //      the definitions do not exist at all anymore!
+        //
+        // Whatever approach we would take, we would invalidate value uses, and
+        // would need to track and fix them up.
+        if self.func.dfg.insts[inst].opcode().is_branch() {
+            return None;
+        }
+
+        let mut guard = TakeAndReplace::new(self, |x| &mut x.optimized_insts);
+        let (ctx, optimized_insts) = guard.get();
+
+        crate::opts::generated_code::constructor_simplify_skeleton(
+            &mut IsleContext { ctx },
+            inst,
+            optimized_insts,
+        );
+
+        let simplifications_len = optimized_insts.len();
+        log::trace!(" -> simplify_skeleton: yielded {simplifications_len} simplification(s)");
+        if simplifications_len > MATCHES_LIMIT {
+            log::trace!("      too many candidate simplifications; truncating to {MATCHES_LIMIT}");
+            optimized_insts.truncate(MATCHES_LIMIT);
+        }
+
+        // Find the best simplification, if any, from our candidates.
+        //
+        // Unlike simplifying pure values, we do not add side-effectful
+        // instructions to the egraph, nor do we extract the best version via
+        // dynamic programming and considering the costs of operands. Instead,
+        // we greedily choose the best simplification. This is because there is
+        // an impedance mismatch: the egraph and our pure rewrites are centered
+        // around *values*, but we don't represent side-effects with values, we
+        // represent them implicitly in their *instructions*.
+        //
+        // The initial best choice is "no simplification, just use the original
+        // instruction" which has the original instruction's cost.
+        let mut best = None;
+        let mut best_cost = cost::Cost::of_skeleton_op(
+            ctx.func.dfg.insts[inst].opcode(),
+            ctx.func.dfg.inst_args(inst).len(),
+        );
+        while let Some(simplification) = optimized_insts.pop() {
+            let (new_inst, new_val) = match simplification {
+                // We can't do better than completely removing the skeleton
+                // instruction, so short-cicuit the loop and eagerly return the
+                // `Remove*` simplifications.
+                SkeletonInstSimplification::Remove => {
+                    log::trace!(" -> simplify_skeleton: remove inst");
+                    debug_assert!(ctx.func.dfg.inst_results(inst).is_empty());
+                    return Some(simplification);
+                }
+                SkeletonInstSimplification::RemoveWithVal { val } => {
+                    log::trace!(" -> simplify_skeleton: remove inst and use {val} as its result");
+                    if cfg!(debug_assertions) {
+                        let results = ctx.func.dfg.inst_results(inst);
+                        debug_assert_eq!(results.len(), 1);
+                        debug_assert_eq!(
+                            ctx.func.dfg.value_type(results[0]),
+                            ctx.func.dfg.value_type(val),
+                        );
+                    }
+                    return Some(simplification);
+                }
+
+                // For instruction replacement simplification, we want to check
+                // that the replacements define the same number and types of
+                // values as the original instruction, and also determine
+                // whether they are actually an improvement over (i.e. have
+                // lower cost than) the original instruction.
+                SkeletonInstSimplification::Replace { inst } => {
+                    log::trace!(
+                        " -> simplify_skeleton: replace inst with {inst}: {}",
+                        ctx.func.dfg.display_inst(inst)
+                    );
+                    (inst, None)
+                }
+                SkeletonInstSimplification::ReplaceWithVal { inst, val } => {
+                    log::trace!(
+                        " -> simplify_skeleton: replace inst with {val} and {inst}: {}",
+                        ctx.func.dfg.display_inst(inst)
+                    );
+                    (inst, Some(val))
+                }
+            };
+
+            if cfg!(debug_assertions) {
+                let opcode = ctx.func.dfg.insts[inst].opcode();
+                debug_assert!(
+                    !(opcode.is_terminator() || opcode.is_branch()),
+                    "simplifying control-flow instructions and terminators is not yet supported",
+                );
+
+                let old_vals = ctx.func.dfg.inst_results(inst);
+                let new_vals = if let Some(val) = new_val.as_ref() {
+                    std::slice::from_ref(val)
+                } else {
+                    ctx.func.dfg.inst_results(new_inst)
+                };
+                debug_assert_eq!(
+                    old_vals.len(),
+                    new_vals.len(),
+                    "skeleton simplification should result in the same number of result values",
+                );
+
+                for (old_val, new_val) in old_vals.iter().zip(new_vals) {
+                    let old_ty = ctx.func.dfg.value_type(*old_val);
+                    let new_ty = ctx.func.dfg.value_type(*new_val);
+                    debug_assert_eq!(
+                        old_ty, new_ty,
+                        "skeleton simplification should result in values of the correct type",
+                    );
+                }
+            }
+
+            // Our best simplification is the one with the least cost. Update
+            // `best` if necessary.
+            let cost = cost::Cost::of_skeleton_op(
+                ctx.func.dfg.insts[new_inst].opcode(),
+                ctx.func.dfg.inst_args(new_inst).len(),
+            );
+            if cost < best_cost {
+                best = Some(simplification);
+                best_cost = cost;
+            }
+        }
+
+        // Return the best simplification!
+        best
     }
 
     /// Helper to propagate facts on constant values: if PCC is
@@ -653,7 +845,10 @@ impl<'a> EgraphPass<'a> {
                         available_block[param] = block;
                     }
                     while let Some(inst) = cursor.next_inst() {
-                        trace!("Processing inst {}", inst);
+                        trace!(
+                            "Processing inst {inst}: {}",
+                            cursor.func.dfg.display_inst(inst),
+                        );
 
                         // Rewrite args of *all* instructions using the
                         // value-to-opt-value map.
@@ -685,6 +880,7 @@ impl<'a> EgraphPass<'a> {
                             flags: self.flags,
                             ctrl_plane: self.ctrl_plane,
                             optimized_values: Default::default(),
+                            optimized_insts: Default::default(),
                         };
 
                         if is_pure_for_egraph(ctx.func, inst) {
@@ -698,8 +894,13 @@ impl<'a> EgraphPass<'a> {
                             // enode in the eclass, so we can remove it.
                             cursor.remove_inst_and_step_back();
                         } else {
-                            if ctx.optimize_skeleton_inst(inst, block) {
-                                cursor.remove_inst_and_step_back();
+                            if let Some(cmd) = ctx.optimize_skeleton_inst(inst, block) {
+                                Self::execute_skeleton_inst_simplification(
+                                    cmd,
+                                    &mut cursor,
+                                    &mut value_to_opt_value,
+                                    inst,
+                                );
                             }
                         }
                     }
@@ -710,6 +911,63 @@ impl<'a> EgraphPass<'a> {
                 }
             }
         }
+    }
+
+    /// Execute a simplification of an instruction in the side-effectful
+    /// skeleton.
+    fn execute_skeleton_inst_simplification(
+        simplification: SkeletonInstSimplification,
+        cursor: &mut FuncCursor,
+        value_to_opt_value: &mut SecondaryMap<Value, Value>,
+        old_inst: Inst,
+    ) {
+        let mut forward_val = |cursor: &mut FuncCursor, old_val, new_val| {
+            cursor.func.dfg.change_to_alias(old_val, new_val);
+            value_to_opt_value[old_val] = new_val;
+        };
+
+        let (new_inst, new_val) = match simplification {
+            SkeletonInstSimplification::Remove => {
+                cursor.remove_inst_and_step_back();
+                return;
+            }
+            SkeletonInstSimplification::RemoveWithVal { val } => {
+                cursor.remove_inst_and_step_back();
+                let old_val = cursor.func.dfg.first_result(old_inst);
+                cursor.func.dfg.detach_inst_results(old_inst);
+                forward_val(cursor, old_val, val);
+                return;
+            }
+            SkeletonInstSimplification::Replace { inst } => (inst, None),
+            SkeletonInstSimplification::ReplaceWithVal { inst, val } => (inst, Some(val)),
+        };
+
+        // Replace the old instruction with the new one.
+        cursor.replace_inst(new_inst);
+        debug_assert!(!cursor.func.dfg.insts[new_inst].opcode().is_terminator());
+
+        // Redirect the old instruction's result values to our new instruction's
+        // result values.
+        let mut i = 0;
+        let mut next_new_val = |dfg: &crate::ir::DataFlowGraph| -> Value {
+            if let Some(val) = new_val {
+                val
+            } else {
+                let val = dfg.inst_results(new_inst)[i];
+                i += 1;
+                val
+            }
+        };
+        for i in 0..cursor.func.dfg.inst_results(old_inst).len() {
+            let old_val = cursor.func.dfg.inst_results(old_inst)[i];
+            let new_val = next_new_val(&cursor.func.dfg);
+            forward_val(cursor, old_val, new_val);
+        }
+
+        // Back up so that the next iteration of the outer egraph loop will
+        // process the new instruction.
+        cursor.goto_inst(new_inst);
+        cursor.prev_inst();
     }
 
     /// Scoped elaboration: compute a final ordering of op computation
@@ -812,6 +1070,7 @@ pub(crate) struct Stats {
     pub(crate) pure_inst_insert_orig: u64,
     pub(crate) pure_inst_insert_new: u64,
     pub(crate) skeleton_inst: u64,
+    pub(crate) skeleton_inst_simplified: u64,
     pub(crate) skeleton_inst_gvn: u64,
     pub(crate) alias_analysis_removed: u64,
     pub(crate) new_inst: u64,

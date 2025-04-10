@@ -1,3 +1,5 @@
+#![expect(unsafe_op_in_unsafe_fn, reason = "old code, not worth updating yet")]
+
 // Here we avoid using wit-bindgen so that we can export our own post-return
 // function and keep track of whether it was called.
 

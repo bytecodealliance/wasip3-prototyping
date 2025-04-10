@@ -1,3 +1,5 @@
+#![expect(unsafe_op_in_unsafe_fn, reason = "old code, not worth updating yet")]
+
 mod bindings {
     wit_bindgen::generate!({
         path: "../misc/component-async-tests/wit",
