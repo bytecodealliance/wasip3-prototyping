@@ -1,4 +1,4 @@
-//! # Wasmtime's WASI Implementation
+//! # Wasmtime's WASIp2 Implementation
 //!
 //!
 //! This module provides a Wasmtime host implementation of WASI 0.2 (aka WASIp2
