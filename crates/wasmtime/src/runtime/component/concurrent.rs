@@ -2314,9 +2314,6 @@ impl Instance {
     /// #
     /// # async fn foo() -> Result<()> {
     /// # let mut config = Config::new();
-    /// # config.wasm_component_model(true);
-    /// # config.wasm_component_model_async(true);
-    /// # config.async_support(true);
     /// # let engine = Engine::new(&config)?;
     /// # let mut store = Store::new(&engine, ());
     /// # let mut linker = Linker::new(&engine);
@@ -2336,7 +2333,7 @@ impl Instance {
     /// // let (future,) = call.await?;
     ///
     /// // OK, since we use `Instance::run` to poll `call` inside the event loop:
-    /// let (future,) = instance.run(&mut store, call).await?;
+    /// let (future,) = instance.run(&mut store, call).await??;
     ///
     /// let future = future.into_reader(&mut store);
     ///
@@ -2386,28 +2383,72 @@ impl Instance {
     /// futures passed to `run`.
     ///
     /// ```
+    /// # use {
+    /// #   anyhow::Result,
+    /// #   wasmtime::{
+    /// #     component::{ Component, Linker, Resource, ResourceTable },
+    /// #     Config, Engine, Store
+    /// #   },
+    /// # };
+    /// #
+    /// # struct MyResource(u32);
+    /// # struct Ctx { table: ResourceTable }
+    /// #
+    /// # async fn foo() -> Result<()> {
+    /// # let mut config = Config::new();
+    /// # let engine = Engine::new(&config)?;
+    /// # let mut store = Store::new(&engine, Ctx { table: ResourceTable::new() });
+    /// # let mut linker = Linker::new(&engine);
+    /// # let component = Component::new(&engine, "")?;
+    /// # let instance = linker.instantiate_async(&mut store, &component).await?;
+    /// # let foo = instance.get_typed_func::<(Resource<MyResource>,), (Resource<MyResource>,)>(&mut store, "foo")?;
+    /// # let bar = instance.get_typed_func::<(u32,), ()>(&mut store, "bar")?;
     /// let resource = store.data_mut().table.push(MyResource(42))?;
     /// let call = foo.call_concurrent(&mut store, (resource,));
-    /// let (another_resource,) = instance.run(&mut store, call).await?;
+    /// let (another_resource,) = instance.run(&mut store, call).await??;
     /// let value = store.data_mut().table.delete(another_resource)?;
     /// let call = bar.call_concurrent(&mut store, (value.0,));
-    /// instance.run(&mut store, call).await?;
+    /// instance.run(&mut store, call).await??;
+    /// # Ok(())
+    /// # }
     /// ```
     ///
     /// - Call `run_with` once and use `Accessor::with` to access the store from
     /// within the future.
     ///
     /// ```
-    /// instance.run_with(&mut store, Box::pin(|accessor| async move {
-    ///    let another_resource = accessor.with(|store| {
-    ///        let resource = store.data_mut().table.push(MyResource(42))?;
-    ///        Ok(foo.call_concurrent(store, (resource,)))
+    /// # use {
+    /// #   anyhow::{Result, Error},
+    /// #   wasmtime::{
+    /// #     component::{ Component, Linker, Resource, ResourceTable, Accessor, Access },
+    /// #     Config, Engine, Store
+    /// #   },
+    /// # };
+    /// #
+    /// # struct MyResource(u32);
+    /// # struct Ctx { table: ResourceTable }
+    /// #
+    /// # async fn foo() -> Result<()> {
+    /// # let mut config = Config::new();
+    /// # let engine = Engine::new(&config)?;
+    /// # let mut store = Store::new(&engine, Ctx { table: ResourceTable::new() });
+    /// # let mut linker = Linker::new(&engine);
+    /// # let component = Component::new(&engine, "")?;
+    /// # let instance = linker.instantiate_async(&mut store, &component).await?;
+    /// # let foo = instance.get_typed_func::<(Resource<MyResource>,), (Resource<MyResource>,)>(&mut store, "foo")?;
+    /// # let bar = instance.get_typed_func::<(u32,), ()>(&mut store, "bar")?;
+    /// instance.run_with(&mut store, move |accessor: &mut Accessor<_, _>| Box::pin(async move {
+    ///    let (another_resource,) = accessor.with(|mut access: Access<Ctx, Ctx>| {
+    ///        let resource = access.table.push(MyResource(42))?;
+    ///        Ok::<_, Error>(foo.call_concurrent(access, (resource,)))
     ///    })?.await?;
-    ///    accessor.with(|store| {
-    ///        let value = store.data_mut().table.delete(another_resource)?;
-    ///        Ok(bar.call_concurrent(store, (value.0,)))
+    ///    accessor.with(|mut access: Access<Ctx, Ctx>| {
+    ///        let value = access.table.delete(another_resource)?;
+    ///        Ok::<_, Error>(bar.call_concurrent(access, (value.0,)))
     ///    })?.await
-    /// })).await?;
+    /// })).await??;
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn run_with<U: Send, V: Send + Sync + 'static, F>(
         &self,

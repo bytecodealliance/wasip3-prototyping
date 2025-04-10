@@ -592,8 +592,8 @@ impl ServeCommand {
                                 )?;
                                 let (req, body) = req.into_parts();
                                 let body = body.map_err(wasmtime_wasi_http::p3::bindings::http::types::ErrorCode::from_hyper_request_error);
-                                let handle =
-                                    proxy.handle(&mut store, http::Request::from_parts(req, body));
+                                let handle = proxy
+                                    .handle(&mut store, http::Request::from_parts(req, body))?;
                                 let res = instance.run(&mut store, handle).await???;
                                 let (res, tx, io) =
                                     wasmtime_wasi_http::p3::Response::resource_into_http(

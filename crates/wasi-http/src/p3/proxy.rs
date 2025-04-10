@@ -1,6 +1,6 @@
 use anyhow::Context as _;
 use futures::FutureExt;
-use std::future::{self, Future};
+use std::future::Future;
 use std::pin::Pin;
 use wasmtime::component::Resource;
 use wasmtime::AsContextMut;
@@ -16,11 +16,13 @@ impl Proxy {
         &self,
         mut store: S,
         req: R,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = wasmtime::Result<Result<Resource<Response>, ErrorCode>>>
-                + Send
-                + 'static,
+    ) -> wasmtime::Result<
+        Pin<
+            Box<
+                dyn Future<Output = wasmtime::Result<Result<Resource<Response>, ErrorCode>>>
+                    + Send
+                    + 'static,
+            >,
         >,
     >
     where
@@ -28,15 +30,12 @@ impl Proxy {
     {
         let mut store = store.as_context_mut();
         let table = store.data_mut().table();
-        match table
+        let req = table
             .push(req.into())
-            .context("failed to push request to table")
-        {
-            Ok(req) => self
-                .wasi_http_handler()
-                .call_handle(&mut store, req)
-                .boxed(),
-            Err(e) => future::ready(Err(e)).boxed(),
-        }
+            .context("failed to push request to table")?;
+        Ok(self
+            .wasi_http_handler()
+            .call_handle(&mut store, req)
+            .boxed())
     }
 }
