@@ -3,7 +3,8 @@ use crate::check::artifacts_dir;
 use anyhow::Result;
 use std::path::Path;
 use wasmtime::{Config, Engine, Linker, Module, Store};
-use wasmtime_wasi::p2::{preview1::WasiP1Ctx, WasiP2CtxBuilder};
+use wasmtime_wasi::p2::WasiP2CtxBuilder;
+use wasmtime_wasi::preview1::WasiP1Ctx;
 use wasmtime_wasi::{DirPerms, FilePerms};
 use wasmtime_wasi_nn::{witx::WasiNnCtx, Backend, InMemoryRegistry};
 
