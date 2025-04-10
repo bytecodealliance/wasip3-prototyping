@@ -1,14 +1,9 @@
 use crate::network::{SocketAddrUse, SocketAddressFamily};
+use crate::p2::bindings::sockets::network::{ErrorCode, IpAddressFamily, IpSocketAddress, Network};
+use crate::p2::bindings::sockets::udp;
 use crate::p2::host::network::util;
-use crate::p2::{
-    bindings::{
-        sockets::network::{ErrorCode, IpAddressFamily, IpSocketAddress, Network},
-        sockets::udp,
-    },
-    udp::{IncomingDatagramStream, OutgoingDatagramStream, SendState, UdpState},
-    Pollable,
-};
-use crate::p2::{IoView, SocketError, SocketResult, WasiP2Impl, WasiP2View};
+use crate::p2::udp::{IncomingDatagramStream, OutgoingDatagramStream, SendState, UdpState};
+use crate::p2::{IoView, Pollable, SocketError, SocketResult, WasiP2Impl, WasiP2View};
 use anyhow::anyhow;
 use async_trait::async_trait;
 use io_lifetimes::AsSocketlike;

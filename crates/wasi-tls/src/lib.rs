@@ -83,16 +83,13 @@ use tokio::sync::Mutex;
 use tokio_rustls::client::TlsStream;
 use wasmtime::component::{Resource, ResourceTable};
 use wasmtime_wasi::async_trait;
-use wasmtime_wasi::p2::pipe::AsyncReadStream;
-use wasmtime_wasi::p2::OutputStream;
-use wasmtime_wasi::p2::{
-    bindings::io::{
-        error::Error as HostIoError,
-        poll::Pollable as HostPollable,
-        streams::{InputStream as BoxInputStream, OutputStream as BoxOutputStream},
-    },
-    Pollable, StreamError,
+use wasmtime_wasi::p2::bindings::io::{
+    error::Error as HostIoError,
+    poll::Pollable as HostPollable,
+    streams::{InputStream as BoxInputStream, OutputStream as BoxOutputStream},
 };
+use wasmtime_wasi::p2::pipe::AsyncReadStream;
+use wasmtime_wasi::p2::{OutputStream, Pollable, StreamError};
 use wasmtime_wasi::runtime::AbortOnDropJoinHandle;
 
 mod gen_ {
