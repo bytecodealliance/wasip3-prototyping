@@ -14,7 +14,7 @@ use wasmtime::component::{
     StreamWriter,
 };
 use wasmtime::{Config, Engine, Store};
-use wasmtime_wasi::{IoView, WasiP2CtxBuilder};
+use wasmtime_wasi::p2::{IoView, WasiP2CtxBuilder};
 
 use component_async_tests::util::{annotate, compose, init_logger};
 
