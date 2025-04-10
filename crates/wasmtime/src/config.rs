@@ -279,10 +279,9 @@ impl Config {
 
             // When running under MIRI try to optimize for compile time of wasm
             // code itself as much as possible. Disable optimizations by
-            // default and use the fastest regalloc available to us.
+            // default.
             if cfg!(miri) {
                 ret.cranelift_opt_level(OptLevel::None);
-                ret.cranelift_regalloc_algorithm(RegallocAlgorithm::SinglePass);
             }
         }
 
@@ -1082,13 +1081,7 @@ impl Config {
     ///
     /// [proposal]: https://github.com/webassembly/stack-switching
     pub fn wasm_stack_switching(&mut self, enable: bool) -> &mut Self {
-        // FIXME(dhil): Once the config provides a handle
-        // for turning on/off exception handling proposal support,
-        // this ought to only enable stack switching.
-        self.wasm_feature(
-            WasmFeatures::EXCEPTIONS | WasmFeatures::STACK_SWITCHING,
-            enable,
-        );
+        self.wasm_feature(WasmFeatures::STACK_SWITCHING, enable);
         self
     }
 
@@ -1154,6 +1147,21 @@ impl Config {
     /// TODO
     pub fn wasm_component_model_error_context(&mut self, enable: bool) -> &mut Self {
         self.wasm_feature(WasmFeatures::CM_ERROR_CONTEXT, enable);
+        self
+    }
+
+    #[doc(hidden)] // FIXME(#3427) - if/when implemented then un-hide this
+    pub fn wasm_exceptions(&mut self, enable: bool) -> &mut Self {
+        self.wasm_feature(WasmFeatures::EXCEPTIONS, enable);
+        self
+    }
+
+    #[doc(hidden)] // FIXME(#3427) - if/when implemented then un-hide this
+    #[deprecated = "This configuration option only exists for internal \
+                    usage with the spec testsuite. It may be removed at \
+                    any time and without warning. Do not rely on it!"]
+    pub fn wasm_legacy_exceptions(&mut self, enable: bool) -> &mut Self {
+        self.wasm_feature(WasmFeatures::LEGACY_EXCEPTIONS, enable);
         self
     }
 
@@ -1252,7 +1260,6 @@ impl Config {
     pub fn cranelift_regalloc_algorithm(&mut self, algo: RegallocAlgorithm) -> &mut Self {
         let val = match algo {
             RegallocAlgorithm::Backtracking => "backtracking",
-            RegallocAlgorithm::SinglePass => "single_pass",
         };
         self.compiler_config
             .settings
@@ -2053,23 +2060,25 @@ impl Config {
         #[cfg(any(feature = "cranelift", feature = "winch"))]
         match self.compiler_config.strategy {
             None | Some(Strategy::Cranelift) => {
+                let mut unsupported = WasmFeatures::empty();
+
                 // Pulley at this time fundamentally doesn't support the
                 // `threads` proposal, notably shared memory, because Rust can't
                 // safely implement loads/stores in the face of shared memory.
                 if self.compiler_target().is_pulley() {
-                    return WasmFeatures::THREADS;
+                    unsupported |= WasmFeatures::THREADS;
                 }
 
-                // Other Cranelift backends are either 100% missing or complete
-                // at this time, so no need to further filter.
-                WasmFeatures::empty()
+                unsupported
             }
             Some(Strategy::Winch) => {
                 let mut unsupported = WasmFeatures::GC
                     | WasmFeatures::FUNCTION_REFERENCES
                     | WasmFeatures::RELAXED_SIMD
                     | WasmFeatures::TAIL_CALL
-                    | WasmFeatures::GC_TYPES;
+                    | WasmFeatures::GC_TYPES
+                    | WasmFeatures::EXCEPTIONS
+                    | WasmFeatures::LEGACY_EXCEPTIONS;
                 match self.compiler_target().architecture {
                     target_lexicon::Architecture::Aarch64(_) => {
                         // no support for simd on aarch64
@@ -2836,16 +2845,6 @@ pub enum RegallocAlgorithm {
     /// results in better register utilization, producing fewer spills
     /// and moves, but can cause super-linear compile runtime.
     Backtracking,
-    /// Generates acceptable code very quickly.
-    ///
-    /// This algorithm performs a single pass through the code,
-    /// guaranteed to work in linear time.  (Note that the rest of
-    /// Cranelift is not necessarily guaranteed to run in linear time,
-    /// however.) It cannot undo earlier decisions, however, and it
-    /// cannot foresee constraints or issues that may occur further
-    /// ahead in the code, so the code may have more spills and moves as
-    /// a result.
-    SinglePass,
 }
 
 /// Select which profiling technique to support.

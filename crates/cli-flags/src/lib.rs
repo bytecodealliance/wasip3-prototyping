@@ -382,6 +382,10 @@ wasmtime_option_group! {
         pub wide_arithmetic: Option<bool>,
         /// Configure support for the extended-const proposal.
         pub extended_const: Option<bool>,
+        /// Configure support for the exceptions proposal.
+        pub exceptions: Option<bool>,
+        /// DEPRECATED: Configure support for the legacy exceptions proposal.
+        pub legacy_exceptions: Option<bool>,
     }
 
     enum Wasm {
@@ -985,6 +989,13 @@ impl CommonOptions {
         if let Some(enable) = self.wasm.extended_const.or(all) {
             config.wasm_extended_const(enable);
         }
+        if let Some(enable) = self.wasm.exceptions.or(all) {
+            config.wasm_exceptions(enable);
+        }
+        if let Some(enable) = self.wasm.legacy_exceptions.or(all) {
+            #[expect(deprecated, reason = "forwarding CLI flag")]
+            config.wasm_legacy_exceptions(enable);
+        }
         if let Some(enable) = self.wasm.component_model_error_context.or(all) {
             config.wasm_component_model_error_context(enable);
         }
@@ -1076,7 +1087,6 @@ mod tests {
         // Regalloc algorithm
         for (regalloc_value, expected) in [
             ("\"backtracking\"", Some(RegallocAlgorithm::Backtracking)),
-            ("\"single-pass\"", Some(RegallocAlgorithm::SinglePass)),
             ("\"hello\"", None), // should fail
             ("3", None),         // should fail
             ("true", None),      // should fail

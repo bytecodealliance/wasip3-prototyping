@@ -348,6 +348,7 @@ pub struct StoreOpaque {
     /// `rooted_host_funcs` below. This structure contains pointers which are
     /// otherwise kept alive by the `Arc` references in `rooted_host_funcs`.
     store_data: ManuallyDrop<StoreData>,
+    traitobj: StorePtr,
     default_caller: InstanceHandle,
 
     /// Used to optimized wasm->host calls when the host function is defined with
@@ -522,67 +523,83 @@ impl<T> Store<T> {
     /// tables created to 10,000. This can be overridden with the
     /// [`Store::limiter`] configuration method.
     pub fn new(engine: &Engine, data: T) -> Self {
+        let store_data = StoreData::new();
+        log::trace!("creating new store {:?}", store_data.id());
+
         let pkey = engine.allocator().next_available_pkey();
 
-        let mut inner = Box::new(StoreInner {
-            inner: StoreOpaque {
-                _marker: marker::PhantomPinned,
-                engine: engine.clone(),
-                vm_store_context: Default::default(),
-                instances: Vec::new(),
-                #[cfg(feature = "component-model")]
-                num_component_instances: 0,
-                signal_handler: None,
-                gc_store: None,
-                gc_roots: RootSet::default(),
-                #[cfg(feature = "gc")]
-                gc_roots_list: GcRootsList::default(),
-                #[cfg(feature = "gc")]
-                gc_host_alloc_types: Default::default(),
-                modules: ModuleRegistry::default(),
-                func_refs: FuncRefs::default(),
-                host_globals: Vec::new(),
-                instance_count: 0,
-                instance_limit: crate::DEFAULT_INSTANCE_LIMIT,
-                memory_count: 0,
-                memory_limit: crate::DEFAULT_MEMORY_LIMIT,
-                table_count: 0,
-                table_limit: crate::DEFAULT_TABLE_LIMIT,
-                #[cfg(feature = "async")]
-                async_state: AsyncState::default(),
-                fuel_reserve: 0,
-                fuel_yield_interval: None,
-                store_data: ManuallyDrop::new(StoreData::new()),
-                default_caller: InstanceHandle::null(),
-                hostcall_val_storage: Vec::new(),
-                wasm_val_raw_storage: Vec::new(),
-                rooted_host_funcs: ManuallyDrop::new(Vec::new()),
-                pkey,
-                #[cfg(feature = "component-model")]
-                component_host_table: Default::default(),
-                #[cfg(feature = "component-model")]
-                component_calls: Default::default(),
-                #[cfg(feature = "component-model")]
-                host_resource_data: Default::default(),
-                #[cfg(feature = "component-model-async")]
-                concurrent_async_state: Default::default(),
-                #[cfg(has_host_compiler_backend)]
-                executor: if cfg!(feature = "pulley") && engine.target().is_pulley() {
-                    Executor::Interpreter(Interpreter::new(engine))
-                } else {
-                    Executor::Native
-                },
-                #[cfg(not(has_host_compiler_backend))]
-                executor: {
-                    debug_assert!(engine.target().is_pulley());
-                    Executor::Interpreter(Interpreter::new(engine))
-                },
+        let inner = StoreOpaque {
+            _marker: marker::PhantomPinned,
+            engine: engine.clone(),
+            vm_store_context: Default::default(),
+            instances: Vec::new(),
+            #[cfg(feature = "component-model")]
+            num_component_instances: 0,
+            signal_handler: None,
+            gc_store: None,
+            gc_roots: RootSet::default(),
+            #[cfg(feature = "gc")]
+            gc_roots_list: GcRootsList::default(),
+            #[cfg(feature = "gc")]
+            gc_host_alloc_types: Default::default(),
+            modules: ModuleRegistry::default(),
+            func_refs: FuncRefs::default(),
+            host_globals: Vec::new(),
+            instance_count: 0,
+            instance_limit: crate::DEFAULT_INSTANCE_LIMIT,
+            memory_count: 0,
+            memory_limit: crate::DEFAULT_MEMORY_LIMIT,
+            table_count: 0,
+            table_limit: crate::DEFAULT_TABLE_LIMIT,
+            #[cfg(feature = "async")]
+            async_state: AsyncState::default(),
+            fuel_reserve: 0,
+            fuel_yield_interval: None,
+            store_data: ManuallyDrop::new(store_data),
+            traitobj: StorePtr::empty(),
+            default_caller: InstanceHandle::null(),
+            hostcall_val_storage: Vec::new(),
+            wasm_val_raw_storage: Vec::new(),
+            rooted_host_funcs: ManuallyDrop::new(Vec::new()),
+            pkey,
+            #[cfg(feature = "component-model")]
+            component_host_table: Default::default(),
+            #[cfg(feature = "component-model")]
+            component_calls: Default::default(),
+            #[cfg(feature = "component-model")]
+            host_resource_data: Default::default(),
+            #[cfg(feature = "component-model-async")]
+            concurrent_async_state: Default::default(),
+            #[cfg(has_host_compiler_backend)]
+            executor: if cfg!(feature = "pulley") && engine.target().is_pulley() {
+                Executor::Interpreter(Interpreter::new(engine))
+            } else {
+                Executor::Native
             },
+            #[cfg(not(has_host_compiler_backend))]
+            executor: {
+                debug_assert!(engine.target().is_pulley());
+                Executor::Interpreter(Interpreter::new(engine))
+            },
+        };
+        let mut inner = Box::new(StoreInner {
+            inner,
             limiter: None,
             call_hook: None,
             #[cfg(target_has_atomic = "64")]
             epoch_deadline_behavior: None,
             data: ManuallyDrop::new(data),
+        });
+
+        // Note the erasure of the lifetime here into `'static`, so in general
+        // usage of this trait object must be strictly bounded to the `Store`
+        // itself, and this is an invariant that we have to maintain throughout
+        // Wasmtime.
+        inner.traitobj = StorePtr::new(unsafe {
+            mem::transmute::<
+                NonNull<dyn crate::runtime::vm::VMStore + '_>,
+                NonNull<dyn crate::runtime::vm::VMStore + 'static>,
+            >(NonNull::from(&mut *inner))
         });
 
         // Wasmtime uses the callee argument to host functions to learn about
@@ -596,9 +613,11 @@ impl<T> Store<T> {
             let module = Arc::new(wasmtime_environ::Module::default());
             let shim = ModuleRuntimeInfo::bare(module);
             let allocator = OnDemandInstanceAllocator::default();
+
             allocator
                 .validate_module(shim.env_module(), shim.offsets())
                 .unwrap();
+
             let mut instance = unsafe {
                 allocator
                     .allocate_module(InstanceAllocationRequest {
@@ -612,19 +631,10 @@ impl<T> Store<T> {
                     })
                     .expect("failed to allocate default callee")
             };
-
-            // Note the erasure of the lifetime here into `'static`, so in
-            // general usage of this trait object must be strictly bounded to
-            // the `Store` itself, and this is an invariant that we have to
-            // maintain throughout Wasmtime.
             unsafe {
-                let traitobj = mem::transmute::<
-                    NonNull<dyn crate::runtime::vm::VMStore + '_>,
-                    NonNull<dyn crate::runtime::vm::VMStore + 'static>,
-                >(NonNull::from(&mut *inner));
-                instance.set_store(traitobj);
-                instance
+                instance.set_store(Some(inner.traitobj()));
             }
+            instance
         };
 
         Self {
@@ -1532,6 +1542,101 @@ impl StoreOpaque {
         self.gc_roots.exit_lifo_scope(self.gc_store.as_mut(), scope);
     }
 
+    /// Attempt an allocation, if it fails due to GC OOM, then do a GC and
+    /// retry.
+    #[cfg(feature = "gc")]
+    pub(crate) fn retry_after_gc<T, U>(
+        &mut self,
+        value: T,
+        alloc_func: impl Fn(&mut Self, T) -> Result<U>,
+    ) -> Result<U>
+    where
+        T: Send + Sync + 'static,
+    {
+        assert!(
+            !self.async_support(),
+            "use the `*_async` versions of methods when async is configured"
+        );
+        match alloc_func(self, value) {
+            Ok(x) => Ok(x),
+            Err(e) => match e.downcast::<crate::GcHeapOutOfMemory<T>>() {
+                Ok(oom) => {
+                    let value = oom.into_inner();
+                    self.gc();
+                    alloc_func(self, value)
+                }
+                Err(e) => Err(e),
+            },
+        }
+    }
+
+    /// Like `retry_after_gc` but must be called from a fiber stack if this is
+    /// an async store.
+    #[cfg(feature = "gc")]
+    pub(crate) unsafe fn retry_after_gc_maybe_async<T, U>(
+        &mut self,
+        value: T,
+        alloc_func: impl Fn(&mut Self, T) -> Result<U>,
+    ) -> Result<U>
+    where
+        T: Send + Sync + 'static,
+    {
+        match alloc_func(self, value) {
+            Ok(x) => Ok(x),
+            Err(e) => match e.downcast::<crate::GcHeapOutOfMemory<T>>() {
+                Ok(oom) => {
+                    let value = oom.into_inner();
+                    self.maybe_async_gc(None)?;
+                    alloc_func(self, value)
+                }
+                Err(e) => Err(e),
+            },
+        }
+    }
+
+    /// Like `gc` but must be called from a fiber stack if this is an async
+    /// store.
+    #[cfg(feature = "gc")]
+    unsafe fn maybe_async_gc(&mut self, root: Option<VMGcRef>) -> Result<Option<VMGcRef>> {
+        let mut scope = crate::OpaqueRootScope::new(self);
+        let store_id = scope.id();
+        let root = root.map(|r| scope.gc_roots_mut().push_lifo_root(store_id, r));
+
+        if scope.async_support() {
+            #[cfg(feature = "component-model-async")]
+            unsafe {
+                let async_cx = crate::component::concurrent::AsyncCx::try_new(&mut scope)
+                    .expect("attempted to pull async context during shutdown");
+                let future = scope.gc_async();
+                let future = std::pin::pin!(future);
+                async_cx.block_on(future, None)?.0
+            }
+            #[cfg(not(feature = "component-model-async"))]
+            unsafe {
+                let async_cx = scope.async_cx();
+                let future = scope.gc_async();
+                async_cx
+                    .expect("attempted to pull async context during shutdown")
+                    .block_on(future)?;
+            }
+        } else {
+            scope.gc();
+        }
+
+        let root = match root {
+            None => None,
+            Some(r) => {
+                let r = r
+                    .get_gc_ref(&scope)
+                    .expect("still in scope")
+                    .unchecked_copy();
+                Some(scope.gc_store_mut()?.clone_gc_ref(&r))
+            }
+        };
+
+        Ok(root)
+    }
+
     #[cfg(feature = "gc")]
     pub fn gc(&mut self) {
         // If the GC heap hasn't been initialized, there is nothing to collect.
@@ -1729,7 +1834,12 @@ impl StoreOpaque {
 
     #[inline]
     pub fn traitobj(&self) -> NonNull<dyn crate::runtime::vm::VMStore> {
-        self.default_caller.traitobj(self)
+        self.traitobj.as_raw().unwrap()
+    }
+
+    #[inline]
+    pub fn traitobj_mut(&mut self) -> &mut dyn crate::runtime::vm::VMStore {
+        unsafe { self.traitobj().as_mut() }
     }
 
     /// Takes the cached `Vec<Val>` stored internally across hostcalls to get
@@ -2127,52 +2237,12 @@ unsafe impl<T> crate::runtime::vm::VMStore for StoreInner<T> {
     }
 
     #[cfg(feature = "gc")]
-    fn maybe_async_gc(&mut self, root: Option<VMGcRef>) -> Result<Option<VMGcRef>> {
-        let mut scope = crate::RootScope::new(self);
-        let store = scope.as_context_mut().0;
-        let store_id = store.id();
-        let root = root.map(|r| store.gc_roots_mut().push_lifo_root(store_id, r));
-
-        if store.async_support() {
-            #[cfg(feature = "async")]
-            unsafe {
-                #[cfg(feature = "component-model-async")]
-                {
-                    let async_cx = crate::component::concurrent::AsyncCx::try_new(&mut store.inner)
-                        .expect("attempted to pull async context during shutdown");
-                    let future = store.gc_async();
-                    let future = std::pin::pin!(future);
-                    async_cx.block_on(future, None)?.0
-                }
-                #[cfg(not(feature = "component-model-async"))]
-                {
-                    let async_cx = store.async_cx();
-                    let future = store.gc_async();
-                    async_cx
-                        .expect("attempted to pull async context during shutdown")
-                        .block_on(future)?;
-                }
-            }
-        } else {
-            (**store).gc();
-        }
-
-        let root = match root {
-            None => None,
-            Some(r) => {
-                let r = r
-                    .get_gc_ref(store)
-                    .expect("still in scope")
-                    .unchecked_copy();
-                Some(store.gc_store_mut()?.clone_gc_ref(&r))
-            }
-        };
-
-        Ok(root)
+    unsafe fn maybe_async_gc(&mut self, root: Option<VMGcRef>) -> Result<Option<VMGcRef>> {
+        (**self).maybe_async_gc(root)
     }
 
     #[cfg(not(feature = "gc"))]
-    fn maybe_async_gc(&mut self, root: Option<VMGcRef>) -> Result<Option<VMGcRef>> {
+    unsafe fn maybe_async_gc(&mut self, root: Option<VMGcRef>) -> Result<Option<VMGcRef>> {
         Ok(root)
     }
 
