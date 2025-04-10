@@ -8,7 +8,7 @@
 //! default.
 //!
 //! For components and WASIp2, continue reading below. For WASIp1 and core
-//! modules, see the [`preview1`] module documentation.
+//! modules, see the [`preview1`](crate::preview1) module documentation.
 //!
 //! # WASIp2 interfaces
 //!
@@ -165,7 +165,7 @@
 //!   into a `pollable` resource from `wasi:io/poll`. A pollable resource is
 //!   created through the [`subscribe`] function.
 //!
-//! * [`HostWallClock`] and [`HostMonotonicClock`] are used in conjunction with
+//! * [`HostWallClock`](crate::HostWallClock) and [`HostMonotonicClock`](crate::HostMonotonicClock) are used in conjunction with
 //!   [`WasiP2CtxBuilder::wall_clock`] and [`WasiP2CtxBuilder::monotonic_clock`] if
 //!   the defaults host's clock should not be used.
 //!
