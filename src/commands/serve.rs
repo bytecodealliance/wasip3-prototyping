@@ -11,7 +11,9 @@ use tokio::io::{stderr, stdin, stdout};
 use tokio::sync::Notify;
 use wasmtime::component::{Component, Linker};
 use wasmtime::{AsContextMut as _, Engine, Store, StoreLimits, UpdateDeadline};
-use wasmtime_wasi::p2::{IoView, StreamError, StreamResult, WasiP2Ctx, WasiP2CtxBuilder, WasiView};
+use wasmtime_wasi::p2::{
+    IoView, StreamError, StreamResult, WasiP2Ctx, WasiP2CtxBuilder, WasiP2View,
+};
 use wasmtime_wasi_http::bindings::http::types::Scheme;
 use wasmtime_wasi_http::bindings::ProxyPre;
 use wasmtime_wasi_http::body::HyperOutgoingBody;
@@ -62,7 +64,7 @@ impl IoView for Host {
         &mut self.table
     }
 }
-impl WasiView for Host {
+impl WasiP2View for Host {
     fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.ctx
     }

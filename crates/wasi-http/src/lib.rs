@@ -71,7 +71,7 @@
 //! use tokio::net::TcpListener;
 //! use wasmtime::component::{Component, Linker, ResourceTable};
 //! use wasmtime::{Config, Engine, Result, Store};
-//! use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiView};
+//! use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiP2View};
 //! use wasmtime_wasi_http::bindings::ProxyPre;
 //! use wasmtime_wasi_http::bindings::http::types::Scheme;
 //! use wasmtime_wasi_http::body::HyperOutgoingBody;
@@ -201,7 +201,7 @@
 //!         &mut self.table
 //!     }
 //! }
-//! impl WasiView for MyClientState {
+//! impl WasiP2View for MyClientState {
 //!     fn ctx(&mut self) -> &mut WasiP2Ctx {
 //!         &mut self.wasi
 //!     }
@@ -255,7 +255,7 @@ use wasmtime_wasi::p2::IoImpl;
 /// ```
 /// use wasmtime::{Engine, Result, Config};
 /// use wasmtime::component::{ResourceTable, Linker};
-/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiView};
+/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2View};
 /// use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 ///
 /// fn main() -> Result<()> {
@@ -282,13 +282,13 @@ use wasmtime_wasi::p2::IoImpl;
 /// impl WasiHttpView for MyState {
 ///     fn ctx(&mut self) -> &mut WasiHttpCtx { &mut self.http_ctx }
 /// }
-/// impl WasiView for MyState {
+/// impl WasiP2View for MyState {
 ///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 /// ```
 pub fn add_to_linker_async<T>(l: &mut wasmtime::component::Linker<T>) -> anyhow::Result<()>
 where
-    T: WasiHttpView + wasmtime_wasi::p2::WasiView,
+    T: WasiHttpView + wasmtime_wasi::p2::WasiP2View,
 {
     let io_closure = type_annotate_io::<T, _>(|t| wasmtime_wasi::p2::IoImpl(t));
     wasmtime_wasi::p2::bindings::io::poll::add_to_linker_get_host(l, io_closure)?;
@@ -357,7 +357,7 @@ where
 /// ```
 /// use wasmtime::{Engine, Result, Config};
 /// use wasmtime::component::{ResourceTable, Linker};
-/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiView};
+/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2View};
 /// use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 ///
 /// fn main() -> Result<()> {
@@ -382,13 +382,13 @@ where
 /// impl WasiHttpView for MyState {
 ///     fn ctx(&mut self) -> &mut WasiHttpCtx { &mut self.http_ctx }
 /// }
-/// impl WasiView for MyState {
+/// impl WasiP2View for MyState {
 ///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 /// ```
 pub fn add_to_linker_sync<T>(l: &mut wasmtime::component::Linker<T>) -> anyhow::Result<()>
 where
-    T: WasiHttpView + wasmtime_wasi::p2::WasiView,
+    T: WasiHttpView + wasmtime_wasi::p2::WasiP2View,
 {
     let io_closure = type_annotate_io::<T, _>(|t| wasmtime_wasi::p2::IoImpl(t));
     // For the sync linker, use the definitions of poll and streams from the

@@ -4,7 +4,7 @@ use wasmtime::{
     component::{Component, Linker, ResourceTable},
     Engine, Store,
 };
-use wasmtime_wasi::p2::{pipe::MemoryOutputPipe, IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiView};
+use wasmtime_wasi::p2::{pipe::MemoryOutputPipe, IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiP2View};
 use wasmtime_wasi::preview1::WasiP1Ctx;
 use wasmtime_wasi::{DirPerms, FilePerms};
 
@@ -19,7 +19,7 @@ impl IoView for Ctx {
         self.wasi.table()
     }
 }
-impl WasiView for Ctx {
+impl WasiP2View for Ctx {
     fn ctx(&mut self) -> &mut WasiP2Ctx {
         self.wasi.ctx()
     }

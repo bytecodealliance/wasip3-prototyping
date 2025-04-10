@@ -15,7 +15,7 @@
 //! done using the `with` option to [`bindgen!`]:
 //!
 //! ```rust
-//! use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiView};
+//! use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2View};
 //! use wasmtime::{Result, Engine, Config};
 //! use wasmtime::component::{Linker, ResourceTable};
 //!
@@ -56,7 +56,7 @@
 //! impl IoView for MyState {
 //!     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 //! }
-//! impl WasiView for MyState {
+//! impl WasiP2View for MyState {
 //!     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 //! }
 //!
@@ -86,7 +86,7 @@
 /// done using the `with` option to `bindgen!`:
 ///
 /// ```rust
-/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiView};
+/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2View};
 /// use wasmtime::{Result, Engine};
 /// use wasmtime::component::{Linker, ResourceTable};
 ///
@@ -129,7 +129,7 @@
 /// impl IoView for MyState {
 ///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 /// }
-/// impl WasiView for MyState {
+/// impl WasiP2View for MyState {
 ///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 ///
@@ -211,7 +211,7 @@ pub mod sync {
     /// ```no_run
     /// use wasmtime::{Engine, Result, Store, Config};
     /// use wasmtime::component::{ResourceTable, Linker, Component};
-    /// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiView, WasiP2CtxBuilder};
+    /// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2View, WasiP2CtxBuilder};
     /// use wasmtime_wasi::p2::bindings::sync::Command;
     ///
     /// // This example is an example shim of executing a component based on the
@@ -258,7 +258,7 @@ pub mod sync {
     /// impl IoView for MyState {
     ///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
     /// }
-    /// impl WasiView for MyState {
+    /// impl WasiP2View for MyState {
     ///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
     /// }
     /// ```
@@ -276,7 +276,7 @@ pub mod sync {
     /// ```no_run
     /// use wasmtime::{Engine, Result, Store, Config};
     /// use wasmtime::component::{ResourceTable, Linker, Component};
-    /// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiView, WasiP2CtxBuilder};
+    /// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2View, WasiP2CtxBuilder};
     /// use wasmtime_wasi::p2::bindings::sync::CommandPre;
     ///
     /// // This example is an example shim of executing a component based on the
@@ -324,7 +324,7 @@ pub mod sync {
     /// impl IoView for MyState {
     ///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
     /// }
-    /// impl WasiView for MyState {
+    /// impl WasiP2View for MyState {
     ///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
     /// }
     /// ```
@@ -455,7 +455,7 @@ pub use self::async_io::LinkOptions;
 /// ```no_run
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{ResourceTable, Linker, Component};
-/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiView, WasiP2CtxBuilder};
+/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2View, WasiP2CtxBuilder};
 /// use wasmtime_wasi::p2::bindings::Command;
 ///
 /// // This example is an example shim of executing a component based on the
@@ -505,7 +505,7 @@ pub use self::async_io::LinkOptions;
 /// impl IoView for MyState {
 ///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 /// }
-/// impl WasiView for MyState {
+/// impl WasiP2View for MyState {
 ///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 /// ```
@@ -523,7 +523,7 @@ pub use self::async_io::Command;
 /// ```no_run
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{ResourceTable, Linker, Component};
-/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiView, WasiP2CtxBuilder};
+/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2View, WasiP2CtxBuilder};
 /// use wasmtime_wasi::p2::bindings::CommandPre;
 ///
 /// // This example is an example shim of executing a component based on the
@@ -574,7 +574,7 @@ pub use self::async_io::Command;
 /// impl IoView for MyState {
 ///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 /// }
-/// impl WasiView for MyState {
+/// impl WasiP2View for MyState {
 ///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 /// ```

@@ -1,13 +1,13 @@
 use crate::p2::bindings::filesystem::types as async_filesystem;
 use crate::p2::bindings::sync::filesystem::types as sync_filesystem;
 use crate::p2::bindings::sync::io::streams;
-use crate::p2::{FsError, FsResult, WasiImpl, WasiView};
+use crate::p2::{FsError, FsResult, WasiImpl, WasiP2View};
 use crate::runtime::in_tokio;
 use wasmtime::component::Resource;
 
 impl<T> sync_filesystem::Host for WasiImpl<T>
 where
-    T: WasiView,
+    T: WasiP2View,
 {
     fn convert_error_code(&mut self, err: FsError) -> anyhow::Result<sync_filesystem::ErrorCode> {
         Ok(async_filesystem::Host::convert_error_code(self, err)?.into())
@@ -23,7 +23,7 @@ where
 
 impl<T> sync_filesystem::HostDescriptor for WasiImpl<T>
 where
-    T: WasiView,
+    T: WasiP2View,
 {
     fn advise(
         &mut self,
@@ -310,7 +310,7 @@ where
 
 impl<T> sync_filesystem::HostDirectoryEntryStream for WasiImpl<T>
 where
-    T: WasiView,
+    T: WasiP2View,
 {
     fn read_directory_entry(
         &mut self,

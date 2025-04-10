@@ -20,7 +20,7 @@
 //!     component::{Linker, ResourceTable},
 //!     Config, Engine, Result, Store,
 //! };
-//! use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiView};
+//! use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiP2View};
 //! use wasmtime_wasi_keyvalue::{WasiKeyValue, WasiKeyValueCtx, WasiKeyValueCtxBuilder};
 //!
 //! #[tokio::main]
@@ -56,7 +56,7 @@
 //! impl IoView for Ctx {
 //!     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 //! }
-//! impl WasiView for Ctx {
+//! impl WasiP2View for Ctx {
 //!     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.wasi_ctx }
 //! }
 //! ```

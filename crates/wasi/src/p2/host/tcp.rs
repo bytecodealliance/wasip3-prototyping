@@ -3,7 +3,7 @@ use crate::p2::bindings::{
     sockets::network::{IpAddressFamily, IpSocketAddress, Network},
     sockets::tcp::{self, ShutdownType},
 };
-use crate::p2::{SocketResult, WasiImpl, WasiView};
+use crate::p2::{SocketResult, WasiImpl, WasiP2View};
 use std::net::SocketAddr;
 use std::time::Duration;
 use wasmtime::component::Resource;
@@ -13,11 +13,11 @@ use wasmtime_wasi_io::{
     IoView,
 };
 
-impl<T> tcp::Host for WasiImpl<T> where T: WasiView {}
+impl<T> tcp::Host for WasiImpl<T> where T: WasiP2View {}
 
 impl<T> crate::p2::host::tcp::tcp::HostTcpSocket for WasiImpl<T>
 where
-    T: WasiView,
+    T: WasiP2View,
 {
     async fn start_bind(
         &mut self,
@@ -330,15 +330,15 @@ pub mod sync {
                 OutputStream, Pollable, ShutdownType, TcpSocket,
             },
         },
-        SocketError, WasiImpl, WasiView,
+        SocketError, WasiImpl, WasiP2View,
     };
     use crate::runtime::in_tokio;
 
-    impl<T> tcp::Host for WasiImpl<T> where T: WasiView {}
+    impl<T> tcp::Host for WasiImpl<T> where T: WasiP2View {}
 
     impl<T> HostTcpSocket for WasiImpl<T>
     where
-        T: WasiView,
+        T: WasiP2View,
     {
         fn start_bind(
             &mut self,

@@ -16,7 +16,7 @@ use std::thread;
 use tokio::io::{stderr, stdin, stdout};
 use wasi_common::sync::{ambient_authority, Dir, TcpListener, WasiCtxBuilder};
 use wasmtime::{Engine, Func, Module, Store, StoreLimits, Val, ValType};
-use wasmtime_wasi::p2::{IoView, WasiView};
+use wasmtime_wasi::p2::{IoView, WasiP2View};
 
 #[cfg(feature = "wasi-nn")]
 use wasmtime_wasi_nn::wit::WasiNnView;
@@ -1113,7 +1113,7 @@ impl IoView for Host {
         self.preview2_ctx().table()
     }
 }
-impl WasiView for Host {
+impl WasiP2View for Host {
     fn ctx(&mut self) -> &mut wasmtime_wasi::p2::WasiP2Ctx {
         self.preview2_ctx().ctx()
     }

@@ -40,7 +40,7 @@ impl WasiHttpCtx {
 ///
 /// ```
 /// use wasmtime::component::ResourceTable;
-/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiView, WasiP2CtxBuilder};
+/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2View, WasiP2CtxBuilder};
 /// use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 ///
 /// struct MyState {
@@ -56,7 +56,7 @@ impl WasiHttpCtx {
 ///     fn ctx(&mut self) -> &mut WasiHttpCtx { &mut self.http_ctx }
 /// }
 ///
-/// impl WasiView for MyState {
+/// impl WasiP2View for MyState {
 ///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 ///

@@ -1,11 +1,11 @@
 use crate::network::Network;
 use crate::p2::bindings::sockets::instance_network;
-use crate::p2::{IoView, WasiImpl, WasiView};
+use crate::p2::{IoView, WasiImpl, WasiP2View};
 use wasmtime::component::Resource;
 
 impl<T> instance_network::Host for WasiImpl<T>
 where
-    T: WasiView,
+    T: WasiP2View,
 {
     fn instance_network(&mut self) -> Result<Resource<Network>, anyhow::Error> {
         let network = Network {

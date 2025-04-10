@@ -12,14 +12,14 @@ pub use wasmtime_wasi_io::{IoImpl, IoView};
 /// [`add_to_linker_sync`](crate::p2::add_to_linker_sync) and
 /// [`add_to_linker_async`](crate::p2::add_to_linker_async) functions.
 ///
-/// The [`WasiView`] trait implies the [`IoView`] trait, so each `T` must
+/// The [`WasiP2View`] trait implies the [`IoView`] trait, so each `T` must
 /// also contain a [`ResourceTable`] and impl `IoView`.
 ///
 /// # Example
 ///
 /// ```
 /// use wasmtime_wasi::ResourceTable;
-/// use wasmtime_wasi::p2::{WasiP2Ctx, WasiView, IoView, WasiP2CtxBuilder};
+/// use wasmtime_wasi::p2::{WasiP2Ctx, WasiP2View, IoView, WasiP2CtxBuilder};
 ///
 /// struct MyState {
 ///     ctx: WasiP2Ctx,
@@ -29,7 +29,7 @@ pub use wasmtime_wasi_io::{IoImpl, IoView};
 /// impl IoView for MyState {
 ///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 /// }
-/// impl WasiView for MyState {
+/// impl WasiP2View for MyState {
 ///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 /// ```
@@ -37,19 +37,19 @@ pub use wasmtime_wasi_io::{IoImpl, IoView};
 /// [`Linker`]: wasmtime::component::Linker
 /// [`ResourceTable`]: wasmtime::component::ResourceTable
 ///
-pub trait WasiView: IoView {
+pub trait WasiP2View: IoView {
     /// Yields mutable access to the [`WasiP2Ctx`] configuration used for this
     /// context.
     fn ctx(&mut self) -> &mut WasiP2Ctx;
 }
 
-impl<T: ?Sized + WasiView> WasiView for &mut T {
+impl<T: ?Sized + WasiP2View> WasiP2View for &mut T {
     fn ctx(&mut self) -> &mut WasiP2Ctx {
         T::ctx(self)
     }
 }
 
-impl<T: ?Sized + WasiView> WasiView for Box<T> {
+impl<T: ?Sized + WasiP2View> WasiP2View for Box<T> {
     fn ctx(&mut self) -> &mut WasiP2Ctx {
         T::ctx(self)
     }
@@ -75,7 +75,7 @@ impl<T: IoView> IoView for WasiImpl<T> {
         T::table(&mut self.0 .0)
     }
 }
-impl<T: WasiView> WasiView for WasiImpl<T> {
+impl<T: WasiP2View> WasiP2View for WasiImpl<T> {
     fn ctx(&mut self) -> &mut WasiP2Ctx {
         T::ctx(&mut self.0 .0)
     }

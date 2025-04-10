@@ -530,7 +530,7 @@ impl WasiP2CtxBuilder {
 ///
 /// This structure is created through [`WasiP2CtxBuilder`] and is stored within
 /// the `T` of [`Store<T>`][`Store`]. Access to the structure is provided
-/// through the [`WasiView`](crate::p2::WasiView) trait as an implementation on `T`.
+/// through the [`WasiP2View`](crate::p2::WasiP2View) trait as an implementation on `T`.
 ///
 /// Note that this structure itself does not have any accessors, it's here for
 /// internal use within the `wasmtime-wasi` crate's implementation of
@@ -542,7 +542,7 @@ impl WasiP2CtxBuilder {
 ///
 /// ```
 /// use wasmtime_wasi::ResourceTable;
-/// use wasmtime_wasi::p2::{WasiP2Ctx, WasiView, IoView, WasiP2CtxBuilder};
+/// use wasmtime_wasi::p2::{WasiP2Ctx, WasiP2View, IoView, WasiP2CtxBuilder};
 ///
 /// struct MyState {
 ///     ctx: WasiP2Ctx,
@@ -552,7 +552,7 @@ impl WasiP2CtxBuilder {
 /// impl IoView for MyState {
 ///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 /// }
-/// impl WasiView for MyState {
+/// impl WasiP2View for MyState {
 ///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 ///

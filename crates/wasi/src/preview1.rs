@@ -71,7 +71,7 @@ use crate::p2::bindings::{
     clocks::{monotonic_clock, wall_clock},
     filesystem::{preopens::Host as _, types as filesystem},
 };
-use crate::p2::{FsError, IsATTY, WasiImpl, WasiP2Ctx, WasiView};
+use crate::p2::{FsError, IsATTY, WasiImpl, WasiP2Ctx, WasiP2View};
 use crate::ResourceTable;
 use anyhow::{bail, Context};
 use std::collections::{BTreeMap, HashSet};
@@ -100,7 +100,7 @@ use wasmtime_wasi_io::bindings::wasi::io::poll::Host as _;
 ///
 /// This structure is created through [`WasiP2CtxBuilder::build_p1`] and is
 /// configured through the various methods of [`WasiP2CtxBuilder`]. This structure
-/// itself implements generated traits for WASIp1 as well as [`WasiView`] to
+/// itself implements generated traits for WASIp1 as well as [`WasiP2View`] to
 /// have access to WASIp2.
 ///
 /// Instances of [`WasiP1Ctx`] are typically stored within the `T` of
@@ -168,7 +168,7 @@ impl IoView for WasiP1Ctx {
         &mut self.table
     }
 }
-impl WasiView for WasiP1Ctx {
+impl WasiP2View for WasiP1Ctx {
     fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.wasi
     }

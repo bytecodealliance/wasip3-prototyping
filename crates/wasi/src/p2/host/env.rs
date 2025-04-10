@@ -1,9 +1,9 @@
 use crate::p2::bindings::cli::environment;
-use crate::p2::{WasiImpl, WasiView};
+use crate::p2::{WasiImpl, WasiP2View};
 
 impl<T> environment::Host for WasiImpl<T>
 where
-    T: WasiView,
+    T: WasiP2View,
 {
     fn get_environment(&mut self) -> anyhow::Result<Vec<(String, String)>> {
         Ok(self.ctx().env.clone())

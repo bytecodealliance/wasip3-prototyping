@@ -8,7 +8,7 @@
 //! # An example of how to configure [wasi-tls] is the following:
 //!
 //! ```rust
-//! use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiView};
+//! use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiP2View};
 //! use wasmtime::{
 //!     component::{Linker, ResourceTable},
 //!     Store, Engine, Result, Config
@@ -26,7 +26,7 @@
 //!     }
 //! }
 //!
-//! impl WasiView for Ctx {
+//! impl WasiP2View for Ctx {
 //!     fn ctx(&mut self) -> &mut WasiP2Ctx {
 //!         &mut self.wasi_ctx
 //!     }

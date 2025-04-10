@@ -4,7 +4,7 @@ use crate::p2::bindings::{
     clocks::monotonic_clock::{self, Duration as WasiDuration, Instant},
     clocks::wall_clock::{self, Datetime},
 };
-use crate::p2::{DynPollable, IoView, WasiImpl, WasiView};
+use crate::p2::{DynPollable, IoView, WasiImpl, WasiP2View};
 use cap_std::time::SystemTime;
 use std::time::Duration;
 use wasmtime::component::Resource;
@@ -26,7 +26,7 @@ impl TryFrom<SystemTime> for Datetime {
 
 impl<T> wall_clock::Host for WasiImpl<T>
 where
-    T: WasiView,
+    T: WasiP2View,
 {
     fn now(&mut self) -> anyhow::Result<Datetime> {
         let now = self.ctx().wall_clock.now();
@@ -66,7 +66,7 @@ fn subscribe_to_duration(
 
 impl<T> monotonic_clock::Host for WasiImpl<T>
 where
-    T: WasiView,
+    T: WasiP2View,
 {
     fn now(&mut self) -> anyhow::Result<Instant> {
         Ok(self.ctx().monotonic_clock.now())

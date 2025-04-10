@@ -6,7 +6,7 @@ use crate::p2::bindings::filesystem::types::{
 use crate::p2::filesystem::{
     Descriptor, Dir, File, FileInputStream, FileOutputStream, ReaddirIterator,
 };
-use crate::p2::{FsError, FsResult, IoView, WasiImpl, WasiView};
+use crate::p2::{FsError, FsResult, IoView, WasiImpl, WasiP2View};
 use crate::{DirPerms, FilePerms, OpenMode};
 use anyhow::Context;
 use wasmtime::component::Resource;
@@ -16,7 +16,7 @@ mod sync;
 
 impl<T> preopens::Host for WasiImpl<T>
 where
-    T: WasiView,
+    T: WasiP2View,
 {
     fn get_directories(
         &mut self,
@@ -35,7 +35,7 @@ where
 
 impl<T> types::Host for WasiImpl<T>
 where
-    T: WasiView,
+    T: WasiP2View,
 {
     fn convert_error_code(&mut self, err: FsError) -> anyhow::Result<ErrorCode> {
         err.downcast()
@@ -59,7 +59,7 @@ where
 
 impl<T> HostDescriptor for WasiImpl<T>
 where
-    T: WasiView,
+    T: WasiP2View,
 {
     async fn advise(
         &mut self,
@@ -855,7 +855,7 @@ where
 
 impl<T> HostDirectoryEntryStream for WasiImpl<T>
 where
-    T: WasiView,
+    T: WasiP2View,
 {
     async fn read_directory_entry(
         &mut self,

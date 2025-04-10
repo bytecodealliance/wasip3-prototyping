@@ -39,9 +39,9 @@
 //! * [`wasi:sockets/udp-create-socket`]
 //! * [`wasi:sockets/udp`]
 //!
-//! All traits are implemented in terms of a [`WasiView`] trait which provides
+//! All traits are implemented in terms of a [`WasiP2View`] trait which provides
 //! access to [`WasiP2Ctx`], which defines the configuration for WASI.
-//! The [`WasiView`] trait imples [`IoView`], which provides access to a common
+//! The [`WasiP2View`] trait imples [`IoView`], which provides access to a common
 //! [`ResourceTable`], which owns all host-defined component model resources.
 //!
 //! The [`wasmtime-wasi-io`] crate contains implementations of the
@@ -65,13 +65,13 @@
 //! all WASI interfaces. Raw bindings are available in the [`bindings`] submodule
 //! of this module. Downstream users can either implement these traits themselves
 //! or you can use the built-in implementations in this module for
-//! `WasiImpl<T: WasiView>`.
+//! `WasiImpl<T: WasiP2View>`.
 //!
-//! # The `WasiView` trait
+//! # The `WasiP2View` trait
 //!
 //! This module's implementation of WASI is done in terms of an implementation of
-//! [`WasiView`]. This trait provides a "view" into WASI-related state that is
-//! contained within a [`Store<T>`](wasmtime::Store). [`WasiView`] implies the
+//! [`WasiP2View`]. This trait provides a "view" into WASI-related state that is
+//! contained within a [`Store<T>`](wasmtime::Store). [`WasiP2View`] implies the
 //! [`IoView`] trait, which provides access to common [`ResourceTable`] which
 //! owns all host-implemented component model resources.
 //!
@@ -80,28 +80,28 @@
 //!
 //! ```
 //! # use wasmtime_wasi::p2::WasiImpl;
-//! # trait WasiView {}
+//! # trait WasiP2View {}
 //! # mod bindings { pub mod wasi { pub trait Host {} } }
-//! impl<T: WasiView> bindings::wasi::Host for WasiImpl<T> {
+//! impl<T: WasiP2View> bindings::wasi::Host for WasiImpl<T> {
 //!     // ...
 //! }
 //! ```
 //!
 //! The [`add_to_linker_sync`] and [`add_to_linker_async`] function then require
-//! that `T: WasiView` with [`Linker<T>`](wasmtime::component::Linker).
+//! that `T: WasiP2View` with [`Linker<T>`](wasmtime::component::Linker).
 //!
-//! To implement the [`WasiView`] and [`IoView`] trait you will first select a
+//! To implement the [`WasiP2View`] and [`IoView`] trait you will first select a
 //! `T` to put in `Store<T>` (typically, by defining your own struct).
 //! Somewhere within `T` you'll store:
 //!
 //! * [`ResourceTable`] - created through default constructors.
 //! * [`WasiP2Ctx`] - created through [`WasiP2CtxBuilder`].
 //!
-//! You'll then write implementations of the [`IoView`] and [`WasiView`]
+//! You'll then write implementations of the [`IoView`] and [`WasiP2View`]
 //! traits to access those items in your `T`. For example:
 //! ```
 //! use wasmtime::component::ResourceTable;
-//! use wasmtime_wasi::p2::{WasiP2Ctx, IoView, WasiView};
+//! use wasmtime_wasi::p2::{WasiP2Ctx, IoView, WasiP2View};
 //! struct MyCtx {
 //!     table: ResourceTable,
 //!     wasi: WasiP2Ctx,
@@ -111,7 +111,7 @@
 //!         &mut self.table
 //!     }
 //! }
-//! impl WasiView for MyCtx {
+//! impl WasiP2View for MyCtx {
 //!     fn ctx(&mut self) -> &mut WasiP2Ctx {
 //!         &mut self.wasi
 //!     }
@@ -180,7 +180,7 @@
 //!
 //! Usage of this module is done through a few steps to get everything hooked up:
 //!
-//! 1. First implement [`IoView`] and [`WasiView`] for your type which is the
+//! 1. First implement [`IoView`] and [`WasiP2View`] for your type which is the
 //!    `T` in `Store<T>`.
 //! 2. Add WASI interfaces to a `wasmtime::component::Linker<T>`. This is either
 //!    done through top-level functions like [`add_to_linker_sync`] or through
@@ -192,7 +192,7 @@
 //! 4. Use the previous `Linker<T>` to instantiate a `Component` within a
 //!    `Store<T>`.
 //!
-//! For examples see each of [`WasiView`], [`WasiP2Ctx`], [`WasiP2CtxBuilder`],
+//! For examples see each of [`WasiP2View`], [`WasiP2Ctx`], [`WasiP2CtxBuilder`],
 //! [`add_to_linker_sync`], and [`bindings::Command`].
 //!
 //! [`wasmtime::component::bindgen!`]: https://docs.rs/wasmtime/latest/wasmtime/component/macro.bindgen.html
@@ -252,7 +252,7 @@ pub use self::stdio::{
     stderr, stdin, stdout, AsyncStdinStream, AsyncStdoutStream, IsATTY, OutputFile, Stderr, Stdin,
     StdinStream, Stdout, StdoutStream,
 };
-pub use self::view::{WasiImpl, WasiView};
+pub use self::view::{WasiImpl, WasiP2View};
 // These contents of wasmtime-wasi-io are re-exported by this module for compatibility:
 // they were originally defined in this module before being factored out, and many
 // users of this module depend on them at these names.
@@ -281,7 +281,7 @@ pub use wasmtime_wasi_io::{IoImpl, IoView};
 /// ```
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{ResourceTable, Linker};
-/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiView, WasiP2CtxBuilder};
+/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2View, WasiP2CtxBuilder};
 ///
 /// fn main() -> Result<()> {
 ///     let mut config = Config::new();
@@ -317,17 +317,17 @@ pub use wasmtime_wasi_io::{IoImpl, IoView};
 /// impl IoView for MyState {
 ///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 /// }
-/// impl WasiView for MyState {
+/// impl WasiP2View for MyState {
 ///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 /// ```
-pub fn add_to_linker_async<T: WasiView>(linker: &mut Linker<T>) -> anyhow::Result<()> {
+pub fn add_to_linker_async<T: WasiP2View>(linker: &mut Linker<T>) -> anyhow::Result<()> {
     let options = crate::p2::bindings::LinkOptions::default();
     add_to_linker_with_options_async(linker, &options)
 }
 
 /// Similar to [`add_to_linker_async`], but with the ability to enable unstable features.
-pub fn add_to_linker_with_options_async<T: WasiView>(
+pub fn add_to_linker_with_options_async<T: WasiP2View>(
     linker: &mut Linker<T>,
     options: &crate::p2::bindings::LinkOptions,
 ) -> anyhow::Result<()> {
@@ -381,7 +381,7 @@ pub fn add_to_linker_with_options_async<T: WasiView>(
 /// ```
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{ResourceTable, Linker};
-/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiView, WasiP2CtxBuilder};
+/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2View, WasiP2CtxBuilder};
 ///
 /// fn main() -> Result<()> {
 ///     let engine = Engine::default();
@@ -414,11 +414,11 @@ pub fn add_to_linker_with_options_async<T: WasiView>(
 /// impl IoView for MyState {
 ///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 /// }
-/// impl WasiView for MyState {
+/// impl WasiP2View for MyState {
 ///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 /// ```
-pub fn add_to_linker_sync<T: WasiView>(
+pub fn add_to_linker_sync<T: WasiP2View>(
     linker: &mut wasmtime::component::Linker<T>,
 ) -> anyhow::Result<()> {
     let options = crate::p2::bindings::sync::LinkOptions::default();
@@ -426,7 +426,7 @@ pub fn add_to_linker_sync<T: WasiView>(
 }
 
 /// Similar to [`add_to_linker_sync`], but with the ability to enable unstable features.
-pub fn add_to_linker_with_options_sync<T: WasiView>(
+pub fn add_to_linker_with_options_sync<T: WasiP2View>(
     linker: &mut wasmtime::component::Linker<T>,
     options: &crate::p2::bindings::sync::LinkOptions,
 ) -> anyhow::Result<()> {
@@ -474,7 +474,7 @@ where
 {
     val
 }
-fn type_annotate<T: WasiView, F>(val: F) -> F
+fn type_annotate<T: WasiP2View, F>(val: F) -> F
 where
     F: Fn(&mut T) -> WasiImpl<&mut T>,
 {

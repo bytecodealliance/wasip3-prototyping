@@ -5,7 +5,7 @@ use wasmtime::{
     Store,
 };
 use wasmtime_wasi::p2::{
-    add_to_linker_async, bindings::Command, IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiView,
+    add_to_linker_async, bindings::Command, IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiP2View,
 };
 use wasmtime_wasi_config::{WasiConfig, WasiConfigVariables};
 
@@ -20,7 +20,7 @@ impl IoView for Ctx {
         &mut self.table
     }
 }
-impl WasiView for Ctx {
+impl WasiP2View for Ctx {
     fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.wasi_ctx
     }

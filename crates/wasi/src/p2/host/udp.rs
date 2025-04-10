@@ -8,7 +8,7 @@ use crate::p2::{
     udp::{IncomingDatagramStream, OutgoingDatagramStream, SendState, UdpState},
     Pollable,
 };
-use crate::p2::{IoView, SocketError, SocketResult, WasiImpl, WasiView};
+use crate::p2::{IoView, SocketError, SocketResult, WasiImpl, WasiP2View};
 use anyhow::anyhow;
 use async_trait::async_trait;
 use io_lifetimes::AsSocketlike;
@@ -23,11 +23,11 @@ use wasmtime_wasi_io::poll::DynPollable;
 /// In practice, datagrams are typically less than 1500 bytes.
 const MAX_UDP_DATAGRAM_SIZE: usize = u16::MAX as usize;
 
-impl<T> udp::Host for WasiImpl<T> where T: WasiView {}
+impl<T> udp::Host for WasiImpl<T> where T: WasiP2View {}
 
 impl<T> udp::HostUdpSocket for WasiImpl<T>
 where
-    T: WasiView,
+    T: WasiP2View,
 {
     async fn start_bind(
         &mut self,
@@ -309,7 +309,7 @@ where
 
 impl<T> udp::HostIncomingDatagramStream for WasiImpl<T>
 where
-    T: WasiView,
+    T: WasiP2View,
 {
     fn receive(
         &mut self,
@@ -403,7 +403,7 @@ impl Pollable for IncomingDatagramStream {
 
 impl<T> udp::HostOutgoingDatagramStream for WasiImpl<T>
 where
-    T: WasiView,
+    T: WasiP2View,
 {
     fn check_send(&mut self, this: Resource<udp::OutgoingDatagramStream>) -> SocketResult<u64> {
         let table = self.table();
@@ -567,15 +567,15 @@ pub mod sync {
                 UdpSocket,
             },
         },
-        SocketError, WasiImpl, WasiView,
+        SocketError, WasiImpl, WasiP2View,
     };
     use crate::runtime::in_tokio;
 
-    impl<T> udp::Host for WasiImpl<T> where T: WasiView {}
+    impl<T> udp::Host for WasiImpl<T> where T: WasiP2View {}
 
     impl<T> HostUdpSocket for WasiImpl<T>
     where
-        T: WasiView,
+        T: WasiP2View,
     {
         fn start_bind(
             &mut self,
@@ -677,7 +677,7 @@ pub mod sync {
 
     impl<T> HostIncomingDatagramStream for WasiImpl<T>
     where
-        T: WasiView,
+        T: WasiP2View,
     {
         fn receive(
             &mut self,
@@ -719,7 +719,7 @@ pub mod sync {
 
     impl<T> HostOutgoingDatagramStream for WasiImpl<T>
     where
-        T: WasiView,
+        T: WasiP2View,
     {
         fn check_send(
             &mut self,

@@ -10,7 +10,7 @@ use wasmtime_wasi::p2::bindings::Command;
 use wasmtime_wasi::p2::{
     add_to_linker_async,
     bindings::{clocks::wall_clock, filesystem::types as filesystem},
-    IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiView,
+    IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiP2View,
 };
 use wasmtime_wasi::{DirPerms, FilePerms, HostMonotonicClock, HostWallClock};
 
@@ -24,7 +24,7 @@ impl IoView for CommandCtx {
         &mut self.table
     }
 }
-impl WasiView for CommandCtx {
+impl WasiP2View for CommandCtx {
     fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.wasi
     }

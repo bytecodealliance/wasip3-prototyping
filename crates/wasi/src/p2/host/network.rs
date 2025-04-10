@@ -3,7 +3,7 @@ use crate::p2::bindings::sockets::network::{
     Ipv6SocketAddress,
 };
 use crate::p2::network::{from_ipv4_addr, from_ipv6_addr, to_ipv4_addr, to_ipv6_addr};
-use crate::p2::{IoView, SocketError, WasiImpl, WasiView};
+use crate::p2::{IoView, SocketError, WasiImpl, WasiP2View};
 use anyhow::Error;
 use rustix::io::Errno;
 use std::io;
@@ -11,7 +11,7 @@ use wasmtime::component::Resource;
 
 impl<T> network::Host for WasiImpl<T>
 where
-    T: WasiView,
+    T: WasiP2View,
 {
     fn convert_error_code(&mut self, error: SocketError) -> anyhow::Result<ErrorCode> {
         error.downcast()
@@ -30,7 +30,7 @@ where
 
 impl<T> crate::p2::bindings::sockets::network::HostNetwork for WasiImpl<T>
 where
-    T: WasiView,
+    T: WasiP2View,
 {
     fn drop(&mut self, this: Resource<network::Network>) -> Result<(), anyhow::Error> {
         let table = self.table();

@@ -68,7 +68,7 @@ impl wasmtime_wasi::p2::IoView for Ctx {
         &mut self.table
     }
 }
-impl wasmtime_wasi::p2::WasiView for Ctx {
+impl wasmtime_wasi::p2::WasiP2View for Ctx {
     fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.wasi
     }
