@@ -320,7 +320,7 @@ where
                     } = get_socket_mut(view.table(), &socket)?;
                     *tcp_state = TcpState::Listening {
                         listener,
-                        task: task.abort_handle(),
+                        task: task.abort_on_drop_handle(),
                     };
                     Ok(Ok((
                         rx,
@@ -487,7 +487,7 @@ where
                     else {
                         bail!("corrupted socket state");
                     };
-                    *rx_task = Some(task.abort_handle());
+                    *rx_task = Some(task.abort_on_drop_handle());
                 }
                 _ => {
                     let fut = res_tx.write(Err(ErrorCode::InvalidState));

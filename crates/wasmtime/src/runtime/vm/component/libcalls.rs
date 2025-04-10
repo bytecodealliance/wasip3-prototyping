@@ -616,6 +616,15 @@ unsafe fn task_return(
 }
 
 #[cfg(feature = "component-model-async")]
+unsafe fn task_cancel(vmctx: NonNull<VMComponentContext>, caller_instance: u32) -> Result<()> {
+    ComponentInstance::from_vmctx(vmctx, |instance| {
+        instance.task_cancel(
+            wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
+        )
+    })
+}
+
+#[cfg(feature = "component-model-async")]
 unsafe fn waitable_set_new(
     vmctx: NonNull<VMComponentContext>,
     caller_instance: u32,
@@ -717,12 +726,29 @@ unsafe fn subtask_drop(
 }
 
 #[cfg(feature = "component-model-async")]
+unsafe fn subtask_cancel(
+    vmctx: NonNull<VMComponentContext>,
+    caller_instance: u32,
+    async_: u8,
+    task_id: u32,
+) -> Result<u32> {
+    ComponentInstance::from_vmctx(vmctx, |instance| {
+        instance.subtask_cancel(
+            wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
+            async_ != 0,
+            task_id,
+        )
+    })
+}
+
+#[cfg(feature = "component-model-async")]
 unsafe fn sync_enter(
     vmctx: NonNull<VMComponentContext>,
     memory: *mut u8,
     start: *mut u8,
     return_: *mut u8,
     caller_instance: u32,
+    callee_instance: u32,
     task_return_type: u32,
     string_encoding: u32,
     result_count: u32,
@@ -736,6 +762,7 @@ unsafe fn sync_enter(
             start.cast::<crate::vm::VMFuncRef>(),
             return_.cast::<crate::vm::VMFuncRef>(),
             wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
+            wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(callee_instance),
             wasmtime_environ::component::TypeTupleIndex::from_u32(task_return_type),
             u8::try_from(string_encoding).unwrap(),
             result_count,
@@ -749,9 +776,7 @@ unsafe fn sync_enter(
 unsafe fn sync_exit(
     vmctx: NonNull<VMComponentContext>,
     callback: *mut u8,
-    caller_instance: u32,
     callee: *mut u8,
-    callee_instance: u32,
     param_count: u32,
     storage: *mut u8,
     storage_len: usize,
@@ -760,9 +785,7 @@ unsafe fn sync_exit(
         (*instance.store()).component_async_store().sync_exit(
             instance,
             callback.cast::<crate::vm::VMFuncRef>(),
-            wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
             callee.cast::<crate::vm::VMFuncRef>(),
-            wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(callee_instance),
             param_count,
             storage.cast::<std::mem::MaybeUninit<crate::ValRaw>>(),
             storage_len,
@@ -777,6 +800,7 @@ unsafe fn async_enter(
     start: *mut u8,
     return_: *mut u8,
     caller_instance: u32,
+    callee_instance: u32,
     task_return_type: u32,
     string_encoding: u32,
     params: u32,
@@ -789,6 +813,7 @@ unsafe fn async_enter(
             start.cast::<crate::vm::VMFuncRef>(),
             return_.cast::<crate::vm::VMFuncRef>(),
             wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
+            wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(callee_instance),
             wasmtime_environ::component::TypeTupleIndex::from_u32(task_return_type),
             u8::try_from(string_encoding).unwrap(),
             params,
@@ -802,9 +827,7 @@ unsafe fn async_exit(
     vmctx: NonNull<VMComponentContext>,
     callback: *mut u8,
     post_return: *mut u8,
-    caller_instance: u32,
     callee: *mut u8,
-    callee_instance: u32,
     param_count: u32,
     result_count: u32,
     flags: u32,
@@ -814,9 +837,7 @@ unsafe fn async_exit(
             instance,
             callback.cast::<crate::vm::VMFuncRef>(),
             post_return.cast::<crate::vm::VMFuncRef>(),
-            wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
             callee.cast::<crate::vm::VMFuncRef>(),
-            wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(callee_instance),
             param_count,
             result_count,
             flags,

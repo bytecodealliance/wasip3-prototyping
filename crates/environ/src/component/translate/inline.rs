@@ -698,6 +698,15 @@ impl<'a> Inliner<'a> {
                     .push((*func, dfg::Trampoline::TaskReturn { results, options }));
                 frame.funcs.push(dfg::CoreDef::Trampoline(index));
             }
+            TaskCancel { func } => {
+                let index = self.result.trampolines.push((
+                    *func,
+                    dfg::Trampoline::TaskCancel {
+                        instance: frame.instance,
+                    },
+                ));
+                frame.funcs.push(dfg::CoreDef::Trampoline(index));
+            }
             WaitableSetNew { func } => {
                 let index = self.result.trampolines.push((
                     *func,
@@ -771,6 +780,16 @@ impl<'a> Inliner<'a> {
                     *func,
                     dfg::Trampoline::SubtaskDrop {
                         instance: frame.instance,
+                    },
+                ));
+                frame.funcs.push(dfg::CoreDef::Trampoline(index));
+            }
+            SubtaskCancel { func, async_ } => {
+                let index = self.result.trampolines.push((
+                    *func,
+                    dfg::Trampoline::SubtaskCancel {
+                        instance: frame.instance,
+                        async_: *async_,
                     },
                 ));
                 frame.funcs.push(dfg::CoreDef::Trampoline(index));

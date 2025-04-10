@@ -927,7 +927,7 @@ where
                 trailers_tx,
             });
             let req = get_request_mut(view.table(), &req)?;
-            req.task = Some(task.abort_handle());
+            req.task = Some(task.abort_on_drop_handle());
             Ok(Ok((contents_rx.into(), trailers_rx.into())))
         })
     }
@@ -1150,7 +1150,7 @@ where
                 trailers_tx,
             });
             let res = get_response_mut(view.table(), &res)?;
-            res.body_task = Some(task.abort_handle());
+            res.body_task = Some(task.abort_on_drop_handle());
             Ok(Ok((contents_rx.into(), trailers_rx.into())))
         })
     }

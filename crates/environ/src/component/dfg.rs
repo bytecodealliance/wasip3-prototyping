@@ -291,6 +291,9 @@ pub enum Trampoline {
         results: TypeTupleIndex,
         options: CanonicalOptions,
     },
+    TaskCancel {
+        instance: RuntimeComponentInstanceIndex,
+    },
     WaitableSetNew {
         instance: RuntimeComponentInstanceIndex,
     },
@@ -315,6 +318,10 @@ pub enum Trampoline {
     },
     SubtaskDrop {
         instance: RuntimeComponentInstanceIndex,
+    },
+    SubtaskCancel {
+        instance: RuntimeComponentInstanceIndex,
+        async_: bool,
     },
     StreamNew {
         ty: TypeStreamTableIndex,
@@ -795,6 +802,9 @@ impl LinearizeDfg<'_> {
                 results: *results,
                 options: self.options(options),
             },
+            Trampoline::TaskCancel { instance } => info::Trampoline::TaskCancel {
+                instance: *instance,
+            },
             Trampoline::WaitableSetNew { instance } => info::Trampoline::WaitableSetNew {
                 instance: *instance,
             },
@@ -825,6 +835,10 @@ impl LinearizeDfg<'_> {
             Trampoline::Yield { async_ } => info::Trampoline::Yield { async_: *async_ },
             Trampoline::SubtaskDrop { instance } => info::Trampoline::SubtaskDrop {
                 instance: *instance,
+            },
+            Trampoline::SubtaskCancel { instance, async_ } => info::Trampoline::SubtaskCancel {
+                instance: *instance,
+                async_: *async_,
             },
             Trampoline::StreamNew { ty } => info::Trampoline::StreamNew { ty: *ty },
             Trampoline::StreamRead { ty, options } => info::Trampoline::StreamRead {

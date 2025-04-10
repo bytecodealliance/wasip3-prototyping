@@ -55,6 +55,7 @@ pub static SYNC_ENTER_FIXED_PARAMS: &[ValType] = &[
     ValType::I32,
     ValType::I32,
     ValType::I32,
+    ValType::I32,
 ];
 
 /// Representation of an adapter module.
@@ -527,10 +528,9 @@ impl<'a> Module<'a> {
         callback: Option<FuncIndex>,
         results: &[ValType],
     ) -> FuncIndex {
-        let ty = self.core_types.function(
-            &[ValType::I32, ValType::FUNCREF, ValType::I32, ValType::I32],
-            results,
-        );
+        let ty = self
+            .core_types
+            .function(&[ValType::FUNCREF, ValType::I32], results);
         self.core_imports.import(
             "sync",
             &format!("[exit-call]{suffix}"),
@@ -553,6 +553,7 @@ impl<'a> Module<'a> {
             &[
                 ValType::FUNCREF,
                 ValType::FUNCREF,
+                ValType::I32,
                 ValType::I32,
                 ValType::I32,
                 ValType::I32,
@@ -585,14 +586,7 @@ impl<'a> Module<'a> {
         self.import_simple_get_and_set(
             "async",
             &format!("[exit-call]{suffix}"),
-            &[
-                ValType::I32,
-                ValType::FUNCREF,
-                ValType::I32,
-                ValType::I32,
-                ValType::I32,
-                ValType::I32,
-            ],
+            &[ValType::FUNCREF, ValType::I32, ValType::I32, ValType::I32],
             &[ValType::I32],
             Import::AsyncExitCall {
                 callback: callback

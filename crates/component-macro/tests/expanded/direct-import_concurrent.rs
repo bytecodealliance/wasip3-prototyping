@@ -140,7 +140,7 @@ fn poll_with_state<
     cx: &mut wasmtime::component::__internal::Context,
     future: wasmtime::component::__internal::Pin<&mut F>,
 ) -> wasmtime::component::__internal::Poll<F::Output> {
-    use wasmtime::component::__internal::{SpawnedInner, mem, DerefMut, Poll};
+    use wasmtime::component::__internal::{AbortWrapper, mem, DerefMut, Poll};
     let mut store_cx = unsafe {
         wasmtime::StoreContextMut::new(&mut *store.0.as_ptr().cast())
     };
@@ -169,10 +169,10 @@ fn poll_with_state<
                     let mut spawned = spawned.try_lock().unwrap();
                     let inner = mem::replace(
                         DerefMut::deref_mut(&mut spawned),
-                        SpawnedInner::Aborted,
+                        AbortWrapper::Aborted,
                     );
-                    if let SpawnedInner::Unpolled(mut future)
-                    | SpawnedInner::Polled { mut future, .. } = inner {
+                    if let AbortWrapper::Unpolled(mut future)
+                    | AbortWrapper::Polled { mut future, .. } = inner {
                         let result = poll_with_state(
                             getter,
                             store,
@@ -180,7 +180,7 @@ fn poll_with_state<
                             cx,
                             future.as_mut(),
                         );
-                        *DerefMut::deref_mut(&mut spawned) = SpawnedInner::Polled {
+                        *DerefMut::deref_mut(&mut spawned) = AbortWrapper::Polled {
                             future,
                             waker: cx.waker().clone(),
                         };
