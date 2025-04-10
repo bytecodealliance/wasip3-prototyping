@@ -297,7 +297,7 @@ pub mod foo {
                 for spawned in spawned {
                     instance
                         .unwrap()
-                        .spawn(
+                        .spawn_raw(
                             &mut store_cx,
                             wasmtime::component::__internal::poll_fn(move |cx| {
                                 let mut spawned = spawned.try_lock().unwrap();
@@ -841,10 +841,12 @@ pub mod exports {
                     }
                 }
                 impl Guest {
-                    pub async fn call_f1<S: wasmtime::AsContextMut>(
+                    pub fn call_f1<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<()>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<()>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -854,16 +856,15 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.f1)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), ())
-                            .await?;
-                        Ok(promise)
+                        callee.call_concurrent(store.as_context_mut(), ())
                     }
-                    pub async fn call_f2<S: wasmtime::AsContextMut>(
+                    pub fn call_f2<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
                         arg0: u32,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<()>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<()>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -873,17 +874,16 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.f2)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), (arg0,))
-                            .await?;
-                        Ok(promise)
+                        callee.call_concurrent(store.as_context_mut(), (arg0,))
                     }
-                    pub async fn call_f3<S: wasmtime::AsContextMut>(
+                    pub fn call_f3<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
                         arg0: u32,
                         arg1: u32,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<()>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<()>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -893,15 +893,14 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.f3)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), (arg0, arg1))
-                            .await?;
-                        Ok(promise)
+                        callee.call_concurrent(store.as_context_mut(), (arg0, arg1))
                     }
-                    pub async fn call_f4<S: wasmtime::AsContextMut>(
+                    pub fn call_f4<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<u32>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<u32>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -911,15 +910,17 @@ pub mod exports {
                                 (u32,),
                             >::new_unchecked(self.f4)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), ())
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee.call_concurrent(store.as_context_mut(), ()),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
-                    pub async fn call_f5<S: wasmtime::AsContextMut>(
+                    pub fn call_f5<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<(u32, u32)>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<(u32, u32)>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -929,18 +930,20 @@ pub mod exports {
                                 ((u32, u32),),
                             >::new_unchecked(self.f5)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), ())
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee.call_concurrent(store.as_context_mut(), ()),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
-                    pub async fn call_f6<S: wasmtime::AsContextMut>(
+                    pub fn call_f6<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
                         arg0: u32,
                         arg1: u32,
                         arg2: u32,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<(u32, u32, u32)>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<(u32, u32, u32)>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -950,10 +953,14 @@ pub mod exports {
                                 ((u32, u32, u32),),
                             >::new_unchecked(self.f6)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), (arg0, arg1, arg2))
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee
+                                .call_concurrent(
+                                    store.as_context_mut(),
+                                    (arg0, arg1, arg2),
+                                ),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
                 }
             }

@@ -51,9 +51,7 @@ impl bindings::local::local::resource_stream::Host for &mut Ctx {
                     tx = accessor
                         .with(|mut view| {
                             let item = IoView::table(&mut *view).push(ResourceStreamX)?;
-                            Ok::<_, anyhow::Error>(
-                                tx.take().unwrap().write_all(Some(item)).into_future(),
-                            )
+                            Ok::<_, anyhow::Error>(tx.take().unwrap().write_all(Some(item)))
                         })?
                         .await
                         .0;

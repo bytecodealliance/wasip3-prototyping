@@ -127,7 +127,7 @@ where
                 }
                 Err(err) => {
                     drop(data_tx);
-                    let fut = res_tx.write(Err(err)).into_future();
+                    let fut = res_tx.write(Err(err));
                     view.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                         fut.await;
                         Ok(())
@@ -158,7 +158,7 @@ where
         if !f.perms.contains(FilePerms::WRITE) {
             return Ok(Err(types::ErrorCode::BadDescriptor));
         }
-        let mut fut = fut.into_future();
+        let mut fut = fut;
         loop {
             let (Some(tail), buf_again) = fut.await else {
                 return Ok(Ok(()));
@@ -183,7 +183,7 @@ where
                 }
                 Err(err) => return Ok(Err(err)),
             }
-            fut = tail.read(buf).into_future();
+            fut = tail.read(buf);
         }
     }
 
@@ -206,7 +206,7 @@ where
         if !f.perms.contains(FilePerms::WRITE) {
             return Ok(Err(types::ErrorCode::BadDescriptor));
         }
-        let mut fut = fut.into_future();
+        let mut fut = fut;
         loop {
             let (Some(tail), buf_again) = fut.await else {
                 return Ok(Ok(()));
@@ -230,7 +230,7 @@ where
                 }
                 Err(err) => return Ok(Err(err)),
             }
-            fut = tail.read(buf).into_future()
+            fut = tail.read(buf)
         }
     }
 
@@ -414,7 +414,7 @@ where
                 }
                 Err(err) => {
                     drop(data_tx);
-                    let fut = res_tx.write(Err(err)).into_future();
+                    let fut = res_tx.write(Err(err));
                     view.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                         fut.await;
                         Ok(())

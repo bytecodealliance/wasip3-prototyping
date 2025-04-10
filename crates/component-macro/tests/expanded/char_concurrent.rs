@@ -274,7 +274,7 @@ pub mod foo {
                 for spawned in spawned {
                     instance
                         .unwrap()
-                        .spawn(
+                        .spawn_raw(
                             &mut store_cx,
                             wasmtime::component::__internal::poll_fn(move |cx| {
                                 let mut spawned = spawned.try_lock().unwrap();
@@ -557,11 +557,13 @@ pub mod exports {
                 }
                 impl Guest {
                     /// A function that accepts a character
-                    pub async fn call_take_char<S: wasmtime::AsContextMut>(
+                    pub fn call_take_char<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
                         arg0: char,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<()>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<()>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -571,16 +573,15 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.take_char)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), (arg0,))
-                            .await?;
-                        Ok(promise)
+                        callee.call_concurrent(store.as_context_mut(), (arg0,))
                     }
                     /// A function that returns a character
-                    pub async fn call_return_char<S: wasmtime::AsContextMut>(
+                    pub fn call_return_char<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<char>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<char>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -590,10 +591,10 @@ pub mod exports {
                                 (char,),
                             >::new_unchecked(self.return_char)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), ())
-                            .await?;
-                        Ok(promise.map(|(v,)| v))
+                        wasmtime::component::__internal::FutureExt::map(
+                            callee.call_concurrent(store.as_context_mut(), ()),
+                            |v| v.map(|(v,)| v),
+                        )
                     }
                 }
             }

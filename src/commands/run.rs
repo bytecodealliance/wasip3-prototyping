@@ -500,27 +500,18 @@ impl RunCommand {
                 }
 
                 let component = main_target.unwrap_component();
+                let instance = linker.instantiate_async(&mut *store, component).await?;
                 let result = if let Ok(command) =
-                    wasmtime_wasi::p3::bindings::Command::instantiate_async(
-                        &mut *store,
-                        component,
-                        linker,
-                    )
-                    .await
+                    wasmtime_wasi::p3::bindings::Command::new(&mut *store, &instance)
                 {
-                    let p = command
-                        .wasi_cli_run()
-                        .call_run(&mut *store)
+                    let run = command.wasi_cli_run().call_run(&mut *store);
+                    instance
+                        .run(&mut *store, run)
                         .await
-                        .context("failed to call `wasi:cli/run#run`")?;
-                    p.get(&mut *store).await
+                        .context("failed to call `wasi:cli/run#run`")?
+                        .context("failed to call `wasi:cli/run#run`")
                 } else {
-                    let command = wasmtime_wasi::bindings::Command::instantiate_async(
-                        &mut *store,
-                        component,
-                        linker,
-                    )
-                    .await?;
+                    let command = wasmtime_wasi::bindings::Command::new(&mut *store, &instance)?;
                     command
                         .wasi_cli_run()
                         .call_run(&mut *store)

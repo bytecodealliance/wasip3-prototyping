@@ -358,7 +358,7 @@ pub mod http_fetch {
         for spawned in spawned {
             instance
                 .unwrap()
-                .spawn(
+                .spawn_raw(
                     &mut store_cx,
                     wasmtime::component::__internal::poll_fn(move |cx| {
                         let mut spawned = spawned.try_lock().unwrap();
@@ -566,11 +566,13 @@ pub mod exports {
             }
         }
         impl Guest {
-            pub async fn call_handle_request<S: wasmtime::AsContextMut>(
+            pub fn call_handle_request<S: wasmtime::AsContextMut>(
                 &self,
                 mut store: S,
                 arg0: Request,
-            ) -> wasmtime::Result<wasmtime::component::Promise<Response>>
+            ) -> impl wasmtime::component::__internal::Future<
+                Output = wasmtime::Result<Response>,
+            > + Send + 'static + use<S>
             where
                 <S as wasmtime::AsContext>::Data: Send,
             {
@@ -580,10 +582,10 @@ pub mod exports {
                         (Response,),
                     >::new_unchecked(self.handle_request)
                 };
-                let promise = callee
-                    .call_concurrent(store.as_context_mut(), (arg0,))
-                    .await?;
-                Ok(promise.map(|(v,)| v))
+                wasmtime::component::__internal::FutureExt::map(
+                    callee.call_concurrent(store.as_context_mut(), (arg0,)),
+                    |v| v.map(|(v,)| v),
+                )
             }
         }
     }

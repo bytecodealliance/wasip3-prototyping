@@ -922,8 +922,9 @@ async fn async_reentrance() -> Result<()> {
         .await?;
 
     let func = instance.get_typed_func::<(u32,), (u32,)>(&mut store, "export")?;
+    let call = func.call_concurrent(&mut store, (42,));
 
-    match func.call_concurrent(&mut store, (42,)).await {
+    match instance.run(&mut store, call).await {
         Ok(_) => panic!(),
         Err(e) => assert!(format!("{e:?}").contains("cannot enter component instance")),
     }
@@ -1045,8 +1046,9 @@ async fn task_return_trap(component: &str, substring: &str) -> Result<()> {
         .await?;
 
     let func = instance.get_typed_func::<(), ()>(&mut store, "foo")?;
+    let call = func.call_concurrent(&mut store, ());
 
-    match func.call_concurrent(&mut store, ()).await {
+    match instance.run(&mut store, call).await {
         Ok(_) => panic!(),
         Err(e) => {
             assert!(
@@ -1239,8 +1241,8 @@ async fn test_many_parameters(dynamic: bool, concurrent: bool) -> Result<()> {
         let func = instance.get_func(&mut store, "many-param").unwrap();
 
         let mut results = if concurrent {
-            let promise = func.call_concurrent(&mut store, input).await?;
-            promise.get(&mut store).await?.into_iter()
+            let call = func.call_concurrent(&mut store, input);
+            instance.run(&mut store, call).await??.into_iter()
         } else {
             let mut results = vec![Val::Bool(false)];
             func.call_async(&mut store, &input, &mut results).await?;
@@ -1282,8 +1284,8 @@ async fn test_many_parameters(dynamic: bool, concurrent: bool) -> Result<()> {
         ), ((Vec<u8>, u32),)>(&mut store, "many-param")?;
 
         if concurrent {
-            let promise = func.call_concurrent(&mut store, input).await?;
-            promise.get(&mut store).await?.0
+            let call = func.call_concurrent(&mut store, input);
+            instance.run(&mut store, call).await??.0
         } else {
             func.call_async(&mut store, input).await?.0
         }
@@ -1666,8 +1668,8 @@ async fn test_many_results(dynamic: bool, concurrent: bool) -> Result<()> {
         let func = instance.get_func(&mut store, "many-results").unwrap();
 
         let mut results = if concurrent {
-            let promise = func.call_concurrent(&mut store, Vec::new()).await?;
-            promise.get(&mut store).await?.into_iter()
+            let call = func.call_concurrent(&mut store, Vec::new());
+            instance.run(&mut store, call).await??.into_iter()
         } else {
             let mut results = vec![Val::Bool(false)];
             func.call_async(&mut store, &[], &mut results).await?;
@@ -1753,8 +1755,8 @@ async fn test_many_results(dynamic: bool, concurrent: bool) -> Result<()> {
         ),)>(&mut store, "many-results")?;
 
         if concurrent {
-            let promise = func.call_concurrent(&mut store, ()).await?;
-            promise.get(&mut store).await?.0
+            let call = func.call_concurrent(&mut store, ());
+            instance.run(&mut store, call).await??.0
         } else {
             func.call_async(&mut store, ()).await?.0
         }

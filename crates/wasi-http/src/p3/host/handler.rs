@@ -132,7 +132,6 @@ where
                 store.spawn(AccessorTaskFn(
                     move |_: &mut Accessor<U, Self>| async move {
                         tx.write(Err(ErrorCode::HttpRequestBodySize(Some(sent))))
-                            .into_future()
                             .await;
                         Ok(())
                     },
@@ -152,7 +151,7 @@ where
                     Ok((response, io)) => {
                         store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                             let res = io.await;
-                            tx.write(res.map_err(Into::into)).into_future().await;
+                            tx.write(res.map_err(Into::into)).await;
                             Ok(())
                         }));
                         match response.await {
@@ -182,7 +181,7 @@ where
                     Ok((response, io)) => {
                         store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                             let res = io.await;
-                            tx.write(res.map_err(Into::into)).into_future().await;
+                            tx.write(res.map_err(Into::into)).await;
                             Ok(())
                         }));
                         match response.await {
@@ -205,7 +204,7 @@ where
                 store.spawn({
                     let err = err.clone();
                     AccessorTaskFn(move |_: &mut Accessor<U, Self>| async move {
-                        tx.write(Err(err)).into_future().await;
+                        tx.write(Err(err)).await;
                         Ok(())
                     })
                 });
@@ -232,7 +231,7 @@ where
                     Ok((response, io)) => {
                         store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                             let res = io.await;
-                            tx.write(res.map_err(Into::into)).into_future().await;
+                            tx.write(res.map_err(Into::into)).await;
                             Ok(())
                         }));
                         match response.await {
@@ -272,7 +271,7 @@ where
                     Ok((response, io)) => {
                         store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                             let res = io.await;
-                            tx.write(res.map_err(Into::into)).into_future().await;
+                            tx.write(res.map_err(Into::into)).await;
                             Ok(())
                         }));
                         match response.await {

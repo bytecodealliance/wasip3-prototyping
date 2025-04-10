@@ -116,9 +116,9 @@ mod values;
 pub use self::component::{Component, ComponentExportIndex};
 #[cfg(feature = "component-model-async")]
 pub use self::concurrent::{
-    AbortOnDropHandle, Accessor, AccessorTask, ErrorContext, FutureReader, FutureWriter,
-    HostFuture, HostStream, Promise, PromisesUnordered, ReadBuffer, StreamReader, StreamWriter,
-    VMComponentAsyncStore, VecBuffer, Watch, WriteBuffer,
+    AbortOnDropHandle, Access, Accessor, AccessorTask, ErrorContext, FutureReader, FutureWriter,
+    HostFuture, HostStream, ReadBuffer, StreamReader, StreamWriter, VMComponentAsyncStore,
+    VecBuffer, Watch, WriteBuffer,
 };
 pub use self::func::{
     ComponentNamedList, ComponentType, Func, Lift, Lower, TypedFunc, WasmList, WasmStr,
@@ -170,7 +170,7 @@ pub mod __internal {
     #[cfg(feature = "component-model-async")]
     pub use core::task::{Context, Poll};
     #[cfg(feature = "component-model-async")]
-    pub use futures::future::poll_fn;
+    pub use futures::future::{poll_fn, FutureExt};
     #[cfg(feature = "component-model-async")]
     pub use std::sync::{Arc, Mutex};
     #[cfg(feature = "async")]

@@ -1,4 +1,5 @@
 use core::future::poll_fn;
+use core::future::Future;
 use core::mem;
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
@@ -139,14 +140,11 @@ where
                 drop(self.contents_tx);
                 join!(
                     async {
-                        tx.write(Err(self.cx.as_body_size_error(sent)))
-                            .into_future()
-                            .await;
+                        tx.write(Err(self.cx.as_body_size_error(sent))).await;
                     },
                     async {
                         self.trailers_tx
                             .write(Err(self.cx.as_body_size_error(sent)))
-                            .into_future()
                             .await;
                     }
                 );
@@ -161,7 +159,7 @@ where
             } => {
                 drop(self.contents_tx);
                 let (watch_reader, trailers_tx) = self.trailers_tx.watch_reader();
-                let mut watch_reader = watch_reader.into_future();
+                let mut watch_reader = Box::pin(watch_reader);
                 let Some(Some(res)) = poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
                     Poll::Ready(()) => return Poll::Ready(None),
                     Poll::Pending => trailers_rx.as_mut().poll(cx).map(Some),
@@ -181,11 +179,7 @@ where
                     return Ok(());
                 };
                 let trailers_tx = trailers_tx.into_inner();
-                if !trailers_tx
-                    .write(clone_trailer_result(&res))
-                    .into_future()
-                    .await
-                {
+                if !trailers_tx.write(clone_trailer_result(&res)).await {
                     let Ok(mut body) = self.body.lock() else {
                         bail!("lock poisoned");
                     };
@@ -198,7 +192,7 @@ where
                     };
                     return Ok(());
                 }
-                tx.write(Ok(())).into_future().await;
+                tx.write(Ok(())).await;
                 Ok(())
             }
             Body::Guest {
@@ -209,12 +203,7 @@ where
                 content_length: None,
             } => {
                 drop(self.contents_tx);
-                if !self
-                    .trailers_tx
-                    .write(clone_trailer_result(&res))
-                    .into_future()
-                    .await
-                {
+                if !self.trailers_tx.write(clone_trailer_result(&res)).await {
                     let Ok(mut body) = self.body.lock() else {
                         bail!("lock poisoned");
                     };
@@ -227,7 +216,7 @@ where
                     };
                     return Ok(());
                 }
-                tx.write(Ok(())).into_future().await;
+                tx.write(Ok(())).await;
                 Ok(())
             }
             Body::Guest {
@@ -240,10 +229,7 @@ where
                 let mut contents_tx = self.contents_tx;
                 match buffer {
                     Some(BodyFrame::Data(buffer)) => {
-                        let (tx_tail, buffer) = contents_tx
-                            .write_all(Cursor::new(buffer))
-                            .into_future()
-                            .await;
+                        let (tx_tail, buffer) = contents_tx.write_all(Cursor::new(buffer)).await;
                         let Some(tx_tail) = tx_tail else {
                             let Ok(mut body) = self.body.lock() else {
                                 bail!("lock poisoned");
@@ -265,7 +251,7 @@ where
                     None => {}
                 }
                 let (contents_tx_drop, mut contents_tx) = contents_tx.watch_reader();
-                let mut contents_tx_drop = contents_tx_drop.into_future();
+                let mut contents_tx_drop = Box::pin(contents_tx_drop);
                 loop {
                     let Some((rx_tail, mut rx_buffer)) =
                         poll_fn(|cx| match contents_tx_drop.as_mut().poll(cx) {
@@ -295,14 +281,11 @@ where
                                 drop(tx_tail);
                                 join!(
                                     async {
-                                        tx.write(Err(self.cx.as_body_size_error(sent)))
-                                            .into_future()
-                                            .await;
+                                        tx.write(Err(self.cx.as_body_size_error(sent))).await;
                                     },
                                     async {
                                         self.trailers_tx
                                             .write(Err(self.cx.as_body_size_error(sent)))
-                                            .into_future()
                                             .await;
                                     }
                                 );
@@ -328,14 +311,11 @@ where
                             drop(tx_tail);
                             join!(
                                 async {
-                                    tx.write(Err(self.cx.as_body_size_error(n)))
-                                        .into_future()
-                                        .await;
+                                    tx.write(Err(self.cx.as_body_size_error(n))).await;
                                 },
                                 async {
                                     self.trailers_tx
                                         .write(Err(self.cx.as_body_size_error(n)))
-                                        .into_future()
                                         .await;
                                 }
                             );
@@ -344,9 +324,8 @@ where
                     }
                     let buffer = rx_buffer.split().freeze();
                     rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
-                    contents_rx = rx_tail.read(rx_buffer).into_future();
-                    let (tx_tail, buffer) =
-                        tx_tail.write_all(Cursor::new(buffer)).into_future().await;
+                    contents_rx = Box::pin(rx_tail.read(rx_buffer));
+                    let (tx_tail, buffer) = tx_tail.write_all(Cursor::new(buffer)).await;
                     let Some(tx_tail) = tx_tail else {
                         let Ok(mut body) = self.body.lock() else {
                             bail!("lock poisoned");
@@ -364,11 +343,11 @@ where
                     };
                     let (tx_tail_drop, tx_tail) = tx_tail.watch_reader();
                     contents_tx = tx_tail;
-                    contents_tx_drop = tx_tail_drop.into_future();
+                    contents_tx_drop = Box::pin(tx_tail_drop);
                 }
 
                 let (watch_reader, trailers_tx) = self.trailers_tx.watch_reader();
-                let mut watch_reader = watch_reader.into_future();
+                let mut watch_reader = Box::pin(watch_reader);
                 let Some(Some(res)) = poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
                     Poll::Ready(()) => return Poll::Ready(None),
                     Poll::Pending => trailers_rx.as_mut().poll(cx).map(Some),
@@ -388,11 +367,7 @@ where
                     return Ok(());
                 };
                 let trailers_tx = trailers_tx.into_inner();
-                if !trailers_tx
-                    .write(clone_trailer_result(&res))
-                    .into_future()
-                    .await
-                {
+                if !trailers_tx.write(clone_trailer_result(&res)).await {
                     let Ok(mut body) = self.body.lock() else {
                         bail!("lock poisoned");
                     };
@@ -405,7 +380,7 @@ where
                     };
                     return Ok(());
                 }
-                tx.write(Ok(())).into_future().await;
+                tx.write(Ok(())).await;
                 Ok(())
             }
             Body::Guest { .. } => bail!("corrupted guest body state"),
@@ -416,10 +391,7 @@ where
                 let mut contents_tx = self.contents_tx;
                 match buffer {
                     Some(BodyFrame::Data(buffer)) => {
-                        let (tx_tail, buffer) = contents_tx
-                            .write_all(Cursor::new(buffer))
-                            .into_future()
-                            .await;
+                        let (tx_tail, buffer) = contents_tx.write_all(Cursor::new(buffer)).await;
                         let Some(tx_tail) = tx_tail else {
                             let Ok(mut body) = self.body.lock() else {
                                 bail!("lock poisoned");
@@ -438,7 +410,7 @@ where
                     None => {}
                 }
                 let (watch_reader, mut contents_tx) = contents_tx.watch_reader();
-                let mut watch_reader = watch_reader.into_future();
+                let mut watch_reader = Box::pin(watch_reader);
                 loop {
                     match poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
                         Poll::Ready(()) => return Poll::Ready(None),
@@ -459,7 +431,7 @@ where
                         }
                         Some(None) => {
                             drop(contents_tx.into_inner());
-                            if !self.trailers_tx.write(Ok(None)).into_future().await {
+                            if !self.trailers_tx.write(Ok(None)).await {
                                 let Ok(mut body) = self.body.lock() else {
                                     bail!("lock poisoned");
                                 };
@@ -475,7 +447,7 @@ where
                                 Ok(buffer) => {
                                     let tx_tail = contents_tx.into_inner();
                                     let (tx_tail, buffer) =
-                                        tx_tail.write_all(Cursor::new(buffer)).into_future().await;
+                                        tx_tail.write_all(Cursor::new(buffer)).await;
                                     let Some(tx_tail) = tx_tail else {
                                         let Ok(mut body) = self.body.lock() else {
                                             bail!("lock poisoned");
@@ -491,7 +463,7 @@ where
                                     let (new_watch_reader, new_contents_tx) =
                                         tx_tail.watch_reader();
                                     contents_tx = new_contents_tx;
-                                    watch_reader = new_watch_reader.into_future();
+                                    watch_reader = Box::pin(new_watch_reader);
                                 }
                                 Err(Ok(trailers)) => {
                                     drop(contents_tx.into_inner());
@@ -501,7 +473,6 @@ where
                                     if !self
                                         .trailers_tx
                                         .write(Ok(Some(Resource::new_own(trailers.rep()))))
-                                        .into_future()
                                         .await
                                     {
                                         let Ok(mut body) = self.body.lock() else {
@@ -519,7 +490,6 @@ where
                                     if !self
                                         .trailers_tx
                                         .write(Err(ErrorCode::HttpProtocolError))
-                                        .into_future()
                                         .await
                                     {
                                         let Ok(mut body) = self.body.lock() else {
@@ -538,7 +508,7 @@ where
                         }
                         Some(Some(Err(err))) => {
                             drop(contents_tx.into_inner());
-                            if !self.trailers_tx.write(Err(err.clone())).into_future().await {
+                            if !self.trailers_tx.write(Err(err.clone())).await {
                                 let Ok(mut body) = self.body.lock() else {
                                     bail!("lock poisoned");
                                 };
@@ -557,12 +527,7 @@ where
                 buffer: Some(BodyFrame::Trailers(res)),
             } => {
                 drop(self.contents_tx);
-                if !self
-                    .trailers_tx
-                    .write(clone_trailer_result(&res))
-                    .into_future()
-                    .await
-                {
+                if !self.trailers_tx.write(clone_trailer_result(&res)).await {
                     let Ok(mut body) = self.body.lock() else {
                         bail!("lock poisoned");
                     };
@@ -790,9 +755,8 @@ where
                 contents
                     .into_reader(&mut view)
                     .read(BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY))
-                    .into_future()
             });
-            let trailers = trailers.into_reader(&mut view).read().into_future();
+            let trailers = trailers.into_reader(&mut view).read();
             let table = view.table();
             let headers = delete_fields(table, headers)?;
             let headers = headers.unwrap_or_clone()?;
@@ -804,8 +768,8 @@ where
                 })
                 .transpose()?;
             let body = Body::Guest {
-                contents,
-                trailers: Some(trailers),
+                contents: contents.map(|v| Box::pin(v) as _),
+                trailers: Some(Box::pin(trailers)),
                 buffer: None,
                 tx: res_tx,
                 content_length: content_length.map(ContentLength::new),
@@ -1109,16 +1073,15 @@ where
                 contents
                     .into_reader(&mut view)
                     .read(BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY))
-                    .into_future()
             });
-            let trailers = trailers.into_reader(&mut view).read().into_future();
+            let trailers = trailers.into_reader(&mut view).read();
             let table = view.table();
             let headers = delete_fields(table, headers)?;
             let headers = headers.unwrap_or_clone()?;
             let content_length = get_content_length(&headers)?;
             let body = Body::Guest {
-                contents,
-                trailers: Some(trailers),
+                contents: contents.map(|v| Box::pin(v) as _),
+                trailers: Some(Box::pin(trailers)),
                 buffer: None,
                 tx: res_tx,
                 content_length: content_length.map(ContentLength::new),

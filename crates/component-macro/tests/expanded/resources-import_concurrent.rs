@@ -263,7 +263,7 @@ fn poll_with_state<
     for spawned in spawned {
         instance
             .unwrap()
-            .spawn(
+            .spawn_raw(
                 &mut store_cx,
                 wasmtime::component::__internal::poll_fn(move |cx| {
                     let mut spawned = spawned.try_lock().unwrap();
@@ -642,12 +642,12 @@ const _: () = {
             foo::foo::transitive_interface_with_resource::add_to_linker(linker, get)?;
             Ok(())
         }
-        pub async fn call_some_world_func2<S: wasmtime::AsContextMut>(
+        pub fn call_some_world_func2<S: wasmtime::AsContextMut>(
             &self,
             mut store: S,
-        ) -> wasmtime::Result<
-            wasmtime::component::Promise<wasmtime::component::Resource<WorldResource>>,
-        >
+        ) -> impl wasmtime::component::__internal::Future<
+            Output = wasmtime::Result<wasmtime::component::Resource<WorldResource>>,
+        > + Send + 'static + use<S>
         where
             <S as wasmtime::AsContext>::Data: Send,
         {
@@ -657,8 +657,10 @@ const _: () = {
                     (wasmtime::component::Resource<WorldResource>,),
                 >::new_unchecked(self.some_world_func2)
             };
-            let promise = callee.call_concurrent(store.as_context_mut(), ()).await?;
-            Ok(promise.map(|(v,)| v))
+            wasmtime::component::__internal::FutureExt::map(
+                callee.call_concurrent(store.as_context_mut(), ()),
+                |v| v.map(|(v,)| v),
+            )
         }
         pub fn foo_foo_uses_resource_transitively(
             &self,
@@ -1012,7 +1014,7 @@ pub mod foo {
                 for spawned in spawned {
                     instance
                         .unwrap()
-                        .spawn(
+                        .spawn_raw(
                             &mut store_cx,
                             wasmtime::component::__internal::poll_fn(move |cx| {
                                 let mut spawned = spawned.try_lock().unwrap();
@@ -2618,7 +2620,7 @@ pub mod foo {
                 for spawned in spawned {
                     instance
                         .unwrap()
-                        .spawn(
+                        .spawn_raw(
                             &mut store_cx,
                             wasmtime::component::__internal::poll_fn(move |cx| {
                                 let mut spawned = spawned.try_lock().unwrap();
@@ -2886,7 +2888,7 @@ pub mod exports {
                                 .ok_or_else(|| {
                                     anyhow::anyhow!(
                                         "instance export `foo:foo/uses-resource-transitively` does \
-                        not have export `{name}`"
+                          not have export `{name}`"
                                     )
                                 })
                         };
@@ -2912,11 +2914,13 @@ pub mod exports {
                     }
                 }
                 impl Guest {
-                    pub async fn call_handle<S: wasmtime::AsContextMut>(
+                    pub fn call_handle<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
                         arg0: wasmtime::component::Resource<Foo>,
-                    ) -> wasmtime::Result<wasmtime::component::Promise<()>>
+                    ) -> impl wasmtime::component::__internal::Future<
+                        Output = wasmtime::Result<()>,
+                    > + Send + 'static + use<S>
                     where
                         <S as wasmtime::AsContext>::Data: Send,
                     {
@@ -2926,10 +2930,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.handle)
                         };
-                        let promise = callee
-                            .call_concurrent(store.as_context_mut(), (arg0,))
-                            .await?;
-                        Ok(promise)
+                        callee.call_concurrent(store.as_context_mut(), (arg0,))
                     }
                 }
             }

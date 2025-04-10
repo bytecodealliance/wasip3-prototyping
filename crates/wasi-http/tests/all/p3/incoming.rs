@@ -39,17 +39,17 @@ async fn run_wasi_http<E: Into<ErrorCode> + 'static>(
     wasmtime_wasi_http::p3::add_to_linker(&mut linker)?;
     let instance = linker.instantiate_async(&mut store, &component).await?;
     let proxy = Proxy::new(&mut store, &instance)?;
-    let handle = proxy.handle(&mut store, req).await?;
-    let res = match handle.get(&mut store).await? {
+    let handle = proxy.handle(&mut store, req)?;
+    let res = match instance.run(&mut store, handle).await?? {
         Ok(res) => res,
         Err(err) => return Ok(Err(Some(err))),
     };
-    let (res, tx, io) = Response::resource_into_http(&mut store, &instance, res)?;
+    let (res, tx, io) = Response::resource_into_http(&mut store, res)?;
     let (parts, body) = res.into_parts();
     let ((), body) = try_join!(
         async {
             if let Some(io) = io {
-                let closure = io.get(&mut store).await?;
+                let closure = instance.run(&mut store, io).await?;
                 closure(store.as_context_mut())?;
             }
             anyhow::Ok(())
@@ -61,7 +61,7 @@ async fn run_wasi_http<E: Into<ErrorCode> + 'static>(
         Err(err) => return Ok(Err(err)),
     };
     if let Some(tx) = tx {
-        tx.write(Ok(())).get(store).await?;
+        instance.run(store, tx.write(Ok(()))).await?;
     }
     Ok(Ok(http::Response::from_parts(parts, body)))
 }

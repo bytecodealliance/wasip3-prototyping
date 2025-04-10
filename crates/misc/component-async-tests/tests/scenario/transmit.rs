@@ -1,11 +1,16 @@
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
+use futures::{
+    future::{self, FutureExt},
+    stream::{FuturesUnordered, TryStreamExt},
+};
 use tokio::fs;
 use wasmtime::component::{
-    Component, HostFuture, HostStream, Instance, Linker, Promise, PromisesUnordered, ResourceTable,
-    StreamReader, StreamWriter, Val,
+    Component, HostFuture, HostStream, Instance, Linker, ResourceTable, StreamReader, StreamWriter,
+    Val,
 };
 use wasmtime::{AsContextMut, Config, Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;
@@ -51,7 +56,7 @@ pub trait TransmitTest {
         store: impl AsContextMut<Data = Ctx>,
         instance: &Self::Instance,
         params: Self::Params,
-    ) -> impl Future<Output = Result<Promise<Self::Result>>>;
+    ) -> impl Future<Output = Result<Self::Result>> + Send + 'static;
 
     fn into_params(
         control: HostStream<Control>,
@@ -89,15 +94,14 @@ impl TransmitTest for StaticTransmitTest {
         Ok((callee, instance))
     }
 
-    async fn call(
+    fn call(
         store: impl AsContextMut<Data = Ctx>,
         instance: &Self::Instance,
         params: Self::Params,
-    ) -> Result<Promise<Self::Result>> {
+    ) -> impl Future<Output = Result<Self::Result>> + Send + 'static {
         instance
             .local_local_transmit()
             .call_exchange(store, params.0, params.1, params.2, params.3)
-            .await
     }
 
     fn into_params(
@@ -134,25 +138,30 @@ impl TransmitTest for DynamicTransmitTest {
         Ok((instance, instance))
     }
 
-    async fn call(
+    fn call(
         mut store: impl AsContextMut<Data = Ctx>,
         instance: &Self::Instance,
         params: Self::Params,
-    ) -> Result<Promise<Self::Result>> {
-        let transmit_instance = instance
-            .get_export(store.as_context_mut(), None, "local:local/transmit")
-            .ok_or_else(|| anyhow!("can't find `local:local/transmit` in instance"))?;
-        let exchange_function = instance
-            .get_export(store.as_context_mut(), Some(&transmit_instance), "exchange")
-            .ok_or_else(|| anyhow!("can't find `exchange` in instance"))?;
-        let exchange_function = instance
-            .get_func(store.as_context_mut(), exchange_function)
-            .ok_or_else(|| anyhow!("can't find `exchange` in instance"))?;
+    ) -> impl Future<Output = Result<Self::Result>> + Send + 'static {
+        let exchange_function = (|| {
+            let transmit_instance = instance
+                .get_export(store.as_context_mut(), None, "local:local/transmit")
+                .ok_or_else(|| anyhow!("can't find `local:local/transmit` in instance"))?;
+            let exchange_function = instance
+                .get_export(store.as_context_mut(), Some(&transmit_instance), "exchange")
+                .ok_or_else(|| anyhow!("can't find `exchange` in instance"))?;
+            instance
+                .get_func(store.as_context_mut(), exchange_function)
+                .ok_or_else(|| anyhow!("can't find `exchange` in instance"))
+        })();
 
-        Ok(exchange_function
-            .call_concurrent(store, params)
-            .await?
-            .map(|results| results.into_iter().next().unwrap()))
+        match exchange_function {
+            Ok(exchange_function) => exchange_function
+                .call_concurrent(store, params)
+                .map(|v| v.map(|v| v.into_iter().next().unwrap()))
+                .boxed(),
+            Err(e) => future::ready(Err(e)).boxed(),
+        }
     }
 
     fn into_params(
@@ -243,25 +252,29 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
     let (caller_future1_tx, caller_future1_rx) = instance.future(&mut store)?;
     let (_caller_future2_tx, caller_future2_rx) = instance.future(&mut store)?;
 
-    let mut promises = PromisesUnordered::<Event<Test>>::new();
+    let mut futures = FuturesUnordered::<
+        Pin<Box<dyn Future<Output = Result<Event<Test>>> + Send + 'static>>,
+    >::new();
     let mut caller_future1_tx = Some(caller_future1_tx);
     let mut callee_stream_rx = None;
     let mut callee_future1_rx = None;
     let mut complete = false;
 
-    promises.push(
+    futures.push(
         control_tx
             .write_all(Some(Control::ReadStream("a".into())))
-            .map(|(w, _)| Event::ControlWriteA(w)),
+            .map(|(w, _)| Ok(Event::ControlWriteA(w)))
+            .boxed(),
     );
 
-    promises.push(
+    futures.push(
         caller_stream_tx
             .write_all(Some(String::from("a")))
-            .map(|_| Event::WriteA),
+            .map(|_| Ok(Event::WriteA))
+            .boxed(),
     );
 
-    promises.push(
+    futures.push(
         Test::call(
             &mut store,
             &test,
@@ -272,11 +285,11 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
                 caller_future2_rx.into(),
             ),
         )
-        .await?
-        .map(Event::Result),
+        .map(|v| v.map(Event::Result))
+        .boxed(),
     );
 
-    while let Some(event) = promises.next(&mut store).await? {
+    while let Some(event) = instance.run(&mut store, futures.try_next()).await?? {
         match event {
             Event::Result(result) => {
                 let results = Test::from_result(&mut store, instance, result)?;
@@ -284,61 +297,76 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
                 callee_future1_rx = Some(results.1.into_reader(&mut store));
             }
             Event::ControlWriteA(tx) => {
-                promises.push(
+                futures.push(
                     tx.unwrap()
                         .write_all(Some(Control::ReadFuture("b".into())))
-                        .map(|(w, _)| Event::ControlWriteB(w)),
+                        .map(|(w, _)| Ok(Event::ControlWriteB(w)))
+                        .boxed(),
                 );
             }
             Event::WriteA => {
-                promises.push(
+                futures.push(
                     caller_future1_tx
                         .take()
                         .unwrap()
                         .write("b".into())
-                        .map(Event::WriteB),
+                        .map(Event::WriteB)
+                        .map(Ok)
+                        .boxed(),
                 );
             }
             Event::ControlWriteB(tx) => {
-                promises.push(
+                futures.push(
                     tx.unwrap()
                         .write_all(Some(Control::WriteStream("c".into())))
-                        .map(|(w, _)| Event::ControlWriteC(w)),
+                        .map(|(w, _)| Ok(Event::ControlWriteC(w)))
+                        .boxed(),
                 );
             }
             Event::WriteB(delivered) => {
                 assert!(delivered);
-                promises.push(
+                futures.push(
                     callee_stream_rx
                         .take()
                         .unwrap()
                         .read(None)
-                        .map(|(r, b)| Event::ReadC(r, b)),
+                        .map(|(r, b)| Ok(Event::ReadC(r, b)))
+                        .boxed(),
                 );
             }
             Event::ControlWriteC(tx) => {
-                promises.push(
+                futures.push(
                     tx.unwrap()
                         .write_all(Some(Control::WriteFuture("d".into())))
-                        .map(|_| Event::ControlWriteD),
+                        .map(|_| Ok(Event::ControlWriteD))
+                        .boxed(),
                 );
             }
             Event::ReadC(None, _) => unreachable!(),
             Event::ReadC(Some(rx), mut value) => {
                 assert_eq!(value.take().as_deref(), Some("c"));
-                promises.push(callee_future1_rx.take().unwrap().read().map(Event::ReadD));
+                futures.push(
+                    callee_future1_rx
+                        .take()
+                        .unwrap()
+                        .read()
+                        .map(Event::ReadD)
+                        .map(Ok)
+                        .boxed(),
+                );
                 callee_stream_rx = Some(rx);
             }
             Event::ControlWriteD => {}
             Event::ReadD(None) => unreachable!(),
             Event::ReadD(Some(value)) => {
                 assert_eq!(&value, "d");
-                promises.push(
+                futures.push(
                     callee_stream_rx
                         .take()
                         .unwrap()
                         .read(None)
-                        .map(|(r, _)| Event::ReadNone(r)),
+                        .map(|(r, _)| Ok(Event::ReadNone(r)))
+                        .boxed(),
                 );
             }
             Event::ReadNone(Some(_)) => unreachable!(),

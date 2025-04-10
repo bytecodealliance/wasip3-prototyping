@@ -3157,7 +3157,7 @@ impl<'a> InterfaceGenerator<'a> {
         let (async_, async__, await_, concurrent) = match &style {
             CallStyle::Async | CallStyle::Concurrent => {
                 if self.generator.opts.concurrent_exports {
-                    ("async", "INVALID", "INVALID", true)
+                    ("", "INVALID", "INVALID", true)
                 } else {
                     ("async", "_async", ".await", false)
                 }
@@ -3186,16 +3186,22 @@ impl<'a> InterfaceGenerator<'a> {
             self.push_str(",");
         }
 
-        uwrite!(self.src, ") -> {wt}::Result<");
         if concurrent {
-            uwrite!(self.src, "{wt}::component::Promise<");
+            uwrite!(
+                self.src,
+                ") -> impl {wt}::component::__internal::Future<Output = {wt}::Result<"
+            );
+        } else {
+            uwrite!(self.src, ") -> {wt}::Result<");
         }
         self.print_result_ty(func.result, TypeMode::Owned);
         if concurrent {
+            uwrite!(self.src, ">> + Send + 'static + use<S>");
+        } else {
             uwrite!(self.src, ">");
         }
 
-        uwrite!(self.src, "> where <S as {wt}::AsContext>::Data: Send {{\n");
+        uwrite!(self.src, " where <S as {wt}::AsContext>::Data: Send {{\n");
 
         // TODO: support tracing concurrent calls
         if self.generator.opts.tracing && !concurrent {
@@ -3251,19 +3257,17 @@ impl<'a> InterfaceGenerator<'a> {
         self.src.push_str("};\n");
 
         if concurrent {
-            uwrite!(
-                self.src,
-                "let promise = callee.call_concurrent(store.as_context_mut(), ("
-            );
+            if func.result.is_some() {
+                uwrite!(self.src, "{wt}::component::__internal::FutureExt::map(");
+            }
+            uwrite!(self.src, "callee.call_concurrent(store.as_context_mut(), (");
             for (i, _) in func.params.iter().enumerate() {
                 uwrite!(self.src, "arg{i}, ");
             }
-            self.src.push_str(")).await?;");
+            self.src.push_str("))");
 
             if func.result.is_some() {
-                self.src.push_str("Ok(promise.map(|(v,)| v))\n");
-            } else {
-                self.src.push_str("Ok(promise)");
+                self.src.push_str(", |v| v.map(|(v,)| v))");
             }
         } else {
             self.src.push_str("let (");
@@ -3754,7 +3758,7 @@ fn concurrent_declarations(wt: &str, get_host: &str) -> String {
             }};
 
             for spawned in spawned {{
-                instance.unwrap().spawn(&mut store_cx, {wt}::component::__internal::poll_fn(move |cx| {{
+                instance.unwrap().spawn_raw(&mut store_cx, {wt}::component::__internal::poll_fn(move |cx| {{
                     let mut spawned = spawned.try_lock().unwrap();
                     let inner = mem::replace(
                         DerefMut::deref_mut(&mut spawned),

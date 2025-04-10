@@ -28,14 +28,13 @@ async fn run(path: &str, server: &Server) -> anyhow::Result<()> {
     wasmtime_wasi::add_to_linker_async(&mut linker).context("failed to link `wasi:cli@0.2.x`")?;
     wasmtime_wasi::p3::add_to_linker(&mut linker).context("failed to link `wasi:cli@0.3.x`")?;
     wasmtime_wasi_http::p3::add_only_http_to_linker(&mut linker)?;
-    let command = Command::instantiate_async(&mut store, &component, &linker).await?;
-    let p = command
-        .wasi_cli_run()
-        .call_run(&mut store)
+    let instance = linker.instantiate_async(&mut store, &component).await?;
+    let command = Command::new(&mut store, &instance)?;
+    let run = command.wasi_cli_run().call_run(&mut store);
+    instance
+        .run(store, run)
         .await
-        .context("failed to call `wasi:cli/run#run`")?;
-    p.get(&mut store)
-        .await
+        .context("failed to call `wasi:cli/run#run`")?
         .context("guest trapped")?
         .map_err(|()| anyhow!("`wasi:cli/run#run` failed"))
 }

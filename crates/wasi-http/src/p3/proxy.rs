@@ -1,5 +1,8 @@
 use anyhow::Context as _;
-use wasmtime::component::{Promise, Resource};
+use futures::FutureExt;
+use std::future::Future;
+use std::pin::Pin;
+use wasmtime::component::Resource;
 use wasmtime::AsContextMut;
 use wasmtime_wasi::p3::ResourceView;
 
@@ -8,12 +11,20 @@ use crate::p3::bindings::Proxy;
 use crate::p3::{Request, Response};
 
 impl Proxy {
-    /// Call `handle` on [Proxy] getting a [Promise] back.
-    pub async fn handle<T>(
+    /// Call `handle` on [Proxy] getting a [Future] back.
+    pub fn handle<T, S: AsContextMut<Data = T>, R: Into<Request>>(
         &self,
-        mut store: impl AsContextMut<Data = T>,
-        req: impl Into<Request>,
-    ) -> wasmtime::Result<Promise<Result<Resource<Response>, ErrorCode>>>
+        mut store: S,
+        req: R,
+    ) -> wasmtime::Result<
+        Pin<
+            Box<
+                dyn Future<Output = wasmtime::Result<Result<Resource<Response>, ErrorCode>>>
+                    + Send
+                    + 'static,
+            >,
+        >,
+    >
     where
         T: ResourceView + Send,
     {
@@ -22,6 +33,9 @@ impl Proxy {
         let req = table
             .push(req.into())
             .context("failed to push request to table")?;
-        self.wasi_http_handler().call_handle(&mut store, req).await
+        Ok(self
+            .wasi_http_handler()
+            .call_handle(&mut store, req)
+            .boxed())
     }
 }

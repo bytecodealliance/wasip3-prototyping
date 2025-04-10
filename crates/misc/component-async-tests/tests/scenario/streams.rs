@@ -1,14 +1,17 @@
 use {
     anyhow::Result,
     component_async_tests::{closed_streams, util::init_logger, Ctx},
-    futures::future,
-    std::sync::{Arc, Mutex},
+    futures::{
+        future::{self, FutureExt},
+        stream::{FuturesUnordered, StreamExt, TryStreamExt},
+    },
+    std::{
+        future::Future,
+        sync::{Arc, Mutex},
+    },
     tokio::fs,
     wasmtime::{
-        component::{
-            Component, Linker, PromisesUnordered, ResourceTable, StreamReader, StreamWriter,
-            VecBuffer,
-        },
+        component::{Component, Linker, ResourceTable, StreamReader, StreamWriter, VecBuffer},
         Config, Engine, Store,
     },
     wasmtime_wasi::WasiCtxBuilder,
@@ -50,45 +53,45 @@ pub async fn async_watch_streams() -> Result<()> {
     let (tx, rx) = instance.stream::<u8, Option<_>, Option<_>, _, _>(&mut store)?;
     let watch = tx.watch_reader().0;
     drop(rx);
-    watch.get(&mut store).await?;
+    instance.run(&mut store, watch).await?;
 
     // Test dropping and then watching the read end of a stream.
     let (tx, rx) = instance.stream::<u8, Option<_>, Option<_>, _, _>(&mut store)?;
     drop(rx);
-    tx.watch_reader().0.get(&mut store).await?;
+    instance.run(&mut store, tx.watch_reader().0).await?;
 
     // Test watching and then dropping the write end of a stream.
     let (tx, rx) = instance.stream::<u8, Option<_>, Option<_>, _, _>(&mut store)?;
     let watch = rx.watch_writer().0;
     drop(tx);
-    watch.get(&mut store).await?;
+    instance.run(&mut store, watch).await?;
 
     // Test dropping and then watching the write end of a stream.
     let (tx, rx) = instance.stream::<u8, Option<_>, Option<_>, _, _>(&mut store)?;
     drop(tx);
-    rx.watch_writer().0.get(&mut store).await?;
+    instance.run(&mut store, rx.watch_writer().0).await?;
 
     // Test watching and then dropping the read end of a future.
     let (tx, rx) = instance.future::<u8, _, _>(&mut store)?;
     let watch = tx.watch_reader().0;
     drop(rx);
-    watch.get(&mut store).await?;
+    instance.run(&mut store, watch).await?;
 
     // Test dropping and then watching the read end of a future.
     let (tx, rx) = instance.future::<u8, _, _>(&mut store)?;
     drop(rx);
-    tx.watch_reader().0.get(&mut store).await?;
+    instance.run(&mut store, tx.watch_reader().0).await?;
 
     // Test watching and then dropping the write end of a future.
     let (tx, rx) = instance.future::<u8, _, _>(&mut store)?;
     let watch = rx.watch_writer().0;
     drop(tx);
-    watch.get(&mut store).await?;
+    instance.run(&mut store, watch).await?;
 
     // Test dropping and then watching the write end of a future.
     let (tx, rx) = instance.future::<u8, _, _>(&mut store)?;
     drop(tx);
-    rx.watch_writer().0.get(&mut store).await?;
+    instance.run(&mut store, rx.watch_writer().0).await?;
 
     #[allow(clippy::type_complexity)]
     enum Event {
@@ -98,19 +101,20 @@ pub async fn async_watch_streams() -> Result<()> {
 
     // Test watching, then writing to, then dropping, then writing again to the
     // read end of a stream.
-    let mut promises = PromisesUnordered::new();
+    let mut futures = FuturesUnordered::new();
     let (tx, rx) = instance.stream(&mut store)?;
     let watch = tx.watch_reader().1;
-    promises.push(
+    futures.push(
         watch
             .into_inner()
             .write_all(Some(42))
-            .map(|(w, _)| Event::Write(w)),
+            .map(|(w, _)| Event::Write(w))
+            .boxed(),
     );
-    promises.push(rx.read(None).map(|(r, b)| Event::Read(r, b)));
+    futures.push(rx.read(None).map(|(r, b)| Event::Read(r, b)).boxed());
     let mut rx = None;
     let mut tx = None;
-    while let Some(event) = promises.next(&mut store).await? {
+    while let Some(event) = instance.run(&mut store, futures.next()).await? {
         match event {
             Event::Write(None) => unreachable!(),
             Event::Write(Some(new_tx)) => tx = Some(new_tx),
@@ -122,15 +126,13 @@ pub async fn async_watch_streams() -> Result<()> {
         }
     }
     drop(rx);
-    let (promise, watch) = tx.take().unwrap().watch_reader();
-    let mut future = promise.into_future();
+    let (future, watch) = tx.take().unwrap().watch_reader();
+    let mut future = Box::pin(future);
     instance
-        .get(&mut store, future::poll_fn(|cx| future.as_mut().poll(cx)))
+        .run(&mut store, future::poll_fn(|cx| future.as_mut().poll(cx)))
         .await?;
-    assert!(watch
-        .into_inner()
-        .write_all(Some(42))
-        .get(&mut store)
+    assert!(instance
+        .run(&mut store, watch.into_inner().write_all(Some(42)))
         .await?
         .0
         .is_none());
@@ -206,31 +208,35 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
     {
         let (tx, rx) = instance.stream(&mut store)?;
 
-        let mut promises = PromisesUnordered::new();
-        promises.push(
+        let mut futures = FuturesUnordered::new();
+        futures.push(
             tx.write_all(values.clone().into())
-                .map(|(w, _)| StreamEvent::FirstWrite(w)),
+                .map(|(w, _)| StreamEvent::FirstWrite(w))
+                .boxed(),
         );
-        promises.push(
+        futures.push(
             rx.read(Vec::with_capacity(3))
-                .map(|(r, b)| StreamEvent::FirstRead(r, b)),
+                .map(|(r, b)| StreamEvent::FirstRead(r, b))
+                .boxed(),
         );
 
         let mut count = 0;
-        while let Some(event) = promises.next(&mut store).await? {
+        while let Some(event) = instance.run(&mut store, futures.next()).await? {
             count += 1;
             match event {
                 StreamEvent::FirstWrite(Some(tx)) => {
                     if watch {
-                        promises.push(
+                        futures.push(
                             tx.watch_reader()
                                 .0
-                                .map(move |()| StreamEvent::SecondWrite(None)),
+                                .map(|()| StreamEvent::SecondWrite(None))
+                                .boxed(),
                         );
                     } else {
-                        promises.push(
+                        futures.push(
                             tx.write_all(values.clone().into())
-                                .map(|(w, _)| StreamEvent::SecondWrite(w)),
+                                .map(|(w, _)| StreamEvent::SecondWrite(w))
+                                .boxed(),
                         );
                     }
                 }
@@ -255,23 +261,29 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
         let (tx, rx) = instance.future(&mut store)?;
         let (tx_ignored, rx_ignored) = instance.future(&mut store)?;
 
-        let mut promises = PromisesUnordered::new();
-        promises.push(tx.write(value).map(FutureEvent::Write));
-        promises.push(rx.read().map(FutureEvent::Read));
+        let mut futures = FuturesUnordered::new();
+        futures.push(tx.write(value).map(FutureEvent::Write).boxed());
+        futures.push(rx.read().map(FutureEvent::Read).boxed());
         if watch {
-            promises.push(
+            futures.push(
                 tx_ignored
                     .watch_reader()
                     .0
-                    .map(|()| FutureEvent::WriteIgnored(false)),
+                    .map(|()| FutureEvent::WriteIgnored(false))
+                    .boxed(),
             );
         } else {
-            promises.push(tx_ignored.write(value).map(FutureEvent::WriteIgnored));
+            futures.push(
+                tx_ignored
+                    .write(value)
+                    .map(FutureEvent::WriteIgnored)
+                    .boxed(),
+            );
         }
         drop(rx_ignored);
 
         let mut count = 0;
-        while let Some(event) = promises.next(&mut store).await? {
+        while let Some(event) = instance.run(&mut store, futures.next()).await? {
             count += 1;
             match event {
                 FutureEvent::Write(delivered) => {
@@ -295,30 +307,37 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
     {
         let (tx, rx) = instance.stream::<_, _, Vec<_>, _, _>(&mut store)?;
 
-        let mut promises = PromisesUnordered::new();
-        promises.push(
+        let mut futures = FuturesUnordered::new();
+        futures.push(
             closed_streams
                 .local_local_closed()
                 .call_read_stream(&mut store, rx.into(), values.clone())
-                .await?
-                .map(|()| StreamEvent::GuestCompleted),
+                .map(|v| v.map(|()| StreamEvent::GuestCompleted))
+                .boxed(),
         );
-        promises.push(
+        futures.push(
             tx.write_all(values.clone().into())
-                .map(|(w, _)| StreamEvent::FirstWrite(w)),
+                .map(|(w, _)| Ok(StreamEvent::FirstWrite(w)))
+                .boxed(),
         );
 
         let mut count = 0;
-        while let Some(event) = promises.next(&mut store).await? {
+        while let Some(event) = instance.run(&mut store, futures.try_next()).await?? {
             count += 1;
             match event {
                 StreamEvent::FirstWrite(Some(tx)) => {
                     if watch {
-                        promises.push(tx.watch_reader().0.map(|()| StreamEvent::SecondWrite(None)));
+                        futures.push(
+                            tx.watch_reader()
+                                .0
+                                .map(|()| Ok(StreamEvent::SecondWrite(None)))
+                                .boxed(),
+                        );
                     } else {
-                        promises.push(
+                        futures.push(
                             tx.write_all(values.clone().into())
-                                .map(|(w, _)| StreamEvent::SecondWrite(w)),
+                                .map(|(w, _)| Ok(StreamEvent::SecondWrite(w)))
+                                .boxed(),
                         );
                     }
                 }
@@ -340,28 +359,35 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
         let (tx, rx) = instance.future(&mut store)?;
         let (tx_ignored, rx_ignored) = instance.future(&mut store)?;
 
-        let mut promises = PromisesUnordered::new();
-        promises.push(
+        let mut futures = FuturesUnordered::new();
+        futures.push(
             closed_streams
                 .local_local_closed()
                 .call_read_future(&mut store, rx.into(), value, rx_ignored.into())
-                .await?
-                .map(|()| FutureEvent::GuestCompleted),
+                .map(|v| v.map(|()| FutureEvent::GuestCompleted))
+                .boxed(),
         );
-        promises.push(tx.write(value).map(FutureEvent::Write));
+        futures.push(tx.write(value).map(FutureEvent::Write).map(Ok).boxed());
         if watch {
-            promises.push(
+            futures.push(
                 tx_ignored
                     .watch_reader()
                     .0
-                    .map(|()| FutureEvent::WriteIgnored(false)),
+                    .map(|()| Ok(FutureEvent::WriteIgnored(false)))
+                    .boxed(),
             );
         } else {
-            promises.push(tx_ignored.write(value).map(FutureEvent::WriteIgnored));
+            futures.push(
+                tx_ignored
+                    .write(value)
+                    .map(FutureEvent::WriteIgnored)
+                    .map(Ok)
+                    .boxed(),
+            );
         }
 
         let mut count = 0;
-        while let Some(event) = promises.next(&mut store).await? {
+        while let Some(event) = instance.run(&mut store, futures.try_next()).await?? {
             count += 1;
             match event {
                 FutureEvent::Write(delivered) => {

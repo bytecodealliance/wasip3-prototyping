@@ -60,7 +60,10 @@ mod no_imports {
 
 mod no_imports_concurrent {
     use super::*;
-    use wasmtime::component::PromisesUnordered;
+    use futures::{
+        stream::{FuturesUnordered, TryStreamExt},
+        FutureExt,
+    };
 
     wasmtime::component::bindgen!({
         inline: "
@@ -114,12 +117,19 @@ mod no_imports_concurrent {
 
         let linker = Linker::new(&engine);
         let mut store = Store::new(&engine, ());
-        let no_imports = NoImports::instantiate_async(&mut store, &component, &linker).await?;
-        let mut promises = PromisesUnordered::new();
-        promises.push(no_imports.call_bar(&mut store).await?);
-        promises.push(no_imports.foo().call_foo(&mut store).await?);
-        assert!(promises.next(&mut store).await?.is_some());
-        assert!(promises.next(&mut store).await?.is_some());
+        let instance = linker.instantiate_async(&mut store, &component).await?;
+        let no_imports = NoImports::new(&mut store, &instance)?;
+        let mut futures = FuturesUnordered::new();
+        futures.push(no_imports.call_bar(&mut store).boxed());
+        futures.push(no_imports.foo().call_foo(&mut store).boxed());
+        assert!(instance
+            .run(&mut store, futures.try_next())
+            .await??
+            .is_some());
+        assert!(instance
+            .run(&mut store, futures.try_next())
+            .await??
+            .is_some());
         Ok(())
     }
 }
@@ -278,9 +288,10 @@ mod one_import_concurrent {
         let mut linker = Linker::new(&engine);
         foo::add_to_linker_get_host(&mut linker, annotate(|f: &mut MyImports| f))?;
         let mut store = Store::new(&engine, MyImports::default());
-        let no_imports = NoImports::instantiate_async(&mut store, &component, &linker).await?;
-        let promise = no_imports.call_bar(&mut store).await?;
-        promise.get(&mut store).await?;
+        let instance = linker.instantiate_async(&mut store, &component).await?;
+        let no_imports = NoImports::new(&mut store, &instance)?;
+        let call = no_imports.call_bar(&mut store);
+        instance.run(&mut store, call).await??;
         assert!(store.data().hit);
         Ok(())
     }

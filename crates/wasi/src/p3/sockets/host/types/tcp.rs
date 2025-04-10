@@ -172,7 +172,7 @@ impl<T, U: WasiSocketsView> AccessorTask<T, U, wasmtime::Result<()>> for ListenT
                     .context("failed to push socket to table")?;
                 Ok::<_, wasmtime::Error>(tx.write(Some(socket)))
             })?;
-            let (Some(tail), _) = fut.into_future().await else {
+            let (Some(tail), _) = fut.await else {
                 return Ok(());
             };
             tx = tail;
@@ -387,7 +387,7 @@ where
             Ok(Err(err)) => return Ok(Err(err)),
             Err(err) => return Err(err),
         };
-        let mut fut = fut.into_future();
+        let mut fut = fut;
         'outer: loop {
             let (Some(tail), buf_again) = fut.await else {
                 _ = stream
@@ -402,7 +402,7 @@ where
                         if n == slice.len() {
                             buf = buf_again;
                             buf.clear();
-                            fut = tail.read(buf).into_future();
+                            fut = tail.read(buf);
                             continue 'outer;
                         } else {
                             slice = &slice[n..];
@@ -490,7 +490,7 @@ where
                     *rx_task = Some(task.abort_handle());
                 }
                 _ => {
-                    let fut = res_tx.write(Err(ErrorCode::InvalidState)).into_future();
+                    let fut = res_tx.write(Err(ErrorCode::InvalidState));
                     view.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
                         fut.await;
                         Ok(())

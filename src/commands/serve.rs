@@ -593,22 +593,20 @@ impl ServeCommand {
                                 let (req, body) = req.into_parts();
                                 let body = body.map_err(wasmtime_wasi_http::p3::bindings::http::types::ErrorCode::from_hyper_request_error);
                                 let handle = proxy
-                                    .handle(&mut store, http::Request::from_parts(req, body))
-                                    .await
-                                    .context("failed to call `handle`")?;
-                                let res = handle.get(&mut store).await??;
+                                    .handle(&mut store, http::Request::from_parts(req, body))?;
+                                let res = instance.run(&mut store, handle).await???;
                                 let (res, tx, io) =
                                     wasmtime_wasi_http::p3::Response::resource_into_http(
-                                        &mut store, &instance, res,
+                                        &mut store, res,
                                     )?;
                                 tokio::task::spawn(async move {
                                     if let Some(io) = io {
-                                        let closure = io.get(&mut store).await?;
+                                        let closure = instance.run(&mut store, io).await?;
                                         closure(store.as_context_mut())?;
                                     }
                                     // TODO: Report transmit errors
                                     if let Some(tx) = tx {
-                                        tx.write(Ok(())).get(&mut store).await?;
+                                        instance.run(&mut store, tx.write(Ok(()))).await?;
                                     }
                                     anyhow::Ok(())
                                 });

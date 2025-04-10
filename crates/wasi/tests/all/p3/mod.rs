@@ -130,21 +130,15 @@ async fn run(path: &str) -> anyhow::Result<()> {
             ..Ctx::default()
         },
     );
-    let command = Command::instantiate_async(&mut store, &component, &linker)
+    let instance = linker.instantiate_async(&mut store, &component).await?;
+    let command =
+        Command::new(&mut store, &instance).context("failed to instantiate `wasi:cli/command`")?;
+    let run = command.wasi_cli_run().call_run(&mut store);
+    instance
+        .run(&mut store, run)
         .await
-        .context("failed to instantiate `wasi:cli/command`")?;
-    let mut promises = wasmtime::component::PromisesUnordered::new();
-    let p = command
-        .wasi_cli_run()
-        .call_run(&mut store)
-        .await
-        .context("failed to call `wasi:cli/run#run`")?;
-    promises.push(p);
-    promises
-        .next(&mut store)
-        .await
+        .context("failed to call `wasi:cli/run#run`")?
         .context("guest trapped")?
-        .context("promise missing")?
         .map_err(|()| anyhow!("`wasi:cli/run#run` failed"))
 }
 
