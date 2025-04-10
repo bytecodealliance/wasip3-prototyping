@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::task::Waker;
 
 use wasmtime::component::ResourceTable;
-use wasmtime_wasi::{IoView, WasiP2Ctx, WasiP2View};
+use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2View};
 
 pub mod borrowing_host;
 pub mod closed_streams;
