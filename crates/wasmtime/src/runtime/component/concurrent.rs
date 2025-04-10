@@ -387,8 +387,6 @@ struct ResetInstance(Option<SendSyncPtr<ComponentInstance>>);
 
 impl Drop for ResetInstance {
     fn drop(&mut self) {
-        eprintln!("reset to: {:?}", self.0);
-
         INSTANCE.with(|v| v.set(self.0.map(|v| v.as_ptr()).unwrap_or_else(ptr::null_mut)))
     }
 }
@@ -425,7 +423,6 @@ fn poll_with_state<T, F: Future + ?Sized>(
             }))
         });
         let _reset_state = ResetState(old_state);
-        eprintln!("set to: {:?}", instance.as_ptr());
         let old_instance = INSTANCE.with(|v| v.replace(instance.as_ptr()));
         let _reset_instance = ResetInstance(NonNull::new(old_instance).map(SendSyncPtr::new));
         (future.poll(cx), STATE.with(|v| v.take()).unwrap().spawned)
@@ -899,12 +896,8 @@ impl ComponentInstance {
         self.maybe_resume_next_task(runtime_instance)
     }
 
-    fn poll_for_result(&mut self) -> Result<()> {
-        let task = *self.guest_task();
-        self.poll_loop(move |instance| {
-            task.map(|task| Ok::<_, anyhow::Error>(instance.get(task)?.result.is_none()))
-                .unwrap_or(Ok(true))
-        })
+    fn poll_for_result(&mut self, task: TableId<GuestTask>) -> Result<()> {
+        self.poll_loop(move |instance| Ok::<_, anyhow::Error>(instance.get(task)?.result.is_none()))
     }
 
     fn handle_ready(&mut self, ready: Vec<HostTaskOutput>) -> Result<()> {
@@ -1626,7 +1619,7 @@ impl ComponentInstance {
                 self.get_mut(set)?.waiting.insert(caller);
                 Waitable::Guest(guest_task).join(self, Some(set))?;
 
-                self.poll_for_result()?;
+                self.poll_for_result(guest_task)?;
                 status = Status::Returned;
                 0
             }
@@ -1880,7 +1873,6 @@ impl ComponentInstance {
         store: StoreContextMut<'_, T>,
         future: Pin<Box<dyn Future<Output = R> + Send + '_>>,
     ) -> Result<R> {
-        eprintln!("set to: {:?}", self as *mut _);
         let old = INSTANCE.with(|v| v.replace(self));
         let _reset_instance = ResetInstance(NonNull::new(old).map(SendSyncPtr::new));
         unsafe {
@@ -3639,7 +3631,6 @@ fn checked<F: Future + Send + 'static>(
 
 fn check_recursive_run() {
     INSTANCE.with(|v| {
-        eprintln!("v.get(): {:?}", v.get());
         if !v.get().is_null() {
             panic!("Recursive `Instance::run{{_with}}` calls not supported")
         }
