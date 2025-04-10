@@ -81,7 +81,8 @@ impl WasiFilesystemCtx {
     /// # Examples
     ///
     /// ```
-    /// use wasmtime_wasi::{WasiP2CtxBuilder, DirPerms, FilePerms};
+    /// use wasmtime_wasi::p2::{WasiP2CtxBuilder};
+    /// use wasmtime_wasi::{DirPerms, FilePerms};
     ///
     /// # fn main() {}
     /// # fn foo() -> wasmtime::Result<()> {

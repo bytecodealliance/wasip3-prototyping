@@ -224,8 +224,8 @@ pub use self::generated::LinkOptions;
 /// ```no_run
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{Component, Linker, ResourceTable};
-/// use wasmtime_wasi::{IoView, WasiP2Ctx, WasiP2View, WasiP2CtxBuilder};
-/// use wasmtime_wasi::bindings::Command;
+/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2View, WasiP2CtxBuilder};
+/// use wasmtime_wasi::p2::bindings::Command;
 ///
 /// // This example is an example shim of executing a component based on the
 /// // command line arguments provided to this program.
@@ -292,8 +292,8 @@ pub use self::generated::Command;
 /// ```no_run
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{ResourceTable, Linker, Component};
-/// use wasmtime_wasi::{IoView, WasiP2Ctx, WasiP2View, WasiP2CtxBuilder};
-/// use wasmtime_wasi::bindings::CommandPre;
+/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2View, WasiP2CtxBuilder};
+/// use wasmtime_wasi::p2::bindings::CommandPre;
 ///
 /// // This example is an example shim of executing a component based on the
 /// // command line arguments provided to this program.
