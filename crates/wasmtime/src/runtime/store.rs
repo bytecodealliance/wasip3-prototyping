@@ -1611,7 +1611,7 @@ impl StoreOpaque {
                 let future = std::pin::pin!(future);
                 async_cx.block_on(future, None)?.0
             }
-            #[cfg(not(feature = "component-model-async"))]
+            #[cfg(all(feature = "async", not(feature = "component-model-async")))]
             unsafe {
                 let async_cx = scope.async_cx();
                 let future = scope.gc_async();
