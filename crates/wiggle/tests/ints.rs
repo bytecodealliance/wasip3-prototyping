@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 use wiggle::{GuestMemory, GuestPtr};
-use wiggle_test::{impl_errno, HostMemory, MemArea, WasiCtx};
+use wiggle_test::{impl_errno, HostMemory, MemArea, WasiP2Ctx};
 
 wiggle::from_witx!({
     witx: ["$CARGO_MANIFEST_DIR/tests/ints.witx"],
@@ -8,7 +8,7 @@ wiggle::from_witx!({
 
 impl_errno!(types::Errno);
 
-impl<'a> ints::Ints for WasiCtx<'a> {
+impl<'a> ints::Ints for WasiP2Ctx<'a> {
     fn cookie_cutter(
         &mut self,
         _memory: &mut GuestMemory<'_>,
@@ -46,7 +46,7 @@ impl CookieCutterExercise {
     }
 
     pub fn test(&self) {
-        let mut ctx = WasiCtx::new();
+        let mut ctx = WasiP2Ctx::new();
         let mut host_memory = HostMemory::new();
         let mut memory = host_memory.guest_memory();
 

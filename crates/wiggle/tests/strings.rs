@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 use wiggle::{GuestMemory, GuestPtr};
-use wiggle_test::{impl_errno, HostMemory, MemArea, MemAreas, WasiCtx};
+use wiggle_test::{impl_errno, HostMemory, MemArea, MemAreas, WasiP2Ctx};
 
 wiggle::from_witx!({
     witx: ["$CARGO_MANIFEST_DIR/tests/strings.witx"],
@@ -8,7 +8,7 @@ wiggle::from_witx!({
 
 impl_errno!(types::Errno);
 
-impl<'a> strings::Strings for WasiCtx<'a> {
+impl<'a> strings::Strings for WasiP2Ctx<'a> {
     fn hello_string(
         &mut self,
         memory: &mut GuestMemory<'_>,
@@ -86,7 +86,7 @@ impl HelloStringExercise {
     }
 
     pub fn test(&self) {
-        let mut ctx = WasiCtx::new();
+        let mut ctx = WasiP2Ctx::new();
         let mut host_memory = HostMemory::new();
         let mut memory = host_memory.guest_memory();
 
@@ -199,7 +199,7 @@ impl MultiStringExercise {
     }
 
     pub fn test(&self) {
-        let mut ctx = WasiCtx::new();
+        let mut ctx = WasiP2Ctx::new();
         let mut host_memory = HostMemory::new();
         let mut memory = host_memory.guest_memory();
 
@@ -279,7 +279,7 @@ impl OverlappingStringExercise {
     }
 
     pub fn test(&self) {
-        let mut ctx = WasiCtx::new();
+        let mut ctx = WasiP2Ctx::new();
         let mut host_memory = HostMemory::new();
         let mut memory = host_memory.guest_memory();
 

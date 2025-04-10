@@ -1,5 +1,5 @@
 use wiggle::{GuestErrorType, GuestMemory, GuestPtr};
-use wiggle_test::WasiCtx;
+use wiggle_test::WasiP2Ctx;
 
 // This test file exists to make sure that the entire `wasi.witx` file can be
 // handled by wiggle, producing code that compiles correctly.
@@ -31,7 +31,7 @@ impl GuestErrorType for types::Errno {
     }
 }
 
-impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a> {
+impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP2Ctx<'a> {
     fn args_get(
         &mut self,
         _memory: &mut GuestMemory<'_>,

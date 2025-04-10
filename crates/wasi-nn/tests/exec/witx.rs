@@ -3,7 +3,9 @@ use crate::check::artifacts_dir;
 use anyhow::Result;
 use std::path::Path;
 use wasmtime::{Config, Engine, Linker, Module, Store};
-use wasmtime_wasi::{preview1::WasiP1Ctx, DirPerms, FilePerms, WasiCtxBuilder};
+use wasmtime_wasi::p2::WasiP2CtxBuilder;
+use wasmtime_wasi::preview1::WasiP1Ctx;
+use wasmtime_wasi::{DirPerms, FilePerms};
 use wasmtime_wasi_nn::{witx::WasiNnCtx, Backend, InMemoryRegistry};
 
 /// Run a wasi-nn test program. This is modeled after
@@ -31,7 +33,7 @@ struct Ctx {
 
 impl Ctx {
     fn new(preopen_dir: &Path, preload_model: bool, mut backend: Backend) -> Result<Self> {
-        let mut builder = WasiCtxBuilder::new();
+        let mut builder = WasiP2CtxBuilder::new();
         builder.inherit_stdio().preopened_dir(
             preopen_dir,
             PREOPENED_DIR_NAME,

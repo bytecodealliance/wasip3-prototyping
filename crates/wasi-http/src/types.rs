@@ -18,7 +18,8 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use wasmtime::component::{Resource, ResourceTable};
-use wasmtime_wasi::{runtime::AbortOnDropJoinHandle, IoImpl, IoView, Pollable};
+use wasmtime_wasi::p2::{IoImpl, IoView, Pollable};
+use wasmtime_wasi::runtime::AbortOnDropJoinHandle;
 
 /// Capture the state necessary for use in the wasi-http API implementation.
 #[derive(Debug)]
@@ -39,11 +40,11 @@ impl WasiHttpCtx {
 ///
 /// ```
 /// use wasmtime::component::ResourceTable;
-/// use wasmtime_wasi::{IoView, WasiCtx, WasiView, WasiCtxBuilder};
+/// use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2View, WasiP2CtxBuilder};
 /// use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 ///
 /// struct MyState {
-///     ctx: WasiCtx,
+///     ctx: WasiP2Ctx,
 ///     http_ctx: WasiHttpCtx,
 ///     table: ResourceTable,
 /// }
@@ -55,13 +56,13 @@ impl WasiHttpCtx {
 ///     fn ctx(&mut self) -> &mut WasiHttpCtx { &mut self.http_ctx }
 /// }
 ///
-/// impl WasiView for MyState {
-///     fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
+/// impl WasiP2View for MyState {
+///     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.ctx }
 /// }
 ///
 /// impl MyState {
 ///     fn new() -> MyState {
-///         let mut wasi = WasiCtxBuilder::new();
+///         let mut wasi = WasiP2CtxBuilder::new();
 ///         wasi.arg("./foo.wasm");
 ///         wasi.arg("--help");
 ///         wasi.env("FOO", "bar");

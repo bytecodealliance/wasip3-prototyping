@@ -4,12 +4,12 @@ use wasmtime::{
     component::{Component, Linker, ResourceTable},
     Store,
 };
-use wasmtime_wasi::{bindings::Command, IoView, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::p2::{bindings::Command, IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiP2View};
 use wasmtime_wasi_keyvalue::{WasiKeyValue, WasiKeyValueCtx, WasiKeyValueCtxBuilder};
 
 struct Ctx {
     table: ResourceTable,
-    wasi_ctx: WasiCtx,
+    wasi_ctx: WasiP2Ctx,
     wasi_keyvalue_ctx: WasiKeyValueCtx,
 }
 
@@ -18,8 +18,8 @@ impl IoView for Ctx {
         &mut self.table
     }
 }
-impl WasiView for Ctx {
-    fn ctx(&mut self) -> &mut WasiCtx {
+impl WasiP2View for Ctx {
+    fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.wasi_ctx
     }
 }
@@ -32,7 +32,7 @@ async fn run_wasi(path: &str, ctx: Ctx) -> Result<()> {
     let component = Component::from_file(&engine, path)?;
 
     let mut linker = Linker::new(&engine);
-    wasmtime_wasi::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     wasmtime_wasi_keyvalue::add_to_linker(&mut linker, |h: &mut Ctx| {
         WasiKeyValue::new(&h.wasi_keyvalue_ctx, &mut h.table)
     })?;
@@ -60,7 +60,7 @@ async fn keyvalue_main() -> Result<()> {
         KEYVALUE_MAIN_COMPONENT,
         Ctx {
             table: ResourceTable::new(),
-            wasi_ctx: WasiCtxBuilder::new().inherit_stderr().build(),
+            wasi_ctx: WasiP2CtxBuilder::new().inherit_stderr().build(),
             wasi_keyvalue_ctx: WasiKeyValueCtxBuilder::new()
                 .in_memory_data([("atomics_key", "5")])
                 .build(),

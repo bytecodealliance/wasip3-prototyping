@@ -16,7 +16,7 @@ fn main() -> Result<()> {
     wasi_common::sync::add_to_linker(&mut linker, |s| s)?;
 
     // Create a WASI context and put it in a Store; all instances in the store
-    // share this context. `WasiCtxBuilder` provides a number of ways to
+    // share this context. `WasiP2CtxBuilder` provides a number of ways to
     // configure what the target program will have access to.
     let wasi = WasiCtxBuilder::new()
         .inherit_stdio()

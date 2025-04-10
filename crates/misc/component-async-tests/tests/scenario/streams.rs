@@ -11,7 +11,7 @@ use {
         },
         Config, Engine, Store,
     },
-    wasmtime_wasi::WasiCtxBuilder,
+    wasmtime_wasi::p2::WasiP2CtxBuilder,
 };
 
 #[tokio::test]
@@ -28,7 +28,7 @@ pub async fn async_watch_streams() -> Result<()> {
     let mut store = Store::new(
         &engine,
         Ctx {
-            wasi: WasiCtxBuilder::new().inherit_stdio().build(),
+            wasi: WasiP2CtxBuilder::new().inherit_stdio().build(),
             table: ResourceTable::default(),
             continue_: false,
             wakers: Arc::new(Mutex::new(None)),
@@ -37,7 +37,7 @@ pub async fn async_watch_streams() -> Result<()> {
 
     let mut linker = Linker::new(&engine);
 
-    wasmtime_wasi::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
 
     let component = Component::new(
         &engine,
@@ -163,7 +163,7 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
     let mut store = Store::new(
         &engine,
         Ctx {
-            wasi: WasiCtxBuilder::new().inherit_stdio().build(),
+            wasi: WasiP2CtxBuilder::new().inherit_stdio().build(),
             table: ResourceTable::default(),
             continue_: false,
             wakers: Arc::new(Mutex::new(None)),
@@ -172,7 +172,7 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
 
     let mut linker = Linker::new(&engine);
 
-    wasmtime_wasi::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
 
     let component = Component::new(
         &engine,

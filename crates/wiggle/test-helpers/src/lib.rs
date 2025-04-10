@@ -300,13 +300,13 @@ use wiggle::GuestError;
 
 // In lucet, our Ctx struct needs a lifetime, so we're using one
 // on the test as well.
-pub struct WasiCtx<'a> {
+pub struct WasiP2Ctx<'a> {
     pub guest_errors: RefCell<Vec<GuestError>>,
     pub log: RefCell<Vec<String>>,
     lifetime: marker::PhantomData<&'a ()>,
 }
 
-impl<'a> WasiCtx<'a> {
+impl<'a> WasiP2Ctx<'a> {
     pub fn new() -> Self {
         Self {
             guest_errors: RefCell::new(vec![]),
@@ -317,7 +317,7 @@ impl<'a> WasiCtx<'a> {
 }
 
 // Errno is used as a first return value in the functions above, therefore
-// it must implement GuestErrorType with type Context = WasiCtx.
+// it must implement GuestErrorType with type Context = WasiP2Ctx.
 // The context type should let you do logging or debugging or whatever you need
 // with these errors. We just push them to vecs.
 #[macro_export]

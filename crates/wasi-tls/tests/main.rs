@@ -4,12 +4,12 @@ use wasmtime::{
     component::{Component, Linker, ResourceTable},
     Store,
 };
-use wasmtime_wasi::{bindings::Command, IoView, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::p2::{bindings::Command, IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiP2View};
 use wasmtime_wasi_tls::{LinkOptions, WasiTlsCtx};
 
 struct Ctx {
     table: ResourceTable,
-    wasi_ctx: WasiCtx,
+    wasi_ctx: WasiP2Ctx,
 }
 
 impl IoView for Ctx {
@@ -17,8 +17,8 @@ impl IoView for Ctx {
         &mut self.table
     }
 }
-impl WasiView for Ctx {
-    fn ctx(&mut self) -> &mut WasiCtx {
+impl WasiP2View for Ctx {
+    fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.wasi_ctx
     }
 }
@@ -31,7 +31,7 @@ async fn run_wasi(path: &str, ctx: Ctx) -> Result<()> {
     let component = Component::from_file(&engine, path)?;
 
     let mut linker = Linker::new(&engine);
-    wasmtime_wasi::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     let mut opts = LinkOptions::default();
     opts.tls(true);
     wasmtime_wasi_tls::add_to_linker(&mut linker, &mut opts, |h: &mut Ctx| {
@@ -61,7 +61,7 @@ async fn tls_sample_application() -> Result<()> {
         TLS_SAMPLE_APPLICATION_COMPONENT,
         Ctx {
             table: ResourceTable::new(),
-            wasi_ctx: WasiCtxBuilder::new()
+            wasi_ctx: WasiP2CtxBuilder::new()
                 .inherit_stderr()
                 .inherit_network()
                 .allow_ip_name_lookup(true)

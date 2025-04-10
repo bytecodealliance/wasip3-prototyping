@@ -1,6 +1,6 @@
 use anyhow::Result;
 use wasmtime::component::Resource;
-use wasmtime_wasi::IoView;
+use wasmtime_wasi::p2::IoView;
 
 use super::Ctx;
 

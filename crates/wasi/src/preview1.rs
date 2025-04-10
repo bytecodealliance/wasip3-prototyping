@@ -10,17 +10,17 @@
 //! * [`WasiP1Ctx`]
 //! * [`add_to_linker_sync`] (or [`add_to_linker_async`])
 //!
-//! First a [`WasiCtxBuilder`] will be used and finalized with the [`build_p1`]
-//! method to create a [`WasiCtx`]. Next a [`wasmtime::Linker`] is configured
+//! First a [`WasiP2CtxBuilder`] will be used and finalized with the [`build_p1`]
+//! method to create a [`WasiP2Ctx`]. Next a [`wasmtime::Linker`] is configured
 //! with WASI imports by using the `add_to_linker_*` desired (sync or async
 //! depending on [`Config::async_support`]).
 //!
 //! Note that WASIp1 is not as extensible or configurable as WASIp2 so the
 //! support in this module is enough to run wasm modules but any customization
-//! beyond that [`WasiCtxBuilder`] already supports is not possible yet.
+//! beyond that [`WasiP2CtxBuilder`] already supports is not possible yet.
 //!
-//! [`WasiCtxBuilder`]: crate::WasiCtxBuilder
-//! [`build_p1`]: crate::WasiCtxBuilder::build_p1
+//! [`WasiP2CtxBuilder`]: crate::p2::WasiP2CtxBuilder
+//! [`build_p1`]: crate::p2::WasiP2CtxBuilder::build_p1
 //! [`Config::async_support`]: wasmtime::Config::async_support
 //!
 //! # Components vs Modules
@@ -36,7 +36,7 @@
 //! ```no_run
 //! use wasmtime::{Result, Engine, Linker, Module, Store};
 //! use wasmtime_wasi::preview1::{self, WasiP1Ctx};
-//! use wasmtime_wasi::WasiCtxBuilder;
+//! use wasmtime_wasi::p2::WasiP2CtxBuilder;
 //!
 //! // An example of executing a WASIp1 "command"
 //! fn main() -> Result<()> {
@@ -48,7 +48,7 @@
 //!     preview1::add_to_linker_async(&mut linker, |t| t)?;
 //!     let pre = linker.instantiate_pre(&module)?;
 //!
-//!     let wasi_ctx = WasiCtxBuilder::new()
+//!     let wasi_ctx = WasiP2CtxBuilder::new()
 //!         .inherit_stdio()
 //!         .inherit_env()
 //!         .args(&args)
@@ -63,7 +63,7 @@
 //! }
 //! ```
 
-use crate::bindings::{
+use crate::p2::bindings::{
     cli::{
         stderr::Host as _, stdin::Host as _, stdout::Host as _, terminal_input, terminal_output,
         terminal_stderr::Host as _, terminal_stdin::Host as _, terminal_stdout::Host as _,
@@ -71,7 +71,8 @@ use crate::bindings::{
     clocks::{monotonic_clock, wall_clock},
     filesystem::{preopens::Host as _, types as filesystem},
 };
-use crate::{FsError, IsATTY, ResourceTable, WasiCtx, WasiImpl, WasiView};
+use crate::p2::{FsError, IsATTY, WasiP2Ctx, WasiP2Impl, WasiP2View};
+use crate::ResourceTable;
 use anyhow::{bail, Context};
 use std::collections::{BTreeMap, HashSet};
 use std::mem::{self, size_of, size_of_val};
@@ -90,30 +91,30 @@ use wiggle::tracing::instrument;
 use wiggle::{GuestError, GuestMemory, GuestPtr, GuestType};
 
 // Bring all WASI traits in scope that this implementation builds on.
-use crate::bindings::cli::environment::Host as _;
-use crate::bindings::filesystem::types::HostDescriptor as _;
-use crate::bindings::random::random::Host as _;
+use crate::p2::bindings::cli::environment::Host as _;
+use crate::p2::bindings::filesystem::types::HostDescriptor as _;
+use crate::p2::bindings::random::random::Host as _;
 use wasmtime_wasi_io::bindings::wasi::io::poll::Host as _;
 
 /// Structure containing state for WASIp1.
 ///
-/// This structure is created through [`WasiCtxBuilder::build_p1`] and is
-/// configured through the various methods of [`WasiCtxBuilder`]. This structure
-/// itself implements generated traits for WASIp1 as well as [`WasiView`] to
+/// This structure is created through [`WasiP2CtxBuilder::build_p1`] and is
+/// configured through the various methods of [`WasiP2CtxBuilder`]. This structure
+/// itself implements generated traits for WASIp1 as well as [`WasiP2View`] to
 /// have access to WASIp2.
 ///
 /// Instances of [`WasiP1Ctx`] are typically stored within the `T` of
 /// [`Store<T>`](wasmtime::Store).
 ///
-/// [`WasiCtxBuilder::build_p1`]: crate::WasiCtxBuilder::build_p1
-/// [`WasiCtxBuilder`]: crate::WasiCtxBuilder
+/// [`WasiP2CtxBuilder::build_p1`]: crate::p2::WasiP2CtxBuilder::build_p1
+/// [`WasiP2CtxBuilder`]: crate::p2::WasiP2CtxBuilder
 ///
 /// # Examples
 ///
 /// ```no_run
 /// use wasmtime::{Result, Linker};
 /// use wasmtime_wasi::preview1::{self, WasiP1Ctx};
-/// use wasmtime_wasi::WasiCtxBuilder;
+/// use wasmtime_wasi::p2::WasiP2CtxBuilder;
 ///
 /// struct MyState {
 ///     // ... custom state as necessary ...
@@ -126,7 +127,7 @@ use wasmtime_wasi_io::bindings::wasi::io::poll::Host as _;
 ///         MyState {
 ///             // .. initialize custom state if needed ..
 ///
-///             wasi: WasiCtxBuilder::new()
+///             wasi: WasiP2CtxBuilder::new()
 ///                 .arg("./foo.wasm")
 ///                 // .. more customization if necesssary ..
 ///                 .build_p1(),
@@ -141,12 +142,12 @@ use wasmtime_wasi_io::bindings::wasi::io::poll::Host as _;
 /// ```
 pub struct WasiP1Ctx {
     table: ResourceTable,
-    wasi: WasiCtx,
+    wasi: WasiP2Ctx,
     adapter: WasiPreview1Adapter,
 }
 
 impl WasiP1Ctx {
-    pub(crate) fn new(wasi: WasiCtx) -> Self {
+    pub(crate) fn new(wasi: WasiP2Ctx) -> Self {
         Self {
             table: ResourceTable::new(),
             wasi,
@@ -154,8 +155,8 @@ impl WasiP1Ctx {
         }
     }
 
-    fn as_wasi_impl(&mut self) -> WasiImpl<&mut Self> {
-        WasiImpl(IoImpl(self))
+    fn as_wasi_impl(&mut self) -> WasiP2Impl<&mut Self> {
+        WasiP2Impl(IoImpl(self))
     }
     fn as_io_impl(&mut self) -> IoImpl<&mut Self> {
         IoImpl(self)
@@ -167,15 +168,15 @@ impl IoView for WasiP1Ctx {
         &mut self.table
     }
 }
-impl WasiView for WasiP1Ctx {
-    fn ctx(&mut self) -> &mut WasiCtx {
+impl WasiP2View for WasiP1Ctx {
+    fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.wasi
     }
 }
 
 #[derive(Debug)]
 struct File {
-    /// The handle to the preview2 descriptor of type [`crate::filesystem::Descriptor::File`].
+    /// The handle to the preview2 descriptor of type [`crate::p2::filesystem::Descriptor::File`].
     fd: Resource<filesystem::Descriptor>,
 
     /// The current-position pointer.
@@ -266,14 +267,14 @@ enum Descriptor {
         stream: Resource<streams::OutputStream>,
         isatty: IsATTY,
     },
-    /// A fd of type [`crate::filesystem::Descriptor::Dir`]
+    /// A fd of type [`crate::p2::filesystem::Descriptor::Dir`]
     Directory {
         fd: Resource<filesystem::Descriptor>,
         /// The path this directory was preopened as.
         /// `None` means this directory was opened using `open-at`.
         preopen_path: Option<String>,
     },
-    /// A fd of type [`crate::filesystem::Descriptor::File`]
+    /// A fd of type [`crate::p2::filesystem::Descriptor::File`]
     File(File),
 }
 
@@ -304,7 +305,7 @@ impl DerefMut for Descriptors {
 
 impl Descriptors {
     /// Initializes [Self] using `preopens`
-    fn new(mut host: WasiImpl<&mut WasiP1Ctx>) -> Result<Self, types::Error> {
+    fn new(mut host: WasiP2Impl<&mut WasiP1Ctx>) -> Result<Self, types::Error> {
         let mut descriptors = Self::default();
         descriptors.push(Descriptor::Stdin {
             stream: host
@@ -550,7 +551,7 @@ impl WasiP1Ctx {
 
     /// Lazily initializes [`WasiPreview1Adapter`] returned by [`WasiPreview1View::adapter_mut`]
     /// and returns [`filesystem::Descriptor`] corresponding to `fd`
-    /// if it describes a [`Descriptor::File`] of [`crate::filesystem::File`] type
+    /// if it describes a [`Descriptor::File`] of [`crate::p2::filesystem::File`] type
     fn get_file_fd(
         &mut self,
         fd: types::Fd,
@@ -563,7 +564,7 @@ impl WasiP1Ctx {
     /// Lazily initializes [`WasiPreview1Adapter`] returned by [`WasiPreview1View::adapter_mut`]
     /// and returns [`filesystem::Descriptor`] corresponding to `fd`
     /// if it describes a [`Descriptor::File`] or [`Descriptor::PreopenDirectory`]
-    /// of [`crate::filesystem::Dir`] type
+    /// of [`crate::p2::filesystem::Dir`] type
     fn get_dir_fd(
         &mut self,
         fd: types::Fd,
@@ -816,7 +817,7 @@ pub fn add_to_linker_sync<T: Send>(
     linker: &mut wasmtime::Linker<T>,
     f: impl Fn(&mut T) -> &mut WasiP1Ctx + Copy + Send + Sync + 'static,
 ) -> anyhow::Result<()> {
-    crate::preview1::sync::add_wasi_snapshot_preview1_to_linker(linker, f)
+    sync::add_wasi_snapshot_preview1_to_linker(linker, f)
 }
 
 // Generate the wasi_snapshot_preview1::WasiSnapshotPreview1 trait,
@@ -2157,11 +2158,11 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
             .await?;
         let mut t = self.transact()?;
         let desc = match t.view.table().get(&fd)? {
-            crate::filesystem::Descriptor::Dir(_) => Descriptor::Directory {
+            crate::p2::filesystem::Descriptor::Dir(_) => Descriptor::Directory {
                 fd,
                 preopen_path: None,
             },
-            crate::filesystem::Descriptor::File(_) => Descriptor::File(File {
+            crate::p2::filesystem::Descriptor::File(_) => Descriptor::File(File {
                 fd,
                 position: Default::default(),
                 append: fdflags.contains(types::Fdflags::APPEND),

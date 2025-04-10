@@ -16,6 +16,12 @@ impl WallClock {
     }
 }
 
+impl Default for WallClock {
+    fn default() -> Self {
+        Self::new(ambient_authority())
+    }
+}
+
 impl HostWallClock for WallClock {
     fn resolution(&self) -> Duration {
         self.clock.resolution()
@@ -37,6 +43,12 @@ pub struct MonotonicClock {
     /// The `Instant` this clock was created. All returned times are
     /// durations since that time.
     initial: Instant,
+}
+
+impl Default for MonotonicClock {
+    fn default() -> Self {
+        Self::new(ambient_authority())
+    }
 }
 
 impl MonotonicClock {
@@ -65,9 +77,9 @@ impl HostMonotonicClock for MonotonicClock {
 }
 
 pub fn monotonic_clock() -> Box<dyn HostMonotonicClock + Send> {
-    Box::new(MonotonicClock::new(ambient_authority()))
+    Box::new(MonotonicClock::default())
 }
 
 pub fn wall_clock() -> Box<dyn HostWallClock + Send> {
-    Box::new(WallClock::new(ambient_authority()))
+    Box::new(WallClock::default())
 }

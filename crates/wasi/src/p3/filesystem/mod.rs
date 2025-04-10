@@ -2,7 +2,6 @@ use std::collections::hash_map;
 use std::path::Path;
 use std::sync::Arc;
 
-use bitflags::bitflags;
 use cap_fs_ext::{FileTypeExt as _, MetadataExt as _};
 use cap_std::ambient_authority;
 use tracing::debug;
@@ -15,6 +14,7 @@ use crate::p3::bindings::filesystem::types::{
 };
 use crate::p3::{ResourceView, TaskTable};
 use crate::runtime::{spawn_blocking, AbortOnDropJoinHandle};
+use crate::{DirPerms, FilePerms, OpenMode};
 
 mod host;
 
@@ -81,11 +81,12 @@ impl WasiFilesystemCtx {
     /// # Examples
     ///
     /// ```
-    /// use wasmtime_wasi::{WasiCtxBuilder, DirPerms, FilePerms};
+    /// use wasmtime_wasi::p2::{WasiP2CtxBuilder};
+    /// use wasmtime_wasi::{DirPerms, FilePerms};
     ///
     /// # fn main() {}
     /// # fn foo() -> wasmtime::Result<()> {
-    /// let mut wasi = WasiCtxBuilder::new();
+    /// let mut wasi = WasiP2CtxBuilder::new();
     ///
     /// // Make `./host-directory` available in the guest as `.`
     /// wasi.preopened_dir("./host-directory", ".", DirPerms::all(), FilePerms::all());
@@ -381,39 +382,6 @@ impl From<Advice> for system_interface::fs::Advice {
             Advice::DontNeed => Self::DontNeed,
             Advice::NoReuse => Self::NoReuse,
         }
-    }
-}
-
-bitflags! {
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-    pub struct FilePerms: usize {
-        const READ = 0b1;
-        const WRITE = 0b10;
-    }
-}
-
-bitflags! {
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-    pub struct OpenMode: usize {
-        const READ = 0b1;
-        const WRITE = 0b10;
-    }
-}
-
-bitflags! {
-    /// Permission bits for operating on a directory.
-    ///
-    /// Directories can be limited to being readonly. This will restrict what
-    /// can be done with them, for example preventing creation of new files.
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-    pub struct DirPerms: usize {
-        /// This directory can be read, for example its entries can be iterated
-        /// over and files can be opened.
-        const READ = 0b1;
-
-        /// This directory can be mutated, for example by creating new files
-        /// within it.
-        const MUTATE = 0b10;
     }
 }
 
@@ -805,7 +773,7 @@ impl Descriptor {
             }
         }
 
-        // Now enforce this WasiCtx's permissions before letting the OS have
+        // Now enforce this WasiP2Ctx's permissions before letting the OS have
         // its shot:
         if !d.perms.contains(DirPerms::MUTATE) && create {
             return Err(ErrorCode::NotPermitted);
@@ -985,7 +953,7 @@ pub struct File {
     /// [`spawn_blocking`]: Self::spawn_blocking
     file: Arc<cap_std::fs::File>,
     /// Permissions to enforce on access to the file. These permissions are
-    /// specified by a user of the `crate::WasiCtxBuilder`, and are
+    /// specified by a user of the `crate::WasiP2CtxBuilder`, and are
     /// enforced prior to any enforced by the underlying operating system.
     perms: FilePerms,
     /// The mode the file was opened under: bits for reading, and writing.
@@ -1017,7 +985,7 @@ impl File {
 
     /// Execute the blocking `body` function.
     ///
-    /// Depending on how the WasiCtx was configured, the body may either be:
+    /// Depending on how the WasiP2Ctx was configured, the body may either be:
     /// - Executed directly on the current thread. In this case the `async`
     ///   signature of this method is effectively a lie and the returned
     ///   Future will always be immediately Ready. Or:
@@ -1026,7 +994,7 @@ impl File {
     ///
     /// Intentionally blocking the executor thread might seem unorthodox, but is
     /// not actually a problem for specific workloads. See:
-    /// - [`crate::WasiCtxBuilder::allow_blocking_current_thread`]
+    /// - [`crate::WasiP2CtxBuilder::allow_blocking_current_thread`]
     /// - [Poor performance of wasmtime file I/O maybe because tokio](https://github.com/bytecodealliance/wasmtime/issues/7973)
     /// - [Implement opt-in for enabling WASI to block the current thread](https://github.com/bytecodealliance/wasmtime/pull/8190)
     pub(crate) async fn run_blocking<F, R>(&self, body: F) -> R
@@ -1071,7 +1039,7 @@ pub struct Dir {
     /// [`spawn_blocking`]: Self::spawn_blocking
     dir: Arc<cap_std::fs::Dir>,
     /// Permissions to enforce on access to this directory. These permissions
-    /// are specified by a user of the `crate::WasiCtxBuilder`, and
+    /// are specified by a user of the `crate::WasiP2CtxBuilder`, and
     /// are enforced prior to any enforced by the underlying operating system.
     ///
     /// These permissions are also enforced on any directories opened under
@@ -1110,7 +1078,7 @@ impl Dir {
 
     /// Execute the blocking `body` function.
     ///
-    /// Depending on how the WasiCtx was configured, the body may either be:
+    /// Depending on how the WasiP2Ctx was configured, the body may either be:
     /// - Executed directly on the current thread. In this case the `async`
     ///   signature of this method is effectively a lie and the returned
     ///   Future will always be immediately Ready. Or:
@@ -1119,7 +1087,7 @@ impl Dir {
     ///
     /// Intentionally blocking the executor thread might seem unorthodox, but is
     /// not actually a problem for specific workloads. See:
-    /// - [`crate::WasiCtxBuilder::allow_blocking_current_thread`]
+    /// - [`crate::WasiP2CtxBuilder::allow_blocking_current_thread`]
     /// - [Poor performance of wasmtime file I/O maybe because tokio](https://github.com/bytecodealliance/wasmtime/issues/7973)
     /// - [Implement opt-in for enabling WASI to block the current thread](https://github.com/bytecodealliance/wasmtime/pull/8190)
     pub(crate) async fn run_blocking<F, R>(&self, body: F) -> R

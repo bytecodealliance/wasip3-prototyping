@@ -2,7 +2,7 @@
 mod convert_just_errno {
     use anyhow::Result;
     use wiggle::GuestMemory;
-    use wiggle_test::{impl_errno, HostMemory, WasiCtx};
+    use wiggle_test::{impl_errno, HostMemory, WasiP2Ctx};
 
     /// The `errors` argument to the wiggle gives us a hook to map a rich error
     /// type like this one (typical of wiggle use cases in wasi-common and beyond)
@@ -43,7 +43,7 @@ mod convert_just_errno {
         }
     }
 
-    impl<'a> one_error_conversion::OneErrorConversion for WasiCtx<'a> {
+    impl<'a> one_error_conversion::OneErrorConversion for WasiP2Ctx<'a> {
         fn foo(&mut self, _memory: &mut GuestMemory<'_>, strike: u32) -> Result<(), types::ErrnoT> {
             // We use the argument to this function to exercise all of the
             // possible error cases we could hit here
@@ -57,7 +57,7 @@ mod convert_just_errno {
 
     #[test]
     fn one_error_conversion_test() {
-        let mut ctx = WasiCtx::new();
+        let mut ctx = WasiP2Ctx::new();
         let mut host_memory = HostMemory::new();
         let mut memory = host_memory.guest_memory();
 
@@ -95,7 +95,7 @@ mod convert_multiple_error_types {
     pub use super::convert_just_errno::RichError;
     use anyhow::Result;
     use wiggle::GuestMemory;
-    use wiggle_test::{impl_errno, WasiCtx};
+    use wiggle_test::{impl_errno, WasiP2Ctx};
 
     /// Test that we can map multiple types of errors.
     #[derive(Debug, thiserror::Error)]
@@ -132,7 +132,7 @@ mod convert_multiple_error_types {
     // The UserErrorConversion trait will also have two methods for this test. They correspond to
     // each member of the `errors` mapping.
     // Bodies elided.
-    impl<'a> types::UserErrorConversion for WasiCtx<'a> {
+    impl<'a> types::UserErrorConversion for WasiP2Ctx<'a> {
         fn errno_from_rich_error(&mut self, _e: RichError) -> Result<types::Errno> {
             unimplemented!()
         }
@@ -145,7 +145,7 @@ mod convert_multiple_error_types {
     }
 
     // And here's the witx module trait impl, bodies elided
-    impl<'a> two_error_conversions::TwoErrorConversions for WasiCtx<'a> {
+    impl<'a> two_error_conversions::TwoErrorConversions for WasiP2Ctx<'a> {
         fn foo(&mut self, _: &mut GuestMemory<'_>, _: u32) -> Result<(), RichError> {
             unimplemented!()
         }

@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::task::Waker;
 
 use wasmtime::component::ResourceTable;
-use wasmtime_wasi::{IoView, WasiCtx, WasiView};
+use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2View};
 
 pub mod borrowing_host;
 pub mod closed_streams;
@@ -17,7 +17,7 @@ pub mod yield_host;
 
 /// Host implementation, usable primarily by tests
 pub struct Ctx {
-    pub wasi: WasiCtx,
+    pub wasi: WasiP2Ctx,
     pub table: ResourceTable,
     pub wakers: Arc<Mutex<Option<Vec<Waker>>>>,
     pub continue_: bool,
@@ -29,8 +29,8 @@ impl IoView for Ctx {
     }
 }
 
-impl WasiView for Ctx {
-    fn ctx(&mut self) -> &mut WasiCtx {
+impl WasiP2View for Ctx {
+    fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.wasi
     }
 }

@@ -6,7 +6,8 @@ use std::ffi::{c_char, CStr};
 use std::fs::File;
 use std::path::Path;
 use std::slice;
-use wasmtime_wasi::{preview1::WasiP1Ctx, WasiCtxBuilder};
+use wasmtime_wasi::p2::WasiP2CtxBuilder;
+use wasmtime_wasi::preview1::WasiP1Ctx;
 
 unsafe fn cstr_to_path<'a>(path: *const c_char) -> Option<&'a Path> {
     CStr::from_ptr(path).to_str().map(Path::new).ok()
@@ -26,7 +27,7 @@ unsafe fn create_file(path: *const c_char) -> Option<File> {
 
 #[repr(C)]
 pub struct wasi_config_t {
-    builder: WasiCtxBuilder,
+    builder: WasiP2CtxBuilder,
 }
 
 wasmtime_c_api_macros::declare_own!(wasi_config_t);
@@ -40,7 +41,7 @@ impl wasi_config_t {
 #[unsafe(no_mangle)]
 pub extern "C" fn wasi_config_new() -> Box<wasi_config_t> {
     Box::new(wasi_config_t {
-        builder: WasiCtxBuilder::new(),
+        builder: WasiP2CtxBuilder::new(),
     })
 }
 
@@ -105,8 +106,9 @@ pub unsafe extern "C" fn wasi_config_set_stdin_file(
     };
 
     let file = tokio::fs::File::from_std(file);
-    let stdin_stream =
-        wasmtime_wasi::AsyncStdinStream::new(wasmtime_wasi::pipe::AsyncReadStream::new(file));
+    let stdin_stream = wasmtime_wasi::p2::AsyncStdinStream::new(
+        wasmtime_wasi::p2::pipe::AsyncReadStream::new(file),
+    );
     config.builder.stdin(stdin_stream);
 
     true
@@ -118,7 +120,7 @@ pub unsafe extern "C" fn wasi_config_set_stdin_bytes(
     binary: &mut wasm_byte_vec_t,
 ) {
     let binary = binary.take();
-    let binary = wasmtime_wasi::pipe::MemoryInputPipe::new(binary);
+    let binary = wasmtime_wasi::p2::pipe::MemoryInputPipe::new(binary);
     config.builder.stdin(binary);
 }
 
@@ -137,7 +139,9 @@ pub unsafe extern "C" fn wasi_config_set_stdout_file(
         None => return false,
     };
 
-    config.builder.stdout(wasmtime_wasi::OutputFile::new(file));
+    config
+        .builder
+        .stdout(wasmtime_wasi::p2::OutputFile::new(file));
 
     true
 }
@@ -157,7 +161,9 @@ pub unsafe extern "C" fn wasi_config_set_stderr_file(
         None => return false,
     };
 
-    config.builder.stderr(wasmtime_wasi::OutputFile::new(file));
+    config
+        .builder
+        .stderr(wasmtime_wasi::p2::OutputFile::new(file));
 
     true
 }

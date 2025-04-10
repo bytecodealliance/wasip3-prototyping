@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 use wiggle::{GuestMemory, GuestPtr};
-use wiggle_test::{impl_errno, HostMemory, MemArea, WasiCtx};
+use wiggle_test::{impl_errno, HostMemory, MemArea, WasiP2Ctx};
 
 wiggle::from_witx!({
     witx: ["$CARGO_MANIFEST_DIR/tests/atoms.witx"],
@@ -8,7 +8,7 @@ wiggle::from_witx!({
 
 impl_errno!(types::Errno);
 
-impl<'a> atoms::Atoms for WasiCtx<'a> {
+impl<'a> atoms::Atoms for WasiP2Ctx<'a> {
     fn int_float_args(
         &mut self,
         _memory: &mut GuestMemory<'_>,
@@ -37,7 +37,7 @@ struct IntFloatExercise {
 
 impl IntFloatExercise {
     pub fn test(&self) {
-        let mut ctx = WasiCtx::new();
+        let mut ctx = WasiP2Ctx::new();
         let mut host_memory = HostMemory::new();
 
         let e = atoms::int_float_args(
@@ -72,7 +72,7 @@ struct DoubleIntExercise {
 
 impl DoubleIntExercise {
     pub fn test(&self) {
-        let mut ctx = WasiCtx::new();
+        let mut ctx = WasiP2Ctx::new();
         let mut host_memory = HostMemory::new();
         let mut memory = host_memory.guest_memory();
 

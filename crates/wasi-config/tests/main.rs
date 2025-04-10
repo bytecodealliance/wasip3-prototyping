@@ -4,14 +4,14 @@ use wasmtime::{
     component::{Component, Linker, ResourceTable},
     Store,
 };
-use wasmtime_wasi::{
-    add_to_linker_async, bindings::Command, IoView, WasiCtx, WasiCtxBuilder, WasiView,
+use wasmtime_wasi::p2::{
+    add_to_linker_async, bindings::Command, IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiP2View,
 };
 use wasmtime_wasi_config::{WasiConfig, WasiConfigVariables};
 
 struct Ctx {
     table: ResourceTable,
-    wasi_ctx: WasiCtx,
+    wasi_ctx: WasiP2Ctx,
     wasi_config_vars: WasiConfigVariables,
 }
 
@@ -20,8 +20,8 @@ impl IoView for Ctx {
         &mut self.table
     }
 }
-impl WasiView for Ctx {
-    fn ctx(&mut self) -> &mut WasiCtx {
+impl WasiP2View for Ctx {
+    fn ctx(&mut self) -> &mut WasiP2Ctx {
         &mut self.wasi_ctx
     }
 }
@@ -62,7 +62,7 @@ async fn config_get() -> Result<()> {
         CONFIG_GET_COMPONENT,
         Ctx {
             table: ResourceTable::new(),
-            wasi_ctx: WasiCtxBuilder::new().build(),
+            wasi_ctx: WasiP2CtxBuilder::new().build(),
             wasi_config_vars: WasiConfigVariables::from_iter(vec![("hello", "world")]),
         },
     )

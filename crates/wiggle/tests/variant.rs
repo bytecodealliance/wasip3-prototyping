@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 use wiggle::{GuestMemory, GuestPtr, GuestType};
-use wiggle_test::{impl_errno, HostMemory, MemArea, WasiCtx};
+use wiggle_test::{impl_errno, HostMemory, MemArea, WasiP2Ctx};
 
 wiggle::from_witx!({
     witx: ["$CARGO_MANIFEST_DIR/tests/variant.witx"],
@@ -30,7 +30,7 @@ fn mult_zero_nan(a: f32, b: u32) -> f32 {
     }
 }
 
-impl<'a> variant_example::VariantExample for WasiCtx<'a> {
+impl<'a> variant_example::VariantExample for WasiP2Ctx<'a> {
     fn get_tag(
         &mut self,
         _memory: &mut GuestMemory<'_>,
@@ -115,7 +115,7 @@ impl GetTagExercise {
     }
 
     pub fn test(&self) {
-        let mut ctx = WasiCtx::new();
+        let mut ctx = WasiP2Ctx::new();
         let mut host_memory = HostMemory::new();
         let mut memory = host_memory.guest_memory();
 
@@ -190,7 +190,7 @@ impl ReasonMultExercise {
     }
 
     pub fn test(&self) {
-        let mut ctx = WasiCtx::new();
+        let mut ctx = WasiP2Ctx::new();
         let mut host_memory = HostMemory::new();
         let mut memory = host_memory.guest_memory();
 

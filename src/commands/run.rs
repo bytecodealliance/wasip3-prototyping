@@ -16,7 +16,7 @@ use std::thread;
 use tokio::io::{stderr, stdin, stdout};
 use wasi_common::sync::{ambient_authority, Dir, TcpListener, WasiCtxBuilder};
 use wasmtime::{Engine, Func, Module, Store, StoreLimits, Val, ValType};
-use wasmtime_wasi::{IoView, WasiView};
+use wasmtime_wasi::p2::{IoView, WasiP2View};
 
 #[cfg(feature = "wasi-nn")]
 use wasmtime_wasi_nn::wit::WasiNnView;
@@ -515,7 +515,7 @@ impl RunCommand {
                         .context("failed to call `wasi:cli/run#run`")?;
                     p.get(&mut *store).await
                 } else {
-                    let command = wasmtime_wasi::bindings::Command::instantiate_async(
+                    let command = wasmtime_wasi::p2::bindings::Command::instantiate_async(
                         &mut *store,
                         component,
                         linker,
@@ -712,7 +712,7 @@ impl RunCommand {
                 #[cfg(feature = "component-model")]
                 CliLinker::Component(linker) => {
                     let link_options = self.run.compute_wasi_features();
-                    wasmtime_wasi::add_to_linker_with_options_async(linker, &link_options)?;
+                    wasmtime_wasi::p2::add_to_linker_with_options_async(linker, &link_options)?;
                     wasmtime_wasi::p3::add_to_linker(linker)
                         .context("failed to link `wasi:cli@0.3.x`")?;
                     self.set_preview2_ctx(store)?;
@@ -958,7 +958,7 @@ impl RunCommand {
     }
 
     fn set_preview2_ctx(&self, store: &mut Store<Host>) -> Result<()> {
-        let mut builder = wasmtime_wasi::WasiCtxBuilder::new();
+        let mut builder = wasmtime_wasi::p2::WasiP2CtxBuilder::new();
         builder.inherit_stdio().args(&self.compute_argv()?);
         self.run.configure_wasip2(&mut builder)?;
         let ctx = builder.build_p1();
@@ -1007,8 +1007,8 @@ impl RunCommand {
             p3_filesystem.preopened_dir(
                 host,
                 guest,
-                wasmtime_wasi::p3::filesystem::DirPerms::all(),
-                wasmtime_wasi::p3::filesystem::FilePerms::all(),
+                wasmtime_wasi::DirPerms::all(),
+                wasmtime_wasi::FilePerms::all(),
             )?;
         }
         store.data_mut().p3_filesystem = Some(p3_filesystem);
@@ -1113,8 +1113,8 @@ impl IoView for Host {
         self.preview2_ctx().table()
     }
 }
-impl WasiView for Host {
-    fn ctx(&mut self) -> &mut wasmtime_wasi::WasiCtx {
+impl WasiP2View for Host {
+    fn ctx(&mut self) -> &mut wasmtime_wasi::p2::WasiP2Ctx {
         self.preview2_ctx().ctx()
     }
 }

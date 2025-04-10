@@ -12,10 +12,9 @@ use crate::p3::bindings::filesystem::types::{
     MetadataHashValue, NewTimestamp, OpenFlags, PathFlags,
 };
 use crate::p3::bindings::filesystem::{preopens, types};
-use crate::p3::filesystem::{
-    Descriptor, DirPerms, FilePerms, WasiFilesystemImpl, WasiFilesystemView,
-};
+use crate::p3::filesystem::{Descriptor, WasiFilesystemImpl, WasiFilesystemView};
 use crate::p3::{AccessorTaskFn, IoTask, ResourceView as _, TaskTable};
+use crate::{DirPerms, FilePerms};
 
 fn get_descriptor<'a>(
     table: &'a ResourceTable,

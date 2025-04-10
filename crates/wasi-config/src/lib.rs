@@ -17,7 +17,7 @@
 //!     component::{Linker, ResourceTable},
 //!     Config, Engine, Result, Store,
 //! };
-//! use wasmtime_wasi::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
+//! use wasmtime_wasi::p2::{IoView, WasiP2Ctx, WasiP2CtxBuilder, WasiP2View};
 //! use wasmtime_wasi_config::{WasiConfig, WasiConfigVariables};
 //!
 //! #[tokio::main]
@@ -28,7 +28,7 @@
 //!
 //!     let mut store = Store::new(&engine, Ctx {
 //!         table: ResourceTable::new(),
-//!         wasi_ctx: WasiCtxBuilder::new().build(),
+//!         wasi_ctx: WasiP2CtxBuilder::new().build(),
 //!         wasi_config_vars: WasiConfigVariables::from_iter(vec![
 //!             ("config_key1", "value1"),
 //!             ("config_key2", "value2"),
@@ -36,7 +36,7 @@
 //!     });
 //!
 //!     let mut linker = Linker::<Ctx>::new(&engine);
-//!     wasmtime_wasi::add_to_linker_async(&mut linker)?;
+//!     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
 //!     // add `wasi-config` world's interfaces to the linker
 //!     wasmtime_wasi_config::add_to_linker(&mut linker, |h: &mut Ctx| {
 //!         WasiConfig::from(&h.wasi_config_vars)
@@ -49,15 +49,15 @@
 //!
 //! struct Ctx {
 //!     table: ResourceTable,
-//!     wasi_ctx: WasiCtx,
+//!     wasi_ctx: WasiP2Ctx,
 //!     wasi_config_vars: WasiConfigVariables,
 //! }
 //!
 //! impl IoView for Ctx {
 //!     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 //! }
-//! impl WasiView for Ctx {
-//!     fn ctx(&mut self) -> &mut WasiCtx { &mut self.wasi_ctx }
+//! impl WasiP2View for Ctx {
+//!     fn ctx(&mut self) -> &mut WasiP2Ctx { &mut self.wasi_ctx }
 //! }
 //! ```
 //!
