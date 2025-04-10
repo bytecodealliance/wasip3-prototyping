@@ -68,14 +68,14 @@ impl<T: ?Sized + WasiP2View> WasiP2View for Box<T> {
 /// module](crate::p2::bindings). In this situation you'll want to create a value of
 /// this type in the closures added to a `Linker`.
 #[repr(transparent)]
-pub struct WasiImpl<T>(pub IoImpl<T>);
+pub struct WasiP2Impl<T>(pub IoImpl<T>);
 
-impl<T: IoView> IoView for WasiImpl<T> {
+impl<T: IoView> IoView for WasiP2Impl<T> {
     fn table(&mut self) -> &mut ResourceTable {
         T::table(&mut self.0 .0)
     }
 }
-impl<T: WasiP2View> WasiP2View for WasiImpl<T> {
+impl<T: WasiP2View> WasiP2View for WasiP2Impl<T> {
     fn ctx(&mut self) -> &mut WasiP2Ctx {
         T::ctx(&mut self.0 .0)
     }

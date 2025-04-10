@@ -6,7 +6,7 @@ use crate::p2::bindings::filesystem::types::{
 use crate::p2::filesystem::{
     Descriptor, Dir, File, FileInputStream, FileOutputStream, ReaddirIterator,
 };
-use crate::p2::{FsError, FsResult, IoView, WasiImpl, WasiP2View};
+use crate::p2::{FsError, FsResult, IoView, WasiP2Impl, WasiP2View};
 use crate::{DirPerms, FilePerms, OpenMode};
 use anyhow::Context;
 use wasmtime::component::Resource;
@@ -14,7 +14,7 @@ use wasmtime_wasi_io::streams::{DynInputStream, DynOutputStream};
 
 mod sync;
 
-impl<T> preopens::Host for WasiImpl<T>
+impl<T> preopens::Host for WasiP2Impl<T>
 where
     T: WasiP2View,
 {
@@ -33,7 +33,7 @@ where
     }
 }
 
-impl<T> types::Host for WasiImpl<T>
+impl<T> types::Host for WasiP2Impl<T>
 where
     T: WasiP2View,
 {
@@ -57,7 +57,7 @@ where
     }
 }
 
-impl<T> HostDescriptor for WasiImpl<T>
+impl<T> HostDescriptor for WasiP2Impl<T>
 where
     T: WasiP2View,
 {
@@ -853,7 +853,7 @@ where
     }
 }
 
-impl<T> HostDirectoryEntryStream for WasiImpl<T>
+impl<T> HostDirectoryEntryStream for WasiP2Impl<T>
 where
     T: WasiP2View,
 {

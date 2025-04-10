@@ -65,7 +65,7 @@
 //! all WASI interfaces. Raw bindings are available in the [`bindings`] submodule
 //! of this module. Downstream users can either implement these traits themselves
 //! or you can use the built-in implementations in this module for
-//! `WasiImpl<T: WasiP2View>`.
+//! `WasiP2Impl<T: WasiP2View>`.
 //!
 //! # The `WasiP2View` trait
 //!
@@ -79,10 +79,10 @@
 //! implementations are provided looking like:
 //!
 //! ```
-//! # use wasmtime_wasi::p2::WasiImpl;
+//! # use wasmtime_wasi::p2::WasiP2Impl;
 //! # trait WasiP2View {}
 //! # mod bindings { pub mod wasi { pub trait Host {} } }
-//! impl<T: WasiP2View> bindings::wasi::Host for WasiImpl<T> {
+//! impl<T: WasiP2View> bindings::wasi::Host for WasiP2Impl<T> {
 //!     // ...
 //! }
 //! ```
@@ -252,7 +252,7 @@ pub use self::stdio::{
     stderr, stdin, stdout, AsyncStdinStream, AsyncStdoutStream, IsATTY, OutputFile, Stderr, Stdin,
     StdinStream, Stdout, StdoutStream,
 };
-pub use self::view::{WasiImpl, WasiP2View};
+pub use self::view::{WasiP2Impl, WasiP2View};
 // These contents of wasmtime-wasi-io are re-exported by this module for compatibility:
 // they were originally defined in this module before being factored out, and many
 // users of this module depend on them at these names.
@@ -334,7 +334,7 @@ pub fn add_to_linker_with_options_async<T: WasiP2View>(
     let l = linker;
     wasmtime_wasi_io::add_to_linker_async(l)?;
 
-    let closure = type_annotate::<T, _>(|t| WasiImpl(IoImpl(t)));
+    let closure = type_annotate::<T, _>(|t| WasiP2Impl(IoImpl(t)));
 
     crate::p2::bindings::clocks::wall_clock::add_to_linker_get_host(l, closure)?;
     crate::p2::bindings::clocks::monotonic_clock::add_to_linker_get_host(l, closure)?;
@@ -437,7 +437,7 @@ pub fn add_to_linker_with_options_sync<T: WasiP2View>(
     crate::p2::bindings::sync::io::poll::add_to_linker_get_host(l, io_closure)?;
     crate::p2::bindings::sync::io::streams::add_to_linker_get_host(l, io_closure)?;
 
-    let closure = type_annotate::<T, _>(|t| WasiImpl(IoImpl(t)));
+    let closure = type_annotate::<T, _>(|t| WasiP2Impl(IoImpl(t)));
 
     crate::p2::bindings::clocks::wall_clock::add_to_linker_get_host(l, closure)?;
     crate::p2::bindings::clocks::monotonic_clock::add_to_linker_get_host(l, closure)?;
@@ -476,7 +476,7 @@ where
 }
 fn type_annotate<T: WasiP2View, F>(val: F) -> F
 where
-    F: Fn(&mut T) -> WasiImpl<&mut T>,
+    F: Fn(&mut T) -> WasiP2Impl<&mut T>,
 {
     val
 }

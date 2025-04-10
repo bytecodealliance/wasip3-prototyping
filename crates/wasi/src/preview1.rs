@@ -71,7 +71,7 @@ use crate::p2::bindings::{
     clocks::{monotonic_clock, wall_clock},
     filesystem::{preopens::Host as _, types as filesystem},
 };
-use crate::p2::{FsError, IsATTY, WasiImpl, WasiP2Ctx, WasiP2View};
+use crate::p2::{FsError, IsATTY, WasiP2Ctx, WasiP2Impl, WasiP2View};
 use crate::ResourceTable;
 use anyhow::{bail, Context};
 use std::collections::{BTreeMap, HashSet};
@@ -155,8 +155,8 @@ impl WasiP1Ctx {
         }
     }
 
-    fn as_wasi_impl(&mut self) -> WasiImpl<&mut Self> {
-        WasiImpl(IoImpl(self))
+    fn as_wasi_impl(&mut self) -> WasiP2Impl<&mut Self> {
+        WasiP2Impl(IoImpl(self))
     }
     fn as_io_impl(&mut self) -> IoImpl<&mut Self> {
         IoImpl(self)
@@ -305,7 +305,7 @@ impl DerefMut for Descriptors {
 
 impl Descriptors {
     /// Initializes [Self] using `preopens`
-    fn new(mut host: WasiImpl<&mut WasiP1Ctx>) -> Result<Self, types::Error> {
+    fn new(mut host: WasiP2Impl<&mut WasiP1Ctx>) -> Result<Self, types::Error> {
         let mut descriptors = Self::default();
         descriptors.push(Descriptor::Stdin {
             stream: host

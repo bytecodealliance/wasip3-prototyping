@@ -1,8 +1,8 @@
 use crate::p2::bindings::random::{insecure, insecure_seed, random};
-use crate::p2::{WasiImpl, WasiP2View};
+use crate::p2::{WasiP2Impl, WasiP2View};
 use cap_rand::{distributions::Standard, Rng};
 
-impl<T> random::Host for WasiImpl<T>
+impl<T> random::Host for WasiP2Impl<T>
 where
     T: WasiP2View,
 {
@@ -18,7 +18,7 @@ where
     }
 }
 
-impl<T> insecure::Host for WasiImpl<T>
+impl<T> insecure::Host for WasiP2Impl<T>
 where
     T: WasiP2View,
 {
@@ -34,7 +34,7 @@ where
     }
 }
 
-impl<T> insecure_seed::Host for WasiImpl<T>
+impl<T> insecure_seed::Host for WasiP2Impl<T>
 where
     T: WasiP2View,
 {

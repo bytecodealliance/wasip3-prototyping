@@ -1,7 +1,7 @@
 use crate::p2::bindings::sockets::ip_name_lookup::{Host, HostResolveAddressStream};
 use crate::p2::bindings::sockets::network::{ErrorCode, IpAddress, Network};
 use crate::p2::host::network::util;
-use crate::p2::{IoView, SocketError, WasiImpl, WasiP2View};
+use crate::p2::{IoView, SocketError, WasiP2Impl, WasiP2View};
 use crate::runtime::{spawn_blocking, AbortOnDropJoinHandle};
 use anyhow::Result;
 use std::mem;
@@ -19,7 +19,7 @@ pub enum ResolveAddressStream {
     Done(Result<vec::IntoIter<IpAddress>, SocketError>),
 }
 
-impl<T> Host for WasiImpl<T>
+impl<T> Host for WasiP2Impl<T>
 where
     T: WasiP2View,
 {
@@ -42,7 +42,7 @@ where
     }
 }
 
-impl<T> HostResolveAddressStream for WasiImpl<T>
+impl<T> HostResolveAddressStream for WasiP2Impl<T>
 where
     T: WasiP2View,
 {

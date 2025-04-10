@@ -3,13 +3,13 @@ use crate::p2::bindings::sockets::network::{
     Ipv6SocketAddress,
 };
 use crate::p2::network::{from_ipv4_addr, from_ipv6_addr, to_ipv4_addr, to_ipv6_addr};
-use crate::p2::{IoView, SocketError, WasiImpl, WasiP2View};
+use crate::p2::{IoView, SocketError, WasiP2Impl, WasiP2View};
 use anyhow::Error;
 use rustix::io::Errno;
 use std::io;
 use wasmtime::component::Resource;
 
-impl<T> network::Host for WasiImpl<T>
+impl<T> network::Host for WasiP2Impl<T>
 where
     T: WasiP2View,
 {
@@ -28,7 +28,7 @@ where
     }
 }
 
-impl<T> crate::p2::bindings::sockets::network::HostNetwork for WasiImpl<T>
+impl<T> crate::p2::bindings::sockets::network::HostNetwork for WasiP2Impl<T>
 where
     T: WasiP2View,
 {

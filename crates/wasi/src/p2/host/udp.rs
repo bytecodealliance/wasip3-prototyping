@@ -8,7 +8,7 @@ use crate::p2::{
     udp::{IncomingDatagramStream, OutgoingDatagramStream, SendState, UdpState},
     Pollable,
 };
-use crate::p2::{IoView, SocketError, SocketResult, WasiImpl, WasiP2View};
+use crate::p2::{IoView, SocketError, SocketResult, WasiP2Impl, WasiP2View};
 use anyhow::anyhow;
 use async_trait::async_trait;
 use io_lifetimes::AsSocketlike;
@@ -23,9 +23,9 @@ use wasmtime_wasi_io::poll::DynPollable;
 /// In practice, datagrams are typically less than 1500 bytes.
 const MAX_UDP_DATAGRAM_SIZE: usize = u16::MAX as usize;
 
-impl<T> udp::Host for WasiImpl<T> where T: WasiP2View {}
+impl<T> udp::Host for WasiP2Impl<T> where T: WasiP2View {}
 
-impl<T> udp::HostUdpSocket for WasiImpl<T>
+impl<T> udp::HostUdpSocket for WasiP2Impl<T>
 where
     T: WasiP2View,
 {
@@ -307,7 +307,7 @@ where
     }
 }
 
-impl<T> udp::HostIncomingDatagramStream for WasiImpl<T>
+impl<T> udp::HostIncomingDatagramStream for WasiP2Impl<T>
 where
     T: WasiP2View,
 {
@@ -401,7 +401,7 @@ impl Pollable for IncomingDatagramStream {
     }
 }
 
-impl<T> udp::HostOutgoingDatagramStream for WasiImpl<T>
+impl<T> udp::HostOutgoingDatagramStream for WasiP2Impl<T>
 where
     T: WasiP2View,
 {
@@ -567,13 +567,13 @@ pub mod sync {
                 UdpSocket,
             },
         },
-        SocketError, WasiImpl, WasiP2View,
+        SocketError, WasiP2Impl, WasiP2View,
     };
     use crate::runtime::in_tokio;
 
-    impl<T> udp::Host for WasiImpl<T> where T: WasiP2View {}
+    impl<T> udp::Host for WasiP2Impl<T> where T: WasiP2View {}
 
-    impl<T> HostUdpSocket for WasiImpl<T>
+    impl<T> HostUdpSocket for WasiP2Impl<T>
     where
         T: WasiP2View,
     {
@@ -675,7 +675,7 @@ pub mod sync {
         }
     }
 
-    impl<T> HostIncomingDatagramStream for WasiImpl<T>
+    impl<T> HostIncomingDatagramStream for WasiP2Impl<T>
     where
         T: WasiP2View,
     {
@@ -717,7 +717,7 @@ pub mod sync {
         }
     }
 
-    impl<T> HostOutgoingDatagramStream for WasiImpl<T>
+    impl<T> HostOutgoingDatagramStream for WasiP2Impl<T>
     where
         T: WasiP2View,
     {

@@ -4,7 +4,7 @@ use crate::p2::bindings::cli::{
 };
 use crate::p2::pipe;
 use crate::p2::{
-    InputStream, IoView, OutputStream, Pollable, StreamError, StreamResult, WasiImpl, WasiP2View,
+    InputStream, IoView, OutputStream, Pollable, StreamError, StreamResult, WasiP2Impl, WasiP2View,
 };
 use bytes::Bytes;
 use std::io::IsTerminal;
@@ -409,7 +409,7 @@ pub enum IsATTY {
     No,
 }
 
-impl<T> stdin::Host for WasiImpl<T>
+impl<T> stdin::Host for WasiP2Impl<T>
 where
     T: WasiP2View,
 {
@@ -419,7 +419,7 @@ where
     }
 }
 
-impl<T> stdout::Host for WasiImpl<T>
+impl<T> stdout::Host for WasiP2Impl<T>
 where
     T: WasiP2View,
 {
@@ -429,7 +429,7 @@ where
     }
 }
 
-impl<T> stderr::Host for WasiImpl<T>
+impl<T> stderr::Host for WasiP2Impl<T>
 where
     T: WasiP2View,
 {
@@ -442,8 +442,8 @@ where
 pub struct TerminalInput;
 pub struct TerminalOutput;
 
-impl<T> terminal_input::Host for WasiImpl<T> where T: WasiP2View {}
-impl<T> terminal_input::HostTerminalInput for WasiImpl<T>
+impl<T> terminal_input::Host for WasiP2Impl<T> where T: WasiP2View {}
+impl<T> terminal_input::HostTerminalInput for WasiP2Impl<T>
 where
     T: WasiP2View,
 {
@@ -452,8 +452,8 @@ where
         Ok(())
     }
 }
-impl<T> terminal_output::Host for WasiImpl<T> where T: WasiP2View {}
-impl<T> terminal_output::HostTerminalOutput for WasiImpl<T>
+impl<T> terminal_output::Host for WasiP2Impl<T> where T: WasiP2View {}
+impl<T> terminal_output::HostTerminalOutput for WasiP2Impl<T>
 where
     T: WasiP2View,
 {
@@ -462,7 +462,7 @@ where
         Ok(())
     }
 }
-impl<T> terminal_stdin::Host for WasiImpl<T>
+impl<T> terminal_stdin::Host for WasiP2Impl<T>
 where
     T: WasiP2View,
 {
@@ -475,7 +475,7 @@ where
         }
     }
 }
-impl<T> terminal_stdout::Host for WasiImpl<T>
+impl<T> terminal_stdout::Host for WasiP2Impl<T>
 where
     T: WasiP2View,
 {
@@ -488,7 +488,7 @@ where
         }
     }
 }
-impl<T> terminal_stderr::Host for WasiImpl<T>
+impl<T> terminal_stderr::Host for WasiP2Impl<T>
 where
     T: WasiP2View,
 {

@@ -296,7 +296,7 @@ where
     wasmtime_wasi::p2::bindings::io::streams::add_to_linker_get_host(l, io_closure)?;
 
     let closure =
-        type_annotate_wasi::<T, _>(|t| wasmtime_wasi::p2::WasiImpl(wasmtime_wasi::p2::IoImpl(t)));
+        type_annotate_wasi::<T, _>(|t| wasmtime_wasi::p2::WasiP2Impl(wasmtime_wasi::p2::IoImpl(t)));
     wasmtime_wasi::p2::bindings::clocks::wall_clock::add_to_linker_get_host(l, closure)?;
     wasmtime_wasi::p2::bindings::clocks::monotonic_clock::add_to_linker_get_host(l, closure)?;
     wasmtime_wasi::p2::bindings::cli::stdin::add_to_linker_get_host(l, closure)?;
@@ -317,7 +317,7 @@ where
 }
 fn type_annotate_wasi<T, F>(val: F) -> F
 where
-    F: Fn(&mut T) -> wasmtime_wasi::p2::WasiImpl<&mut T>,
+    F: Fn(&mut T) -> wasmtime_wasi::p2::WasiP2Impl<&mut T>,
 {
     val
 }
@@ -399,7 +399,7 @@ where
     wasmtime_wasi::p2::bindings::io::error::add_to_linker_get_host(l, io_closure)?;
 
     let closure =
-        type_annotate_wasi::<T, _>(|t| wasmtime_wasi::p2::WasiImpl(wasmtime_wasi::p2::IoImpl(t)));
+        type_annotate_wasi::<T, _>(|t| wasmtime_wasi::p2::WasiP2Impl(wasmtime_wasi::p2::IoImpl(t)));
 
     wasmtime_wasi::p2::bindings::clocks::wall_clock::add_to_linker_get_host(l, closure)?;
     wasmtime_wasi::p2::bindings::clocks::monotonic_clock::add_to_linker_get_host(l, closure)?;

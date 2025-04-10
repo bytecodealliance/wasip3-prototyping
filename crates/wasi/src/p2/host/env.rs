@@ -1,7 +1,7 @@
 use crate::p2::bindings::cli::environment;
-use crate::p2::{WasiImpl, WasiP2View};
+use crate::p2::{WasiP2Impl, WasiP2View};
 
-impl<T> environment::Host for WasiImpl<T>
+impl<T> environment::Host for WasiP2Impl<T>
 where
     T: WasiP2View,
 {

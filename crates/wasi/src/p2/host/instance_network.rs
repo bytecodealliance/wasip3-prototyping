@@ -1,9 +1,9 @@
 use crate::network::Network;
 use crate::p2::bindings::sockets::instance_network;
-use crate::p2::{IoView, WasiImpl, WasiP2View};
+use crate::p2::{IoView, WasiP2Impl, WasiP2View};
 use wasmtime::component::Resource;
 
-impl<T> instance_network::Host for WasiImpl<T>
+impl<T> instance_network::Host for WasiP2Impl<T>
 where
     T: WasiP2View,
 {
