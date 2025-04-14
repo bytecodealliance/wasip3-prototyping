@@ -39,7 +39,7 @@
     (import "" "child-run" (func $child-run (param i32)))
 
     (func (export "run")
-      (call $child-run (i32.wrap_i64 (i64.shr_u (call $new) (i64.const 32))))
+      (call $child-run (i32.wrap_i64 (call $new)))
     )
   )
   (core instance $i (instantiate $m
@@ -91,7 +91,7 @@
     (import "" "child-run" (func $child-run (param i32)))
 
     (func (export "run")
-      (call $child-run (i32.wrap_i64 (i64.shr_u (call $new) (i64.const 32))))
+      (call $child-run (i32.wrap_i64 (call $new)))
     )
   )
   (core instance $i (instantiate $m
@@ -147,7 +147,7 @@
     (import "" "child-run" (func $child-run (param i32)))
 
     (func (export "run")
-      (call $child-run (i32.wrap_i64 (i64.shr_u (call $new) (i64.const 32))))
+      (call $child-run (i32.wrap_i64 (call $new)))
     )
   )
   (core instance $i (instantiate $m
@@ -207,7 +207,7 @@
     (import "" "child-run" (func $child-run (param i32)))
 
     (func (export "run")
-      (call $child-run (i32.wrap_i64 (i64.shr_u (call $new) (i64.const 32))))
+      (call $child-run (i32.wrap_i64 (call $new)))
     )
   )
   (core instance $i (instantiate $m

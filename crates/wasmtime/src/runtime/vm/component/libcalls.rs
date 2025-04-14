@@ -878,8 +878,8 @@ unsafe impl HostResultHasUnwindSentinel for ResourcePair {
     const SENTINEL: u64 = u64::MAX;
 
     fn into_abi(self) -> Self::Abi {
-        assert!(self.read & (1 << 31) == 0);
-        (u64::from(self.read) << 32) | u64::from(self.write)
+        assert!(self.write & (1 << 31) == 0);
+        (u64::from(self.write) << 32) | u64::from(self.read)
     }
 }
 
