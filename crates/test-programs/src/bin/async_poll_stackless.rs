@@ -79,8 +79,8 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, _event2: u32) -> u32
 
             let set = *set;
             let result = async_when_ready();
-            let status = result >> 30;
-            let call = result & !(0b11 << 30);
+            let status = result & 0xf;
+            let call = result >> 4;
             assert!(status != STATUS_RETURNED);
             waitable_join(call, set);
 
@@ -117,7 +117,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, _event2: u32) -> u32
             assert_eq!(event0, EVENT_NONE);
 
             let set = *set;
-            assert!(async_when_ready() == STATUS_RETURNED << 30);
+            assert!(async_when_ready() == STATUS_RETURNED);
 
             *state = State::S5 { set };
 

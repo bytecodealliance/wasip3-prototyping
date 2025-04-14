@@ -643,6 +643,7 @@ pub struct Resource {
 ///
 /// Note that this type does not implement `Serialize` or `Deserialize` and
 /// that's intentional as this isn't stored in the final compilation artifact.
+#[derive(Debug)]
 pub enum Trampoline {
     /// Description of a lowered import used in conjunction with
     /// `GlobalInitializer::LowerImport`.
