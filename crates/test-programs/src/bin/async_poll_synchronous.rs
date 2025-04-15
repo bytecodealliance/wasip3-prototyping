@@ -12,7 +12,7 @@ use {
     bindings::{exports::local::local::run::Guest, local::local::ready},
     test_programs::async_::{
         subtask_drop, waitable_join, waitable_set_drop, waitable_set_new, waitable_set_poll,
-        EVENT_CALL_RETURNED, STATUS_RETURNED,
+        EVENT_SUBTASK, STATUS_RETURNED,
     },
 };
 
@@ -54,11 +54,12 @@ impl Guest for Component {
 
             ready::set_ready(true);
 
-            let Some((EVENT_CALL_RETURNED, task, _)) = waitable_set_poll(set) else {
+            let Some((event, task, code)) = waitable_set_poll(set) else {
                 panic!()
             };
-
+            assert_eq!(event, EVENT_SUBTASK);
             assert_eq!(call, task);
+            assert_eq!(code, STATUS_RETURNED);
 
             subtask_drop(task);
 

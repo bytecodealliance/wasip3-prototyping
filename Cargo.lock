@@ -5267,7 +5267,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen"
 version = "0.41.0"
-source = "git+https://github.com/bytecodealliance/witx-bindgen#b8d39b3f2b188154ead61079dd3d788851b6c183"
+source = "git+https://github.com/bytecodealliance/witx-bindgen#be0de78ffb80ced696b29eefe6c3c45b913fb939"
 dependencies = [
  "wit-bindgen-rt 0.41.0",
  "wit-bindgen-rust-macro",
@@ -5276,7 +5276,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-core"
 version = "0.41.0"
-source = "git+https://github.com/bytecodealliance/witx-bindgen#b8d39b3f2b188154ead61079dd3d788851b6c183"
+source = "git+https://github.com/bytecodealliance/witx-bindgen#be0de78ffb80ced696b29eefe6c3c45b913fb939"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5295,7 +5295,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rt"
 version = "0.41.0"
-source = "git+https://github.com/bytecodealliance/witx-bindgen#b8d39b3f2b188154ead61079dd3d788851b6c183"
+source = "git+https://github.com/bytecodealliance/witx-bindgen#be0de78ffb80ced696b29eefe6c3c45b913fb939"
 dependencies = [
  "bitflags 2.6.0",
  "futures",
@@ -5305,7 +5305,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rust"
 version = "0.41.0"
-source = "git+https://github.com/bytecodealliance/witx-bindgen#b8d39b3f2b188154ead61079dd3d788851b6c183"
+source = "git+https://github.com/bytecodealliance/witx-bindgen#be0de78ffb80ced696b29eefe6c3c45b913fb939"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5320,7 +5320,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rust-macro"
 version = "0.41.0"
-source = "git+https://github.com/bytecodealliance/witx-bindgen#b8d39b3f2b188154ead61079dd3d788851b6c183"
+source = "git+https://github.com/bytecodealliance/witx-bindgen#be0de78ffb80ced696b29eefe6c3c45b913fb939"
 dependencies = [
  "anyhow",
  "prettyplease",

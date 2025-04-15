@@ -95,14 +95,12 @@ pub unsafe fn context_set(_: u32) {
     unreachable!()
 }
 
-pub const STATUS_STARTING: u32 = 1;
-pub const STATUS_STARTED: u32 = 2;
-pub const STATUS_RETURNED: u32 = 3;
+pub const STATUS_STARTING: u32 = 0;
+pub const STATUS_STARTED: u32 = 1;
+pub const STATUS_RETURNED: u32 = 2;
 
 pub const EVENT_NONE: u32 = 0;
-pub const EVENT_CALL_STARTING: u32 = 1;
-pub const EVENT_CALL_STARTED: u32 = 2;
-pub const EVENT_CALL_RETURNED: u32 = 3;
+pub const EVENT_SUBTASK: u32 = 1;
 
 pub const CALLBACK_CODE_EXIT: u32 = 0;
 pub const CALLBACK_CODE_YIELD: u32 = 1;
