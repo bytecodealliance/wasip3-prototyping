@@ -45,8 +45,8 @@ impl Guest for Component {
             assert!(waitable_set_poll(set).is_none());
 
             let result = async_when_ready();
-            let status = result >> 30;
-            let call = result & !(0b11 << 30);
+            let status = result & 0xf;
+            let call = result >> 4;
             assert!(status != STATUS_RETURNED);
             waitable_join(call, set);
 
@@ -64,7 +64,7 @@ impl Guest for Component {
 
             assert!(waitable_set_poll(set).is_none());
 
-            assert!(async_when_ready() == STATUS_RETURNED << 30);
+            assert!(async_when_ready() == STATUS_RETURNED);
 
             assert!(waitable_set_poll(set).is_none());
 

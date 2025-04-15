@@ -1,5 +1,5 @@
 #[cfg(feature = "component-model-async")]
-use crate::component::concurrent::Accessor;
+use crate::component::concurrent::{Accessor, Status};
 use crate::component::func::{LiftContext, LowerContext, Options};
 use crate::component::matching::InstanceType;
 use crate::component::storage::slice_to_storage_mut;
@@ -22,11 +22,6 @@ use wasmtime_environ::component::{
     CanonicalAbiInfo, ComponentTypes, InterfaceType, RuntimeComponentInstanceIndex, StringEncoding,
     TypeFuncIndex, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS,
 };
-
-#[cfg(feature = "component-model-async")]
-const STATUS_PARAMS_READ: u32 = 1;
-#[cfg(feature = "component-model-async")]
-const STATUS_DONE: u32 = 3;
 
 pub struct HostFunc {
     entrypoint: VMLoweringCallee,
@@ -335,9 +330,9 @@ where
             })?;
 
             let status = if let Some(task) = task {
-                (STATUS_PARAMS_READ << 30) | task
+                Status::Started.pack(Some(task))
             } else {
-                STATUS_DONE << 30
+                Status::Returned.pack(None)
             };
 
             storage[0] = MaybeUninit::new(ValRaw::i32(status as i32));
@@ -591,9 +586,9 @@ where
                 })?;
 
             let status = if let Some(task) = task {
-                (STATUS_PARAMS_READ << 30) | task
+                Status::Started.pack(Some(task))
             } else {
-                STATUS_DONE << 30
+                Status::Returned.pack(None)
             };
 
             storage[0] = MaybeUninit::new(ValRaw::i32(status as i32));

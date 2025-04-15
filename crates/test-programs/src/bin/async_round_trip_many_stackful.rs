@@ -86,8 +86,8 @@ unsafe extern "C" fn export_foo(args: *mut u8) {
     let results = alloc::alloc(layout);
 
     let result = import_foo(params, results);
-    let mut status = result >> 30;
-    let call = result & !(0b11 << 30);
+    let mut status = result & 0xf;
+    let call = result >> 4;
     let set = waitable_set_new();
     if call != 0 {
         waitable_join(call, set);

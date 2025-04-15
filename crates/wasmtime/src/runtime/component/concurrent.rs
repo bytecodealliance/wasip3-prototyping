@@ -70,12 +70,26 @@ mod ready_chunks;
 mod states;
 mod table;
 
+/// Corresponds to `CallState` in the upstream spec.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
-#[repr(u32)]
-enum Status {
+pub enum Status {
     Starting = 1,
-    Started,
-    Returned,
+    Started = 2,
+    Returned = 3,
+}
+
+impl Status {
+    /// Packs this status and the optional `waitable` provided into a 32-bit
+    /// result that the canonical ABI requires.
+    ///
+    /// The low 4 bits are reserved for the status while the upper 28 bits are
+    /// the waitable, if present.
+    pub fn pack(self, waitable: Option<u32>) -> u32 {
+        assert!(matches!(self, Status::Returned) == waitable.is_none());
+        let waitable = waitable.unwrap_or(0);
+        assert!(waitable < (1 << 28));
+        (waitable << 4) | (self as u32)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1602,12 +1616,14 @@ impl ComponentInstance {
 
         log::trace!("status {status:?} for {}", guest_task.rep());
 
-        let call = if status != Status::Returned {
+        let waitable = if status != Status::Returned {
             if async_caller {
                 self.get_mut(guest_task)?.has_suspended = true;
 
-                self.waitable_tables()[caller_instance]
-                    .insert(guest_task.rep(), WaitableState::GuestTask)?
+                Some(
+                    self.waitable_tables()[caller_instance]
+                        .insert(guest_task.rep(), WaitableState::GuestTask)?,
+                )
             } else {
                 let caller = if let Caller::Guest { task, .. } = &self.get(guest_task)?.caller {
                     *task
@@ -1621,10 +1637,10 @@ impl ComponentInstance {
 
                 self.poll_for_result(guest_task)?;
                 status = Status::Returned;
-                0
+                None
             }
         } else {
-            0
+            None
         };
 
         if let Some(storage) = storage {
@@ -1635,10 +1651,8 @@ impl ComponentInstance {
             } else {
                 return Err(anyhow!(crate::Trap::NoAsyncResult));
             }
-            Ok(0)
-        } else {
-            Ok(((status as u32) << 30) | call)
         }
+        Ok(status.pack(waitable))
     }
 
     pub(crate) fn wrap_call<T, F, P, R>(
