@@ -73,9 +73,9 @@ mod table;
 /// Corresponds to `CallState` in the upstream spec.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub enum Status {
-    Starting = 1,
-    Started = 2,
-    Returned = 3,
+    Starting = 0,
+    Started = 1,
+    Returned = 2,
 }
 
 impl Status {
@@ -95,9 +95,9 @@ impl Status {
 #[derive(Clone, Copy, Debug)]
 enum Event {
     None,
-    _CallStarting,
-    CallStarted,
-    CallReturned,
+    Subtask {
+        status: Status,
+    },
     StreamRead {
         code: ReturnCode,
         handle: u32,
@@ -120,15 +120,19 @@ enum Event {
 
 impl Event {
     fn parts(self) -> (u32, u32) {
+        const EVENT_NONE: u32 = 0;
+        const EVENT_SUBTASK: u32 = 1;
+        const EVENT_STREAM_READ: u32 = 2;
+        const EVENT_STREAM_WRITE: u32 = 3;
+        const EVENT_FUTURE_READ: u32 = 4;
+        const EVENT_FUTURE_WRITE: u32 = 5;
         match self {
-            Event::None => (0, 0),
-            Event::_CallStarting => (1, 0),
-            Event::CallStarted => (2, 0),
-            Event::CallReturned => (3, 0),
-            Event::StreamRead { code, .. } => (5, code.encode()),
-            Event::StreamWrite { code, .. } => (6, code.encode()),
-            Event::FutureRead { code, .. } => (7, code.encode()),
-            Event::FutureWrite { code, .. } => (8, code.encode()),
+            Event::None => (EVENT_NONE, 0),
+            Event::Subtask { status } => (EVENT_SUBTASK, status as u32),
+            Event::StreamRead { code, .. } => (EVENT_STREAM_READ, code.encode()),
+            Event::StreamWrite { code, .. } => (EVENT_STREAM_WRITE, code.encode()),
+            Event::FutureRead { code, .. } => (EVENT_FUTURE_READ, code.encode()),
+            Event::FutureWrite { code, .. } => (EVENT_FUTURE_WRITE, code.encode()),
         }
     }
 }
@@ -664,7 +668,10 @@ impl ComponentInstance {
                     // subtask was closed by the caller already or the caller called the
                     // callee via a sync-lowered import.  Either way, we can skip this
                     // event.
-                    if let Event::CallReturned = event {
+                    if let Event::Subtask {
+                        status: Status::Returned,
+                    } = event
+                    {
                         // Since this is a `CallReturned` event which will never be
                         // delivered to the caller, we must handle deleting the subtask
                         // here.
@@ -713,7 +720,10 @@ impl ComponentInstance {
             waitable.common(self)?.event = Some(event);
             waitable.mark_ready(self)?;
 
-            let resumed = if let Event::CallReturned = event {
+            let resumed = if let Event::Subtask {
+                status: Status::Returned,
+            } = event
+            {
                 if let Some((fiber, async_)) = self.get_mut(guest_task)?.deferred.take_stackful() {
                     log::trace!(
                         "use fiber to deliver event {event:?} to {} for {}",
@@ -786,7 +796,9 @@ impl ComponentInstance {
                             }
                             Caller::Guest { .. } => {
                                 let waitable = Waitable::Guest(guest_task);
-                                waitable.common(self)?.event = Some(Event::CallReturned);
+                                waitable.common(self)?.event = Some(Event::Subtask {
+                                    status: Status::Returned,
+                                });
                                 waitable.send_or_mark_ready(self)?;
                             }
                         }
@@ -835,7 +847,9 @@ impl ComponentInstance {
             }
             pending_event
         } else {
-            Event::CallReturned
+            Event::Subtask {
+                status: Status::Returned,
+            }
         };
 
         let get_set = |instance: &mut Self, handle| {
@@ -905,7 +919,14 @@ impl ComponentInstance {
 
         self.maybe_pop_call_context(guest_task)?;
 
-        self.handle_callback_code(runtime_instance, guest_task, code, Event::CallStarted)?;
+        self.handle_callback_code(
+            runtime_instance,
+            guest_task,
+            code,
+            Event::Subtask {
+                status: Status::Started,
+            },
+        )?;
 
         self.maybe_resume_next_task(runtime_instance)
     }
@@ -926,9 +947,9 @@ impl ComponentInstance {
                         let event = fun(self)?;
                         log::trace!("handle_ready event {event:?} for {waitable}");
                         let waitable = match event {
-                            Event::CallReturned => {
-                                Waitable::Host(TableId::<HostTask>::new(waitable))
-                            }
+                            Event::Subtask {
+                                status: Status::Returned,
+                            } => Waitable::Host(TableId::<HostTask>::new(waitable)),
                             Event::StreamRead { .. }
                             | Event::FutureRead { .. }
                             | Event::StreamWrite { .. }
@@ -1375,7 +1396,14 @@ impl ComponentInstance {
             Err(anyhow!(crate::Trap::NoAsyncResult))
         } else {
             if ready && callback.is_some() {
-                self.handle_callback_code(callee_instance, guest_task, code, Event::CallStarted)?;
+                self.handle_callback_code(
+                    callee_instance,
+                    guest_task,
+                    code,
+                    Event::Subtask {
+                        status: Status::Started,
+                    },
+                )?;
             }
 
             Ok(())
@@ -1448,7 +1476,9 @@ impl ComponentInstance {
                 let task = instance.guest_task().unwrap();
                 if old_task_rep.is_some() {
                     let waitable = Waitable::Guest(task);
-                    waitable.common(instance)?.event = Some(Event::CallStarted);
+                    waitable.common(instance)?.event = Some(Event::Subtask {
+                        status: Status::Started,
+                    });
                     waitable.send_or_mark_ready(instance)?;
                 }
                 Ok(())
@@ -1482,7 +1512,9 @@ impl ComponentInstance {
                     }
                     if old_task_rep.is_some() {
                         let waitable = Waitable::Guest(task);
-                        waitable.common(instance)?.event = Some(Event::CallReturned);
+                        waitable.common(instance)?.event = Some(Event::Subtask {
+                            status: Status::Returned,
+                        });
                         waitable.send_or_mark_ready(instance)?;
                     }
                     Ok(Box::new(DummyResult) as Box<dyn std::any::Any + Send + Sync>)
@@ -1606,11 +1638,21 @@ impl ComponentInstance {
             Status::Starting
         } else if task.lift_result.is_some() {
             let event = Waitable::Guest(guest_task).take_event(self)?;
-            assert!(matches!(event, Some(Event::CallStarted)));
+            assert!(matches!(
+                event,
+                Some(Event::Subtask {
+                    status: Status::Started,
+                })
+            ));
             Status::Started
         } else {
             let event = Waitable::Guest(guest_task).take_event(self)?;
-            assert!(matches!(event, Some(Event::CallReturned)));
+            assert!(matches!(
+                event,
+                Some(Event::Subtask {
+                    status: Status::Returned,
+                })
+            ));
             Status::Returned
         };
 
@@ -1783,7 +1825,9 @@ impl ComponentInstance {
             fun: Box::new(move |instance| {
                 let store = unsafe { StoreContextMut(&mut *instance.store().cast()) };
                 lower(store, result?)?;
-                Ok(Event::CallReturned)
+                Ok(Event::Subtask {
+                    status: Status::Returned,
+                })
             }),
         })) as HostTaskFuture;
 
@@ -1841,7 +1885,9 @@ impl ComponentInstance {
             waitable,
             fun: Box::new(move |instance| {
                 instance.get_mut(caller)?.result = Some(Box::new(result?) as _);
-                Ok(Event::CallReturned)
+                Ok(Event::Subtask {
+                    status: Status::Returned,
+                })
             }),
         })) as HostTaskFuture;
 
@@ -3133,7 +3179,10 @@ impl GuestTask {
         instance.yielding().remove(&me);
 
         for waitable in mem::take(&mut instance.get_mut(self.sync_call_set)?.ready) {
-            if let Some(Event::CallReturned) = waitable.common(instance)?.event {
+            if let Some(Event::Subtask {
+                status: Status::Returned,
+            }) = waitable.common(instance)?.event
+            {
                 waitable.delete_from(instance)?;
             }
         }

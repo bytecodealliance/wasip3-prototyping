@@ -24,7 +24,7 @@ use {
     std::alloc::{self, Layout},
     test_programs::async_::{
         subtask_drop, waitable_join, waitable_set_drop, waitable_set_new, waitable_set_wait,
-        EVENT_CALL_RETURNED, STATUS_RETURNED,
+        EVENT_SUBTASK, STATUS_RETURNED,
     },
 };
 
@@ -84,8 +84,9 @@ unsafe extern "C" fn export_foo(ptr: *mut u8, len: usize) {
         let payload = Box::into_raw(Box::new([0i32; 2]));
         let event = waitable_set_wait(set, payload.cast());
         let payload = Box::from_raw(payload);
-        if event == EVENT_CALL_RETURNED {
-            assert!(call == payload[0] as u32);
+        if event == EVENT_SUBTASK {
+            assert_eq!(call, payload[0] as u32);
+            assert_eq!(STATUS_RETURNED, payload[1] as u32);
             subtask_drop(call);
             waitable_set_drop(set);
             status = STATUS_RETURNED;

@@ -11,7 +11,7 @@ use {
     bindings::local::local::ready,
     test_programs::async_::{
         context_get, context_set, subtask_drop, waitable_join, waitable_set_drop, waitable_set_new,
-        CALLBACK_CODE_EXIT, CALLBACK_CODE_POLL, EVENT_CALL_RETURNED, EVENT_NONE, STATUS_RETURNED,
+        CALLBACK_CODE_EXIT, CALLBACK_CODE_POLL, EVENT_NONE, EVENT_SUBTASK, STATUS_RETURNED,
     },
 };
 
@@ -59,7 +59,7 @@ unsafe extern "C" fn export_run() -> u32 {
 }
 
 #[unsafe(export_name = "[callback][async-lift]local:local/run#run")]
-unsafe extern "C" fn callback_run(event0: u32, event1: u32, _event2: u32) -> u32 {
+unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 {
     let state = &mut *(usize::try_from(context_get()).unwrap() as *mut State);
     match state {
         State::S0 => {
@@ -102,8 +102,9 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, _event2: u32) -> u32
         }
 
         State::S3 { set, call } => {
-            assert_eq!(event0, EVENT_CALL_RETURNED);
+            assert_eq!(event0, EVENT_SUBTASK);
             assert_eq!(event1, *call);
+            assert_eq!(event2, STATUS_RETURNED);
 
             let set = *set;
             subtask_drop(*call);
