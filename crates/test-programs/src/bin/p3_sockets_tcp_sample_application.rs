@@ -32,10 +32,7 @@ async fn test_tcp_sample_application(family: IpAddressFamily, bind_address: IpSo
                 },
                 async {
                     let (result, _) = data_tx.write(vec![]).await;
-                    // FIXME(WebAssembly/component-model#490): this should be a
-                    // panic but will require some spec changes because right
-                    // now this and `Complete(0)` are the same.
-                    assert_eq!(result, StreamResult::Cancelled);
+                    assert_eq!(result, StreamResult::Complete(0));
                     let remaining = data_tx.write_all(first_message.into()).await;
                     assert!(remaining.is_empty());
                     drop(data_tx);

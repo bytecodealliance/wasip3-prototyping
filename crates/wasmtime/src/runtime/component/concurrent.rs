@@ -20,7 +20,7 @@ use {
         future::{self, FutureExt},
         stream::{FuturesUnordered, StreamExt},
     },
-    futures_and_streams::{FlatAbi, StreamFutureState, TableIndex, TransmitHandle},
+    futures_and_streams::{FlatAbi, ReturnCode, StreamFutureState, TableIndex, TransmitHandle},
     once_cell::sync::Lazy,
     ready_chunks::ReadyChunks,
     states::StateTable,
@@ -99,21 +99,21 @@ enum Event {
     CallStarted,
     CallReturned,
     StreamRead {
-        count: u32,
+        code: ReturnCode,
         handle: u32,
         ty: TypeStreamTableIndex,
     },
     StreamWrite {
-        count: u32,
+        code: ReturnCode,
         pending: Option<(TypeStreamTableIndex, u32)>,
     },
     FutureRead {
-        count: u32,
+        code: ReturnCode,
         handle: u32,
         ty: TypeFutureTableIndex,
     },
     FutureWrite {
-        count: u32,
+        code: ReturnCode,
         pending: Option<(TypeFutureTableIndex, u32)>,
     },
 }
@@ -125,10 +125,10 @@ impl Event {
             Event::_CallStarting => (1, 0),
             Event::CallStarted => (2, 0),
             Event::CallReturned => (3, 0),
-            Event::StreamRead { count, .. } => (5, count),
-            Event::StreamWrite { count, .. } => (6, count),
-            Event::FutureRead { count, .. } => (7, count),
-            Event::FutureWrite { count, .. } => (8, count),
+            Event::StreamRead { code, .. } => (5, code.encode()),
+            Event::StreamWrite { code, .. } => (6, code.encode()),
+            Event::FutureRead { code, .. } => (7, code.encode()),
+            Event::FutureWrite { code, .. } => (8, code.encode()),
         }
     }
 }
@@ -2820,18 +2820,20 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         future: u32,
         address: u32,
     ) -> Result<u32> {
-        instance.guest_write(
-            StoreContextMut(self),
-            memory,
-            realloc,
-            string_encoding,
-            async_,
-            TableIndex::Future(ty),
-            None,
-            future,
-            address,
-            1,
-        )
+        instance
+            .guest_write(
+                StoreContextMut(self),
+                memory,
+                realloc,
+                string_encoding,
+                async_,
+                TableIndex::Future(ty),
+                None,
+                future,
+                address,
+                1,
+            )
+            .map(|result| result.encode())
     }
 
     fn future_read(
@@ -2845,18 +2847,20 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         future: u32,
         address: u32,
     ) -> Result<u32> {
-        instance.guest_read(
-            StoreContextMut(self),
-            memory,
-            realloc,
-            string_encoding,
-            async_,
-            TableIndex::Future(ty),
-            None,
-            future,
-            address,
-            1,
-        )
+        instance
+            .guest_read(
+                StoreContextMut(self),
+                memory,
+                realloc,
+                string_encoding,
+                async_,
+                TableIndex::Future(ty),
+                None,
+                future,
+                address,
+                1,
+            )
+            .map(|result| result.encode())
     }
 
     fn stream_write(
@@ -2871,18 +2875,20 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         address: u32,
         count: u32,
     ) -> Result<u32> {
-        instance.guest_write(
-            StoreContextMut(self),
-            memory,
-            realloc,
-            string_encoding,
-            async_,
-            TableIndex::Stream(ty),
-            None,
-            stream,
-            address,
-            count,
-        )
+        instance
+            .guest_write(
+                StoreContextMut(self),
+                memory,
+                realloc,
+                string_encoding,
+                async_,
+                TableIndex::Stream(ty),
+                None,
+                stream,
+                address,
+                count,
+            )
+            .map(|result| result.encode())
     }
 
     fn stream_read(
@@ -2897,18 +2903,20 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         address: u32,
         count: u32,
     ) -> Result<u32> {
-        instance.guest_read(
-            StoreContextMut(self),
-            memory,
-            realloc,
-            string_encoding,
-            async_,
-            TableIndex::Stream(ty),
-            None,
-            stream,
-            address,
-            count,
-        )
+        instance
+            .guest_read(
+                StoreContextMut(self),
+                memory,
+                realloc,
+                string_encoding,
+                async_,
+                TableIndex::Stream(ty),
+                None,
+                stream,
+                address,
+                count,
+            )
+            .map(|result| result.encode())
     }
 
     fn flat_stream_write(
@@ -2924,21 +2932,23 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         address: u32,
         count: u32,
     ) -> Result<u32> {
-        instance.guest_write(
-            StoreContextMut(self),
-            memory,
-            realloc,
-            StringEncoding::Utf8 as u8,
-            async_,
-            TableIndex::Stream(ty),
-            Some(FlatAbi {
-                size: payload_size,
-                align: payload_align,
-            }),
-            stream,
-            address,
-            count,
-        )
+        instance
+            .guest_write(
+                StoreContextMut(self),
+                memory,
+                realloc,
+                StringEncoding::Utf8 as u8,
+                async_,
+                TableIndex::Stream(ty),
+                Some(FlatAbi {
+                    size: payload_size,
+                    align: payload_align,
+                }),
+                stream,
+                address,
+                count,
+            )
+            .map(|result| result.encode())
     }
 
     fn flat_stream_read(
@@ -2954,21 +2964,23 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         address: u32,
         count: u32,
     ) -> Result<u32> {
-        instance.guest_read(
-            StoreContextMut(self),
-            memory,
-            realloc,
-            StringEncoding::Utf8 as u8,
-            async_,
-            TableIndex::Stream(ty),
-            Some(FlatAbi {
-                size: payload_size,
-                align: payload_align,
-            }),
-            stream,
-            address,
-            count,
-        )
+        instance
+            .guest_read(
+                StoreContextMut(self),
+                memory,
+                realloc,
+                StringEncoding::Utf8 as u8,
+                async_,
+                TableIndex::Stream(ty),
+                Some(FlatAbi {
+                    size: payload_size,
+                    align: payload_align,
+                }),
+                stream,
+                address,
+                count,
+            )
+            .map(|result| result.encode())
     }
 
     fn error_context_debug_message(
