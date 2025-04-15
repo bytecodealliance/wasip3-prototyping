@@ -53,10 +53,7 @@ impl Handler for Component {
                             assert!(chunk.is_empty());
                         }
                         StreamResult::Closed => break,
-                        // FIXME(WebAssembly/component-model#490): this should
-                        // be a panic but will require some spec changes because
-                        // right now this and `Complete(0)` are the same.
-                        StreamResult::Cancelled => {}
+                        StreamResult::Cancelled => unreachable!(),
                     }
                 }
 
