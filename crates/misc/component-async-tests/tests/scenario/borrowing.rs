@@ -6,7 +6,7 @@ use futures::stream::{FuturesUnordered, TryStreamExt};
 use tokio::fs;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
-use wasmtime_wasi::WasiCtxBuilder;
+use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::util::{annotate, compose, init_logger};
 
@@ -62,7 +62,7 @@ pub async fn test_run_bool(component: &[u8], v: bool) -> Result<()> {
 
     let mut linker = Linker::new(&engine);
 
-    wasmtime_wasi::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     component_async_tests::borrowing_host::bindings::local::local::borrowing_types::add_to_linker_get_host(
         &mut linker,
         annotate(|ctx| ctx),

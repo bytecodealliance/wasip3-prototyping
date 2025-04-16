@@ -7,7 +7,7 @@ use tokio::fs;
 use wasm_compose::composer::ComponentComposer;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
-use wasmtime_wasi::WasiCtxBuilder;
+use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use super::Ctx;
 
@@ -66,7 +66,7 @@ pub async fn test_run(component: &[u8]) -> Result<()> {
 
     let mut linker = Linker::new(&engine);
 
-    wasmtime_wasi::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     super::yield_host::bindings::local::local::continue_::add_to_linker_get_host(
         &mut linker,
         annotate(|ctx| ctx),

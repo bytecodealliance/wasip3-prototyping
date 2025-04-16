@@ -17,7 +17,7 @@ use wasmtime::component::{
     Accessor, Component, Linker, Resource, ResourceTable, StreamReader, StreamWriter,
 };
 use wasmtime::{Config, Engine, Store};
-use wasmtime_wasi::{IoView, WasiCtxBuilder};
+use wasmtime_wasi::p2::{IoView, WasiCtxBuilder};
 
 use component_async_tests::util::{annotate, compose, init_logger};
 
@@ -138,7 +138,7 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
 
     let mut linker = Linker::new(&engine);
 
-    wasmtime_wasi::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     wasi_http_draft::add_to_linker(&mut linker)?;
     sleep::local::local::sleep::add_to_linker_get_host(&mut linker, annotate(|ctx| ctx))?;
 

@@ -192,6 +192,7 @@ struct WasmFeatures {
     simd: bool,
     tail_call: bool,
     threads: bool,
+    shared_everything_threads: bool,
     multi_memory: bool,
     exceptions: bool,
     legacy_exceptions: bool,
@@ -220,6 +221,7 @@ impl Metadata<'_> {
             component_model,
             simd,
             threads,
+            shared_everything_threads,
             tail_call,
             multi_memory,
             exceptions,
@@ -230,7 +232,6 @@ impl Metadata<'_> {
             function_references,
             gc,
             custom_page_sizes,
-            shared_everything_threads,
             cm_async,
             cm_async_builtins,
             cm_async_stackful,
@@ -255,7 +256,6 @@ impl Metadata<'_> {
         assert!(!memory_control);
         assert!(!cm_nested_names);
         assert!(!cm_values);
-        assert!(!shared_everything_threads);
 
         Metadata {
             target: engine.compiler().triple().to_string(),
@@ -269,6 +269,7 @@ impl Metadata<'_> {
                 component_model,
                 simd,
                 threads,
+                shared_everything_threads,
                 tail_call,
                 multi_memory,
                 exceptions,
@@ -484,6 +485,7 @@ impl Metadata<'_> {
             simd,
             tail_call,
             threads,
+            shared_everything_threads,
             multi_memory,
             exceptions,
             legacy_exceptions,
@@ -543,6 +545,11 @@ impl Metadata<'_> {
             threads,
             other.contains(F::THREADS),
             "WebAssembly threads support",
+        )?;
+        Self::check_bool(
+            shared_everything_threads,
+            other.contains(F::SHARED_EVERYTHING_THREADS),
+            "WebAssembly shared-everything-threads support",
         )?;
         Self::check_bool(
             multi_memory,

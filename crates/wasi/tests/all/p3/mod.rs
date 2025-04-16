@@ -5,6 +5,7 @@ use std::path::Path;
 use anyhow::{anyhow, Context as _};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::Store;
+use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 use wasmtime_wasi::p3::bindings::Command;
 use wasmtime_wasi::p3::cli::{WasiCliCtx, WasiCliView};
 use wasmtime_wasi::p3::clocks::{WasiClocksCtx, WasiClocksView};
@@ -14,7 +15,6 @@ use wasmtime_wasi::p3::sockets::{
     AllowedNetworkUses, SocketAddrCheck, WasiSocketsCtx, WasiSocketsView,
 };
 use wasmtime_wasi::p3::ResourceView;
-use wasmtime_wasi::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 
 macro_rules! assert_test_exists {
     ($name:ident) => {
@@ -111,7 +111,8 @@ async fn run(path: &str) -> anyhow::Result<()> {
     let component = Component::from_file(&engine, path).context("failed to compile component")?;
 
     let mut linker = Linker::new(&engine);
-    wasmtime_wasi::add_to_linker_async(&mut linker).context("failed to link `wasi:cli@0.2.x`")?;
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)
+        .context("failed to link `wasi:cli@0.2.x`")?;
     wasmtime_wasi::p3::add_to_linker(&mut linker).context("failed to link `wasi:cli@0.3.x`")?;
 
     let mut filesystem = WasiFilesystemCtx::default();

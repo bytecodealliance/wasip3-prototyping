@@ -25,7 +25,8 @@ async fn run(path: &str, server: &Server) -> anyhow::Result<()> {
         },
     );
     let mut linker = Linker::new(&engine);
-    wasmtime_wasi::add_to_linker_async(&mut linker).context("failed to link `wasi:cli@0.2.x`")?;
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)
+        .context("failed to link `wasi:cli@0.2.x`")?;
     wasmtime_wasi::p3::add_to_linker(&mut linker).context("failed to link `wasi:cli@0.3.x`")?;
     wasmtime_wasi_http::p3::add_only_http_to_linker(&mut linker)?;
     let instance = linker.instantiate_async(&mut store, &component).await?;

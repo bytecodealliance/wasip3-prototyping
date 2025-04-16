@@ -775,7 +775,7 @@ pub fn table_ops(
     mut fuzz_config: generators::Config,
     ops: generators::table_ops::TableOps,
 ) -> Result<usize> {
-    let expected_drops = Arc::new(AtomicUsize::new(ops.num_params as usize));
+    let expected_drops = Arc::new(AtomicUsize::new(0));
     let num_dropped = Arc::new(AtomicUsize::new(0));
 
     let num_gcs = Arc::new(AtomicUsize::new(0));
@@ -809,16 +809,23 @@ pub fn table_ops(
             move |mut caller: Caller<'_, StoreLimits>, _params, results| {
                 log::info!("table_ops: GC");
                 if num_gcs.fetch_add(1, SeqCst) < MAX_GCS {
-                    caller.gc();
+                    caller.gc(None);
                 }
 
-                let a = ExternRef::new(&mut caller, CountDrops(num_dropped.clone()))?;
-                let b = ExternRef::new(&mut caller, CountDrops(num_dropped.clone()))?;
-                let c = ExternRef::new(&mut caller, CountDrops(num_dropped.clone()))?;
+                let a = ExternRef::new(
+                    &mut caller,
+                    CountDrops::new(&expected_drops, num_dropped.clone()),
+                )?;
+                let b = ExternRef::new(
+                    &mut caller,
+                    CountDrops::new(&expected_drops, num_dropped.clone()),
+                )?;
+                let c = ExternRef::new(
+                    &mut caller,
+                    CountDrops::new(&expected_drops, num_dropped.clone()),
+                )?;
 
                 log::info!("table_ops: gc() -> ({:?}, {:?}, {:?})", a, b, c);
-
-                expected_drops.fetch_add(3, SeqCst);
                 results[0] = Some(a).into();
                 results[1] = Some(b).into();
                 results[2] = Some(c).into();
@@ -881,10 +888,18 @@ pub fn table_ops(
             move |mut caller, _params, results| {
                 log::info!("table_ops: make_refs");
 
-                let a = ExternRef::new(&mut caller, CountDrops(num_dropped.clone()))?;
-                let b = ExternRef::new(&mut caller, CountDrops(num_dropped.clone()))?;
-                let c = ExternRef::new(&mut caller, CountDrops(num_dropped.clone()))?;
-                expected_drops.fetch_add(3, SeqCst);
+                let a = ExternRef::new(
+                    &mut caller,
+                    CountDrops::new(&expected_drops, num_dropped.clone()),
+                )?;
+                let b = ExternRef::new(
+                    &mut caller,
+                    CountDrops::new(&expected_drops, num_dropped.clone()),
+                )?;
+                let c = ExternRef::new(
+                    &mut caller,
+                    CountDrops::new(&expected_drops, num_dropped.clone()),
+                )?;
 
                 log::info!("table_ops: make_refs() -> ({:?}, {:?}, {:?})", a, b, c);
 
@@ -911,7 +926,7 @@ pub fn table_ops(
                 .map(|_| {
                     Ok(Val::ExternRef(Some(ExternRef::new(
                         &mut scope,
-                        CountDrops(num_dropped.clone()),
+                        CountDrops::new(&expected_drops, num_dropped.clone()),
                     )?)))
                 })
                 .collect::<Result<_>>()?;
@@ -925,20 +940,23 @@ pub fn table_ops(
             // and `table.set` generated or an out-of-fuel trap. Otherwise any other
             // error is unexpected and should fail fuzzing.
             log::info!("table_ops: calling into Wasm `run` function");
-            let trap = run
-                .call(&mut scope, &args, &mut [])
-                .unwrap_err()
-                .downcast::<Trap>()
-                .unwrap();
-
-            match trap {
-                Trap::TableOutOfBounds | Trap::OutOfFuel => {}
-                _ => panic!("unexpected trap: {trap}"),
+            let err = run.call(&mut scope, &args, &mut []).unwrap_err();
+            match err.downcast::<GcHeapOutOfMemory<CountDrops>>() {
+                Ok(_oom) => {}
+                Err(err) => {
+                    let trap = err
+                        .downcast::<Trap>()
+                        .expect("if not GC oom, error should be a Wasm trap");
+                    match trap {
+                        Trap::TableOutOfBounds | Trap::OutOfFuel => {}
+                        _ => panic!("unexpected trap: {trap}"),
+                    }
+                }
             }
         }
 
         // Do a final GC after running the Wasm.
-        store.gc();
+        store.gc(None);
     }
 
     assert_eq!(num_dropped.load(SeqCst), expected_drops.load(SeqCst));
@@ -946,9 +964,21 @@ pub fn table_ops(
 
     struct CountDrops(Arc<AtomicUsize>);
 
+    impl CountDrops {
+        fn new(expected_drops: &AtomicUsize, num_dropped: Arc<AtomicUsize>) -> Self {
+            let expected = expected_drops.fetch_add(1, SeqCst);
+            log::info!(
+                "CountDrops::new: expected drops: {expected} -> {}",
+                expected + 1
+            );
+            Self(num_dropped)
+        }
+    }
+
     impl Drop for CountDrops {
         fn drop(&mut self) {
-            self.0.fetch_add(1, SeqCst);
+            let drops = self.0.fetch_add(1, SeqCst);
+            log::info!("CountDrops::drop: actual drops: {drops} -> {}", drops + 1);
         }
     }
 }
@@ -1141,9 +1171,9 @@ pub fn call_async(wasm: &[u8], config: &generators::Config, mut poll_amts: &[u32
                 .into()
             }
             other_ty => match other_ty.default_value(&mut store) {
-                Some(item) => item,
-                None => {
-                    log::warn!("couldn't create import for {import:?}");
+                Ok(item) => item,
+                Err(e) => {
+                    log::warn!("couldn't create import for {import:?}: {e:?}");
                     return;
                 }
             },
