@@ -290,7 +290,7 @@ byte-array-literals = { path = "crates/wasi-preview1-component-adapter/byte-arra
 
 # Bytecode Alliance maintained dependencies:
 # ---------------------------
-regalloc2 = "0.11.3"
+regalloc2 = "0.12.1"
 
 # cap-std family:
 target-lexicon = "0.13.0"
@@ -519,6 +519,7 @@ compile = ["cranelift"]
 run = [
   "dep:wasmtime-wasi",
   "wasmtime/runtime",
+  "wasmtime/wave",
   "dep:listenfd",
   "dep:wasi-common",
   "dep:tokio",

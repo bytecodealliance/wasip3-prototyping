@@ -3,13 +3,13 @@ use core::future::Future;
 use bytes::Bytes;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::Store;
+use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 use wasmtime_wasi::p3::cli::{WasiCliCtx, WasiCliView};
 use wasmtime_wasi::p3::clocks::{WasiClocksCtx, WasiClocksView};
 use wasmtime_wasi::p3::filesystem::{WasiFilesystemCtx, WasiFilesystemView};
 use wasmtime_wasi::p3::random::{WasiRandomCtx, WasiRandomView};
 use wasmtime_wasi::p3::sockets::{WasiSocketsCtx, WasiSocketsView};
 use wasmtime_wasi::p3::ResourceView;
-use wasmtime_wasi::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 use wasmtime_wasi_http::p3::bindings::http::types::ErrorCode;
 use wasmtime_wasi_http::p3::{
     default_send_request, Client, RequestOptions, WasiHttpCtx, WasiHttpView,

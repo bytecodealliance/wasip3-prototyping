@@ -44,16 +44,36 @@ impl FreeList {
     /// size.
     pub fn new(capacity: usize) -> Self {
         log::debug!("FreeList::new({capacity})");
+
         let mut free_list = FreeList {
             capacity,
             free_block_index_to_len: BTreeMap::new(),
         };
-        free_list.reset();
+
+        let end = u32::try_from(free_list.capacity).unwrap_or_else(|_| {
+            assert!(free_list.capacity > usize::try_from(u32::MAX).unwrap());
+            u32::MAX
+        });
+
+        // Don't start at `0`. Reserve that for "null pointers" and free_list way we
+        // can use `NonZeroU32` as out pointer type, giving us some more
+        // bitpacking opportunities.
+        let start = ALIGN_U32;
+
+        let len = round_u32_down_to_pow2(end.saturating_sub(start), ALIGN_U32);
+
+        let entire_range = if len >= ALIGN_U32 {
+            Some((start, len))
+        } else {
+            None
+        };
+
+        free_list.free_block_index_to_len.extend(entire_range);
+
         free_list
     }
 
     /// Add additional capacity to this free list.
-    #[allow(dead_code)] // TODO: becomes used in https://github.com/bytecodealliance/wasmtime/pull/10503
     pub fn add_capacity(&mut self, additional: usize) {
         let old_cap = self.capacity;
         self.capacity = self.capacity.saturating_add(additional);
@@ -86,7 +106,13 @@ impl FreeList {
         // list.
         let new_cap = u32::try_from(self.capacity).unwrap_or(u32::MAX);
         let new_cap = round_u32_down_to_pow2(new_cap, ALIGN_U32);
-        debug_assert!(new_cap >= index.get());
+
+        // If we haven't added enough capacity for our first allocation yet,
+        // then just return and wait for more capacity.
+        if index.get() > new_cap {
+            return;
+        }
+
         let size = new_cap - index.get();
         debug_assert_eq!(size % ALIGN_U32, 0);
         if size == 0 {
@@ -349,30 +375,6 @@ impl FreeList {
 
             prev_end = Some(end);
         }
-    }
-
-    /// Reset this free list, making the whole range available for allocation.
-    pub fn reset(&mut self) {
-        let end = u32::try_from(self.capacity).unwrap_or_else(|_| {
-            assert!(self.capacity > usize::try_from(u32::MAX).unwrap());
-            u32::MAX
-        });
-
-        // Don't start at `0`. Reserve that for "null pointers" and this way we
-        // can use `NonZeroU32` as out pointer type, giving us some more
-        // bitpacking opportunities.
-        let start = ALIGN_U32;
-
-        let len = round_u32_down_to_pow2(end.saturating_sub(start), ALIGN_U32);
-
-        let entire_range = if len >= ALIGN_U32 {
-            Some((start, len))
-        } else {
-            None
-        };
-
-        self.free_block_index_to_len.clear();
-        self.free_block_index_to_len.extend(entire_range);
     }
 }
 
@@ -916,6 +918,32 @@ mod tests {
             1,
             "`add_capacity` should eagerly merge new capacity into the last block \
              in the free list, when possible"
+        );
+    }
+
+    #[test]
+    fn add_capacity_not_enough_for_first_alloc() {
+        let layout = Layout::from_size_align(ALIGN_USIZE, ALIGN_USIZE).unwrap();
+
+        let mut free_list = FreeList::new(0);
+        assert!(free_list.alloc(layout).unwrap().is_none(), "no capacity");
+
+        for _ in 1..2 * ALIGN_USIZE {
+            free_list.add_capacity(1);
+            assert!(
+                free_list.alloc(layout).unwrap().is_none(),
+                "not enough capacity"
+            );
+        }
+
+        free_list.add_capacity(1);
+        free_list
+            .alloc(layout)
+            .unwrap()
+            .expect("now we have enough capacity for one");
+        assert!(
+            free_list.alloc(layout).unwrap().is_none(),
+            "but not enough capacity for two"
         );
     }
 }

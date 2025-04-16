@@ -3725,6 +3725,20 @@ pub(crate) async fn on_fiber<R: Send + 'static, T: Send>(
     }
 }
 
+#[cfg(feature = "gc")]
+pub(crate) async fn on_fiber_opaque<R: Send + 'static>(
+    store: &mut StoreOpaque,
+    instance: Option<RuntimeComponentInstanceIndex>,
+    func: impl FnOnce(&mut StoreOpaque) -> R + Send,
+) -> Result<R> {
+    unsafe {
+        on_fiber_raw(VMStoreRawPtr(store.traitobj()), instance, move |store| {
+            func((*store).store_opaque_mut())
+        })
+        .await
+    }
+}
+
 async unsafe fn on_fiber_raw<R: Send + 'static>(
     store: VMStoreRawPtr,
     instance: Option<RuntimeComponentInstanceIndex>,
