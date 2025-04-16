@@ -3725,6 +3725,7 @@ pub(crate) async fn on_fiber<R: Send + 'static, T: Send>(
     }
 }
 
+#[cfg(feature = "gc")]
 pub(crate) async fn on_fiber_opaque<R: Send + 'static>(
     store: &mut StoreOpaque,
     instance: Option<RuntimeComponentInstanceIndex>,
