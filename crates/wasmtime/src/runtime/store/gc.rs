@@ -45,6 +45,12 @@ impl StoreOpaque {
                     .expect("attempted to access async context during shutdown")
                     .block_on(scope.grow_or_collect_gc_heap_async(bytes_needed))?;
             }
+            #[cfg(feature = "component-model-async")]
+            unsafe {
+                let async_cx = crate::component::concurrent::AsyncCx::new(&mut scope);
+                let future = scope.grow_or_collect_gc_heap_async(bytes_needed);
+                async_cx.block_on(Box::pin(future).as_mut(), None)?.0;
+            }
         } else {
             scope.grow_or_collect_gc_heap(bytes_needed);
         }
