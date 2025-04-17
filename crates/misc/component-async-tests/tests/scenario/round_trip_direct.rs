@@ -113,7 +113,7 @@ async fn test_round_trip_direct(
 
         let instance = linker.instantiate_async(&mut store, &component).await?;
         let foo_function = instance
-            .get_export(&mut store, None, "foo")
+            .get_export_index(&mut store, None, "foo")
             .ok_or_else(|| anyhow!("can't find `foo` in instance"))?;
         let foo_function = instance
             .get_func(&mut store, foo_function)

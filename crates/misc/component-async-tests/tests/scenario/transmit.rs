@@ -145,10 +145,10 @@ impl TransmitTest for DynamicTransmitTest {
     ) -> impl Future<Output = Result<Self::Result>> + Send + 'static {
         let exchange_function = (|| {
             let transmit_instance = instance
-                .get_export(store.as_context_mut(), None, "local:local/transmit")
+                .get_export_index(store.as_context_mut(), None, "local:local/transmit")
                 .ok_or_else(|| anyhow!("can't find `local:local/transmit` in instance"))?;
             let exchange_function = instance
-                .get_export(store.as_context_mut(), Some(&transmit_instance), "exchange")
+                .get_export_index(store.as_context_mut(), Some(&transmit_instance), "exchange")
                 .ok_or_else(|| anyhow!("can't find `exchange` in instance"))?;
             instance
                 .get_func(store.as_context_mut(), exchange_function)

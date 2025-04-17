@@ -361,10 +361,10 @@ pub async fn test_round_trip(component: &[u8], inputs_and_outputs: &[(&str, &str
 
         let instance = linker.instantiate_async(&mut store, &component).await?;
         let baz_instance = instance
-            .get_export(&mut store, None, "local:local/baz")
+            .get_export_index(&mut store, None, "local:local/baz")
             .ok_or_else(|| anyhow!("can't find `local:local/baz` in instance"))?;
         let foo_function = instance
-            .get_export(&mut store, Some(&baz_instance), "foo")
+            .get_export_index(&mut store, Some(&baz_instance), "foo")
             .ok_or_else(|| anyhow!("can't find `foo` in instance"))?;
         let foo_function = instance
             .get_func(&mut store, foo_function)
