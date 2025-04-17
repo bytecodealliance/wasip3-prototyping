@@ -20,7 +20,7 @@ where
 
 pub fn init_logger() {
     static ONCE: Once = Once::new();
-    ONCE.call_once(pretty_env_logger::init);
+    ONCE.call_once(env_logger::init);
 }
 
 /// Compose two components

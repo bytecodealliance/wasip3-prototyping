@@ -11,7 +11,7 @@ publish = false
 anyhow = { workspace = true }
 flate2 = "1.0.30"
 futures = { workspace = true }
-pretty_env_logger = { workspace = true }
+env_logger = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = [
   "fs",

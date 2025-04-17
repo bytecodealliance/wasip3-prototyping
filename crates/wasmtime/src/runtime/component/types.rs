@@ -6,10 +6,11 @@ use alloc::sync::Arc;
 use core::fmt;
 use core::ops::Deref;
 use wasmtime_environ::component::{
-    ComponentTypes, InterfaceType, ResourceIndex, TypeComponentIndex, TypeComponentInstanceIndex,
-    TypeDef, TypeEnumIndex, TypeFlagsIndex, TypeFuncIndex, TypeFutureIndex, TypeFutureTableIndex,
-    TypeListIndex, TypeModuleIndex, TypeOptionIndex, TypeRecordIndex, TypeResourceTableIndex,
-    TypeResultIndex, TypeStreamIndex, TypeStreamTableIndex, TypeTupleIndex, TypeVariantIndex,
+    ComponentTypes, Export, InterfaceType, ResourceIndex, TypeComponentIndex,
+    TypeComponentInstanceIndex, TypeDef, TypeEnumIndex, TypeFlagsIndex, TypeFuncIndex,
+    TypeFutureIndex, TypeFutureTableIndex, TypeListIndex, TypeModuleIndex, TypeOptionIndex,
+    TypeRecordIndex, TypeResourceTableIndex, TypeResultIndex, TypeStreamIndex,
+    TypeStreamTableIndex, TypeTupleIndex, TypeVariantIndex,
 };
 use wasmtime_environ::PrimaryMap;
 
@@ -992,6 +993,20 @@ impl ComponentItem {
                 };
                 Self::Resource(ty)
             }
+        }
+    }
+    pub(crate) fn from_export(engine: &Engine, export: &Export, ty: &InstanceType<'_>) -> Self {
+        match export {
+            Export::Instance { ty: idx, .. } => {
+                Self::ComponentInstance(ComponentInstance::from(*idx, ty))
+            }
+            Export::LiftedFunction { ty: idx, .. } => {
+                Self::ComponentFunc(ComponentFunc::from(*idx, ty))
+            }
+            Export::ModuleStatic { ty: idx, .. } | Export::ModuleImport { ty: idx, .. } => {
+                Self::Module(Module::from(*idx, ty))
+            }
+            Export::Type(idx) => Self::from(engine, idx, ty),
         }
     }
 }
