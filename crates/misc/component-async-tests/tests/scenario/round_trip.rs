@@ -15,12 +15,12 @@ use tokio::fs;
 use wasmtime::component::{
     Accessor, AccessorTask, Component, Instance, Linker, ResourceTable, Val,
 };
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::Ctx;
 
-pub use component_async_tests::util::{annotate, compose, init_logger};
+pub use component_async_tests::util::{annotate, compose, config};
 
 #[tokio::test]
 pub async fn async_round_trip_stackful() -> Result<()> {
@@ -185,18 +185,7 @@ pub async fn async_round_trip_stackless_sync_import() -> Result<()> {
 }
 
 pub async fn test_round_trip(component: &[u8], inputs_and_outputs: &[(&str, &str)]) -> Result<()> {
-    init_logger();
-
-    let mut config = Config::new();
-    config.debug_info(true);
-    config.cranelift_debug_verifier(true);
-    config.wasm_component_model(true);
-    config.wasm_component_model_async(true);
-    config.wasm_component_model_async_builtins(true);
-    config.wasm_component_model_async_stackful(true);
-    config.async_support(true);
-
-    let engine = Engine::new(&config)?;
+    let engine = Engine::new(&config())?;
 
     let make_store = || {
         Store::new(
@@ -513,20 +502,9 @@ pub async fn panic_on_recursive_run() {
 }
 
 async fn test_panic(component: &[u8], kind: PanicKind) -> Result<()> {
-    init_logger();
-
     let inputs_and_outputs = &[("a", "b"), ("c", "d")];
 
-    let mut config = Config::new();
-    config.debug_info(true);
-    config.cranelift_debug_verifier(true);
-    config.wasm_component_model(true);
-    config.wasm_component_model_async(true);
-    config.wasm_component_model_async_builtins(true);
-    config.wasm_component_model_async_stackful(true);
-    config.async_support(true);
-
-    let engine = Engine::new(&config)?;
+    let engine = Engine::new(&config())?;
 
     let make_store = || {
         Store::new(
