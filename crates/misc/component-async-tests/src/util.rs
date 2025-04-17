@@ -23,6 +23,21 @@ pub fn init_logger() {
     ONCE.call_once(env_logger::init);
 }
 
+pub fn config() -> Config {
+    init_logger();
+
+    let mut config = Config::new();
+    config.debug_info(true);
+    config.cranelift_debug_verifier(true);
+    config.wasm_component_model(true);
+    config.wasm_component_model_async(true);
+    config.wasm_component_model_async_builtins(true);
+    config.wasm_component_model_async_stackful(true);
+    config.wasm_component_model_error_context(true);
+    config.async_support(true);
+    config
+}
+
 /// Compose two components
 ///
 /// a is the "root" component, and b is composed into it
@@ -53,16 +68,7 @@ pub async fn test_run(component: &[u8]) -> Result<()> {
 }
 
 pub async fn test_run_with_count(component: &[u8], count: usize) -> Result<()> {
-    init_logger();
-
-    let mut config = Config::new();
-    config.debug_info(true);
-    config.cranelift_debug_verifier(true);
-    config.wasm_component_model(true);
-    config.wasm_component_model_async(true);
-    config.wasm_component_model_async_builtins(true);
-    config.wasm_component_model_error_context(true);
-    config.async_support(true);
+    let mut config = config();
     config.epoch_interruption(true);
 
     let engine = Engine::new(&config)?;

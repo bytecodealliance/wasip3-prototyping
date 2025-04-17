@@ -5,10 +5,10 @@ use anyhow::Result;
 use futures::stream::{FuturesUnordered, TryStreamExt};
 use tokio::fs;
 use wasmtime::component::{Component, Linker, ResourceTable};
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
-use component_async_tests::util::{annotate, compose, init_logger};
+use component_async_tests::util::{annotate, compose, config};
 
 #[tokio::test]
 pub async fn async_borrowing_caller() -> Result<()> {
@@ -46,14 +46,7 @@ pub async fn async_borrowing_callee() -> Result<()> {
 }
 
 pub async fn test_run_bool(component: &[u8], v: bool) -> Result<()> {
-    init_logger();
-
-    let mut config = Config::new();
-    config.debug_info(true);
-    config.cranelift_debug_verifier(true);
-    config.wasm_component_model(true);
-    config.wasm_component_model_async(true);
-    config.async_support(true);
+    let mut config = config();
     config.epoch_interruption(true);
 
     let engine = Engine::new(&config)?;

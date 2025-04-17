@@ -5,10 +5,10 @@ use anyhow::{anyhow, Result};
 use futures::stream::{FuturesUnordered, TryStreamExt};
 use tokio::fs;
 use wasmtime::component::{Component, Linker, ResourceTable, Val};
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
-use component_async_tests::util::{annotate, init_logger};
+use component_async_tests::util::{annotate, config};
 use component_async_tests::Ctx;
 
 #[tokio::test]
@@ -39,16 +39,7 @@ async fn test_round_trip_direct(
     input: &str,
     expected_output: &str,
 ) -> Result<()> {
-    init_logger();
-
-    let mut config = Config::new();
-    config.debug_info(true);
-    config.cranelift_debug_verifier(true);
-    config.wasm_component_model(true);
-    config.wasm_component_model_async(true);
-    config.async_support(true);
-
-    let engine = Engine::new(&config)?;
+    let engine = Engine::new(&config())?;
 
     let make_store = || {
         Store::new(

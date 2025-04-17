@@ -13,10 +13,10 @@ use tokio::fs;
 use wasi_http_draft::wasi::http::types::{ErrorCode, Method, Scheme};
 use wasi_http_draft::{Body, Fields, Request, Response};
 use wasmtime::component::{Component, Linker, Resource, ResourceTable, StreamReader, StreamWriter};
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Engine, Store};
 use wasmtime_wasi::p2::{IoView, WasiCtxBuilder};
 
-use component_async_tests::util::{annotate, compose, init_logger};
+use component_async_tests::util::{annotate, compose, config, init_logger};
 
 #[tokio::test]
 pub async fn async_http_echo() -> Result<()> {
@@ -103,13 +103,7 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
 
     init_logger();
 
-    let mut config = Config::new();
-    config.cranelift_debug_verifier(true);
-    config.wasm_component_model(true);
-    config.wasm_component_model_async(true);
-    config.async_support(true);
-
-    let engine = Engine::new(&config)?;
+    let engine = Engine::new(&config())?;
 
     let component = Component::new(&engine, component)?;
 

@@ -1,6 +1,6 @@
 use {
     anyhow::Result,
-    component_async_tests::{closed_streams, util::init_logger, Ctx},
+    component_async_tests::{closed_streams, util::config, Ctx},
     futures::{
         future::{self, FutureExt},
         stream::{FuturesUnordered, StreamExt, TryStreamExt},
@@ -12,21 +12,14 @@ use {
     tokio::fs,
     wasmtime::{
         component::{Component, Linker, ResourceTable, StreamReader, StreamWriter, VecBuffer},
-        Config, Engine, Store,
+        Engine, Store,
     },
     wasmtime_wasi::p2::WasiCtxBuilder,
 };
 
 #[tokio::test]
 pub async fn async_watch_streams() -> Result<()> {
-    init_logger();
-
-    let mut config = Config::new();
-    config.wasm_component_model(true);
-    config.wasm_component_model_async(true);
-    config.async_support(true);
-
-    let engine = Engine::new(&config)?;
+    let engine = Engine::new(&config())?;
 
     let mut store = Store::new(
         &engine,
@@ -151,16 +144,7 @@ pub async fn async_closed_streams_with_watch() -> Result<()> {
 }
 
 pub async fn test_closed_streams(watch: bool) -> Result<()> {
-    init_logger();
-
-    let mut config = Config::new();
-    config.debug_info(true);
-    config.cranelift_debug_verifier(true);
-    config.wasm_component_model(true);
-    config.wasm_component_model_async(true);
-    config.async_support(true);
-
-    let engine = Engine::new(&config)?;
+    let engine = Engine::new(&config())?;
 
     let mut store = Store::new(
         &engine,

@@ -48,14 +48,7 @@ pub async fn compose(a: &[u8], b: &[u8]) -> Result<Vec<u8>> {
 
 #[allow(unused)]
 pub async fn test_run(component: &[u8]) -> Result<()> {
-    init_logger();
-
-    let mut config = Config::new();
-    config.debug_info(true);
-    config.cranelift_debug_verifier(true);
-    config.wasm_component_model(true);
-    config.wasm_component_model_async(true);
-    config.async_support(true);
+    let mut config = config();
     config.epoch_interruption(true);
 
     let engine = Engine::new(&config)?;

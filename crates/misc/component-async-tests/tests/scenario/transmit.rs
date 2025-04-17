@@ -12,11 +12,11 @@ use wasmtime::component::{
     Component, HostFuture, HostStream, Instance, Linker, ResourceTable, StreamReader, StreamWriter,
     Val,
 };
-use wasmtime::{AsContextMut, Config, Engine, Store};
+use wasmtime::{AsContextMut, Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::transmit::bindings::exports::local::local::transmit::Control;
-use component_async_tests::util::{compose, init_logger, test_run, test_run_with_count};
+use component_async_tests::util::{compose, config, test_run, test_run_with_count};
 use component_async_tests::{transmit, Ctx};
 
 #[tokio::test]
@@ -208,21 +208,12 @@ impl TransmitTest for DynamicTransmitTest {
 }
 
 async fn test_transmit(component: &[u8]) -> Result<()> {
-    init_logger();
-
     test_transmit_with::<StaticTransmitTest>(component).await?;
     test_transmit_with::<DynamicTransmitTest>(component).await
 }
 
 async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> Result<()> {
-    let mut config = Config::new();
-    config.debug_info(true);
-    config.cranelift_debug_verifier(true);
-    config.wasm_component_model(true);
-    config.wasm_component_model_async(true);
-    config.async_support(true);
-
-    let engine = Engine::new(&config)?;
+    let engine = Engine::new(&config())?;
 
     let make_store = || {
         Store::new(
