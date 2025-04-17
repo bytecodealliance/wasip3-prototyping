@@ -76,6 +76,28 @@ pub unsafe fn subtask_drop(_: u32) {
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "$root")]
 unsafe extern "C" {
+    #[link_name = "[subtask-cancel]"]
+    pub fn subtask_cancel(task: u32) -> u32;
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub unsafe fn subtask_cancel(_: u32) -> u32 {
+    unreachable!()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "$root")]
+unsafe extern "C" {
+    #[link_name = "[async-lower][subtask-cancel]"]
+    pub fn subtask_cancel_async(task: u32) -> u32;
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub unsafe fn subtask_cancel_async(_: u32) -> u32 {
+    unreachable!()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "$root")]
+unsafe extern "C" {
     #[link_name = "[context-get-1]"]
     pub fn context_get() -> u32;
 }
@@ -95,14 +117,31 @@ pub unsafe fn context_set(_: u32) {
     unreachable!()
 }
 
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "[export]$root")]
+unsafe extern "C" {
+    #[link_name = "[task-cancel]"]
+    pub fn task_cancel();
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub unsafe extern "C" fn task_cancel() {
+    unreachable!()
+}
+
 pub const STATUS_STARTING: u32 = 0;
 pub const STATUS_STARTED: u32 = 1;
 pub const STATUS_RETURNED: u32 = 2;
+pub const STATUS_START_CANCELLED: u32 = 3;
+pub const STATUS_RETURN_CANCELLED: u32 = 4;
 
 pub const EVENT_NONE: u32 = 0;
 pub const EVENT_SUBTASK: u32 = 1;
+pub const EVENT_CANCELLED: u32 = 6;
 
 pub const CALLBACK_CODE_EXIT: u32 = 0;
 pub const CALLBACK_CODE_YIELD: u32 = 1;
 pub const CALLBACK_CODE_WAIT: u32 = 2;
 pub const CALLBACK_CODE_POLL: u32 = 3;
+
+pub const BLOCKED: u32 = 0xffff_ffff;
+pub const DONE: u32 = 0;

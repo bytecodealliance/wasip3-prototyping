@@ -1,11 +1,10 @@
 use std::io::Cursor;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use anyhow::Result;
 use bytes::{Bytes, BytesMut};
-use component_async_tests::Ctx;
+use component_async_tests::{sleep, Ctx};
 use futures::{
     stream::{FuturesUnordered, TryStreamExt},
     FutureExt,
@@ -13,33 +12,11 @@ use futures::{
 use tokio::fs;
 use wasi_http_draft::wasi::http::types::{ErrorCode, Method, Scheme};
 use wasi_http_draft::{Body, Fields, Request, Response};
-use wasmtime::component::{
-    Accessor, Component, Linker, Resource, ResourceTable, StreamReader, StreamWriter,
-};
+use wasmtime::component::{Component, Linker, Resource, ResourceTable, StreamReader, StreamWriter};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::{IoView, WasiCtxBuilder};
 
 use component_async_tests::util::{annotate, compose, init_logger};
-
-mod sleep {
-    wasmtime::component::bindgen!({
-        path: "wit",
-        world: "sleep-host",
-        concurrent_imports: true,
-        concurrent_exports: true,
-        async: {
-            only_imports: [
-                "local:local/sleep#sleep-millis",
-            ]
-        },
-    });
-}
-
-impl sleep::local::local::sleep::Host for &mut Ctx {
-    async fn sleep_millis<T>(_: &mut Accessor<T, Self>, time_in_millis: u64) {
-        tokio::time::sleep(Duration::from_millis(time_in_millis)).await;
-    }
-}
 
 #[tokio::test]
 pub async fn async_http_echo() -> Result<()> {

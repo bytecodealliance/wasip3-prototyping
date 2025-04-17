@@ -136,6 +136,15 @@ interface sleep {
   sleep-millis: func(time-in-millis: u64);
 }
 
+interface sleep-with-options {
+  variant on-cancel {
+    task-return,
+    task-cancel
+  }
+  
+  sleep-millis: func(time-in-millis: u64, on-cancel: on-cancel, on-cancel-delay-millis: u64, synchronous-delay: bool);
+}
+
 world yield-caller {
   import continue;
   import ready;
@@ -264,4 +273,18 @@ world middleware-with-chain {
 
 world sleep-host {
   import sleep;
+}
+
+world cancel-caller {
+  import backpressure;
+  import sleep;
+  import sleep-with-options;
+  export run;
+}
+
+world cancel-callee {
+  import sleep;
+  export backpressure;
+  export sleep;
+  export sleep-with-options;
 }

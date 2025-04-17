@@ -196,6 +196,9 @@ enum LocalInitializer<'data> {
         result: Option<ComponentValType>,
         options: LocalCanonicalOptions,
     },
+    TaskCancel {
+        func: ModuleInternedTypeIndex,
+    },
     WaitableSetNew {
         func: ModuleInternedTypeIndex,
     },
@@ -221,6 +224,10 @@ enum LocalInitializer<'data> {
     },
     SubtaskDrop {
         func: ModuleInternedTypeIndex,
+    },
+    SubtaskCancel {
+        func: ModuleInternedTypeIndex,
+        async_: bool,
     },
     StreamNew {
         ty: ComponentDefinedTypeId,
@@ -675,6 +682,11 @@ impl<'a, 'data> Translator<'a, 'data> {
                                 options,
                             }
                         }
+                        wasmparser::CanonicalFunction::TaskCancel => {
+                            let func = self.core_func_signature(core_func_index)?;
+                            core_func_index += 1;
+                            LocalInitializer::TaskCancel { func }
+                        }
                         wasmparser::CanonicalFunction::WaitableSetNew => {
                             let func = self.core_func_signature(core_func_index)?;
                             core_func_index += 1;
@@ -717,6 +729,11 @@ impl<'a, 'data> Translator<'a, 'data> {
                             let func = self.core_func_signature(core_func_index)?;
                             core_func_index += 1;
                             LocalInitializer::SubtaskDrop { func }
+                        }
+                        wasmparser::CanonicalFunction::SubtaskCancel { async_ } => {
+                            let func = self.core_func_signature(core_func_index)?;
+                            core_func_index += 1;
+                            LocalInitializer::SubtaskCancel { func, async_ }
                         }
                         wasmparser::CanonicalFunction::StreamNew { ty } => {
                             let ty = types.component_defined_type_at(ty);

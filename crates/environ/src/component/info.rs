@@ -721,6 +721,14 @@ pub enum Trampoline {
         options: CanonicalOptions,
     },
 
+    /// A `task.cancel` intrinsic, which acknowledges a `CANCELLED` event
+    /// delivered to a guest task previously created by a call to an async
+    /// export.
+    TaskCancel {
+        /// The specific component instance which is calling the intrinsic.
+        instance: RuntimeComponentInstanceIndex,
+    },
+
     /// A `waitable-set.new` intrinsic.
     WaitableSetNew {
         /// The specific component instance which is calling the intrinsic.
@@ -774,6 +782,15 @@ pub enum Trampoline {
     SubtaskDrop {
         /// The specific component instance which is calling the intrinsic.
         instance: RuntimeComponentInstanceIndex,
+    },
+
+    /// A `subtask.cancel` intrinsic to drop an in-progress task.
+    SubtaskCancel {
+        /// The specific component instance which is calling the intrinsic.
+        instance: RuntimeComponentInstanceIndex,
+        /// If `false`, block until cancellation completes rather than return
+        /// `BLOCKED`.
+        async_: bool,
     },
 
     /// A `stream.new` intrinsic to create a new `stream` handle of the
@@ -1043,6 +1060,7 @@ impl Trampoline {
             ResourceDrop(i) => format!("component-resource-drop[{}]", i.as_u32()),
             BackpressureSet { .. } => format!("backpressure-set"),
             TaskReturn { .. } => format!("task-return"),
+            TaskCancel { .. } => format!("task-cancel"),
             WaitableSetNew { .. } => format!("waitable-set-new"),
             WaitableSetWait { .. } => format!("waitable-set-wait"),
             WaitableSetPoll { .. } => format!("waitable-set-poll"),
@@ -1050,6 +1068,7 @@ impl Trampoline {
             WaitableJoin { .. } => format!("waitable-join"),
             Yield { .. } => format!("yield"),
             SubtaskDrop { .. } => format!("subtask-drop"),
+            SubtaskCancel { .. } => format!("subtask-cancel"),
             StreamNew { .. } => format!("stream-new"),
             StreamRead { .. } => format!("stream-read"),
             StreamWrite { .. } => format!("stream-write"),

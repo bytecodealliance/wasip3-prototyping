@@ -112,7 +112,7 @@ where
                     let id = {
                         let mut tasks = tasks.lock().map_err(|_| anyhow!("lock poisoned"))?;
                         tasks
-                            .push(task.abort_handle())
+                            .push(task.abort_on_drop_handle())
                             .context("failed to push task to table")?
                     };
                     view.spawn(ReadTask {
@@ -399,7 +399,7 @@ where
                     let id = {
                         let mut tasks = tasks.lock().map_err(|_| anyhow!("lock poisoned"))?;
                         tasks
-                            .push(task.abort_handle())
+                            .push(task.abort_on_drop_handle())
                             .context("failed to push task to table")?
                     };
                     view.spawn(ReadTask {

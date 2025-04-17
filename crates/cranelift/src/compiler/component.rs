@@ -108,6 +108,7 @@ impl<'a> TrampolineCompiler<'a> {
             Trampoline::TaskReturn { results, options } => {
                 self.translate_task_return_call(*results, options)
             }
+            Trampoline::TaskCancel { instance } => self.translate_task_cancel_call(*instance),
             Trampoline::WaitableSetNew { instance } => self.translate_waitable_set_new(*instance),
             Trampoline::WaitableSetWait {
                 instance,
@@ -133,6 +134,9 @@ impl<'a> TrampolineCompiler<'a> {
             Trampoline::WaitableJoin { instance } => self.translate_waitable_join(*instance),
             Trampoline::Yield { async_ } => self.translate_yield_call(*async_),
             Trampoline::SubtaskDrop { instance } => self.translate_subtask_drop_call(*instance),
+            Trampoline::SubtaskCancel { instance, async_ } => {
+                self.translate_subtask_cancel_call(*instance, *async_)
+            }
             Trampoline::StreamNew { ty } => self.translate_future_or_stream_call(
                 &[ty.as_u32()],
                 None,
@@ -645,6 +649,25 @@ impl<'a> TrampolineCompiler<'a> {
         self.translate_intrinsic_libcall(
             vmctx,
             host::backpressure_set,
+            &callee_args,
+            TrapSentinel::Falsy,
+        );
+    }
+
+    fn translate_task_cancel_call(&mut self, caller_instance: RuntimeComponentInstanceIndex) {
+        let args = self.builder.func.dfg.block_params(self.block0).to_vec();
+        let vmctx = args[0];
+
+        let callee_args = vec![
+            vmctx,
+            self.builder
+                .ins()
+                .iconst(ir::types::I32, i64::from(caller_instance.as_u32())),
+        ];
+
+        self.translate_intrinsic_libcall(
+            vmctx,
+            host::task_cancel,
             &callee_args,
             TrapSentinel::Falsy,
         );
@@ -1175,6 +1198,33 @@ impl<'a> TrampolineCompiler<'a> {
         self.translate_intrinsic_libcall(
             vmctx,
             get_libcall,
+            &callee_args,
+            TrapSentinel::NegativeOne,
+        );
+    }
+
+    fn translate_subtask_cancel_call(
+        &mut self,
+        caller_instance: RuntimeComponentInstanceIndex,
+        async_: bool,
+    ) {
+        let args = self.builder.func.dfg.block_params(self.block0).to_vec();
+        let vmctx = args[0];
+        let mut callee_args = vec![
+            vmctx,
+            self.builder
+                .ins()
+                .iconst(ir::types::I32, i64::from(caller_instance.as_u32())),
+            self.builder
+                .ins()
+                .iconst(ir::types::I8, if async_ { 1 } else { 0 }),
+        ];
+
+        callee_args.extend(args[2..].iter().copied());
+
+        self.translate_intrinsic_libcall(
+            vmctx,
+            host::subtask_cancel,
             &callee_args,
             TrapSentinel::NegativeOne,
         );

@@ -437,6 +437,9 @@ impl<'a, 'b> Compiler<'a, 'b> {
             i32::try_from(adapter.lower.instance.as_u32()).unwrap(),
         ));
         self.instruction(I32Const(
+            i32::try_from(adapter.lift.instance.as_u32()).unwrap(),
+        ));
+        self.instruction(I32Const(
             i32::try_from(self.types[adapter.lift.ty].results.as_u32()).unwrap(),
         ));
         self.instruction(I32Const(i32::from(
@@ -463,13 +466,7 @@ impl<'a, 'b> Compiler<'a, 'b> {
             format!("[adapter-callee]{}", adapter.name),
         ));
 
-        self.instruction(I32Const(
-            i32::try_from(adapter.lower.instance.as_u32()).unwrap(),
-        ));
         self.instruction(RefFunc(adapter.callee.as_u32()));
-        self.instruction(I32Const(
-            i32::try_from(adapter.lift.instance.as_u32()).unwrap(),
-        ));
         self.instruction(I32Const(param_count));
         // The result count for an async callee is either one (if there's a
         // callback) or zero (if there's no callback).  We conservatively use
@@ -520,6 +517,9 @@ impl<'a, 'b> Compiler<'a, 'b> {
             i32::try_from(adapter.lower.instance.as_u32()).unwrap(),
         ));
         self.instruction(I32Const(
+            i32::try_from(adapter.lift.instance.as_u32()).unwrap(),
+        ));
+        self.instruction(I32Const(
             i32::try_from(self.types[adapter.lift.ty].results.as_u32()).unwrap(),
         ));
         self.instruction(I32Const(i32::from(
@@ -561,13 +561,7 @@ impl<'a, 'b> Compiler<'a, 'b> {
             format!("[adapter-callee]{}", adapter.name),
         ));
 
-        self.instruction(I32Const(
-            i32::try_from(adapter.lower.instance.as_u32()).unwrap(),
-        ));
         self.instruction(RefFunc(adapter.callee.as_u32()));
-        self.instruction(I32Const(
-            i32::try_from(adapter.lift.instance.as_u32()).unwrap(),
-        ));
         self.instruction(I32Const(lift_param_count));
         self.instruction(Call(exit.as_u32()));
 
@@ -609,6 +603,9 @@ impl<'a, 'b> Compiler<'a, 'b> {
             i32::try_from(adapter.lower.instance.as_u32()).unwrap(),
         ));
         self.instruction(I32Const(
+            i32::try_from(adapter.lift.instance.as_u32()).unwrap(),
+        ));
+        self.instruction(I32Const(
             i32::try_from(self.types[adapter.lift.ty].results.as_u32()).unwrap(),
         ));
         self.instruction(I32Const(i32::from(
@@ -626,13 +623,7 @@ impl<'a, 'b> Compiler<'a, 'b> {
             format!("[adapter-callee]{}", adapter.name),
         ));
 
-        self.instruction(I32Const(
-            i32::try_from(adapter.lower.instance.as_u32()).unwrap(),
-        ));
         self.instruction(RefFunc(adapter.callee.as_u32()));
-        self.instruction(I32Const(
-            i32::try_from(adapter.lift.instance.as_u32()).unwrap(),
-        ));
         self.instruction(I32Const(param_count));
         self.instruction(I32Const(result_count));
         self.instruction(I32Const(0));

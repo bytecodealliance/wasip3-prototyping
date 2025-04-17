@@ -224,7 +224,7 @@ where
                 });
                 let body = empty_body().with_trailers(OutgoingRequestTrailers {
                     trailers: Some(trailers_rx),
-                    trailer_task: task.abort_handle(),
+                    trailer_task: task.abort_on_drop_handle(),
                 });
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
@@ -264,7 +264,7 @@ where
                 let body = OutgoingRequestBody::new(contents, buffer, content_length)
                     .with_trailers(OutgoingRequestTrailers {
                         trailers: Some(trailers_rx),
-                        trailer_task: task.abort_handle(),
+                        trailer_task: task.abort_on_drop_handle(),
                     });
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
