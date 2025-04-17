@@ -224,8 +224,8 @@ pub use self::generated::LinkOptions;
 /// ```no_run
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{Component, Linker, ResourceTable};
-/// use wasmtime_wasi::{IoView, WasiCtx, WasiView, WasiCtxBuilder};
-/// use wasmtime_wasi::bindings::Command;
+/// use wasmtime_wasi::p2::{IoView, WasiCtx, WasiView, WasiCtxBuilder};
+/// use wasmtime_wasi::p2::bindings::Command;
 ///
 /// // This example is an example shim of executing a component based on the
 /// // command line arguments provided to this program.
@@ -241,7 +241,7 @@ pub use self::generated::LinkOptions;
 ///     // Configure a `Linker` with WASI, compile a component based on
 ///     // command line arguments, and then pre-instantiate it.
 ///     let mut linker = Linker::<MyState>::new(&engine);
-///     wasmtime_wasi::add_to_linker_async(&mut linker)?;
+///     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
 ///     let component = Component::from_file(&engine, &args[0])?;
 ///
 ///
@@ -292,8 +292,8 @@ pub use self::generated::Command;
 /// ```no_run
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{ResourceTable, Linker, Component};
-/// use wasmtime_wasi::{IoView, WasiCtx, WasiView, WasiCtxBuilder};
-/// use wasmtime_wasi::bindings::CommandPre;
+/// use wasmtime_wasi::p2::{IoView, WasiCtx, WasiView, WasiCtxBuilder};
+/// use wasmtime_wasi::p2::bindings::CommandPre;
 ///
 /// // This example is an example shim of executing a component based on the
 /// // command line arguments provided to this program.
@@ -309,7 +309,7 @@ pub use self::generated::Command;
 ///     // Configure a `Linker` with WASI, compile a component based on
 ///     // command line arguments, and then pre-instantiate it.
 ///     let mut linker = Linker::<MyState>::new(&engine);
-///     wasmtime_wasi::add_to_linker_async(&mut linker)?;
+///     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
 ///     let component = Component::from_file(&engine, &args[0])?;
 ///     let pre = CommandPre::new(linker.instantiate_pre(&component)?)?;
 ///
