@@ -9,7 +9,7 @@ use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
-use super::Ctx;
+use super::{sleep, Ctx};
 
 pub fn annotate<T, F>(val: F) -> F
 where
@@ -49,6 +49,10 @@ pub async fn compose(a: &[u8], b: &[u8]) -> Result<Vec<u8>> {
 
 #[allow(unused)]
 pub async fn test_run(component: &[u8]) -> Result<()> {
+    test_run_with_count(component, 3).await
+}
+
+pub async fn test_run_with_count(component: &[u8], count: usize) -> Result<()> {
     init_logger();
 
     let mut config = Config::new();
@@ -56,6 +60,7 @@ pub async fn test_run(component: &[u8]) -> Result<()> {
     config.cranelift_debug_verifier(true);
     config.wasm_component_model(true);
     config.wasm_component_model_async(true);
+    config.wasm_component_model_async_builtins(true);
     config.wasm_component_model_error_context(true);
     config.async_support(true);
     config.epoch_interruption(true);
@@ -79,6 +84,7 @@ pub async fn test_run(component: &[u8]) -> Result<()> {
         &mut linker,
         annotate(|ctx| ctx),
     )?;
+    sleep::local::local::sleep::add_to_linker_get_host(&mut linker, annotate(|ctx| ctx))?;
 
     let mut store = Store::new(
         &engine,
@@ -99,9 +105,9 @@ pub async fn test_run(component: &[u8]) -> Result<()> {
     let instance = linker.instantiate_async(&mut store, &component).await?;
     let yield_host = super::yield_host::bindings::YieldHost::new(&mut store, &instance)?;
 
-    // Start three concurrent calls and then join them all:
+    // Start `count` concurrent calls and then join them all:
     let mut futures = FuturesUnordered::new();
-    for _ in 0..3 {
+    for _ in 0..count {
         futures.push(yield_host.local_local_run().call_run(&mut store));
     }
 

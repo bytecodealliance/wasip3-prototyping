@@ -58,3 +58,12 @@
   (core func $subtask-drop (canon subtask.drop))
   (core instance $i (instantiate $m (with "" (instance (export "subtask.drop" (func $subtask-drop))))))
 )
+
+;; subtask.cancel
+(component
+  (core module $m
+    (import "" "subtask.cancel" (func $subtask-drop (param i32) (result i32)))
+  )
+  (core func $subtask-cancel (canon subtask.cancel))
+  (core instance $i (instantiate $m (with "" (instance (export "subtask.cancel" (func $subtask-cancel))))))
+)

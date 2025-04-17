@@ -16,7 +16,7 @@ use wasmtime::{AsContextMut, Config, Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::transmit::bindings::exports::local::local::transmit::Control;
-use component_async_tests::util::{compose, init_logger, test_run};
+use component_async_tests::util::{compose, init_logger, test_run, test_run_with_count};
 use component_async_tests::{transmit, Ctx};
 
 #[tokio::test]
@@ -27,6 +27,20 @@ pub async fn async_poll_synchronous() -> Result<()> {
 #[tokio::test]
 pub async fn async_poll_stackless() -> Result<()> {
     test_run(&fs::read(test_programs_artifacts::ASYNC_POLL_STACKLESS_COMPONENT).await?).await
+}
+
+// No-op function; we only test this by composing it in `async_cancel_caller`
+#[allow(
+    dead_code,
+    reason = "here only to make the `assert_test_exists` macro happy"
+)]
+pub fn async_cancel_callee() {}
+
+#[tokio::test]
+pub async fn async_cancel_caller() -> Result<()> {
+    let caller = &fs::read(test_programs_artifacts::ASYNC_CANCEL_CALLER_COMPONENT).await?;
+    let callee = &fs::read(test_programs_artifacts::ASYNC_CANCEL_CALLEE_COMPONENT).await?;
+    test_run_with_count(&compose(caller, callee).await?, 1).await
 }
 
 #[tokio::test]

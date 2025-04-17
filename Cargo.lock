@@ -4055,7 +4055,7 @@ checksum = "6ee99da9c5ba11bd675621338ef6fa52296b76b83305e9b6e5c77d4c286d6d49"
 [[package]]
 name = "wasm-compose"
 version = "0.228.0"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ec621cf17a135cbf27949dcf39b7cefd83f4d3dc"
+source = "git+https://github.com/bytecodealliance/wasm-tools#ffdf16c109ea99ff7c9f91781ff07e55e5d9ddbb"
 dependencies = [
  "anyhow",
  "heck 0.4.1",
@@ -4075,7 +4075,7 @@ dependencies = [
 [[package]]
 name = "wasm-encoder"
 version = "0.228.0"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ec621cf17a135cbf27949dcf39b7cefd83f4d3dc"
+source = "git+https://github.com/bytecodealliance/wasm-tools#ffdf16c109ea99ff7c9f91781ff07e55e5d9ddbb"
 dependencies = [
  "leb128fmt",
  "wasmparser 0.228.0",
@@ -4084,7 +4084,7 @@ dependencies = [
 [[package]]
 name = "wasm-metadata"
 version = "0.228.0"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ec621cf17a135cbf27949dcf39b7cefd83f4d3dc"
+source = "git+https://github.com/bytecodealliance/wasm-tools#ffdf16c109ea99ff7c9f91781ff07e55e5d9ddbb"
 dependencies = [
  "anyhow",
  "indexmap 2.7.0",
@@ -4095,7 +4095,7 @@ dependencies = [
 [[package]]
 name = "wasm-mutate"
 version = "0.228.0"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ec621cf17a135cbf27949dcf39b7cefd83f4d3dc"
+source = "git+https://github.com/bytecodealliance/wasm-tools#ffdf16c109ea99ff7c9f91781ff07e55e5d9ddbb"
 dependencies = [
  "egg",
  "log",
@@ -4108,7 +4108,7 @@ dependencies = [
 [[package]]
 name = "wasm-smith"
 version = "0.228.0"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ec621cf17a135cbf27949dcf39b7cefd83f4d3dc"
+source = "git+https://github.com/bytecodealliance/wasm-tools#ffdf16c109ea99ff7c9f91781ff07e55e5d9ddbb"
 dependencies = [
  "anyhow",
  "arbitrary",
@@ -4127,7 +4127,7 @@ dependencies = [
 [[package]]
 name = "wasm-wave"
 version = "0.228.0"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ec621cf17a135cbf27949dcf39b7cefd83f4d3dc"
+source = "git+https://github.com/bytecodealliance/wasm-tools#ffdf16c109ea99ff7c9f91781ff07e55e5d9ddbb"
 dependencies = [
  "indexmap 2.7.0",
  "logos",
@@ -4192,7 +4192,7 @@ dependencies = [
 [[package]]
 name = "wasmparser"
 version = "0.228.0"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ec621cf17a135cbf27949dcf39b7cefd83f4d3dc"
+source = "git+https://github.com/bytecodealliance/wasm-tools#ffdf16c109ea99ff7c9f91781ff07e55e5d9ddbb"
 dependencies = [
  "bitflags 2.6.0",
  "hashbrown 0.15.2",
@@ -4204,7 +4204,7 @@ dependencies = [
 [[package]]
 name = "wasmprinter"
 version = "0.228.0"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ec621cf17a135cbf27949dcf39b7cefd83f4d3dc"
+source = "git+https://github.com/bytecodealliance/wasm-tools#ffdf16c109ea99ff7c9f91781ff07e55e5d9ddbb"
 dependencies = [
  "anyhow",
  "termcolor",
@@ -4882,7 +4882,7 @@ dependencies = [
 [[package]]
 name = "wast"
 version = "228.0.0"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ec621cf17a135cbf27949dcf39b7cefd83f4d3dc"
+source = "git+https://github.com/bytecodealliance/wasm-tools#ffdf16c109ea99ff7c9f91781ff07e55e5d9ddbb"
 dependencies = [
  "bumpalo",
  "leb128fmt",
@@ -4894,7 +4894,7 @@ dependencies = [
 [[package]]
 name = "wat"
 version = "1.228.0"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ec621cf17a135cbf27949dcf39b7cefd83f4d3dc"
+source = "git+https://github.com/bytecodealliance/wasm-tools#ffdf16c109ea99ff7c9f91781ff07e55e5d9ddbb"
 dependencies = [
  "wast 228.0.0",
 ]
@@ -5259,7 +5259,7 @@ dependencies = [
 [[package]]
 name = "wit-component"
 version = "0.228.0"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ec621cf17a135cbf27949dcf39b7cefd83f4d3dc"
+source = "git+https://github.com/bytecodealliance/wasm-tools#ffdf16c109ea99ff7c9f91781ff07e55e5d9ddbb"
 dependencies = [
  "anyhow",
  "bitflags 2.6.0",
@@ -5277,7 +5277,7 @@ dependencies = [
 [[package]]
 name = "wit-parser"
 version = "0.228.0"
-source = "git+https://github.com/bytecodealliance/wasm-tools#ec621cf17a135cbf27949dcf39b7cefd83f4d3dc"
+source = "git+https://github.com/bytecodealliance/wasm-tools#ffdf16c109ea99ff7c9f91781ff07e55e5d9ddbb"
 dependencies = [
  "anyhow",
  "id-arena",

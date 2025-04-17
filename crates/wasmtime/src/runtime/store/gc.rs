@@ -40,16 +40,19 @@ impl StoreOpaque {
         if scope.async_support() {
             #[cfg(feature = "async")]
             {
-                scope
-                    .async_cx()
-                    .expect("attempted to access async context during shutdown")
-                    .block_on(scope.grow_or_collect_gc_heap_async(bytes_needed))?;
-            }
-            #[cfg(feature = "component-model-async")]
-            unsafe {
-                let async_cx = crate::component::concurrent::AsyncCx::new(&mut scope);
-                let future = scope.grow_or_collect_gc_heap_async(bytes_needed);
-                async_cx.block_on(Box::pin(future).as_mut(), None)?.0;
+                #[cfg(not(feature = "component-model-async"))]
+                {
+                    scope
+                        .async_cx()
+                        .expect("attempted to access async context during shutdown")
+                        .block_on(scope.grow_or_collect_gc_heap_async(bytes_needed))?;
+                }
+                #[cfg(feature = "component-model-async")]
+                unsafe {
+                    let async_cx = crate::component::concurrent::AsyncCx::new(&mut scope);
+                    let future = scope.grow_or_collect_gc_heap_async(bytes_needed);
+                    async_cx.block_on(Box::pin(future).as_mut(), None)?.0;
+                }
             }
         } else {
             scope.grow_or_collect_gc_heap(bytes_needed);
@@ -219,10 +222,20 @@ impl StoreOpaque {
     /// Asynchronously collect garbage, potentially growing the GC heap.
     pub(crate) async fn gc_async(&mut self, why: Option<&GcHeapOutOfMemory<()>>) -> Result<()> {
         assert!(self.async_support());
-        self.on_fiber(|store| unsafe {
-            store.maybe_async_gc(None, why.map(|oom| oom.bytes_needed()))
-        })
-        .await??;
+        #[cfg(feature = "component-model-async")]
+        {
+            concurrent::on_fiber_opaque(self, None, move |store| unsafe {
+                store.maybe_async_gc(None, why.map(|oom| oom.bytes_needed()))
+            })
+            .await??;
+        }
+        #[cfg(not(feature = "component-model-async"))]
+        {
+            self.on_fiber(|store| unsafe {
+                store.maybe_async_gc(None, why.map(|oom| oom.bytes_needed()))
+            })
+            .await??;
+        }
         Ok(())
     }
 
