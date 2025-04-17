@@ -2037,13 +2037,17 @@ impl ComponentInstance {
         store: StoreContextMut<'_, T>,
         future: Pin<Box<dyn Future<Output = R> + Send + '_>>,
     ) -> Result<R> {
-        let old = INSTANCE.with(|v| v.replace(self));
-        let _reset_instance = ResetInstance(NonNull::new(old).map(SendSyncPtr::new));
-        unsafe {
+        let instance = SendSyncPtr::new(NonNull::new(self).unwrap());
+        let mut future = pin!(unsafe {
             on_fiber_raw(VMStoreRawPtr(store.traitobj()), None, move |_| {
                 self.loop_until(future)
             })
-        }
+        });
+        future::poll_fn(move |cx| {
+            let old = INSTANCE.with(|v| v.replace(instance.as_ptr()));
+            let _reset_instance = ResetInstance(NonNull::new(old).map(SendSyncPtr::new));
+            future.as_mut().poll(cx)
+        })
         .await?
     }
 
@@ -3921,7 +3925,7 @@ fn checked<F: Future + Send + 'static>(
             `Future`s which depend on asynchronous component tasks, streams, or \
             futures to complete may only be polled from the event loop of the \
             instance from which they originated.  Please use \
-            `Instance::{get,with,spawn}` to poll or await them.\
+            `Instance::{run,run_with,spawn}` to poll or await them.\
         ";
         INSTANCE.with(|v| {
             if v.get() != instance.as_ptr() {
