@@ -10,8 +10,8 @@ use {
     test_programs::async_::{
         context_get, context_set, subtask_cancel, subtask_cancel_async, subtask_drop,
         waitable_join, waitable_set_drop, waitable_set_new, BLOCKED, CALLBACK_CODE_EXIT,
-        CALLBACK_CODE_WAIT, DONE, EVENT_NONE, EVENT_SUBTASK, STATUS_RETURNED,
-        STATUS_RETURN_CANCELLED, STATUS_STARTED, STATUS_STARTING,
+        CALLBACK_CODE_WAIT, EVENT_NONE, EVENT_SUBTASK, STATUS_RETURNED, STATUS_RETURN_CANCELLED,
+        STATUS_STARTED, STATUS_STARTING, STATUS_START_CANCELLED,
     },
 };
 
@@ -132,7 +132,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
 
                 let result = subtask_cancel_async(waitable);
 
-                assert_eq!(result, DONE);
+                assert_eq!(result, STATUS_START_CANCELLED);
 
                 waitable_join(waitable, 0);
                 subtask_drop(waitable);
@@ -152,7 +152,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
 
                 let result = subtask_cancel_async(waitable);
 
-                assert_eq!(result, DONE);
+                assert_eq!(result, STATUS_RETURN_CANCELLED);
 
                 waitable_join(waitable, 0);
                 subtask_drop(waitable);
@@ -264,7 +264,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
                 // following assertion relies on that behavior; it will need to
                 // be changed (and this test case refactored) if/when that
                 // behavior changes.
-                assert_eq!(result, DONE);
+                assert_eq!(result, STATUS_RETURN_CANCELLED);
 
                 waitable_join(waitable, 0);
                 subtask_drop(waitable);
@@ -334,7 +334,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
 
                 let result = subtask_cancel(waitable);
 
-                assert_eq!(result, DONE);
+                assert_eq!(result, STATUS_RETURN_CANCELLED);
 
                 waitable_join(waitable, 0);
                 subtask_drop(waitable);
@@ -353,7 +353,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
 
                 let result = subtask_cancel(waitable);
 
-                assert_eq!(result, DONE);
+                assert_eq!(result, STATUS_RETURN_CANCELLED);
 
                 waitable_join(waitable, 0);
                 subtask_drop(waitable);
