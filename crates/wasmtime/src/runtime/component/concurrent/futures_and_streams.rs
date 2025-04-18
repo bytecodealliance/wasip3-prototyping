@@ -2231,6 +2231,21 @@ impl ComponentInstance {
             ReadState::Open
         };
 
+        let set_guest_ready = |me: &mut Self| {
+            let transmit = me.get_mut(transmit_id)?;
+            assert!(matches!(&transmit.write, WriteState::Open));
+            transmit.write = WriteState::GuestReady {
+                ty,
+                flat_abi,
+                options,
+                address: usize::try_from(address).unwrap(),
+                count: usize::try_from(count).unwrap(),
+                handle,
+                post_write: PostWrite::Continue,
+            };
+            Ok::<_, crate::Error>(())
+        };
+
         let result = match mem::replace(&mut transmit.read, new_state) {
             ReadState::GuestReady {
                 ty: read_ty,
@@ -2239,9 +2254,11 @@ impl ComponentInstance {
                 address: read_address,
                 count: read_count,
                 handle: read_handle,
-                ..
             } => {
                 assert_eq!(flat_abi, read_flat_abi);
+
+                let write_complete = count == 0 || read_count > 0;
+                let read_complete = count > 0;
 
                 let read_handle_rep = transmit.read_handle.rep();
 
@@ -2261,7 +2278,8 @@ impl ComponentInstance {
                 )?;
 
                 let code = ReturnCode::Completed(count.try_into().unwrap());
-                {
+
+                if read_complete {
                     self.push_event(
                         read_handle_rep,
                         match read_ty {
@@ -2277,9 +2295,24 @@ impl ComponentInstance {
                             },
                         },
                     )?;
+                } else {
+                    let transmit = self.get_mut(transmit_id)?;
+                    transmit.read = ReadState::GuestReady {
+                        ty: read_ty,
+                        flat_abi: read_flat_abi,
+                        options: read_options,
+                        address: read_address,
+                        count: read_count,
+                        handle: read_handle,
+                    };
                 }
 
-                code
+                if write_complete {
+                    code
+                } else {
+                    set_guest_ready(self)?;
+                    ReturnCode::Blocked
+                }
             }
 
             ReadState::HostReady { accept } => {
@@ -2295,19 +2328,7 @@ impl ComponentInstance {
             }
 
             ReadState::Open => {
-                assert!(matches!(&transmit.write, WriteState::Open));
-
-                let transmit = self.get_mut(transmit_id)?;
-                transmit.write = WriteState::GuestReady {
-                    ty,
-                    flat_abi,
-                    options,
-                    address: usize::try_from(address).unwrap(),
-                    count: usize::try_from(count).unwrap(),
-                    handle,
-                    post_write: PostWrite::Continue,
-                };
-
+                set_guest_ready(self)?;
                 ReturnCode::Blocked
             }
 
@@ -2370,6 +2391,20 @@ impl ComponentInstance {
             WriteState::Open
         };
 
+        let set_guest_ready = |me: &mut Self| {
+            let transmit = me.get_mut(transmit_id)?;
+            assert!(matches!(&transmit.read, ReadState::Open));
+            transmit.read = ReadState::GuestReady {
+                ty,
+                flat_abi,
+                options,
+                address: usize::try_from(address).unwrap(),
+                count: usize::try_from(count).unwrap(),
+                handle,
+            };
+            Ok::<_, crate::Error>(())
+        };
+
         let result = match mem::replace(&mut transmit.write, new_state) {
             WriteState::GuestReady {
                 ty: write_ty,
@@ -2383,6 +2418,9 @@ impl ComponentInstance {
                 assert_eq!(flat_abi, write_flat_abi);
 
                 let write_handle_rep = transmit.write_handle.rep();
+
+                let write_complete = write_count == 0 || count > 0;
+                let read_complete = write_count > 0;
 
                 let count = usize::try_from(count).unwrap().min(write_count);
 
@@ -2407,7 +2445,8 @@ impl ComponentInstance {
                 };
 
                 let code = ReturnCode::Completed(count.try_into().unwrap());
-                {
+
+                if write_complete {
                     self.push_event(
                         write_handle_rep,
                         match write_ty {
@@ -2421,9 +2460,25 @@ impl ComponentInstance {
                             },
                         },
                     )?;
+                } else {
+                    let transmit = self.get_mut(transmit_id)?;
+                    transmit.write = WriteState::GuestReady {
+                        ty: write_ty,
+                        flat_abi: write_flat_abi,
+                        options: write_options,
+                        address: write_address,
+                        count: write_count,
+                        handle: write_handle,
+                        post_write,
+                    };
                 }
 
-                code
+                if read_complete {
+                    code
+                } else {
+                    set_guest_ready(self)?;
+                    ReturnCode::Blocked
+                }
             }
 
             WriteState::HostReady { accept, post_write } => {
@@ -2445,18 +2500,7 @@ impl ComponentInstance {
             }
 
             WriteState::Open => {
-                assert!(matches!(&transmit.read, ReadState::Open));
-
-                let transmit = self.get_mut(transmit_id)?;
-                transmit.read = ReadState::GuestReady {
-                    ty,
-                    flat_abi,
-                    options,
-                    address: usize::try_from(address).unwrap(),
-                    count: usize::try_from(count).unwrap(),
-                    handle,
-                };
-
+                set_guest_ready(self)?;
                 ReturnCode::Blocked
             }
 

@@ -63,8 +63,10 @@ interface backpressure {
 interface transmit {
   variant control {
     read-stream(string),
+    read-stream-zero,
     read-future(string),
     write-stream(string),
+    write-stream-zero,
     write-future(string),
   }
 

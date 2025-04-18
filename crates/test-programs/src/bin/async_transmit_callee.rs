@@ -19,7 +19,7 @@ use {
         wit_future, wit_stream,
     },
     std::future::IntoFuture,
-    wit_bindgen_rt::async_support::{self, FutureReader, StreamReader},
+    wit_bindgen_rt::async_support::{self, FutureReader, StreamReader, StreamResult},
 };
 
 struct Component;
@@ -48,6 +48,12 @@ impl Guest for Component {
                     Control::ReadStream(value) => {
                         assert_eq!(caller_stream_rx.next().await, Some(value));
                     }
+                    Control::ReadStreamZero => {
+                        assert_eq!(
+                            caller_stream_rx.read(Vec::new()).await.0,
+                            StreamResult::Complete(0)
+                        );
+                    }
                     Control::ReadFuture(value) => {
                         assert_eq!(
                             caller_future_rx1.take().unwrap().into_future().await,
@@ -56,6 +62,12 @@ impl Guest for Component {
                     }
                     Control::WriteStream(value) => {
                         assert!(callee_stream_tx.write_one(value).await.is_none());
+                    }
+                    Control::WriteStreamZero => {
+                        assert_eq!(
+                            callee_stream_tx.write(Vec::new()).await.0,
+                            StreamResult::Complete(0)
+                        );
                     }
                     Control::WriteFuture(value) => {
                         callee_future_tx1

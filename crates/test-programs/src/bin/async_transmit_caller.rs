@@ -22,13 +22,13 @@ use {
         local::local::transmit::{self, Control},
         wit_future, wit_stream,
     },
-    futures::{future, FutureExt},
+    futures::{future, stream::FuturesUnordered, FutureExt, StreamExt},
     std::{
         future::{Future, IntoFuture},
-        pin::pin,
+        pin::{pin, Pin},
         task::Poll,
     },
-    wit_bindgen_rt::async_support::FutureWriteCancel,
+    wit_bindgen_rt::async_support::{FutureWriteCancel, StreamResult},
 };
 
 struct Component;
@@ -68,6 +68,38 @@ impl Guest for Component {
             .await
             .is_none());
         assert!(caller_stream_tx.write_one("c".into()).await.is_none());
+
+        // Tell the peer to do a zero-length read, do a zero-length write; assert the latter completes, then do a
+        // non-zero-length write, assert that it does _not_ complete, then tell the peer to do a non-zero-length
+        // read and assert that the write completes.
+        assert!(control_tx
+            .write_one(Control::ReadStreamZero)
+            .await
+            .is_none());
+        {
+            assert_eq!(
+                caller_stream_tx.write(Vec::new()).await.0,
+                StreamResult::Complete(0)
+            );
+
+            let send = Box::pin(caller_stream_tx.write_one("d".into()));
+            let Err(send) = poll(send).await else {
+                panic!()
+            };
+
+            let mut futures = FuturesUnordered::new();
+            futures.push(Box::pin(send.map(|v| {
+                assert!(v.is_none());
+            })) as Pin<Box<dyn Future<Output = _>>>);
+            futures.push(Box::pin(
+                control_tx
+                    .write_one(Control::ReadStream("d".into()))
+                    .map(|v| {
+                        assert!(v.is_none());
+                    }),
+            ));
+            while let Some(()) = futures.next().await {}
+        }
 
         // Start writing a value to the future, but cancel the write before telling the peer to read.
         {
@@ -113,6 +145,32 @@ impl Guest for Component {
             .await
             .is_none());
         assert_eq!(callee_stream_rx.next().await, Some("b".into()));
+
+        // Tell the peer to do a zero-length write, assert that the read does _not_ complete, then tell the peer to
+        // do a non-zero-length write and assert that the read completes.
+        assert!(control_tx
+            .write_one(Control::WriteStreamZero)
+            .await
+            .is_none());
+        {
+            let next = Box::pin(callee_stream_rx.next());
+            let Err(next) = poll(next).await else {
+                panic!()
+            };
+
+            let mut futures = FuturesUnordered::new();
+            futures.push(Box::pin(next.map(|v| {
+                assert_eq!(v, Some("c".into()));
+            })) as Pin<Box<dyn Future<Output = _>>>);
+            futures.push(Box::pin(
+                control_tx
+                    .write_one(Control::WriteStream("c".into()))
+                    .map(|v| {
+                        assert!(v.is_none());
+                    }),
+            ));
+            while let Some(()) = futures.next().await {}
+        }
 
         // Start reading a value from the future, but cancel the read before telling the peer to write.
         {
