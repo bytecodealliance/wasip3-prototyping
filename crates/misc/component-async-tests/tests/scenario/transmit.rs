@@ -16,8 +16,10 @@ use wasmtime::{AsContextMut, Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::transmit::bindings::exports::local::local::transmit::Control;
-use component_async_tests::util::{compose, config, test_run, test_run_with_count};
-use component_async_tests::{transmit, Ctx};
+use component_async_tests::util::{annotate, compose, config, test_run};
+use component_async_tests::{sleep, transmit, Ctx};
+
+use cancel::exports::local::local::cancel::Mode;
 
 #[tokio::test]
 pub async fn async_poll_synchronous() -> Result<()> {
@@ -29,6 +31,18 @@ pub async fn async_poll_stackless() -> Result<()> {
     test_run(&fs::read(test_programs_artifacts::ASYNC_POLL_STACKLESS_COMPONENT).await?).await
 }
 
+pub mod cancel {
+    wasmtime::component::bindgen!({
+        path: "wit",
+        world: "cancel-host",
+        concurrent_imports: true,
+        concurrent_exports: true,
+        async: {
+            only_imports: [],
+        }
+    });
+}
+
 // No-op function; we only test this by composing it in `async_cancel_caller`
 #[allow(
     dead_code,
@@ -38,9 +52,74 @@ pub fn async_cancel_callee() {}
 
 #[tokio::test]
 pub async fn async_cancel_caller() -> Result<()> {
+    test_cancel(Mode::Normal).await
+}
+
+#[tokio::test]
+pub async fn async_trap_cancel_guest_after_start_cancelled() -> Result<()> {
+    test_cancel_trap(Mode::TrapCancelGuestAfterStartCancelled).await
+}
+
+#[tokio::test]
+pub async fn async_trap_cancel_guest_after_return_cancelled() -> Result<()> {
+    test_cancel_trap(Mode::TrapCancelGuestAfterReturnCancelled).await
+}
+
+#[tokio::test]
+pub async fn async_trap_cancel_guest_after_return() -> Result<()> {
+    test_cancel_trap(Mode::TrapCancelGuestAfterReturn).await
+}
+
+#[tokio::test]
+pub async fn async_trap_cancel_host_after_return_cancelled() -> Result<()> {
+    test_cancel_trap(Mode::TrapCancelHostAfterReturnCancelled).await
+}
+
+#[tokio::test]
+pub async fn async_trap_cancel_host_after_return() -> Result<()> {
+    test_cancel_trap(Mode::TrapCancelHostAfterReturn).await
+}
+
+async fn test_cancel_trap(mode: Mode) -> Result<()> {
+    let message = "`subtask.cancel` called after terminal status delivered";
+    let trap = test_cancel(mode).await.unwrap_err();
+    assert!(
+        format!("{trap:?}").contains(message),
+        "expected `{message}`; got `{trap:?}`",
+    );
+    Ok(())
+}
+
+async fn test_cancel(mode: Mode) -> Result<()> {
     let caller = &fs::read(test_programs_artifacts::ASYNC_CANCEL_CALLER_COMPONENT).await?;
     let callee = &fs::read(test_programs_artifacts::ASYNC_CANCEL_CALLEE_COMPONENT).await?;
-    test_run_with_count(&compose(caller, callee).await?, 1).await
+    let component = &compose(caller, callee).await?;
+
+    let engine = Engine::new(&config())?;
+
+    let component = Component::new(&engine, component)?;
+
+    let mut linker = Linker::new(&engine);
+
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    sleep::local::local::sleep::add_to_linker_get_host(&mut linker, annotate(|ctx| ctx))?;
+
+    let mut store = Store::new(
+        &engine,
+        Ctx {
+            wasi: WasiCtxBuilder::new().inherit_stdio().build(),
+            table: ResourceTable::default(),
+            continue_: false,
+            wakers: Arc::new(Mutex::new(None)),
+        },
+    );
+
+    let instance = linker.instantiate_async(&mut store, &component).await?;
+    let cancel_host = cancel::CancelHost::new(&mut store, &instance)?;
+    let run = cancel_host.local_local_cancel().call_run(&mut store, mode);
+    instance.run(&mut store, run).await??;
+
+    Ok(())
 }
 
 #[tokio::test]

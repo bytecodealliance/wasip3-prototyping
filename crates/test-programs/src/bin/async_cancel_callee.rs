@@ -49,15 +49,23 @@ unsafe fn sleep_millis_async(_: *mut u8, _: *mut u8) -> u32 {
     unreachable!()
 }
 
-const ON_CANCEL_TASK_RETURN: u32 = 0;
-const ON_CANCEL_TASK_CANCEL: u32 = 1;
+const ON_CANCEL_TASK_RETURN: u8 = 0;
+const ON_CANCEL_TASK_CANCEL: u8 = 1;
+
+const _MODE_NORMAL: u8 = 0;
+const _MODE_TRAP_CANCEL_GUEST_AFTER_START_CANCELLED: u8 = 1;
+const _MODE_TRAP_CANCEL_GUEST_AFTER_RETURN_CANCELLED: u8 = 2;
+const _MODE_TRAP_CANCEL_GUEST_AFTER_RETURN: u8 = 3;
+const MODE_TRAP_CANCEL_HOST_AFTER_RETURN_CANCELLED: u8 = 4;
+const MODE_TRAP_CANCEL_HOST_AFTER_RETURN: u8 = 5;
 
 #[derive(Clone, Copy)]
 struct SleepParams {
     time_in_millis: u64,
-    on_cancel: u32,
+    on_cancel: u8,
     on_cancel_delay_millis: u64,
     synchronous_delay: bool,
+    mode: u8,
 }
 
 enum State {
@@ -91,9 +99,10 @@ unsafe extern "C" fn export_sleep_sleep_millis(time_in_millis: u64) {
 #[unsafe(export_name = "[async-lift]local:local/sleep-with-options#sleep-millis")]
 unsafe extern "C" fn export_sleep_with_options_sleep_millis(
     time_in_millis: u64,
-    on_cancel: u32,
+    on_cancel: u8,
     on_cancel_delay_millis: u64,
     synchronous_delay: bool,
+    mode: u8,
 ) -> u32 {
     unsafe {
         context_set(
@@ -102,6 +111,7 @@ unsafe extern "C" fn export_sleep_with_options_sleep_millis(
                 on_cancel,
                 on_cancel_delay_millis,
                 synchronous_delay,
+                mode,
             }))) as usize)
             .unwrap(),
         );
@@ -154,6 +164,13 @@ unsafe extern "C" fn callback_sleep_with_options_sleep_millis(
                 let result = subtask_cancel(*waitable);
 
                 assert_eq!(result, STATUS_RETURN_CANCELLED);
+
+                if params.mode == MODE_TRAP_CANCEL_HOST_AFTER_RETURN_CANCELLED {
+                    // This should trap, since `waitable` has already been
+                    // cancelled:
+                    subtask_cancel(*waitable);
+                    unreachable!()
+                }
 
                 waitable_join(*waitable, 0);
                 subtask_drop(*waitable);
@@ -210,6 +227,12 @@ unsafe extern "C" fn callback_sleep_with_options_sleep_millis(
                 assert_eq!(event0, EVENT_SUBTASK);
                 assert_eq!(event1, *waitable);
                 assert_eq!(event2, STATUS_RETURNED);
+
+                if params.mode == MODE_TRAP_CANCEL_HOST_AFTER_RETURN {
+                    // This should trap, since `waitable` has already returned:
+                    subtask_cancel(*waitable);
+                    unreachable!()
+                }
 
                 waitable_join(*waitable, 0);
                 subtask_drop(*waitable);

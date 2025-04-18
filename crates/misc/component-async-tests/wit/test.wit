@@ -139,12 +139,27 @@ interface sleep {
 }
 
 interface sleep-with-options {
+  use cancel.{mode};
+
   variant on-cancel {
     task-return,
     task-cancel
   }
   
-  sleep-millis: func(time-in-millis: u64, on-cancel: on-cancel, on-cancel-delay-millis: u64, synchronous-delay: bool);
+  sleep-millis: func(time-in-millis: u64, on-cancel: on-cancel, on-cancel-delay-millis: u64, synchronous-delay: bool, mode: mode);
+}
+
+interface cancel {
+  variant mode {
+    normal,
+    trap-cancel-guest-after-start-cancelled,
+    trap-cancel-guest-after-return-cancelled,
+    trap-cancel-guest-after-return,
+    trap-cancel-host-after-return-cancelled,
+    trap-cancel-host-after-return,
+  }
+
+  run: func(mode: mode);
 }
 
 world yield-caller {
@@ -281,7 +296,7 @@ world cancel-caller {
   import backpressure;
   import sleep;
   import sleep-with-options;
-  export run;
+  export cancel;
 }
 
 world cancel-callee {
@@ -289,4 +304,8 @@ world cancel-callee {
   export backpressure;
   export sleep;
   export sleep-with-options;
+}
+
+world cancel-host {
+  export cancel;
 }

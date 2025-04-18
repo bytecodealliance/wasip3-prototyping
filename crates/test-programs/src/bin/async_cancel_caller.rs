@@ -16,7 +16,7 @@ use {
 };
 
 #[cfg(target_arch = "wasm32")]
-#[link(wasm_import_module = "[export]local:local/run")]
+#[link(wasm_import_module = "[export]local:local/cancel")]
 unsafe extern "C" {
     #[link_name = "[task-return]run"]
     fn task_return_run();
@@ -63,25 +63,37 @@ mod sleep_with_options {
     }
 }
 
-const ON_CANCEL_TASK_RETURN: u32 = 0;
-const ON_CANCEL_TASK_CANCEL: u32 = 1;
+const ON_CANCEL_TASK_RETURN: u8 = 0;
+const ON_CANCEL_TASK_CANCEL: u8 = 1;
+
+const _MODE_NORMAL: u8 = 0;
+const MODE_TRAP_CANCEL_GUEST_AFTER_START_CANCELLED: u8 = 1;
+const MODE_TRAP_CANCEL_GUEST_AFTER_RETURN_CANCELLED: u8 = 2;
+const MODE_TRAP_CANCEL_GUEST_AFTER_RETURN: u8 = 3;
+const _MODE_TRAP_CANCEL_HOST_AFTER_RETURN_CANCELLED: u8 = 4;
+const _MODE_TRAP_CANCEL_HOST_AFTER_RETURN: u8 = 5;
 
 #[repr(C)]
 struct SleepParams {
     time_in_millis: u64,
-    on_cancel: u32,
+    on_cancel: u8,
     on_cancel_delay_millis: u64,
     synchronous_delay: bool,
+    mode: u8,
 }
 
 enum State {
-    S0,
+    S0 {
+        mode: u8,
+    },
     S1 {
+        mode: u8,
         set: u32,
         waitable: u32,
         params: *mut SleepParams,
     },
     S2 {
+        mode: u8,
         set: u32,
         waitable: u32,
         params: *mut SleepParams,
@@ -94,20 +106,20 @@ enum State {
     },
 }
 
-#[unsafe(export_name = "[async-lift]local:local/run#run")]
-unsafe extern "C" fn export_run() -> u32 {
+#[unsafe(export_name = "[async-lift]local:local/cancel#run")]
+unsafe extern "C" fn export_run(mode: u8) -> u32 {
     unsafe {
-        context_set(u32::try_from(Box::into_raw(Box::new(State::S0)) as usize).unwrap());
+        context_set(u32::try_from(Box::into_raw(Box::new(State::S0 { mode })) as usize).unwrap());
         callback_run(EVENT_NONE, 0, 0)
     }
 }
 
-#[unsafe(export_name = "[callback][async-lift]local:local/run#run")]
+#[unsafe(export_name = "[callback][async-lift]local:local/cancel#run")]
 unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 {
     unsafe {
         let state = &mut *(usize::try_from(context_get()).unwrap() as *mut State);
         match state {
-            State::S0 => {
+            State::S0 { mode } => {
                 assert_eq!(event0, EVENT_NONE);
 
                 // First, call and cancel `sleep_with_options::sleep_millis`
@@ -121,6 +133,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
                     on_cancel: ON_CANCEL_TASK_CANCEL,
                     on_cancel_delay_millis: 0,
                     synchronous_delay: false,
+                    mode: *mode,
                 }));
 
                 let status = sleep_with_options::sleep_millis(params.cast(), ptr::null_mut());
@@ -134,7 +147,13 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
 
                 assert_eq!(result, STATUS_START_CANCELLED);
 
-                waitable_join(waitable, 0);
+                if *mode == MODE_TRAP_CANCEL_GUEST_AFTER_START_CANCELLED {
+                    // This should trap, since `waitable` has already been
+                    // cancelled:
+                    subtask_cancel_async(waitable);
+                    unreachable!()
+                }
+
                 subtask_drop(waitable);
 
                 // Next, call and cancel `sleep_with_options::sleep_millis` with
@@ -154,7 +173,13 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
 
                 assert_eq!(result, STATUS_RETURN_CANCELLED);
 
-                waitable_join(waitable, 0);
+                if *mode == MODE_TRAP_CANCEL_GUEST_AFTER_RETURN_CANCELLED {
+                    // This should trap, since `waitable` has already been
+                    // cancelled:
+                    subtask_cancel_async(waitable);
+                    unreachable!()
+                }
+
                 subtask_drop(waitable);
 
                 // Next, call and cancel `sleep_with_options::sleep_millis` with
@@ -178,6 +203,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
                 waitable_join(waitable, set);
 
                 *state = State::S1 {
+                    mode: *mode,
                     set,
                     waitable,
                     params,
@@ -187,6 +213,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
             }
 
             State::S1 {
+                mode,
                 set,
                 waitable,
                 params,
@@ -221,6 +248,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
                 let set = *set;
 
                 *state = State::S2 {
+                    mode: *mode,
                     set,
                     waitable,
                     params: *params,
@@ -230,6 +258,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
             }
 
             State::S2 {
+                mode,
                 set,
                 waitable,
                 params,
@@ -237,6 +266,12 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
                 assert_eq!(event0, EVENT_SUBTASK);
                 assert_eq!(event1, *waitable);
                 assert_eq!(event2, STATUS_RETURNED);
+
+                if *mode == MODE_TRAP_CANCEL_GUEST_AFTER_RETURN {
+                    // This should trap, since `waitable` has already returned:
+                    subtask_cancel_async(*waitable);
+                    unreachable!()
+                }
 
                 waitable_join(*waitable, 0);
                 subtask_drop(*waitable);

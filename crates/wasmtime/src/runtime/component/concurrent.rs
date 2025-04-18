@@ -2465,10 +2465,6 @@ impl ComponentInstance {
         async_: bool,
         task_id: u32,
     ) -> Result<u32> {
-        // TODO: We should trap here if we've already delivered a terminal
-        // status to the caller.  Currently, we detect _some_ cases, but not all
-        // of them.  We'll need tests to cover all the various scenarios.
-
         let (rep, state) = self.waitable_tables()[caller_instance].get_mut_by_index(task_id)?;
         log::trace!("subtask_cancel {rep} (handle {task_id})");
         let (expected_caller_instance, host_task) = match state {
@@ -2489,17 +2485,14 @@ impl ComponentInstance {
         };
         assert_eq!(expected_caller_instance, caller_instance);
 
-        if host_task {
-            if let Some(handle) = self
-                .get_mut(TableId::<HostTask>::new(rep))?
-                .abort_handle
-                .take()
-            {
+        let waitable = if host_task {
+            let host_task = TableId::<HostTask>::new(rep);
+            if let Some(handle) = self.get_mut(host_task)?.abort_handle.take() {
                 handle.abort();
-                Ok(Status::ReturnCancelled as u32)
-            } else {
-                Ok(Status::Returned as u32)
+                return Ok(Status::ReturnCancelled as u32);
             }
+
+            Waitable::Host(host_task)
         } else {
             let guest_task = TableId::<GuestTask>::new(rep);
             let task = self.get_mut(guest_task)?;
@@ -2514,7 +2507,9 @@ impl ComponentInstance {
                     .pending
                     .remove(&guest_task);
 
-                assert!(was_present);
+                if !was_present {
+                    bail!("`subtask.cancel` called after terminal status delivered");
+                }
 
                 return Ok(Status::StartCancelled as u32);
             } else if task.lift_result.is_some() {
@@ -2541,15 +2536,17 @@ impl ComponentInstance {
                 }
             }
 
-            let event = Waitable::Guest(guest_task).take_event(self)?;
-            if let Some(Event::Subtask {
-                status: status @ (Status::Returned | Status::ReturnCancelled),
-            }) = event
-            {
-                Ok(status as u32)
-            } else {
-                bail!("`subtask.cancel` called after terminal status delivered");
-            }
+            Waitable::Guest(guest_task)
+        };
+
+        let event = waitable.take_event(self)?;
+        if let Some(Event::Subtask {
+            status: status @ (Status::Returned | Status::ReturnCancelled),
+        }) = event
+        {
+            Ok(status as u32)
+        } else {
+            bail!("`subtask.cancel` called after terminal status delivered");
         }
     }
 
