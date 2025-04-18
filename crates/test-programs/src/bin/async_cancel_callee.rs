@@ -9,8 +9,9 @@ use {
     std::ptr,
     test_programs::async_::{
         context_get, context_set, subtask_cancel, subtask_drop, task_cancel, waitable_join,
-        waitable_set_drop, waitable_set_new, CALLBACK_CODE_EXIT, CALLBACK_CODE_WAIT, DONE,
-        EVENT_CANCELLED, EVENT_NONE, EVENT_SUBTASK, STATUS_RETURNED, STATUS_STARTED,
+        waitable_set_drop, waitable_set_new, CALLBACK_CODE_EXIT, CALLBACK_CODE_WAIT,
+        EVENT_CANCELLED, EVENT_NONE, EVENT_SUBTASK, STATUS_RETURNED, STATUS_RETURN_CANCELLED,
+        STATUS_STARTED,
     },
     wit_bindgen_rt::async_support,
 };
@@ -152,7 +153,7 @@ unsafe extern "C" fn callback_sleep_with_options_sleep_millis(
 
                 let result = subtask_cancel(*waitable);
 
-                assert_eq!(result, DONE);
+                assert_eq!(result, STATUS_RETURN_CANCELLED);
 
                 waitable_join(*waitable, 0);
                 subtask_drop(*waitable);

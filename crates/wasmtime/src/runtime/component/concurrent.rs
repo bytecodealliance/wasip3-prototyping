@@ -78,7 +78,7 @@ pub enum Status {
     Starting = 0,
     Started = 1,
     Returned = 2,
-    _StartCancelled = 3,
+    StartCancelled = 3,
     ReturnCancelled = 4,
 }
 
@@ -1922,6 +1922,7 @@ impl ComponentInstance {
                     fun: Box::new(move |instance| {
                         let store = unsafe { StoreContextMut(&mut *instance.store().cast()) };
                         lower(store, result?)?;
+                        instance.get_mut(task)?.abort_handle.take();
                         Ok(Event::Subtask {
                             status: Status::Returned,
                         })
@@ -1945,8 +1946,8 @@ impl ComponentInstance {
                         unreachable!()
                     };
                     log::trace!("delete host task {} (already ready)", task.rep());
-                    self.delete(task)?;
                     fun(self)?;
+                    self.delete(task)?;
                     None
                 }
                 Poll::Pending => {
@@ -2464,6 +2465,10 @@ impl ComponentInstance {
         async_: bool,
         task_id: u32,
     ) -> Result<u32> {
+        // TODO: We should trap here if we've already delivered a terminal
+        // status to the caller.  Currently, we detect _some_ cases, but not all
+        // of them.  We'll need tests to cover all the various scenarios.
+
         let (rep, state) = self.waitable_tables()[caller_instance].get_mut_by_index(task_id)?;
         log::trace!("subtask_cancel {rep} (handle {task_id})");
         let (expected_caller_instance, host_task) = match state {
@@ -2491,16 +2496,17 @@ impl ComponentInstance {
                 .take()
             {
                 handle.abort();
+                Ok(Status::ReturnCancelled as u32)
+            } else {
+                Ok(Status::Returned as u32)
             }
-
-            Ok(0)
         } else {
             let guest_task = TableId::<GuestTask>::new(rep);
             let task = self.get_mut(guest_task)?;
             if task.lower_params.is_some() {
+                // Not yet started; cancel and remove from pending
                 let callee_instance = task.instance;
 
-                // Not yet started; remove from pending
                 let was_present = self
                     .instance_states()
                     .get_mut(&callee_instance)
@@ -2510,7 +2516,7 @@ impl ComponentInstance {
 
                 assert!(was_present);
 
-                Ok(0)
+                return Ok(Status::StartCancelled as u32);
             } else if task.lift_result.is_some() {
                 // Started, but not yet returned or cancelled; send the
                 // `CANCELLED` event
@@ -2522,36 +2528,27 @@ impl ComponentInstance {
                     // Still not yet returned or cancelled; if `async_`, return
                     // `BLOCKED`; otherwise wait
                     if async_ {
-                        Ok(BLOCKED)
+                        return Ok(BLOCKED);
                     } else {
                         let old_has_suspended = mem::replace(&mut task.has_suspended, false);
                         let caller = self.guest_task().unwrap();
                         let set = self.get_mut(caller)?.sync_call_set;
                         self.get_mut(set)?.waiting.insert(caller);
                         Waitable::Guest(guest_task).join(self, Some(set))?;
-
                         self.poll_for_result(guest_task)?;
                         self.get_mut(guest_task)?.has_suspended = old_has_suspended;
-                        Ok(0)
                     }
-                } else {
-                    let event = Waitable::Guest(guest_task).take_event(self)?;
-                    assert!(
-                        matches!(
-                            event,
-                            Some(Event::Subtask {
-                                status: Status::Returned | Status::ReturnCancelled
-                            })
-                        ),
-                        "expected `Event::Subtask {{ status: Status::Returned | Status::ReturnCancelled }}`\
-                         ; got {event:?} for {}",
-                        guest_task.rep()
-                    );
-                    Ok(0)
                 }
+            }
+
+            let event = Waitable::Guest(guest_task).take_event(self)?;
+            if let Some(Event::Subtask {
+                status: status @ (Status::Returned | Status::ReturnCancelled),
+            }) = event
+            {
+                Ok(status as u32)
             } else {
-                // Already returned or cancelled; nothing to do
-                Ok(0)
+                bail!("`subtask.cancel` called after terminal status delivered");
             }
         }
     }
