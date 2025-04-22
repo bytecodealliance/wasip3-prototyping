@@ -2,13 +2,6 @@ mod bindings {
     wit_bindgen::generate!({
         path: "../misc/component-async-tests/wit",
         world: "error-context-callee",
-        async: {
-            exports: [
-                "local:local/run#run",
-                "local:local/run-result#run-pass",
-                "local:local/run-result#run-fail",
-            ],
-        }
     });
 
     use super::Component;

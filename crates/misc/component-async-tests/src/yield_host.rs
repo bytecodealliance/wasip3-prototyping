@@ -14,7 +14,7 @@ pub mod bindings {
         concurrent_exports: true,
         async: {
             only_imports: [
-                "local:local/ready#when-ready",
+                "local:local/ready#[async]when-ready",
             ]
         },
     });

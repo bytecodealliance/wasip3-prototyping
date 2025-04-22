@@ -2,11 +2,6 @@ mod bindings {
     wit_bindgen::generate!({
         path: "../misc/component-async-tests/wit",
         world: "read-resource-stream",
-        async: {
-            exports: [
-                "local:local/run#run"
-            ]
-        }
     });
 
     use super::Component;

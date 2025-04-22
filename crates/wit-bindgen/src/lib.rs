@@ -237,6 +237,7 @@ pub enum AsyncConfig {
     OnlyImports(HashSet<String>),
 }
 
+#[derive(Debug, Copy, Clone)]
 pub enum CallStyle {
     Sync,
     Async,
@@ -508,7 +509,7 @@ impl Wasmtime {
                 // Only generate a trait signature for free functions since
                 // resource-related functions get their trait signatures
                 // during `type_resource`.
-                let sig = if let FunctionKind::Freestanding = func.kind {
+                let sig = if func.kind.resource().is_none() {
                     generator.generate_function_trait_sig(func, false);
                     let without_sugar = mem::take(&mut generator.src).into();
                     generator.generate_function_trait_sig(func, true);
@@ -1144,7 +1145,6 @@ impl<_T> {camel}Pre<_T> {{
             );
 
             if !unused_imports.is_empty() {
-                dbg!(&self.used_trappable_imports_opts);
                 unused_imports.sort();
                 anyhow::bail!("names specified in the `trappable_imports` config option but are not referenced in the target world: {unused_imports:?}");
             }
@@ -2552,9 +2552,8 @@ impl<'a> InterfaceGenerator<'a> {
         uwriteln!(self.src, " {{");
 
         for (_, func) in iface.functions.iter() {
-            match func.kind {
-                FunctionKind::Freestanding => {}
-                _ => continue,
+            if func.kind.resource().is_some() {
+                continue;
             }
             self.generate_function_trait_sig(func, false);
             self.push_str(";\n");
@@ -2730,9 +2729,8 @@ impl<'a> InterfaceGenerator<'a> {
 
             // Forward each method call to &mut T
             for (_, func) in iface.functions.iter() {
-                match func.kind {
-                    FunctionKind::Freestanding => {}
-                    _ => continue,
+                if func.kind.resource().is_some() {
+                    continue;
                 }
                 let call_style = self
                     .generator
@@ -3223,9 +3221,10 @@ impl<'a> InterfaceGenerator<'a> {
             "{wt}::component::TypedFunc::<{}>",
             self.typedfunc_sig(func, param_mode)
         );
-        let projection_to_func = match &func.kind {
-            FunctionKind::Freestanding => "",
-            _ => ".funcs",
+        let projection_to_func = if func.kind.resource().is_some() {
+            ".funcs"
+        } else {
+            ""
         };
         uwriteln!(
             self.src,

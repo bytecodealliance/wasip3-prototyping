@@ -2,14 +2,6 @@ mod bindings {
     wit_bindgen::generate!({
         path: "../misc/component-async-tests/wit",
         world: "transmit-caller",
-        async: {
-            imports: [
-                "local:local/transmit#exchange",
-            ],
-            exports: [
-                "local:local/run#run",
-            ],
-        }
     });
 
     use super::Component;

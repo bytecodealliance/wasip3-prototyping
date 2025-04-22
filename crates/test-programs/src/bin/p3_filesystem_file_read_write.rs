@@ -15,10 +15,11 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
         let file = dir
             .open_at(
                 PathFlags::empty(),
-                filename,
+                filename.to_string(),
                 OpenFlags::CREATE,
                 DescriptorFlags::READ | DescriptorFlags::WRITE,
             )
+            .await
             .unwrap();
         let (mut data_tx, data_rx) = wit_stream::new();
         join!(
@@ -47,7 +48,7 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
         data_fut.await.unwrap().unwrap();
         assert_eq!(String::from_utf8_lossy(&contents), "Hello, World!");
 
-        dir.unlink_file_at(filename).unwrap();
+        dir.unlink_file_at(filename.to_string()).await.unwrap();
         Ok(())
     }
 }

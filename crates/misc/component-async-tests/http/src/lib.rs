@@ -13,7 +13,7 @@ wasmtime::component::bindgen!({
             "wasi:http/types@0.3.0-draft#[constructor]body",
             "wasi:http/types@0.3.0-draft#[static]body.new-with-trailers",
             "wasi:http/types@0.3.0-draft#[static]body.finish",
-            "wasi:http/handler@0.3.0-draft#handle",
+            "wasi:http/handler@0.3.0-draft#[async]handle",
         ]
     },
     with: {

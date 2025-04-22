@@ -2,12 +2,6 @@ mod bindings {
     wit_bindgen::generate!({
         path: "../misc/component-async-tests/wit",
         world: "borrowing-callee",
-        async: {
-            exports: [
-                "local:local/borrowing#foo",
-                "local:local/run-bool#run"
-            ]
-        }
     });
 
     use super::Component;
