@@ -1611,14 +1611,11 @@ pub(crate) fn emit(
             // beginning of the immediate field.
             emit_reloc(sink, Reloc::X86CallPCRel4, &call_info.dest, -4);
             sink.put4(0);
-            sink.add_call_site();
 
-            // Add exception info, if any, at this point (which will
-            // be the return address on stack).
             if let Some(try_call) = call_info.try_call_info.as_ref() {
-                for &(tag, label) in &try_call.exception_dests {
-                    sink.add_exception_handler(tag, label);
-                }
+                sink.add_call_site(&try_call.exception_dests);
+            } else {
+                sink.add_call_site(&[]);
             }
 
             // Reclaim the outgoing argument area that was released by the callee, to ensure that
@@ -1663,7 +1660,7 @@ pub(crate) fn emit(
             // beginning of the immediate field.
             emit_reloc(sink, Reloc::X86CallPCRel4, &call_info.dest, -4);
             sink.put4(0);
-            sink.add_call_site();
+            sink.add_call_site(&[]);
         }
 
         Inst::ReturnCallUnknown { info: call_info } => {
@@ -1675,7 +1672,7 @@ pub(crate) fn emit(
                 target: RegMem::reg(callee),
             }
             .emit(sink, info, state);
-            sink.add_call_site();
+            sink.add_call_site(&[]);
         }
 
         Inst::CallUnknown {
@@ -1717,14 +1714,10 @@ pub(crate) fn emit(
                 sink.push_user_stack_map(state, offset, s);
             }
 
-            sink.add_call_site();
-
-            // Add exception info, if any, at this point (which will
-            // be the return address on stack).
             if let Some(try_call) = call_info.try_call_info.as_ref() {
-                for &(tag, label) in &try_call.exception_dests {
-                    sink.add_exception_handler(tag, label);
-                }
+                sink.add_call_site(&try_call.exception_dests);
+            } else {
+                sink.add_call_site(&[]);
             }
 
             // Reclaim the outgoing argument area that was released by the callee, to ensure that
@@ -3355,9 +3348,12 @@ pub(crate) fn emit(
             sink.put1(*imm);
         }
 
-        Inst::XmmUninitializedValue { .. } => {
-            // This instruction format only exists to declare a register as a `def`; no code is
-            // emitted.
+        Inst::XmmUninitializedValue { .. } | Inst::GprUninitializedValue { .. } => {
+            // These instruction formats only exist to declare a register as a
+            // `def`; no code is emitted. This is always immediately followed by
+            // an instruction, such as `xor <tmp>, <tmp>`, that semantically
+            // reads this undefined value but arithmetically produces the same
+            // result regardless of its value.
         }
 
         Inst::XmmMovRM { op, src, dst } => {

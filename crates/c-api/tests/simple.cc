@@ -31,92 +31,9 @@ TEST(Engine, Smoke) {
   engine = Engine(std::move(config));
 }
 
-TEST(PoolAllocationConfig, Smoke) {
-  PoolAllocationConfig config;
-  config.max_unused_warm_slots(1);
-  config.decommit_batch_size(2);
-  config.async_stack_keep_resident(3);
-  config.linear_memory_keep_resident(4);
-  config.table_keep_resident(5);
-  config.total_component_instances(6);
-  config.max_component_instance_size(7);
-  config.max_core_instances_per_component(8);
-  config.max_memories_per_component(9);
-  config.max_tables_per_component(10);
-  config.total_memories(11);
-  config.total_tables(12);
-  config.total_stacks(13);
-  config.total_core_instances(14);
-  config.max_core_instance_size(15);
-  config.max_tables_per_module(16);
-  config.table_elements(17);
-  config.max_memories_per_module(18);
-  config.max_memory_size(19);
-  config.total_gc_heaps(20);
-
-  PoolAllocationConfig config2 = std::move(config);
-  PoolAllocationConfig config3(std::move(config));
-}
-
-TEST(Config, Smoke) {
-  Config config;
-  config.debug_info(false);
-  config.epoch_interruption(false);
-  config.consume_fuel(false);
-  config.max_wasm_stack(100);
-  config.wasm_threads(false);
-  config.wasm_reference_types(false);
-  config.wasm_simd(false);
-  config.wasm_bulk_memory(false);
-  config.wasm_multi_value(false);
-  config.strategy(Strategy::Auto);
-  config.cranelift_debug_verifier(false);
-  config.cranelift_opt_level(OptLevel::Speed);
-  config.profiler(ProfilingStrategy::None);
-  config.memory_reservation(0);
-  config.memory_guard_size(0);
-  auto result = config.cache_load_default();
-  config.cache_load("nonexistent").err();
-
-  PoolAllocationConfig pooling_config;
-  config.pooling_allocation_strategy(pooling_config);
-
-  Config config2 = std::move(config);
-  Config config3(std::move(config));
-}
-
 TEST(wat2wasm, Smoke) {
   wat2wasm("(module)").ok();
   wat2wasm("xxx").err();
-}
-
-TEST(Trap, Smoke) {
-  Trap t("foo");
-  EXPECT_EQ(t.message(), "foo");
-  EXPECT_EQ(t.trace().size(), 0);
-
-  Engine engine;
-  Module m = unwrap(
-      Module::compile(engine, "(module (func (export \"\") unreachable))"));
-  Store store(engine);
-  Instance i = unwrap(Instance::create(store, m, {}));
-  auto func = std::get<Func>(*i.get(store, ""));
-  auto trap = std::get<Trap>(func.call(store, {}).err().data);
-  auto trace = trap.trace();
-  EXPECT_EQ(trace.size(), 1);
-  auto frame = *trace.begin();
-  EXPECT_EQ(frame.func_name(), std::nullopt);
-  EXPECT_EQ(frame.module_name(), std::nullopt);
-  EXPECT_EQ(frame.func_index(), 0);
-  EXPECT_EQ(frame.func_offset(), 1);
-  EXPECT_EQ(frame.module_offset(), 29);
-  for (auto &frame : trace) {
-  }
-
-  EXPECT_TRUE(func.call(store, {}).err().message().find("unreachable") !=
-              std::string::npos);
-  EXPECT_EQ(func.call(store, {1}).err().message(),
-            "expected 0 arguments, got 1");
 }
 
 TEST(Module, Smoke) {
