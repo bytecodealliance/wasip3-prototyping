@@ -918,10 +918,8 @@ impl<T> InstancePre<T> {
         {
             // TODO: do we need to return the store here due to the possible
             // invalidation of the reference we were passed?
-            crate::component::concurrent::on_fiber(store, None, move |store| {
-                self.instantiate_impl(store)
-            })
-            .await?
+            crate::component::concurrent::on_fiber(store, move |store| self.instantiate_impl(store))
+                .await?
         }
         #[cfg(not(feature = "component-model-async"))]
         {

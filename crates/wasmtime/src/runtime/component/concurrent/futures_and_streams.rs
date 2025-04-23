@@ -1,7 +1,8 @@
 use {
     super::{
-        table::TableId, Event, GlobalErrorContextRefCount, HostTaskFuture, HostTaskOutput,
-        LocalErrorContextRefCount, StateTable, Waitable, WaitableCommon, WaitableState,
+        table::{TableDebug, TableId},
+        Event, GlobalErrorContextRefCount, HostTaskOutput, LocalErrorContextRefCount, StateTable,
+        Waitable, WaitableCommon, WaitableState,
     },
     crate::{
         component::{
@@ -30,10 +31,7 @@ use {
         ops::DerefMut,
         ptr::NonNull,
         string::{String, ToString},
-        sync::{
-            atomic::{AtomicU32, Ordering::Relaxed},
-            Arc, Mutex,
-        },
+        sync::{Arc, Mutex},
         task::{Poll, Waker},
         vec::Vec,
     },
@@ -1244,6 +1242,12 @@ impl TransmitHandle {
     }
 }
 
+impl TableDebug for TransmitHandle {
+    fn type_name() -> &'static str {
+        "TransmitHandle"
+    }
+}
+
 struct TransmitState {
     write_handle: TableId<TransmitHandle>,
     read_handle: TableId<TransmitHandle>,
@@ -1263,6 +1267,12 @@ impl Default for TransmitState {
             reader_watcher: None,
             writer_watcher: None,
         }
+    }
+}
+
+impl TableDebug for TransmitState {
+    fn type_name() -> &'static str {
+        "TransmitState"
     }
 }
 
@@ -1398,9 +1408,10 @@ impl Instance {
 
 fn get_state_rep(instance: SendSyncPtr<ComponentInstance>, rep: u32) -> Result<u32> {
     let instance = unsafe { &mut *instance.as_ptr() };
+    let transmit_handle = TableId::<TransmitHandle>::new(rep);
     Ok(instance
-        .get(TableId::<TransmitHandle>::new(rep))
-        .with_context(|| format!("stream or future rep {rep} not found"))?
+        .get(transmit_handle)
+        .with_context(|| format!("stream or future {transmit_handle:?} not found"))?
         .state
         .rep())
 }
@@ -1463,12 +1474,14 @@ impl ComponentInstance {
         }
 
         let (tx, mut rx) = mpsc::channel(1);
-        let run_on_drop = RunOnDrop::new(move || log::trace!("write event loop for {rep} dropped"));
+        let id = TableId::<TransmitHandle>::new(rep);
+        let run_on_drop =
+            RunOnDrop::new(move || log::trace!("write event loop for {id:?} dropped"));
         let task = Box::pin(
             {
                 let instance = SendSyncPtr::new(NonNull::new(self).unwrap());
                 async move {
-                    log::trace!("write event loop for {rep} started");
+                    log::trace!("write event loop for {id:?} started");
                     let mut my_rep = None;
                     while let Some(event) = rx.next().await {
                         if my_rep.is_none() {
@@ -1488,8 +1501,8 @@ impl ComponentInstance {
             }
             .map(move |v| {
                 run_on_drop.cancel();
-                log::trace!("write event loop for {rep} finished: {v:?}");
-                HostTaskOutput::Background(v)
+                log::trace!("write event loop for {id:?} finished: {v:?}");
+                HostTaskOutput::Result(v)
             }),
         );
         self.push_future(task);
@@ -1530,12 +1543,13 @@ impl ComponentInstance {
         }
 
         let (tx, mut rx) = mpsc::channel(1);
-        let run_on_drop = RunOnDrop::new(move || log::trace!("read event loop for {rep} dropped"));
+        let id = TableId::<TransmitHandle>::new(rep);
+        let run_on_drop = RunOnDrop::new(move || log::trace!("read event loop for {id:?} dropped"));
         let task = Box::pin(
             {
                 let instance = SendSyncPtr::new(NonNull::new(self).unwrap());
                 async move {
-                    log::trace!("read event loop for {rep} started");
+                    log::trace!("read event loop for {id:?} started");
                     let mut my_rep = None;
                     while let Some(event) = rx.next().await {
                         if my_rep.is_none() {
@@ -1555,25 +1569,17 @@ impl ComponentInstance {
             }
             .map(move |v| {
                 run_on_drop.cancel();
-                log::trace!("read event loop for {rep} finished: {v:?}");
-                HostTaskOutput::Background(v)
+                log::trace!("read event loop for {id:?} finished: {v:?}");
+                HostTaskOutput::Result(v)
             }),
         );
         self.push_future(task);
         tx
     }
 
-    fn push_event(&mut self, waitable: u32, event: Event) -> Result<()> {
-        log::trace!("push event {event:?} for {waitable}");
-        let waitable = Waitable::Transmit(TableId::<TransmitHandle>::new(waitable))
-            .common(self)?
-            .rep
-            .clone();
-        self.push_future(Box::pin(future::ready(HostTaskOutput::Waitable {
-            waitable,
-            fun: Box::new(move |_| Ok(event)),
-        })) as HostTaskFuture);
-        Ok(())
+    fn set_event(&mut self, waitable: u32, event: Event) -> Result<()> {
+        let waitable = Waitable::Transmit(TableId::<TransmitHandle>::new(waitable));
+        waitable.set_event(self, Some(event))
     }
 
     fn get_mut_by_index(
@@ -1588,21 +1594,13 @@ impl ComponentInstance {
         let state_id = self.push(TransmitState::default())?;
 
         let write = self.push(TransmitHandle::new(state_id))?;
-        self.get_mut(write)?.common.rep.store(write.rep(), Relaxed);
-
         let read = self.push(TransmitHandle::new(state_id))?;
-        self.get_mut(read)?.common.rep.store(read.rep(), Relaxed);
 
         let state = self.get_mut(state_id)?;
         state.write_handle = write;
         state.read_handle = read;
 
-        log::trace!(
-            "new transmit: state {}; write {}; read {}",
-            state_id.rep(),
-            write.rep(),
-            read.rep(),
-        );
+        log::trace!("new transmit: state {state_id:?}; write {write:?}; read {read:?}",);
 
         Ok((write, read))
     }
@@ -1613,10 +1611,9 @@ impl ComponentInstance {
         self.delete(state.read_handle)?;
 
         log::trace!(
-            "delete transmit: state {}; write {}; read {}",
-            state_id.rep(),
-            state.write_handle.rep(),
-            state.read_handle.rep(),
+            "delete transmit: state {state_id:?}; write {:?}; read {:?}",
+            state.write_handle,
+            state.read_handle,
         );
 
         Ok(())
@@ -1701,7 +1698,7 @@ impl ComponentInstance {
                     },
                 )?;
 
-                self.push_event(
+                self.set_event(
                     read_handle.rep(),
                     match ty {
                         TableIndex::Future(ty) => Event::FutureRead { code, ty, handle },
@@ -1793,7 +1790,7 @@ impl ComponentInstance {
                     true
                 };
 
-                self.push_event(
+                self.set_event(
                     write_handle.rep(),
                     match ty {
                         TableIndex::Future(ty) => Event::FutureWrite {
@@ -1852,12 +1849,7 @@ impl ComponentInstance {
             WriteState::Open | WriteState::Closed => {}
         }
 
-        let write_id = transmit.write_handle;
-        let write = self.get_mut(write_id)?;
-        write.common.rep.store(0, Relaxed);
-        write.common.rep = Arc::new(AtomicU32::new(write_id.rep()));
-
-        log::trace!("canceled write {rep}");
+        log::trace!("canceled write {transmit_id:?}");
 
         Ok(ReturnCode::Cancelled(0))
     }
@@ -1874,12 +1866,7 @@ impl ComponentInstance {
             ReadState::Open | ReadState::Closed => {}
         }
 
-        let read_id = transmit.read_handle;
-        let read = self.get_mut(read_id)?;
-        read.common.rep.store(0, Relaxed);
-        read.common.rep = Arc::new(AtomicU32::new(read_id.rep()));
-
-        log::trace!("canceled read {rep}");
+        log::trace!("canceled read {transmit_id:?}");
 
         Ok(ReturnCode::Cancelled(0))
     }
@@ -1933,7 +1920,7 @@ impl ComponentInstance {
                 let code = ReturnCode::Closed(0);
 
                 // Ensure the final read of the guest is queued, with appropriate closure indicator
-                self.push_event(
+                self.set_event(
                     read_handle.rep(),
                     match ty {
                         TableIndex::Future(ty) => Event::FutureRead { code, ty, handle },
@@ -2003,7 +1990,7 @@ impl ComponentInstance {
                 };
 
                 let code = ReturnCode::Closed(0);
-                self.push_event(
+                self.set_event(
                     write_handle.rep(),
                     match ty {
                         TableIndex::Future(ty) => Event::FutureWrite {
@@ -2147,7 +2134,8 @@ impl ComponentInstance {
                         .map(|index| Val::load(lift, ty, &bytes[(index * size)..][..size]))
                         .collect::<Result<Vec<_>>>()?;
 
-                    log::trace!("copy values {values:?} for {rep}");
+                    let id = TableId::<TransmitHandle>::new(rep);
+                    log::trace!("copy values {values:?} for {id:?}");
 
                     let lower = unsafe {
                         &mut LowerContext::new(
@@ -2219,11 +2207,9 @@ impl ComponentInstance {
             );
         };
         *state = StreamFutureState::Busy;
-        let transmit_id = self.get(TableId::<TransmitHandle>::new(rep))?.state;
-        log::trace!(
-            "guest_write {rep} (handle {handle}; state {})",
-            transmit_id.rep()
-        );
+        let transmit_handle = TableId::<TransmitHandle>::new(rep);
+        let transmit_id = self.get(transmit_handle)?.state;
+        log::trace!("guest_write {transmit_handle:?} (handle {handle}; state {transmit_id:?})",);
         let transmit = self.get_mut(transmit_id)?;
         let new_state = if let ReadState::Closed = &transmit.read {
             ReadState::Closed
@@ -2280,7 +2266,7 @@ impl ComponentInstance {
                 let code = ReturnCode::Completed(count.try_into().unwrap());
 
                 if read_complete {
-                    self.push_event(
+                    self.set_event(
                         read_handle_rep,
                         match read_ty {
                             TableIndex::Future(ty) => Event::FutureRead {
@@ -2379,11 +2365,9 @@ impl ComponentInstance {
             );
         };
         *state = StreamFutureState::Busy;
-        let transmit_id = self.get(TableId::<TransmitHandle>::new(rep))?.state;
-        log::trace!(
-            "guest_read {rep} (handle {handle}; state {})",
-            transmit_id.rep()
-        );
+        let transmit_handle = TableId::<TransmitHandle>::new(rep);
+        let transmit_id = self.get(transmit_handle)?.state;
+        log::trace!("guest_read {transmit_handle:?} (handle {handle}; state {transmit_id:?})",);
         let transmit = self.get_mut(transmit_id)?;
         let new_state = if let WriteState::Closed = &transmit.write {
             WriteState::Closed
@@ -2447,7 +2431,7 @@ impl ComponentInstance {
                 let code = ReturnCode::Completed(count.try_into().unwrap());
 
                 if write_complete {
-                    self.push_event(
+                    self.set_event(
                         write_handle_rep,
                         match write_ty {
                             TableIndex::Future(ty) => Event::FutureWrite {
@@ -2525,7 +2509,8 @@ impl ComponentInstance {
         else {
             bail!("invalid stream or future handle");
         };
-        log::trace!("guest cancel write {rep} (handle {writer})");
+        let id = TableId::<TransmitHandle>::new(rep);
+        log::trace!("guest cancel write {id:?} (handle {writer})");
         match state {
             StreamFutureState::Write => {
                 bail!("stream or future write canceled when no write is pending")
@@ -2537,7 +2522,7 @@ impl ComponentInstance {
                 *state = StreamFutureState::Write;
             }
         }
-        let rep = self.get(TableId::<TransmitHandle>::new(rep))?.state.rep();
+        let rep = self.get(id)?.state.rep();
         self.host_cancel_write(rep)
     }
 
@@ -2552,7 +2537,8 @@ impl ComponentInstance {
         else {
             bail!("invalid stream or future handle");
         };
-        log::trace!("guest cancel read {rep} (handle {reader})");
+        let id = TableId::<TransmitHandle>::new(rep);
+        log::trace!("guest cancel read {id:?} (handle {reader})");
         match state {
             StreamFutureState::Read => {
                 bail!("stream or future read canceled when no read is pending")
@@ -2564,7 +2550,7 @@ impl ComponentInstance {
                 *state = StreamFutureState::Read;
             }
         }
-        let rep = self.get(TableId::<TransmitHandle>::new(rep))?.state.rep();
+        let rep = self.get(id)?.state.rep();
         self.host_cancel_read(rep)
     }
 
@@ -2604,8 +2590,9 @@ impl ComponentInstance {
             }
             StreamFutureState::Busy => bail!("cannot drop busy stream or future"),
         }
-        let rep = self.get(TableId::<TransmitHandle>::new(rep))?.state.rep();
-        log::trace!("guest_close_readable: close reader {rep}");
+        let id = TableId::<TransmitHandle>::new(rep);
+        let rep = self.get(id)?.state.rep();
+        log::trace!("guest_close_readable: close reader {id:?}");
         self.host_close_reader(rep)
     }
 

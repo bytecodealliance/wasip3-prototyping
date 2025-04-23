@@ -224,7 +224,7 @@ impl StoreOpaque {
         assert!(self.async_support());
         #[cfg(feature = "component-model-async")]
         {
-            concurrent::on_fiber_opaque(self, None, move |store| unsafe {
+            concurrent::on_fiber_opaque(self, move |store| unsafe {
                 store.maybe_async_gc(None, why.map(|oom| oom.bytes_needed()))
             })
             .await??;

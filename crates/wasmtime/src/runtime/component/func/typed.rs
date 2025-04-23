@@ -19,11 +19,17 @@ use wasmtime_environ::component::{
 };
 
 #[cfg(feature = "component-model-async")]
-use crate::component::concurrent::{self, PreparedCall};
+use crate::component::concurrent::{self, PreparedCall, ResetPtr};
+#[cfg(feature = "component-model-async")]
+use crate::VMStore;
+#[cfg(feature = "component-model-async")]
+use core::any::Any;
 #[cfg(feature = "component-model-async")]
 use core::future::{self, Future};
 #[cfg(feature = "component-model-async")]
-use core::pin::Pin;
+use core::pin::{pin, Pin};
+#[cfg(feature = "component-model-async")]
+use core::sync::atomic::Ordering::Relaxed;
 
 /// A statically-typed version of [`Func`] which takes `Params` as input and
 /// returns `Return`.
@@ -201,9 +207,18 @@ where
         );
         #[cfg(feature = "component-model-async")]
         {
-            let instance = store.0[self.func.0].component_instance;
-            concurrent::on_fiber(store, Some(instance), move |store| {
-                self.call_impl(store, params)
+            let mut params = params;
+            let mut store = store;
+            let instance = store.0[self.func.0].instance;
+            let prepared = self.prepare_call(store.as_context_mut(), drop)?;
+            let param_ptr = prepared.params().clone();
+            let call = concurrent::defer_call(store.as_context_mut(), prepared)?;
+            let mut future = pin!(instance.run(store, call));
+            future::poll_fn(move |cx| {
+                let params = &mut params;
+                param_ptr.store((params as *mut Params).cast(), Relaxed);
+                let _reset = ResetPtr(&param_ptr);
+                future.as_mut().poll(cx)
             })
             .await?
         }
@@ -244,8 +259,17 @@ where
             "cannot use `call_concurrent` when async support is not enabled on the config"
         );
 
-        match self.prepare_call(store.as_context_mut(), params) {
-            Ok(prepared) => Box::pin(concurrent::defer_call(store, prepared)),
+        let result = (|| {
+            let prepared =
+                self.prepare_call(store.as_context_mut(), concurrent::drop_params::<Params>)?;
+            prepared
+                .params()
+                .store(Box::into_raw(Box::new(params)).cast(), Relaxed);
+            concurrent::defer_call(store, prepared)
+        })();
+
+        match result {
+            Ok(future) => Box::pin(future),
             Err(e) => Box::pin(future::ready(Err(e))),
         }
     }
@@ -254,76 +278,85 @@ where
     fn prepare_call<'a, T: Send>(
         self,
         store: StoreContextMut<'a, T>,
-        params: Params,
+        drop_params: unsafe fn(*mut u8),
     ) -> Result<PreparedCall<Return>>
     where
-        Params: Send + Sync + 'static,
+        Params: Send + Sync,
         Return: Send + Sync + 'static,
     {
+        let param_count = mem::size_of::<Params::Lower>() / mem::size_of::<ValRaw>();
         if store.0[self.func.0].options.async_() {
             if Params::flatten_count() <= MAX_FLAT_PARAMS {
                 if Return::flatten_count() <= MAX_FLAT_PARAMS {
-                    self.func.prepare_call_raw(
+                    self.func.prepare_call(
                         store,
-                        params,
-                        Self::lower_stack_args,
-                        Self::lift_stack_result_raw,
+                        Self::lower_stack_args_fn::<T>,
+                        drop_params,
+                        Self::lift_stack_result_fn::<T>,
+                        param_count,
                     )
                 } else {
-                    self.func.prepare_call_raw(
+                    self.func.prepare_call(
                         store,
-                        params,
-                        Self::lower_stack_args,
-                        Self::lift_heap_result_raw,
+                        Self::lower_stack_args_fn::<T>,
+                        drop_params,
+                        Self::lift_heap_result_fn::<T>,
+                        param_count,
                     )
                 }
             } else {
                 if Return::flatten_count() <= MAX_FLAT_PARAMS {
-                    self.func.prepare_call_raw(
+                    self.func.prepare_call(
                         store,
-                        params,
-                        Self::lower_heap_args,
-                        Self::lift_stack_result_raw,
+                        Self::lower_heap_args_fn::<T>,
+                        drop_params,
+                        Self::lift_stack_result_fn::<T>,
+                        1,
                     )
                 } else {
-                    self.func.prepare_call_raw(
+                    self.func.prepare_call(
                         store,
-                        params,
-                        Self::lower_heap_args,
-                        Self::lift_heap_result_raw,
+                        Self::lower_heap_args_fn::<T>,
+                        drop_params,
+                        Self::lift_heap_result_fn::<T>,
+                        1,
                     )
                 }
             }
         } else if Params::flatten_count() <= MAX_FLAT_PARAMS {
             if Return::flatten_count() <= MAX_FLAT_RESULTS {
-                self.func.prepare_call_raw(
+                self.func.prepare_call(
                     store,
-                    params,
-                    Self::lower_stack_args,
-                    Self::lift_stack_result_raw,
+                    Self::lower_stack_args_fn::<T>,
+                    drop_params,
+                    Self::lift_stack_result_fn::<T>,
+                    param_count,
                 )
             } else {
-                self.func.prepare_call_raw(
+                self.func.prepare_call(
                     store,
-                    params,
-                    Self::lower_stack_args,
-                    Self::lift_heap_result_raw,
+                    Self::lower_stack_args_fn::<T>,
+                    drop_params,
+                    Self::lift_heap_result_fn::<T>,
+                    param_count,
                 )
             }
         } else {
             if Return::flatten_count() <= MAX_FLAT_RESULTS {
-                self.func.prepare_call_raw(
+                self.func.prepare_call(
                     store,
-                    params,
-                    Self::lower_heap_args,
-                    Self::lift_stack_result_raw,
+                    Self::lower_heap_args_fn::<T>,
+                    drop_params,
+                    Self::lift_stack_result_fn::<T>,
+                    1,
                 )
             } else {
-                self.func.prepare_call_raw(
+                self.func.prepare_call(
                     store,
-                    params,
-                    Self::lower_heap_args,
-                    Self::lift_heap_result_raw,
+                    Self::lower_heap_args_fn::<T>,
+                    drop_params,
+                    Self::lift_heap_result_fn::<T>,
+                    1,
                 )
             }
         }
@@ -340,88 +373,8 @@ where
         let store = store.as_context_mut();
 
         if store.0[self.func.0].options.async_() {
-            #[cfg(feature = "component-model-async")]
-            if store.0.async_support() {
-                if Params::flatten_count() <= MAX_FLAT_PARAMS {
-                    if Return::flatten_count() <= MAX_FLAT_PARAMS {
-                        self.func.call_raw_async(
-                            store,
-                            params,
-                            Self::lower_stack_args,
-                            Self::lift_stack_result_raw,
-                        )
-                    } else {
-                        self.func.call_raw_async(
-                            store,
-                            params,
-                            Self::lower_stack_args,
-                            Self::lift_heap_result_raw,
-                        )
-                    }
-                } else {
-                    if Return::flatten_count() <= MAX_FLAT_PARAMS {
-                        self.func.call_raw_async(
-                            store,
-                            params,
-                            Self::lower_heap_args,
-                            Self::lift_stack_result_raw,
-                        )
-                    } else {
-                        self.func.call_raw_async(
-                            store,
-                            params,
-                            Self::lower_heap_args,
-                            Self::lift_heap_result_raw,
-                        )
-                    }
-                }
-            } else {
-                bail!("must enable async support in the config to call async-lifted exports")
-            }
-            #[cfg(not(feature = "component-model-async"))]
-            {
-                bail!(
-                    "must enable the `component-model-async` feature to call async-lifted exports"
-                )
-            }
+            bail!("must enable the `component-model-async` feature to call async-lifted exports")
         } else {
-            #[cfg(feature = "component-model-async")]
-            if store.0.async_support() {
-                return if Params::flatten_count() <= MAX_FLAT_PARAMS {
-                    if Return::flatten_count() <= MAX_FLAT_RESULTS {
-                        self.func.call_raw_async(
-                            store,
-                            params,
-                            Self::lower_stack_args,
-                            Self::lift_stack_result_raw,
-                        )
-                    } else {
-                        self.func.call_raw_async(
-                            store,
-                            params,
-                            Self::lower_stack_args,
-                            Self::lift_heap_result_raw,
-                        )
-                    }
-                } else {
-                    if Return::flatten_count() <= MAX_FLAT_RESULTS {
-                        self.func.call_raw_async(
-                            store,
-                            params,
-                            Self::lower_heap_args,
-                            Self::lift_stack_result_raw,
-                        )
-                    } else {
-                        self.func.call_raw_async(
-                            store,
-                            params,
-                            Self::lower_heap_args,
-                            Self::lift_heap_result_raw,
-                        )
-                    }
-                };
-            }
-
             // Note that this is in theory simpler than it might read at this time.
             // Here we're doing a runtime dispatch on the `flatten_count` for the
             // params/results to see whether they're inbounds. This creates 4 cases
@@ -485,6 +438,22 @@ where
         Ok(())
     }
 
+    #[cfg(feature = "component-model-async")]
+    fn lower_stack_args_fn<T>(
+        func: Func,
+        store: *mut dyn VMStore,
+        params_in: *mut u8,
+        params_out: &mut [MaybeUninit<ValRaw>],
+    ) -> Result<()> {
+        super::lower_params(
+            store,
+            params_out,
+            func,
+            unsafe { &*params_in.cast() },
+            Self::lower_stack_args::<T>,
+        )
+    }
+
     /// Lower parameters onto a heap-allocated location.
     ///
     /// This is used when the stack space to be used for the arguments is above
@@ -522,6 +491,22 @@ where
         Ok(())
     }
 
+    #[cfg(feature = "component-model-async")]
+    fn lower_heap_args_fn<T>(
+        func: Func,
+        store: *mut dyn VMStore,
+        params_in: *mut u8,
+        params_out: &mut [MaybeUninit<ValRaw>],
+    ) -> Result<()> {
+        super::lower_params(
+            store,
+            params_out,
+            func,
+            unsafe { &*params_in.cast() },
+            Self::lower_heap_args::<T>,
+        )
+    }
+
     /// Lift the result of a function directly from the stack result.
     ///
     /// This is only used when the result fits in the maximum number of stack
@@ -543,6 +528,18 @@ where
         Self::lift_stack_result(cx, ty, unsafe {
             crate::component::storage::slice_to_storage(dst)
         })
+    }
+
+    #[cfg(feature = "component-model-async")]
+    fn lift_stack_result_fn<T>(
+        func: Func,
+        store: *mut dyn VMStore,
+        results: &[ValRaw],
+    ) -> Result<Box<dyn Any + Send + Sync>>
+    where
+        Return: Send + Sync + 'static,
+    {
+        super::lift_results::<_, T, _>(store, results, func, Self::lift_stack_result_raw)
     }
 
     /// Lift the result of a function where the result is stored indirectly on
@@ -574,6 +571,18 @@ where
         dst: &[ValRaw],
     ) -> Result<Return> {
         Self::lift_heap_result(cx, ty, &dst[0])
+    }
+
+    #[cfg(feature = "component-model-async")]
+    fn lift_heap_result_fn<T>(
+        func: Func,
+        store: *mut dyn VMStore,
+        results: &[ValRaw],
+    ) -> Result<Box<dyn Any + Send + Sync>>
+    where
+        Return: Send + Sync + 'static,
+    {
+        super::lift_results::<_, T, _>(store, results, func, Self::lift_heap_result_raw)
     }
 
     /// See [`Func::post_return`]

@@ -150,7 +150,7 @@ where
         }
         #[cfg(feature = "component-model-async")]
         {
-            crate::component::concurrent::on_fiber(store, None, |store| {
+            crate::component::concurrent::on_fiber(store, |store| {
                 let func = self.func.vm_func_ref(store.0);
                 unsafe { Self::call_raw(store, &self.ty, func, params) }
             })

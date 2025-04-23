@@ -100,7 +100,7 @@ impl Table {
         );
         #[cfg(feature = "component-model-async")]
         {
-            crate::component::concurrent::on_fiber(store, None, move |store| {
+            crate::component::concurrent::on_fiber(store, move |store| {
                 Table::_new(store.0, ty, init)
             })
             .await?
@@ -305,7 +305,7 @@ impl Table {
         );
         #[cfg(feature = "component-model-async")]
         {
-            crate::component::concurrent::on_fiber(store, None, move |store| {
+            crate::component::concurrent::on_fiber(store, move |store| {
                 self.grow(store, delta, init)
             })
             .await?
