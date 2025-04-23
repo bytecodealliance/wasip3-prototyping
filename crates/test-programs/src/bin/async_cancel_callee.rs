@@ -19,7 +19,7 @@ use {
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "[export]local:local/sleep-with-options")]
 unsafe extern "C" {
-    #[link_name = "[task-return]sleep-millis"]
+    #[link_name = "[task-return][async]sleep-millis"]
     fn task_return_sleep_millis();
 }
 #[cfg(not(target_arch = "wasm32"))]
@@ -30,7 +30,7 @@ unsafe extern "C" fn task_return_sleep_millis() {
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "local:local/sleep")]
 unsafe extern "C" {
-    #[link_name = "sleep-millis"]
+    #[link_name = "[async]sleep-millis"]
     fn sleep_millis(_: u64);
 }
 #[cfg(not(target_arch = "wasm32"))]
@@ -41,7 +41,7 @@ unsafe fn sleep_millis(_: u64) {
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "local:local/sleep")]
 unsafe extern "C" {
-    #[link_name = "[async-lower]sleep-millis"]
+    #[link_name = "[async-lower][async]sleep-millis"]
     fn sleep_millis_async(_: *mut u8, _: *mut u8) -> u32;
 }
 #[cfg(not(target_arch = "wasm32"))]
@@ -89,14 +89,14 @@ unsafe extern "C" fn export_set_backpressure(enabled: bool) {
     async_support::backpressure_set(enabled);
 }
 
-#[unsafe(export_name = "local:local/sleep#sleep-millis")]
+#[unsafe(export_name = "local:local/sleep#[async]sleep-millis")]
 unsafe extern "C" fn export_sleep_sleep_millis(time_in_millis: u64) {
     unsafe {
         sleep_millis(time_in_millis);
     }
 }
 
-#[unsafe(export_name = "[async-lift]local:local/sleep-with-options#sleep-millis")]
+#[unsafe(export_name = "[async-lift]local:local/sleep-with-options#[async]sleep-millis")]
 unsafe extern "C" fn export_sleep_with_options_sleep_millis(
     time_in_millis: u64,
     on_cancel: u8,
@@ -119,7 +119,7 @@ unsafe extern "C" fn export_sleep_with_options_sleep_millis(
     }
 }
 
-#[unsafe(export_name = "[callback][async-lift]local:local/sleep-with-options#sleep-millis")]
+#[unsafe(export_name = "[callback][async-lift]local:local/sleep-with-options#[async]sleep-millis")]
 unsafe extern "C" fn callback_sleep_with_options_sleep_millis(
     event0: u32,
     event1: u32,

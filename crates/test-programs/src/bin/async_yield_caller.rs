@@ -2,15 +2,6 @@ mod bindings {
     wit_bindgen::generate!({
         path: "../misc/component-async-tests/wit",
         world: "yield-caller",
-        async: {
-            imports: [
-                "local:local/ready#when-ready",
-                "local:local/run#run",
-            ],
-            exports: [
-                "local:local/run#run",
-            ],
-        }
     });
 
     use super::Component;

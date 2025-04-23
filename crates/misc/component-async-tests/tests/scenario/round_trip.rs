@@ -347,7 +347,7 @@ pub async fn test_round_trip(component: &[u8], inputs_and_outputs: &[(&str, &str
         linker
             .root()
             .instance("local:local/baz")?
-            .func_new_concurrent("foo", |_, params| {
+            .func_new_concurrent("[async]foo", |_, params| {
                 Box::pin(async move {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                     let Some(Val::String(s)) = params.into_iter().next() else {
@@ -366,7 +366,7 @@ pub async fn test_round_trip(component: &[u8], inputs_and_outputs: &[(&str, &str
             .get_export_index(&mut store, None, "local:local/baz")
             .ok_or_else(|| anyhow!("can't find `local:local/baz` in instance"))?;
         let foo_function = instance
-            .get_export_index(&mut store, Some(&baz_instance), "foo")
+            .get_export_index(&mut store, Some(&baz_instance), "[async]foo")
             .ok_or_else(|| anyhow!("can't find `foo` in instance"))?;
         let foo_function = instance
             .get_func(&mut store, foo_function)

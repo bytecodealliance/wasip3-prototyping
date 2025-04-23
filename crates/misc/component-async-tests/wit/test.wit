@@ -1,7 +1,7 @@
 package local:local;
 
 interface baz {
-  foo: func(s: string) -> string;
+  foo: async func(s: string) -> string;
 }
 
 world round-trip {
@@ -16,7 +16,7 @@ interface many {
     c: u64
   }
 
-  foo: func(a: string,
+  foo: async func(a: string,
             b: u32,
             c: list<u8>,
             d: tuple<u64, u64>,
@@ -44,7 +44,7 @@ world round-trip-direct {
 
 interface ready {
   set-ready: func(ready: bool);
-  when-ready: func();
+  when-ready: async func();
 }
 
 interface continue {
@@ -53,7 +53,7 @@ interface continue {
 }
 
 interface run {
-  run: func();
+  run: async func();
 }
 
 interface backpressure {
@@ -70,14 +70,14 @@ interface transmit {
     write-future(string),
   }
 
-  exchange: func(control: stream<control>,
+  exchange: async func(control: stream<control>,
                  caller-stream: stream<string>,
                  caller-future1: future<string>,
                  caller-future2: future<string>) -> tuple<stream<string>, future<string>, future<string>>;
 }
 
 interface post-return {
-  foo: func(s: string) -> string;
+  foo: async func(s: string) -> string;
   get-post-return-value: func() -> string;
 }
 
@@ -91,16 +91,16 @@ interface borrowing-types {
 interface borrowing {
   use borrowing-types.{x};
 
-  foo: func(x: borrow<x>, misbehave: bool);
+  foo: async func(x: borrow<x>, misbehave: bool);
 }
 
 interface run-bool {
-  run: func(v: bool);
+  run: async func(v: bool);
 }
 
 interface run-result {
-  run-fail: func() -> result<_, error-context>;
-  run-pass: func() -> result<_, error-context>;
+  run-fail: async func() -> result<_, error-context>;
+  run-pass: async func() -> result<_, error-context>;
 }
 
 interface run-stream {
@@ -112,7 +112,7 @@ interface run-future {
 }
 
 interface unit-stream {
-  run: func(count: u32) -> stream;
+  run: async func(count: u32) -> stream;
 }
 
 interface resource-stream {
@@ -131,11 +131,11 @@ interface closed {
 interface chain-http {
   use wasi:http/types@0.3.0-draft.{request, response, error-code};
 
-  handle: func(request: request) -> result<response, error-code>;
+  handle: async func(request: request) -> result<response, error-code>;
 }
 
 interface sleep {
-  sleep-millis: func(time-in-millis: u64);
+  sleep-millis: async func(time-in-millis: u64);
 }
 
 interface sleep-with-options {
@@ -145,8 +145,8 @@ interface sleep-with-options {
     task-return,
     task-cancel
   }
-  
-  sleep-millis: func(time-in-millis: u64, on-cancel: on-cancel, on-cancel-delay-millis: u64, synchronous-delay: bool, mode: mode);
+
+  sleep-millis: async func(time-in-millis: u64, on-cancel: on-cancel, on-cancel-delay-millis: u64, synchronous-delay: bool, mode: mode);
 }
 
 interface cancel {

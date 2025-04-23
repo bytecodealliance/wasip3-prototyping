@@ -2,14 +2,6 @@ mod bindings {
     wit_bindgen::generate!({
         path: "../misc/component-async-tests/wit",
         world: "unit-stream-caller",
-        async: {
-            imports: [
-                "local:local/unit-stream#run",
-            ],
-            exports: [
-                "local:local/run#run",
-            ],
-        }
     });
 
     use super::Component;

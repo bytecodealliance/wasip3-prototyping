@@ -2,11 +2,6 @@ mod bindings {
     wit_bindgen::generate!({
         path: "../misc/component-async-tests/wit",
         world: "backpressure-callee",
-        async: {
-            exports: [
-                "local:local/run#run"
-            ]
-        }
     });
 
     use super::Component;
