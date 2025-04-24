@@ -294,12 +294,12 @@ regalloc2 = "0.12.1"
 
 # cap-std family:
 target-lexicon = "0.13.0"
-cap-std = "3.4.1"
-cap-rand = { version = "3.4.1", features = ["small_rng"] }
-cap-fs-ext = "3.4.1"
-cap-net-ext = "3.4.1"
-cap-time-ext = "3.4.1"
-cap-tempfile = "3.4.1"
+cap-std = "3.4.4"
+cap-rand = { version = "3.4.4", features = ["small_rng"] }
+cap-fs-ext = "3.4.4"
+cap-net-ext = "3.4.4"
+cap-time-ext = "3.4.4"
+cap-tempfile = "3.4.4"
 fs-set-times = "0.20.1"
 system-interface = { version = "0.27.1", features = ["cap_std_impls"] }
 io-lifetimes = { version = "2.0.3", default-features = false }
@@ -311,17 +311,17 @@ wit-bindgen-rust-macro = { version = "0.41.0", default-features = false }
 wit-bindgen-rt = { version = "0.41.0", default-features = false }
 
 # wasm-tools family:
-wasmparser = { version = "0.228.0", default-features = false, features = ['simd'] }
-wat = "1.228.0"
-wast = "228.0.0"
-wasmprinter = "0.228.0"
-wasm-encoder = "0.228.0"
-wasm-smith = "0.228.0"
-wasm-mutate = "0.228.0"
-wit-parser = "0.228.0"
-wit-component = "0.228.0"
-wasm-wave = "0.228.0"
-wasm-compose = "0.228.0"
+wasmparser = { version = "0.229.0", default-features = false, features = ['simd'] }
+wat = "1.229.0"
+wast = "229.0.0"
+wasmprinter = "0.229.0"
+wasm-encoder = "0.229.0"
+wasm-smith = "0.229.0"
+wasm-mutate = "0.229.0"
+wit-parser = "0.229.0"
+wit-component = "0.229.0"
+wasm-wave = "0.229.0"
+wasm-compose = "0.229.0"
 
 # Non-Bytecode Alliance maintained dependencies:
 # --------------------------
@@ -588,6 +588,10 @@ incremental = false
 debug-assertions = false
 overflow-checks = false
 opt-level = 's'
+
+[profile.profiling]
+inherits = "bench"
+debug = "line-tables-only"
 
 [profile.fastest-runtime]
 inherits = "release"

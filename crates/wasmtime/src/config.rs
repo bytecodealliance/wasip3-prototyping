@@ -379,7 +379,7 @@ impl Config {
     /// arbitrarily long in the worst case, likely blocking all other
     /// asynchronous tasks.
     ///
-    /// To remedy this situation you have a a few possible ways to solve this:
+    /// To remedy this situation you have a few possible ways to solve this:
     ///
     /// * The most efficient solution is to enable
     ///   [`Config::epoch_interruption`] in conjunction with
@@ -2173,7 +2173,6 @@ impl Config {
     /// Returns the configured compiler target for this `Config`.
     pub(crate) fn compiler_target(&self) -> target_lexicon::Triple {
         // If a target is explicitly configured, always use that.
-        #[cfg(any(feature = "cranelift", feature = "winch"))]
         if let Some(target) = self.target.clone() {
             return target;
         }
