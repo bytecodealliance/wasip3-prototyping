@@ -98,7 +98,7 @@ pub unsafe fn subtask_cancel_async(_: u32) -> u32 {
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "$root")]
 unsafe extern "C" {
-    #[link_name = "[context-get-1]"]
+    #[link_name = "[context-get-0]"]
     pub fn context_get() -> u32;
 }
 #[cfg(not(target_arch = "wasm32"))]
@@ -109,7 +109,7 @@ pub unsafe fn context_get() -> u32 {
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "$root")]
 unsafe extern "C" {
-    #[link_name = "[context-set-1]"]
+    #[link_name = "[context-set-0]"]
     pub fn context_set(value: u32);
 }
 #[cfg(not(target_arch = "wasm32"))]

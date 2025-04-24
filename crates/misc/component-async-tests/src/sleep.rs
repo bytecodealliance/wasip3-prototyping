@@ -10,7 +10,7 @@ wasmtime::component::bindgen!({
     concurrent_exports: true,
     async: {
         only_imports: [
-            "local:local/sleep#sleep-millis",
+            "local:local/sleep#[async]sleep-millis",
         ]
     },
 });

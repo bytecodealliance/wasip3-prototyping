@@ -2,14 +2,6 @@ mod bindings {
     wit_bindgen::generate!({
         path: "../misc/component-async-tests/wit",
         world: "backpressure-caller",
-        async: {
-            imports: [
-                "local:local/run#run"
-            ],
-            exports: [
-                "local:local/run#run"
-            ]
-        }
     });
 
     use super::Component;

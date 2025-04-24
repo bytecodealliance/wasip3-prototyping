@@ -2,6 +2,7 @@ mod bindings {
     wit_bindgen::generate!({
         path: "../misc/component-async-tests/wit",
         world: "poll",
+        async: false,
     });
 
     use super::Component;
@@ -26,7 +27,7 @@ fn async_when_ready() -> u32 {
     {
         #[link(wasm_import_module = "local:local/ready")]
         unsafe extern "C" {
-            #[link_name = "[async-lower]when-ready"]
+            #[link_name = "[async-lower][async]when-ready"]
             fn call_when_ready(_: *mut u8, _: *mut u8) -> u32;
         }
         unsafe { call_when_ready(std::ptr::null_mut(), std::ptr::null_mut()) }

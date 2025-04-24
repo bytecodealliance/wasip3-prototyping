@@ -2,15 +2,6 @@ mod bindings {
     wit_bindgen::generate!({
         path: "../misc/component-async-tests/wit",
         world: "middleware-with-chain",
-        async: {
-            imports: [
-                "local:local/chain-http#handle",
-                "local:local/sleep#sleep-millis"
-            ],
-            exports: [
-                "wasi:http/handler@0.3.0-draft#handle",
-            ]
-        },
         generate_all,
     });
 

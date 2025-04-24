@@ -7,144 +7,7 @@
 //!
 //! # Examples
 //!
-//! If you have a WIT world which refers to `wasi:cli` interfaces you probably want to
-//! use this crate's bindings rather than generate fresh bindings. That can be
-//! done using the `with` option to [`bindgen!`]:
-//!
-//! ```rust
-//! use core::future::Future;
-//!
-//! use wasmtime_wasi::p3::cli::{WasiCliCtx, WasiCliView};
-//! use wasmtime_wasi::p3::clocks::{WasiClocksCtx, WasiClocksView};
-//! use wasmtime_wasi::p3::filesystem::{WasiFilesystemCtx, WasiFilesystemView};
-//! use wasmtime_wasi::p3::random::{WasiRandomCtx, WasiRandomView};
-//! use wasmtime_wasi::p3::sockets::{WasiSocketsCtx, WasiSocketsView};
-//! use wasmtime_wasi::p3::ResourceView;
-//! use wasmtime::{Result, StoreContextMut, Engine, Config};
-//! use wasmtime::component::{Accessor, Linker, ResourceTable};
-//!
-//! wasmtime::component::bindgen!({
-//!     world: "example:wasi/my-world",
-//!     inline: "
-//!         package example:wasi;
-//!
-//!         // An example of extending the `wasi:cli/imports` world with a
-//!         // custom host interface.
-//!         world my-world {
-//!             include wasi:cli/imports@0.3.0;
-//!
-//!             import custom-host;
-//!         }
-//!
-//!         interface custom-host {
-//!             my-custom-function: func();
-//!         }
-//!     ",
-//!     path: "src/p3/wit",
-//!     with: {
-//!         "wasi": wasmtime_wasi::p3::bindings,
-//!     },
-//!     concurrent_exports: true,
-//!     concurrent_imports: true,
-//!     async: {
-//!         only_imports: [
-//!             "example:wasi/custom-host#my-custom-function",
-//!             "wasi:cli/stdin@0.3.0#get-stdin",
-//!             "wasi:cli/stdout@0.3.0#set-stdout",
-//!             "wasi:cli/stderr@0.3.0#set-stderr",
-//!             "wasi:clocks/monotonic-clock@0.3.0#wait-for",
-//!             "wasi:clocks/monotonic-clock@0.3.0#wait-until",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.read-via-stream",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.write-via-stream",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.append-via-stream",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.advise",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.sync-data",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.get-flags",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.get-type",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.set-size",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.set-times",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.read-directory",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.sync",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.create-directory-at",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.stat",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.stat-at",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.set-times-at",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.link-at",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.open-at",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.readlink-at",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.remove-directory-at",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.rename-at",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.symlink-at",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.unlink-file-at",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.is-same-object",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.metadata-hash",
-//!             "wasi:filesystem/types@0.3.0#[method]descriptor.metadata-hash-at",
-//!             "wasi:sockets/ip-name-lookup@0.3.0#resolve-addresses",
-//!             "wasi:sockets/types@0.3.0#[method]tcp-socket.bind",
-//!             "wasi:sockets/types@0.3.0#[method]tcp-socket.connect",
-//!             "wasi:sockets/types@0.3.0#[method]tcp-socket.listen",
-//!             "wasi:sockets/types@0.3.0#[method]tcp-socket.receive",
-//!             "wasi:sockets/types@0.3.0#[method]tcp-socket.send",
-//!             "wasi:sockets/types@0.3.0#[method]udp-socket.bind",
-//!             "wasi:sockets/types@0.3.0#[method]udp-socket.connect",
-//!             "wasi:sockets/types@0.3.0#[method]udp-socket.receive",
-//!             "wasi:sockets/types@0.3.0#[method]udp-socket.send",
-//!         ],
-//!     },
-//! });
-//!
-//! struct MyState {
-//!     cli: WasiCliCtx,
-//!     clocks: WasiClocksCtx,
-//!     filesystem: WasiFilesystemCtx,
-//!     random: WasiRandomCtx,
-//!     sockets: WasiSocketsCtx,
-//!     table: ResourceTable,
-//! }
-//!
-//! impl example::wasi::custom_host::Host for MyState {
-//!     async fn my_custom_function<T>(_store: &mut Accessor<T, Self>) {
-//!         // ..
-//!     }
-//! }
-//!
-//! impl ResourceView for MyState {
-//!     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
-//! }
-//!
-//! impl WasiCliView for MyState {
-//!     fn cli(&mut self) -> &WasiCliCtx { &self.cli }
-//! }
-//!
-//! impl WasiClocksView for MyState {
-//!     fn clocks(&mut self) -> &WasiClocksCtx { &self.clocks }
-//! }
-//!
-//! impl WasiFilesystemView for MyState {
-//!     fn filesystem(&self) -> &WasiFilesystemCtx { &self.filesystem }
-//! }
-//!
-//! impl WasiRandomView for MyState {
-//!     fn random(&mut self) -> &mut WasiRandomCtx { &mut self.random }
-//! }
-//!
-//! impl WasiSocketsView for MyState {
-//!     fn sockets(&self) -> &WasiSocketsCtx { &self.sockets }
-//! }
-//!
-//! fn main() -> Result<()> {
-//!     let mut config = Config::default();
-//!     config.async_support(true);
-//!     let engine = Engine::new(&config)?;
-//!     let mut linker: Linker<MyState> = Linker::new(&engine);
-//!     wasmtime_wasi::p3::add_to_linker(&mut linker)?;
-//!     //example::wasi::custom_host::add_to_linker(&mut linker, |state| state)?;
-//!
-//!     // .. use `Linker` to instantiate component ...
-//!
-//!     Ok(())
-//! }
-//! ```
+//! TODO: fill this back in
 
 mod generated {
     wasmtime::component::bindgen!({
@@ -159,43 +22,43 @@ mod generated {
                 "wasi:cli/stdin@0.3.0#get-stdin",
                 "wasi:cli/stdout@0.3.0#set-stdout",
                 "wasi:cli/stderr@0.3.0#set-stderr",
-                "wasi:clocks/monotonic-clock@0.3.0#wait-for",
-                "wasi:clocks/monotonic-clock@0.3.0#wait-until",
+                "wasi:clocks/monotonic-clock@0.3.0#[async]wait-for",
+                "wasi:clocks/monotonic-clock@0.3.0#[async]wait-until",
                 "wasi:filesystem/types@0.3.0#[method]descriptor.read-via-stream",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.write-via-stream",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.append-via-stream",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.advise",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.sync-data",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.get-flags",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.get-type",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.set-size",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.set-times",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.read-directory",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.sync",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.create-directory-at",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.stat",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.stat-at",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.set-times-at",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.link-at",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.open-at",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.readlink-at",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.remove-directory-at",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.rename-at",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.symlink-at",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.unlink-file-at",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.is-same-object",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.metadata-hash",
-                "wasi:filesystem/types@0.3.0#[method]descriptor.metadata-hash-at",
-                "wasi:sockets/ip-name-lookup@0.3.0#resolve-addresses",
-                "wasi:sockets/types@0.3.0#[method]tcp-socket.bind",
-                "wasi:sockets/types@0.3.0#[method]tcp-socket.connect",
-                "wasi:sockets/types@0.3.0#[method]tcp-socket.listen",
-                "wasi:sockets/types@0.3.0#[method]tcp-socket.receive",
-                "wasi:sockets/types@0.3.0#[method]tcp-socket.send",
-                "wasi:sockets/types@0.3.0#[method]udp-socket.bind",
-                "wasi:sockets/types@0.3.0#[method]udp-socket.connect",
-                "wasi:sockets/types@0.3.0#[method]udp-socket.receive",
-                "wasi:sockets/types@0.3.0#[method]udp-socket.send",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.write-via-stream",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.append-via-stream",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.advise",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.sync-data",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.get-flags",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.get-type",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.set-size",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.set-times",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.read-directory",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.sync",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.create-directory-at",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.stat",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.stat-at",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.set-times-at",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.link-at",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.open-at",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.readlink-at",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.remove-directory-at",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.rename-at",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.symlink-at",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.unlink-file-at",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.is-same-object",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.metadata-hash",
+                "wasi:filesystem/types@0.3.0#[async method]descriptor.metadata-hash-at",
+                "wasi:sockets/ip-name-lookup@0.3.0#[async]resolve-addresses",
+                "[method]tcp-socket.bind",
+                "[async method]tcp-socket.connect",
+                "[method]tcp-socket.listen",
+                "[method]tcp-socket.receive",
+                "[async method]tcp-socket.send",
+                "[method]udp-socket.bind",
+                "[method]udp-socket.connect",
+                "[async method]udp-socket.receive",
+                "[async method]udp-socket.send",
             ],
         },
         with: {

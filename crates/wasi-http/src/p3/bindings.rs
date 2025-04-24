@@ -11,7 +11,7 @@ mod generated {
         concurrent_imports: true,
         async: {
             only_imports: [
-                "wasi:http/handler@0.3.0-draft#handle",
+                "wasi:http/handler@0.3.0-draft#[async]handle",
                 "wasi:http/types@0.3.0-draft#[method]request.body",
                 "wasi:http/types@0.3.0-draft#[method]response.body",
                 "wasi:http/types@0.3.0-draft#[static]request.new",

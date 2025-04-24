@@ -2,6 +2,7 @@ mod bindings {
     wit_bindgen::generate!({
         path: "../misc/component-async-tests/wit",
         world: "yield-callee",
+        async: ["-local:local/run#[async]run"],
     });
 
     use super::Component;

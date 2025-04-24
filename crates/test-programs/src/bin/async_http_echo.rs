@@ -2,14 +2,6 @@ mod bindings {
     wit_bindgen::generate!({
         path: "../misc/component-async-tests/wit",
         world: "wasi:http/proxy",
-        async: {
-            imports: [
-                "wasi:http/handler@0.3.0-draft#handle",
-            ],
-            exports: [
-                "wasi:http/handler@0.3.0-draft#handle",
-            ]
-        }
     });
 
     use super::Component;
