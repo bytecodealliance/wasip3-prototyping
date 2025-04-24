@@ -1,5 +1,4 @@
 #![cfg(not(miri))]
-#![allow(dead_code)]
 
 use super::engine;
 use anyhow::Result;
@@ -512,6 +511,7 @@ mod async_config {
         async: true,
     });
 
+    #[expect(dead_code, reason = "just here for bindings")]
     struct T;
 
     impl T1Imports for T {
