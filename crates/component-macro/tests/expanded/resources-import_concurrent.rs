@@ -2853,7 +2853,7 @@ pub mod exports {
                                 .ok_or_else(|| {
                                     anyhow::anyhow!(
                                         "instance export `foo:foo/uses-resource-transitively` does \
-                          not have export `{name}`"
+                        not have export `{name}`"
                                     )
                                 })
                         };
