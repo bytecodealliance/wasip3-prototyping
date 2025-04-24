@@ -310,7 +310,7 @@ fn from_raw_os_error(err: Option<i32>) -> Option<ErrorCode> {
         RustixErrno::INTR => ErrorCode::Interrupted,
 
         // On some platforms, these have the same value as other errno values.
-        #[allow(unreachable_patterns)]
+        #[allow(unreachable_patterns, reason = "see comment")]
         RustixErrno::OPNOTSUPP => ErrorCode::Unsupported,
 
         _ => return None,

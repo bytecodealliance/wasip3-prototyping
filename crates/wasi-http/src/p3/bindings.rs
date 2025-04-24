@@ -1,6 +1,6 @@
 //! Raw bindings to the `wasi:http` package.
 
-#[allow(missing_docs)]
+#[expect(missing_docs, reason = "generated code")]
 mod generated {
     wasmtime::component::bindgen!({
         path: "src/p3/wit",

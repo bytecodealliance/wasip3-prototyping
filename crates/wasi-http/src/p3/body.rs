@@ -110,7 +110,7 @@ impl Body {
 
 pub(crate) struct OutgoingRequestTrailers {
     pub trailers: Option<oneshot::Receiver<Result<Option<HeaderMap>, ErrorCode>>>,
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "here for the dtor")]
     pub trailer_task: AbortOnDropHandle,
 }
 
