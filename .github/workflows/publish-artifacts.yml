@@ -13,7 +13,7 @@ jobs:
   publish:
     name: Publish artifacts of build
     runs-on: ubuntu-latest
-    if: github.repository == 'bytecodealliance/wasmtime'
+    if: github.repository == 'bytecodealliance/wasmtime' || github.repository == 'bytecodealliance/wasip3-prototyping'
     steps:
     - uses: actions/checkout@v4
     - uses: ./.github/actions/fetch-run-id
