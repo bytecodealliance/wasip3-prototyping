@@ -60,7 +60,7 @@ if [[ "$build" = *-min ]]; then
 else
   # For release builds the CLI is built a bit more feature-ful than the Cargo
   # defaults to provide artifacts that can do as much as possible.
-  bin_flags="--features all-arch,component-model"
+  bin_flags="--features all-arch,component-model,component-model-async"
 fi
 
 cargo build --release $flags --target $target -p wasmtime-cli $bin_flags --features run
