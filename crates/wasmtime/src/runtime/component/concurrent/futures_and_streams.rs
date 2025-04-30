@@ -1841,6 +1841,15 @@ impl ComponentInstance {
         let transmit_id = TableId::<TransmitState>::new(rep);
         let transmit = self.get_mut(transmit_id)?;
 
+        if let Some(event) = Waitable::Transmit(transmit.write_handle).take_event(self)? {
+            let (Event::FutureWrite { code, .. } | Event::StreamWrite { code, .. }) = event else {
+                unreachable!();
+            };
+            return Ok(code);
+        }
+
+        let transmit = self.get_mut(transmit_id)?;
+
         match &transmit.write {
             WriteState::GuestReady { .. } | WriteState::HostReady { .. } => {
                 transmit.write = WriteState::Open;
@@ -1856,6 +1865,15 @@ impl ComponentInstance {
 
     fn host_cancel_read(&mut self, rep: u32) -> Result<ReturnCode> {
         let transmit_id = TableId::<TransmitState>::new(rep);
+        let transmit = self.get_mut(transmit_id)?;
+
+        if let Some(event) = Waitable::Transmit(transmit.read_handle).take_event(self)? {
+            let (Event::FutureRead { code, .. } | Event::StreamRead { code, .. }) = event else {
+                unreachable!();
+            };
+            return Ok(code);
+        }
+
         let transmit = self.get_mut(transmit_id)?;
 
         match &transmit.read {
