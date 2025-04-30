@@ -629,7 +629,7 @@ impl Wasmtime {
                 ty = format!("{wt}::component::Func");
                 let sig = generator.typedfunc_sig(func, TypeMode::AllBorrowed("'_"));
                 let typecheck = format!(
-                    "match item {{ 
+                    "match item {{
                             {wt}::component::types::ComponentItem::ComponentFunc(func) => {{
                                 anyhow::Context::context(
                                     func.typecheck::<{sig}>(&_instance_type),
@@ -3142,8 +3142,21 @@ impl<'a> InterfaceGenerator<'a> {
         } else {
             uwrite!(self.src, ">");
         }
+        uwrite!(self.src, ">");
 
-        uwrite!(self.src, " where <S as {wt}::AsContext>::Data: Send {{\n");
+        match style {
+            CallStyle::Concurrent => {
+                uwrite!(
+                    self.src,
+                    " where <S as {wt}::AsContext>::Data: Send + 'static",
+                );
+            }
+            CallStyle::Async => {
+                uwrite!(self.src, " where <S as {wt}::AsContext>::Data: Send");
+            }
+            CallStyle::Sync => {}
+        }
+        uwrite!(self.src, "{{\n");
 
         // TODO: support tracing concurrent calls
         if self.generator.opts.tracing && !concurrent {

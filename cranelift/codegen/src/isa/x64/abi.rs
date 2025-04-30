@@ -148,9 +148,11 @@ impl ABIMachineSpec for X64ABIMachineSpec {
         // The results are also not packed if any of the types are `f16`. This is to simplify the
         // implementation of `Inst::load`/`Inst::store` (which would otherwise require multiple
         // instructions), and doesn't affect Winch itself as Winch doesn't support `f16` at all.
-        let uses_extension = params
-            .iter()
-            .any(|p| p.extension != ir::ArgumentExtension::None || p.value_type == types::F16);
+        let uses_extension = params.iter().any(|p| {
+            p.extension != ir::ArgumentExtension::None
+                || p.value_type == types::F16
+                || p.value_type == types::I8X2
+        });
 
         for (ix, param) in params.iter().enumerate() {
             let last_param = ix == params.len() - 1;
@@ -211,10 +213,10 @@ impl ABIMachineSpec for X64ABIMachineSpec {
                 );
             }
 
-            // Windows fastcall dictates that `__m128i` parameters to a function
-            // are passed indirectly as pointers, so handle that as a special
-            // case before the loop below.
-            if param.value_type.is_vector()
+            // Windows fastcall dictates that `__m128i` and `f128` parameters to
+            // a function are passed indirectly as pointers, so handle that as a
+            // special case before the loop below.
+            if (param.value_type.is_vector() || param.value_type.is_float())
                 && param.value_type.bits() >= 128
                 && args_or_rets == ArgsOrRets::Args
                 && is_fastcall
@@ -414,7 +416,7 @@ impl ABIMachineSpec for X64ABIMachineSpec {
             types::I8 | types::I16 | types::I32 => types::I64,
             // Stack slots are always at least 8 bytes, so it's fine to load 4 bytes instead of only
             // two.
-            types::F16 => types::F32,
+            types::F16 | types::I8X2 => types::F32,
             _ => ty,
         };
         Inst::load(ty, mem, into_reg, ExtKind::None)
@@ -423,7 +425,7 @@ impl ABIMachineSpec for X64ABIMachineSpec {
     fn gen_store_stack(mem: StackAMode, from_reg: Reg, ty: Type) -> Self::I {
         let ty = match ty {
             // See `gen_load_stack`.
-            types::F16 => types::F32,
+            types::F16 | types::I8X2 => types::F32,
             _ => ty,
         };
         Inst::store(ty, from_reg, mem)
@@ -504,9 +506,9 @@ impl ABIMachineSpec for X64ABIMachineSpec {
     }
 
     fn gen_load_base_offset(into_reg: Writable<Reg>, base: Reg, offset: i32, ty: Type) -> Self::I {
-        // Only ever used for I64s and vectors; if that changes, see if the
-        // ExtKind below needs to be changed.
-        assert!(ty == I64 || ty.is_vector());
+        // Only ever used for I64s, F128s and vectors; if that changes, see if
+        // the ExtKind below needs to be changed.
+        assert!(ty == I64 || ty.is_vector() || ty == F128);
         let mem = Amode::imm_reg(offset, base);
         Inst::load(ty, mem, into_reg, ExtKind::None)
     }
@@ -514,7 +516,7 @@ impl ABIMachineSpec for X64ABIMachineSpec {
     fn gen_store_base_offset(base: Reg, offset: i32, from_reg: Reg, ty: Type) -> Self::I {
         let ty = match ty {
             // See `gen_load_stack`.
-            types::F16 => types::F32,
+            types::F16 | types::I8X2 => types::F32,
             _ => ty,
         };
         let mem = Amode::imm_reg(offset, base);

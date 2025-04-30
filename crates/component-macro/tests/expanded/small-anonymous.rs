@@ -391,10 +391,7 @@ pub mod exports {
                         mut store: S,
                     ) -> wasmtime::Result<
                         Result<Option<wasmtime::component::__internal::String>, Error>,
-                    >
-                    where
-                        <S as wasmtime::AsContext>::Data: Send,
-                    {
+                    > {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (),

@@ -387,10 +387,7 @@ pub mod exports {
                     pub fn call_f1<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<()>
-                    where
-                        <S as wasmtime::AsContext>::Data: Send,
-                    {
+                    ) -> wasmtime::Result<()> {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (),
@@ -405,10 +402,7 @@ pub mod exports {
                         &self,
                         mut store: S,
                         arg0: u32,
-                    ) -> wasmtime::Result<()>
-                    where
-                        <S as wasmtime::AsContext>::Data: Send,
-                    {
+                    ) -> wasmtime::Result<()> {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (u32,),
@@ -424,10 +418,7 @@ pub mod exports {
                         mut store: S,
                         arg0: u32,
                         arg1: u32,
-                    ) -> wasmtime::Result<()>
-                    where
-                        <S as wasmtime::AsContext>::Data: Send,
-                    {
+                    ) -> wasmtime::Result<()> {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (u32, u32),
@@ -441,10 +432,7 @@ pub mod exports {
                     pub fn call_f4<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<u32>
-                    where
-                        <S as wasmtime::AsContext>::Data: Send,
-                    {
+                    ) -> wasmtime::Result<u32> {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (),
@@ -458,10 +446,7 @@ pub mod exports {
                     pub fn call_f5<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<(u32, u32)>
-                    where
-                        <S as wasmtime::AsContext>::Data: Send,
-                    {
+                    ) -> wasmtime::Result<(u32, u32)> {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (),
@@ -478,10 +463,7 @@ pub mod exports {
                         arg0: u32,
                         arg1: u32,
                         arg2: u32,
-                    ) -> wasmtime::Result<(u32, u32, u32)>
-                    where
-                        <S as wasmtime::AsContext>::Data: Send,
-                    {
+                    ) -> wasmtime::Result<(u32, u32, u32)> {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (u32, u32, u32),
