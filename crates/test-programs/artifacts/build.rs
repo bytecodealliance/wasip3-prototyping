@@ -4,7 +4,6 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use wasmparser::{Validator, WasmFeatures};
 use wit_component::ComponentEncoder;
 
 fn main() {
@@ -79,6 +78,10 @@ impl Artifacts {
                 s if s.starts_with("config_") => "config",
                 s if s.starts_with("keyvalue_") => "keyvalue",
                 s if s.starts_with("tls_") => "tls",
+                s if s.starts_with("async_") => "async",
+                s if s.starts_with("p3_http_") => "p3_http",
+                s if s.starts_with("p3_api_") => "p3_api",
+                s if s.starts_with("p3_") => "p3",
                 // If you're reading this because you hit this panic, either add
                 // it to a test suite above or add a new "suite". The purpose of
                 // the categorization above is to have a static assertion that

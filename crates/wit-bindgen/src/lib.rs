@@ -3142,19 +3142,18 @@ impl<'a> InterfaceGenerator<'a> {
         } else {
             uwrite!(self.src, ">");
         }
-        uwrite!(self.src, ">");
 
         match style {
             CallStyle::Concurrent => {
-                uwrite!(
-                    self.src,
-                    " where <S as {wt}::AsContext>::Data: Send + 'static",
-                );
+                uwrite!(self.src, " where <S as {wt}::AsContext>::Data: Send",);
             }
             CallStyle::Async => {
                 uwrite!(self.src, " where <S as {wt}::AsContext>::Data: Send");
             }
-            CallStyle::Sync => {}
+            CallStyle::Sync => {
+                // TODO: should not require `Send` or 'static here.
+                uwrite!(self.src, " where <S as {wt}::AsContext>::Data: Send");
+            }
         }
         uwrite!(self.src, "{{\n");
 

@@ -3467,7 +3467,6 @@ dependencies = [
  "heck 0.5.0",
  "serde",
  "serde_derive",
- "wasmparser 0.229.0",
  "wasmtime",
  "wasmtime-test-util",
  "wat",

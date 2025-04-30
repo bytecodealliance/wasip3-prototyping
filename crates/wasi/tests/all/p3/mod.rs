@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use anyhow::{anyhow, Context as _};
+use test_programs_artifacts::*;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::Store;
 use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
@@ -143,8 +144,80 @@ async fn run(path: &str) -> anyhow::Result<()> {
         .map_err(|()| anyhow!("`wasi:cli/run#run` failed"))
 }
 
-mod clocks;
-mod filesystem;
-mod random;
-mod sockets;
-//mod cli;
+foreach_p3!(assert_test_exists);
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p3_clocks_sleep() -> anyhow::Result<()> {
+    run(P3_CLOCKS_SLEEP_COMPONENT).await
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p3_random_imports() -> anyhow::Result<()> {
+    run(P3_RANDOM_IMPORTS_COMPONENT).await
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p3_sockets_ip_name_lookup() -> anyhow::Result<()> {
+    run(P3_SOCKETS_IP_NAME_LOOKUP_COMPONENT).await
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p3_sockets_tcp_bind() -> anyhow::Result<()> {
+    run(P3_SOCKETS_TCP_BIND_COMPONENT).await
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p3_sockets_tcp_connect() -> anyhow::Result<()> {
+    run(P3_SOCKETS_TCP_CONNECT_COMPONENT).await
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p3_sockets_tcp_sample_application() -> anyhow::Result<()> {
+    run(P3_SOCKETS_TCP_SAMPLE_APPLICATION_COMPONENT).await
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p3_sockets_tcp_sockopts() -> anyhow::Result<()> {
+    run(P3_SOCKETS_TCP_SOCKOPTS_COMPONENT).await
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p3_sockets_tcp_states() -> anyhow::Result<()> {
+    run(P3_SOCKETS_TCP_STATES_COMPONENT).await
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p3_sockets_tcp_streams() -> anyhow::Result<()> {
+    run(P3_SOCKETS_TCP_STREAMS_COMPONENT).await
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p3_sockets_udp_bind() -> anyhow::Result<()> {
+    run(P3_SOCKETS_UDP_BIND_COMPONENT).await
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p3_sockets_udp_connect() -> anyhow::Result<()> {
+    run(P3_SOCKETS_UDP_CONNECT_COMPONENT).await
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+#[ignore = "https://github.com/bytecodealliance/wasip3-prototyping/issues/44"]
+async fn p3_sockets_udp_sample_application() -> anyhow::Result<()> {
+    run(P3_SOCKETS_UDP_SAMPLE_APPLICATION_COMPONENT).await
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p3_sockets_udp_sockopts() -> anyhow::Result<()> {
+    run(P3_SOCKETS_UDP_SOCKOPTS_COMPONENT).await
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p3_sockets_udp_states() -> anyhow::Result<()> {
+    run(P3_SOCKETS_UDP_STATES_COMPONENT).await
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p3_filesystem_file_read_write() -> anyhow::Result<()> {
+    run(P3_FILESYSTEM_FILE_READ_WRITE_COMPONENT).await
+}
