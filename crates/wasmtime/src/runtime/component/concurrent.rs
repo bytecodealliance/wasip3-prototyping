@@ -2319,8 +2319,9 @@ impl Instance {
     /// `LinkerInstance::func_wrap_concurrent` are always polled as part of the
     /// event loop, so this function is not needed in that case.  However,
     /// top-level code which needs to poll `Future`s involving concurrent tasks
-    /// must use either this function, `Instance::with`, or `Instance::spawn` to
-    /// ensure they are polled as part of the correct event loop.
+    /// must use either this function, `Instance::run_with`, or
+    /// `Instance::spawn` to ensure they are polled as part of the correct event
+    /// loop.
     ///
     /// Consider the following examples:
     ///
@@ -3609,6 +3610,9 @@ impl ConcurrentState {
 
     pub fn drop_fibers(&mut self) {
         self.table = Table::new();
+        self.worker = None;
+        self.high_priority = Vec::new();
+        self.low_priority = Vec::new();
     }
 }
 
