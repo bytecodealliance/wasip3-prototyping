@@ -3465,8 +3465,11 @@ version = "0.0.0"
 dependencies = [
  "cargo_metadata",
  "heck 0.5.0",
- "wasmparser 0.229.0",
+ "serde",
+ "serde_derive",
  "wasmtime",
+ "wasmtime-test-util",
+ "wat",
  "wit-component",
 ]
 

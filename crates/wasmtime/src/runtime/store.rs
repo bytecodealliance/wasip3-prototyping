@@ -254,6 +254,7 @@ enum CallHookInner<T> {
 
 /// What to do after returning from a callback when the engine epoch reaches
 /// the deadline for a Store during execution of a function using that store.
+#[non_exhaustive]
 pub enum UpdateDeadline {
     /// Extend the deadline by the specified number of ticks.
     Continue(u64),
@@ -262,6 +263,18 @@ pub enum UpdateDeadline {
     /// configured via [`Config::async_support`](crate::Config::async_support).
     #[cfg(feature = "async")]
     Yield(u64),
+    /// Extend the deadline by the specified number of ticks after yielding to
+    /// the async executor loop. This can only be used with an async [`Store`]
+    /// configured via [`Config::async_support`](crate::Config::async_support).
+    ///
+    /// The yield will be performed by the future provided; when using `tokio`
+    /// it is recommended to provide [`tokio::task::yield_now`](https://docs.rs/tokio/latest/tokio/task/fn.yield_now.html)
+    /// here.
+    #[cfg(feature = "async")]
+    YieldCustom(
+        u64,
+        ::core::pin::Pin<Box<dyn ::core::future::Future<Output = ()> + Send>>,
+    ),
 }
 
 // Forward methods on `StoreOpaque` to also being on `StoreInner<T>`
@@ -949,10 +962,10 @@ impl<T> Store<T> {
     /// add to the epoch deadline, as well as indicating what
     /// to do after the callback returns. If the [`Store`] is
     /// configured with async support, then the callback may return
-    /// [`UpdateDeadline::Yield`] to yield to the async executor before
-    /// updating the epoch deadline. Alternatively, the callback may
-    /// return [`UpdateDeadline::Continue`] to update the epoch deadline
-    /// immediately.
+    /// [`UpdateDeadline::Yield`] or [`UpdateDeadline::YieldCustom`]
+    /// to yield to the async executor before updating the epoch deadline.
+    /// Alternatively, the callback may return [`UpdateDeadline::Continue`] to
+    /// update the epoch deadline immediately.
     ///
     /// This setting is intended to allow for coarse-grained
     /// interruption, but not a deterministic deadline of a fixed,
@@ -1113,33 +1126,9 @@ impl<T> StoreInner<T> {
             CallHookInner::Sync(hook) => hook((&mut *self).as_context_mut(), s),
 
             #[cfg(all(feature = "async", feature = "call-hook"))]
-            CallHookInner::Async(handler) => unsafe {
-                #[cfg(feature = "component-model-async")]
-                {
-                    let async_cx = crate::component::concurrent::AsyncCx::try_new(&mut self.inner)
-                        .ok_or_else(|| anyhow!("couldn't grab async_cx for call hook"))?;
-
-                    async_cx
-                        .block_on(
-                            handler
-                                .handle_call_event((&mut *self).as_context_mut(), s)
-                                .as_mut(),
-                            None,
-                        )?
-                        .0
-                }
-                #[cfg(not(feature = "component-model-async"))]
-                {
-                    self.inner
-                        .async_cx()
-                        .ok_or_else(|| anyhow!("couldn't grab async_cx for call hook"))?
-                        .block_on(
-                            handler
-                                .handle_call_event((&mut *self).as_context_mut(), s)
-                                .as_mut(),
-                        )?
-                }
-            },
+            CallHookInner::Async(handler) => {
+                self.block_on(|store| handler.handle_call_event(StoreContextMut(store), s))?
+            }
 
             CallHookInner::ForceTypeParameterToBeUsed { uninhabited, .. } => {
                 let _ = s;
@@ -2034,36 +2023,12 @@ unsafe impl<T> crate::runtime::vm::VMStore for StoreInner<T> {
                 limiter(&mut self.data).memory_growing(current, desired, maximum)
             }
             #[cfg(feature = "async")]
-            Some(ResourceLimiterInner::Async(ref mut limiter)) => unsafe {
-                #[cfg(feature = "component-model-async")]
-                {
-                    _ = limiter;
-                    let async_cx =
-                        crate::component::concurrent::AsyncCx::new(&mut (&mut *self).inner);
-                    let Some(ResourceLimiterInner::Async(ref mut limiter)) = self.limiter else {
-                        unreachable!();
-                    };
-                    async_cx
-                        .block_on(
-                            limiter(&mut self.data)
-                                .memory_growing(current, desired, maximum)
-                                .as_mut(),
-                            None,
-                        )?
-                        .0
-                }
-                #[cfg(not(feature = "component-model-async"))]
-                {
-                    self.inner
-                        .async_cx()
-                        .expect("ResourceLimiterAsync requires async Store")
-                        .block_on(
-                            limiter(&mut self.data)
-                                .memory_growing(current, desired, maximum)
-                                .as_mut(),
-                        )?
-                }
-            },
+            Some(ResourceLimiterInner::Async(_)) => self.block_on(|store| {
+                let Some(ResourceLimiterInner::Async(limiter)) = &mut store.limiter else {
+                    unreachable!();
+                };
+                limiter(&mut store.data).memory_growing(current, desired, maximum)
+            })?,
             None => Ok(true),
         }
     }
@@ -2090,50 +2055,17 @@ unsafe impl<T> crate::runtime::vm::VMStore for StoreInner<T> {
         desired: usize,
         maximum: Option<usize>,
     ) -> Result<bool, anyhow::Error> {
-        // Need to borrow async_cx before the mut borrow of the limiter.
-        // self.async_cx() panicks when used with a non-async store, so
-        // wrap this in an option.
-        #[cfg(all(feature = "async", not(feature = "component-model-async")))]
-        let async_cx = if self.async_support()
-            && matches!(self.limiter, Some(ResourceLimiterInner::Async(_)))
-        {
-            Some(self.async_cx().unwrap())
-        } else {
-            None
-        };
-
         match self.limiter {
             Some(ResourceLimiterInner::Sync(ref mut limiter)) => {
                 limiter(&mut self.data).table_growing(current, desired, maximum)
             }
             #[cfg(feature = "async")]
-            Some(ResourceLimiterInner::Async(ref mut limiter)) => unsafe {
-                #[cfg(feature = "component-model-async")]
-                {
-                    _ = limiter;
-                    let async_cx =
-                        crate::component::concurrent::AsyncCx::new(&mut (&mut *self).inner);
-                    let Some(ResourceLimiterInner::Async(ref mut limiter)) = self.limiter else {
-                        unreachable!();
-                    };
-                    async_cx
-                        .block_on(
-                            limiter(&mut self.data)
-                                .table_growing(current, desired, maximum)
-                                .as_mut(),
-                            None,
-                        )?
-                        .0
-                }
-                #[cfg(not(feature = "component-model-async"))]
-                {
-                    async_cx
-                        .expect("ResourceLimiterAsync requires async Store")
-                        .block_on(
-                            limiter(&mut self.data).table_growing(current, desired, maximum),
-                        )?
-                }
-            },
+            Some(ResourceLimiterInner::Async(_)) => self.block_on(|store| {
+                let Some(ResourceLimiterInner::Async(limiter)) = &mut store.limiter else {
+                    unreachable!();
+                };
+                limiter(&mut store.data).table_growing(current, desired, maximum)
+            })?,
             None => Ok(true),
         }
     }
@@ -2175,7 +2107,6 @@ unsafe impl<T> crate::runtime::vm::VMStore for StoreInner<T> {
             Some(callback) => callback((&mut *self).as_context_mut()).and_then(|update| {
                 let delta = match update {
                     UpdateDeadline::Continue(delta) => delta,
-
                     #[cfg(feature = "async")]
                     UpdateDeadline::Yield(delta) => {
                         assert!(
@@ -2185,6 +2116,23 @@ unsafe impl<T> crate::runtime::vm::VMStore for StoreInner<T> {
                         // Do the async yield. May return a trap if future was
                         // canceled while we're yielded.
                         self.async_yield_impl()?;
+                        delta
+                    }
+                    #[cfg(feature = "async")]
+                    UpdateDeadline::YieldCustom(delta, future) => {
+                        assert!(
+                            self.async_support(),
+                            "cannot use `UpdateDeadline::YieldCustom` without enabling async support in the config"
+                        );
+
+                        // When control returns, we have a `Result<()>` passed
+                        // in from the host fiber. If this finished successfully then
+                        // we were resumed normally via a `poll`, so keep going.  If
+                        // the future was dropped while we were yielded, then we need
+                        // to clean up this fiber. Do so by raising a trap which will
+                        // abort all wasm and get caught on the other side to clean
+                        // things up.
+                        self.block_on(|_| future)?;
                         delta
                     }
                 };
