@@ -4,6 +4,7 @@ use crate::store::{ResourceLimiterInner, StoreInner, StoreOpaque};
 #[cfg(feature = "call-hook")]
 use crate::CallHook;
 use crate::{Engine, Store, StoreContextMut, UpdateDeadline};
+use anyhow::Context as _;
 use core::cell::UnsafeCell;
 use core::future::Future;
 use core::ops::Range;
@@ -230,7 +231,7 @@ impl<T> StoreInner<T> {
         #[cfg(feature = "component-model-async")]
         {
             let async_cx = crate::component::concurrent::AsyncCx::try_new(self)
-                .expect("couldn't create AsyncCx to block on async operation");
+                .context("couldn't create AsyncCx to block on async operation")?;
             let future = mk_future(self);
             let mut future = core::pin::pin!(future);
             unsafe { Ok(async_cx.block_on(future.as_mut(), None)?.0) }
@@ -240,7 +241,7 @@ impl<T> StoreInner<T> {
             let cx = self
                 .inner
                 .async_cx()
-                .expect("async_cx is not present to block on async operation");
+                .context("async_cx is not present to block on async operation")?;
             let future = mk_future(self);
             let mut future = core::pin::pin!(future);
             unsafe { cx.block_on(future.as_mut()) }
