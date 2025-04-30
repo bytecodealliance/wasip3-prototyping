@@ -2335,50 +2335,34 @@ impl ComponentInstance {
                     (store, options)
                 };
 
-                if wait {
+                let (ordinal, handle, result) = if wait {
                     self.get_mut(params.set)?.waiting.remove(&guest_task);
-
                     let (event, handle) =
                         event_and_handle.ok_or_else(|| anyhow!("no waitables to wait for"))?;
-
                     let (ordinal, result) = event.parts();
-                    let (store, options) = store_and_options(self);
-                    let ptr = func::validate_inbounds::<(u32, u32)>(
-                        options.memory_mut(store),
-                        &ValRaw::u32(params.payload),
-                    )?;
-                    options.memory_mut(store)[ptr + 0..][..4]
-                        .copy_from_slice(&handle.to_le_bytes());
-                    options.memory_mut(store)[ptr + 4..][..4]
-                        .copy_from_slice(&result.to_le_bytes());
-
-                    Ok(ordinal)
+                    (ordinal, handle, result)
                 } else {
                     if let Some((event, handle)) = event_and_handle {
                         let (ordinal, result) = event.parts();
-                        let (store, options) = store_and_options(self);
-                        let ptr = func::validate_inbounds::<(u32, u32, u32)>(
-                            options.memory_mut(store),
-                            &ValRaw::u32(params.payload),
-                        )?;
-                        options.memory_mut(store)[ptr + 0..][..4]
-                            .copy_from_slice(&ordinal.to_le_bytes());
-                        options.memory_mut(store)[ptr + 4..][..4]
-                            .copy_from_slice(&handle.to_le_bytes());
-                        options.memory_mut(store)[ptr + 8..][..4]
-                            .copy_from_slice(&result.to_le_bytes());
-
-                        Ok(1)
+                        (ordinal, handle, result)
                     } else {
                         log::trace!(
                             "no events ready to deliver via waitable-set.poll to {}; set {}",
                             guest_task.rep(),
                             params.set.rep()
                         );
-
-                        Ok(0)
+                        let (ordinal, result) = Event::None.parts();
+                        (ordinal, 0, result)
                     }
-                }
+                };
+                let (store, options) = store_and_options(self);
+                let ptr = func::validate_inbounds::<(u32, u32)>(
+                    options.memory_mut(store),
+                    &ValRaw::u32(params.payload),
+                )?;
+                options.memory_mut(store)[ptr + 0..][..4].copy_from_slice(&handle.to_le_bytes());
+                options.memory_mut(store)[ptr + 4..][..4].copy_from_slice(&result.to_le_bytes());
+                Ok(ordinal)
             }
             WaitableCheck::Yield => Ok(0),
         };

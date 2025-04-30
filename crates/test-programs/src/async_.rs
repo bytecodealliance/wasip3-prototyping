@@ -42,13 +42,10 @@ unsafe extern "C" {
     pub fn waitable_set_poll_raw(_: u32, _: *mut u32) -> u32;
 }
 
-pub fn waitable_set_poll(set: u32) -> Option<(u32, u32, u32)> {
-    let mut payload = [0u32; 3];
-    if unsafe { waitable_set_poll_raw(set, payload.as_mut_ptr()) } != 0 {
-        Some((payload[0], payload[1], payload[2]))
-    } else {
-        None
-    }
+pub fn waitable_set_poll(set: u32) -> (u32, u32, u32) {
+    let mut payload = [0u32; 2];
+    let ret0 = unsafe { waitable_set_poll_raw(set, payload.as_mut_ptr()) };
+    (ret0, payload[0], payload[1])
 }
 
 #[cfg(target_arch = "wasm32")]

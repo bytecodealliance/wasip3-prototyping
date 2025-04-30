@@ -13,7 +13,7 @@ use {
     bindings::{exports::local::local::run::Guest, local::local::ready},
     test_programs::async_::{
         subtask_drop, waitable_join, waitable_set_drop, waitable_set_new, waitable_set_poll,
-        EVENT_SUBTASK, STATUS_RETURNED,
+        EVENT_NONE, EVENT_SUBTASK, STATUS_RETURNED,
     },
 };
 
@@ -43,7 +43,7 @@ impl Guest for Component {
 
             let set = waitable_set_new();
 
-            assert!(waitable_set_poll(set).is_none());
+            assert_eq!(waitable_set_poll(set), (EVENT_NONE, 0, 0));
 
             let result = async_when_ready();
             let status = result & 0xf;
@@ -51,24 +51,22 @@ impl Guest for Component {
             assert!(status != STATUS_RETURNED);
             waitable_join(call, set);
 
-            assert!(waitable_set_poll(set).is_none());
+            assert_eq!(waitable_set_poll(set), (EVENT_NONE, 0, 0));
 
             ready::set_ready(true);
 
-            let Some((event, task, code)) = waitable_set_poll(set) else {
-                panic!()
-            };
+            let (event, task, code) = waitable_set_poll(set);
             assert_eq!(event, EVENT_SUBTASK);
             assert_eq!(call, task);
             assert_eq!(code, STATUS_RETURNED);
 
             subtask_drop(task);
 
-            assert!(waitable_set_poll(set).is_none());
+            assert_eq!(waitable_set_poll(set), (EVENT_NONE, 0, 0));
 
             assert!(async_when_ready() == STATUS_RETURNED);
 
-            assert!(waitable_set_poll(set).is_none());
+            assert_eq!(waitable_set_poll(set), (EVENT_NONE, 0, 0));
 
             waitable_set_drop(set);
         }
