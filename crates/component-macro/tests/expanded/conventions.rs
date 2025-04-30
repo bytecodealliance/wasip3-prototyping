@@ -604,7 +604,10 @@ pub mod exports {
                     pub fn call_kebab_case<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<()> {
+                    ) -> wasmtime::Result<()>
+                    where
+                        <S as wasmtime::AsContext>::Data: Send,
+                    {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (),
@@ -619,7 +622,10 @@ pub mod exports {
                         &self,
                         mut store: S,
                         arg0: LudicrousSpeed,
-                    ) -> wasmtime::Result<()> {
+                    ) -> wasmtime::Result<()>
+                    where
+                        <S as wasmtime::AsContext>::Data: Send,
+                    {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (LudicrousSpeed,),
@@ -633,7 +639,10 @@ pub mod exports {
                     pub fn call_function_with_dashes<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<()> {
+                    ) -> wasmtime::Result<()>
+                    where
+                        <S as wasmtime::AsContext>::Data: Send,
+                    {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (),
@@ -646,7 +655,10 @@ pub mod exports {
                     }
                     pub fn call_function_with_no_weird_characters<
                         S: wasmtime::AsContextMut,
-                    >(&self, mut store: S) -> wasmtime::Result<()> {
+                    >(&self, mut store: S) -> wasmtime::Result<()>
+                    where
+                        <S as wasmtime::AsContext>::Data: Send,
+                    {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (),
@@ -660,7 +672,10 @@ pub mod exports {
                     pub fn call_apple<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<()> {
+                    ) -> wasmtime::Result<()>
+                    where
+                        <S as wasmtime::AsContext>::Data: Send,
+                    {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (),
@@ -674,7 +689,10 @@ pub mod exports {
                     pub fn call_apple_pear<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<()> {
+                    ) -> wasmtime::Result<()>
+                    where
+                        <S as wasmtime::AsContext>::Data: Send,
+                    {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (),
@@ -688,7 +706,10 @@ pub mod exports {
                     pub fn call_apple_pear_grape<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<()> {
+                    ) -> wasmtime::Result<()>
+                    where
+                        <S as wasmtime::AsContext>::Data: Send,
+                    {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (),
@@ -702,7 +723,10 @@ pub mod exports {
                     pub fn call_a0<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<()> {
+                    ) -> wasmtime::Result<()>
+                    where
+                        <S as wasmtime::AsContext>::Data: Send,
+                    {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (),
@@ -721,7 +745,10 @@ pub mod exports {
                     pub fn call_is_xml<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<()> {
+                    ) -> wasmtime::Result<()>
+                    where
+                        <S as wasmtime::AsContext>::Data: Send,
+                    {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (),
@@ -735,7 +762,10 @@ pub mod exports {
                     pub fn call_explicit<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<()> {
+                    ) -> wasmtime::Result<()>
+                    where
+                        <S as wasmtime::AsContext>::Data: Send,
+                    {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (),
@@ -749,7 +779,10 @@ pub mod exports {
                     pub fn call_explicit_kebab<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<()> {
+                    ) -> wasmtime::Result<()>
+                    where
+                        <S as wasmtime::AsContext>::Data: Send,
+                    {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (),
@@ -764,7 +797,10 @@ pub mod exports {
                     pub fn call_bool<S: wasmtime::AsContextMut>(
                         &self,
                         mut store: S,
-                    ) -> wasmtime::Result<()> {
+                    ) -> wasmtime::Result<()>
+                    where
+                        <S as wasmtime::AsContext>::Data: Send,
+                    {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
                                 (),
