@@ -86,10 +86,11 @@ unsafe extern "C" fn export_foo(ptr: *mut u8, len: usize) {
         let payload = Box::from_raw(payload);
         if event == EVENT_SUBTASK {
             assert_eq!(call, payload[0] as u32);
-            assert_eq!(STATUS_RETURNED, payload[1] as u32);
-            subtask_drop(call);
-            waitable_set_drop(set);
-            status = STATUS_RETURNED;
+            status = payload[1] as u32;
+            if status == STATUS_RETURNED {
+                subtask_drop(call);
+                waitable_set_drop(set);
+            }
         }
     }
     alloc::dealloc(params, layout);

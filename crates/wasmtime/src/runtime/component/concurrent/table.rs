@@ -11,6 +11,7 @@ use std::{
     boxed::Box,
     cmp::Ordering,
     collections::BTreeSet,
+    fmt,
     hash::{Hash, Hasher},
     marker::PhantomData,
     vec::Vec,
@@ -19,6 +20,16 @@ use std::{
 pub struct TableId<T> {
     rep: u32,
     _marker: PhantomData<fn() -> T>,
+}
+
+pub trait TableDebug {
+    fn type_name() -> &'static str;
+}
+
+impl<T: TableDebug> fmt::Debug for TableId<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}({})", T::type_name(), self.rep)
+    }
 }
 
 impl<T> Hash for TableId<T> {

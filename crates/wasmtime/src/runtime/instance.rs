@@ -230,7 +230,7 @@ impl Instance {
 
         #[cfg(feature = "component-model-async")]
         {
-            crate::component::concurrent::on_fiber(store.as_context_mut(), None, move |store| {
+            crate::component::concurrent::on_fiber(store.as_context_mut(), move |store| {
                 Self::new_started_impl(store, module, imports)
             })
             .await?

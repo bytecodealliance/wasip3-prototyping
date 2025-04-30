@@ -821,6 +821,8 @@ fn strings() -> Result<()> {
 
 #[tokio::test]
 async fn async_reentrance() -> Result<()> {
+    _ = env_logger::try_init();
+
     let component = r#"
         (component
             (core module $shim
@@ -920,13 +922,16 @@ async fn async_reentrance() -> Result<()> {
     let instance = Linker::new(&engine)
         .instantiate_async(&mut store, &component)
         .await?;
-
     let func = instance.get_typed_func::<(u32,), (u32,)>(&mut store, "export")?;
     let call = func.call_concurrent(&mut store, (42,));
 
+    let message = "cannot enter component instance";
     match instance.run(&mut store, call).await {
         Ok(_) => panic!(),
-        Err(e) => assert!(format!("{e:?}").contains("cannot enter component instance")),
+        Err(e) => assert!(
+            format!("{e:?}").contains(message),
+            "expected `{message}`; got `{e:?}`"
+        ),
     }
 
     Ok(())

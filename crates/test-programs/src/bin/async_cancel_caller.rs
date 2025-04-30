@@ -102,6 +102,11 @@ enum State {
         set: u32,
         waitable: u32,
         params: *mut SleepParams,
+    },
+    S4 {
+        set: u32,
+        waitable: u32,
+        params: *mut SleepParams,
         params2: *mut u64,
     },
 }
@@ -292,17 +297,39 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
 
                 let result = subtask_cancel_async(waitable);
 
-                // NB: As of this writing, Wasmtime does *not* spawn a new fiber
-                // for async->async guest calls, which means we'll block
-                // synchronously when calling `subtask_cancel_async` even though
-                // we're calling it with the `async` canonical option.  The
-                // following assertion relies on that behavior; it will need to
-                // be changed (and this test case refactored) if/when that
-                // behavior changes.
-                assert_eq!(result, STATUS_RETURN_CANCELLED);
+                // NB: As of this writing, Wasmtime spawns a new fiber for
+                // async->async guest calls, which means the above call should
+                // block asynchronously, giving us back control.  However, the
+                // runtime could alternatively execute the call on the original
+                // fiber, in which case the above call would block synchronously
+                // and return `STATUS_RETURN_CANCELLED`.  If Wasmtime's behavior
+                // changes, this test will need to be modified.
+                assert_eq!(result, BLOCKED);
 
-                waitable_join(waitable, 0);
-                subtask_drop(waitable);
+                waitable_join(waitable, *set);
+
+                let set = *set;
+
+                *state = State::S3 {
+                    set,
+                    waitable,
+                    params: *params,
+                };
+
+                CALLBACK_CODE_WAIT | (set << 4)
+            }
+
+            State::S3 {
+                set,
+                waitable,
+                params,
+            } => {
+                assert_eq!(event0, EVENT_SUBTASK);
+                assert_eq!(event1, *waitable);
+                assert_eq!(event2, STATUS_RETURN_CANCELLED);
+
+                waitable_join(*waitable, 0);
+                subtask_drop(*waitable);
 
                 // Next, call and cancel `sleep::sleep_millis`, which the callee
                 // implements using both an synchronous lift and asynchronous
@@ -327,7 +354,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
 
                 let set = *set;
 
-                *state = State::S3 {
+                *state = State::S4 {
                     set,
                     waitable,
                     params: *params,
@@ -337,7 +364,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
                 CALLBACK_CODE_WAIT | (set << 4)
             }
 
-            State::S3 {
+            State::S4 {
                 set,
                 waitable,
                 params,

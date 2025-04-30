@@ -1189,7 +1189,7 @@ impl Func {
         }
         #[cfg(feature = "component-model-async")]
         {
-            crate::component::concurrent::on_fiber(store, None, move |store| unsafe {
+            crate::component::concurrent::on_fiber(store, move |store| unsafe {
                 self.call_impl_do_call(store, params, results)
             })
             .await?

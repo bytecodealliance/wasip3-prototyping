@@ -268,10 +268,8 @@ impl Memory {
         );
         #[cfg(feature = "component-model-async")]
         {
-            crate::component::concurrent::on_fiber(store, None, move |store| {
-                Self::_new(store.0, ty)
-            })
-            .await?
+            crate::component::concurrent::on_fiber(store, move |store| Self::_new(store.0, ty))
+                .await?
         }
         #[cfg(not(feature = "component-model-async"))]
         {
@@ -631,10 +629,8 @@ impl Memory {
         );
         #[cfg(feature = "component-model-async")]
         {
-            crate::component::concurrent::on_fiber(store, None, move |store| {
-                self.grow(store, delta)
-            })
-            .await?
+            crate::component::concurrent::on_fiber(store, move |store| self.grow(store, delta))
+                .await?
         }
         #[cfg(not(feature = "component-model-async"))]
         {

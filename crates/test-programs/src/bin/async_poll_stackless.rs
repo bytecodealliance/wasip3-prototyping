@@ -102,14 +102,17 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
         }
 
         State::S3 { set, call } => {
-            assert_eq!(event0, EVENT_SUBTASK);
-            assert_eq!(event1, *call);
-            assert_eq!(event2, STATUS_RETURNED);
-
             let set = *set;
-            subtask_drop(*call);
 
-            *state = State::S4 { set };
+            if event0 != EVENT_NONE {
+                assert_eq!(event0, EVENT_SUBTASK);
+                assert_eq!(event1, *call);
+                assert_eq!(event2, STATUS_RETURNED);
+
+                subtask_drop(*call);
+
+                *state = State::S4 { set };
+            }
 
             CALLBACK_CODE_POLL | (set << 4)
         }
