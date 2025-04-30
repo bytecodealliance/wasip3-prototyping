@@ -83,9 +83,8 @@ impl HostFunc {
         R: ComponentNamedList + Lower + Send + Sync + 'static,
     {
         let func = Arc::new(func);
-        Self::from_canonical(move |store, instance, params| {
-            let instance = unsafe { &mut *instance };
-            instance.wrap_call(store, func.clone(), params)
+        Self::from_canonical(move |store, instance, params| unsafe {
+            (*instance).wrap_call(store, func.clone(), params)
         })
     }
 
@@ -184,9 +183,8 @@ impl HostFunc {
             + 'static,
     {
         let func = Arc::new(func);
-        Self::new_dynamic_canonical(move |store, instance, params, _| {
-            let instance = unsafe { &mut *instance };
-            instance.wrap_dynamic_call(store, func.clone(), params)
+        Self::new_dynamic_canonical(move |store, instance, params, _| unsafe {
+            (*instance).wrap_call(store, func.clone(), params)
         })
     }
 
@@ -374,7 +372,7 @@ where
 
         let future = closure(cx.as_context_mut(), instance, params);
 
-        let ret = (*instance).poll_and_block(cx.as_context_mut(), future, caller_instance)?;
+        let ret = (*instance).poll_and_block(future, caller_instance)?;
 
         flags.set_may_leave(false);
         let mut lower = LowerContext::new(cx, &options, types, instance);
@@ -639,8 +637,7 @@ where
             args,
             result_tys.types.len(),
         );
-        let result_vals =
-            (*instance).poll_and_block(store.as_context_mut(), future, caller_instance)?;
+        let result_vals = (*instance).poll_and_block(future, caller_instance)?;
 
         flags.set_may_leave(false);
 

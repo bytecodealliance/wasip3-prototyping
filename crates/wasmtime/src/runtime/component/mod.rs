@@ -705,7 +705,6 @@ pub(crate) mod concurrent {
                 Val,
             },
             vm::component::ComponentInstance,
-            StoreContextMut,
         },
         alloc::{sync::Arc, task::Wake},
         anyhow::Result,
@@ -729,9 +728,8 @@ pub(crate) mod concurrent {
     }
 
     impl ComponentInstance {
-        pub(crate) fn poll_and_block<'a, T, R: Send + Sync + 'static>(
+        pub(crate) fn poll_and_block<R: Send + Sync + 'static>(
             &mut self,
-            _store: StoreContextMut<'a, T>,
             future: impl Future<Output = Result<R>> + Send + 'static,
             _caller_instance: RuntimeComponentInstanceIndex,
         ) -> Result<R> {

@@ -16,7 +16,7 @@ use wasmtime_environ::component::{
 };
 
 #[cfg(feature = "component-model-async")]
-use crate::component::concurrent::{self, LiftFn, LowerFn, PreparedCall};
+use crate::component::concurrent::{self, PreparedCall};
 #[cfg(feature = "component-model-async")]
 use crate::VMStore;
 #[cfg(feature = "component-model-async")]
@@ -387,14 +387,21 @@ impl Func {
 
         let result = (|| {
             self.check_param_count(store.as_context_mut(), params.len())?;
-            let prepared = self.prepare_call_dynamic(
-                store.as_context_mut(),
-                concurrent::drop_params::<Vec<Val>>,
-            )?;
+            // SAFETY: We uphold the contract documented in
+            // `concurrent::prepare_call` by setting `PreparedCall::params` to a
+            // valid pointer prior to polling the event loop for this function's
+            // instance and providing a `drop_params` parameter which will
+            // correctly dispose of it after lowering.
+            let prepared = unsafe {
+                self.prepare_call_dynamic(
+                    store.as_context_mut(),
+                    concurrent::drop_params::<Vec<Val>>,
+                )
+            }?;
             prepared
                 .params()
                 .store(Box::into_raw(Box::new(params)).cast(), Relaxed);
-            concurrent::defer_call(store, prepared)
+            concurrent::queue_call(store, prepared)
         })();
 
         match result {
@@ -403,8 +410,12 @@ impl Func {
         }
     }
 
+    /// Calls `concurrent::prepare_call` with monomorphized functions for
+    /// lowering the parameters and lifting the result.
+    ///
+    /// SAFETY: See `concurrent::prepare_call`.
     #[cfg(feature = "component-model-async")]
-    fn prepare_call_dynamic<'a, T: Send>(
+    unsafe fn prepare_call_dynamic<'a, T: Send>(
         self,
         mut store: StoreContextMut<'a, T>,
         drop_params: unsafe fn(*mut u8),
@@ -418,7 +429,7 @@ impl Func {
             Self::lift_results_sync_fn::<T>
         };
 
-        self.prepare_call(store, lower, drop_params, lift, MAX_FLAT_PARAMS)
+        concurrent::prepare_call(store, lower, drop_params, lift, self, MAX_FLAT_PARAMS)
     }
 
     fn call_impl<U: Send>(
@@ -468,18 +479,6 @@ impl Func {
                 Ok(())
             },
         )
-    }
-
-    #[cfg(feature = "component-model-async")]
-    fn prepare_call<'a, T: Send, Return: Send + Sync + 'static>(
-        &self,
-        store: StoreContextMut<'a, T>,
-        lower: LowerFn,
-        drop_params: unsafe fn(*mut u8),
-        lift: LiftFn,
-        param_count: usize,
-    ) -> Result<PreparedCall<Return>> {
-        concurrent::prepare_call(store, lower, drop_params, lift, *self, param_count)
     }
 
     /// Invokes the underlying wasm function, lowering arguments and lifting the
