@@ -203,10 +203,6 @@ impl<T> StoreInner<T> {
     /// This only works on async futures and stores, and assumes that we're
     /// executing on a fiber. This will yield execution back to the caller once.
     pub fn async_yield_impl(&mut self) -> Result<()> {
-        use crate::runtime::vm::Yield;
-
-        let mut future = Yield::new();
-
         // When control returns, we have a `Result<()>` passed
         // in from the host fiber. If this finished successfully then
         // we were resumed normally via a `poll`, so keep going.  If
@@ -214,18 +210,7 @@ impl<T> StoreInner<T> {
         // to clean up this fiber. Do so by raising a trap which will
         // abort all wasm and get caught on the other side to clean
         // things up.
-        #[cfg(feature = "component-model-async")]
-        unsafe {
-            let async_cx = crate::component::concurrent::AsyncCx::new(&mut (&mut *self).inner);
-            async_cx.block_on(Pin::new_unchecked(&mut future), None)?.0;
-            Ok(())
-        }
-        #[cfg(not(feature = "component-model-async"))]
-        unsafe {
-            self.async_cx()
-                .expect("attempted to pull async context during shutdown")
-                .block_on(Pin::new_unchecked(&mut future))
-        }
+        self.block_on(|_| crate::runtime::vm::Yield::new())
     }
 
     #[cfg(target_has_atomic = "64")]
@@ -236,6 +221,30 @@ impl<T> StoreInner<T> {
         );
         self.epoch_deadline_behavior =
             Some(Box::new(move |_store| Ok(UpdateDeadline::Yield(delta))));
+    }
+
+    pub(crate) fn block_on<'a, F: Future + Send>(
+        &'a mut self,
+        mk_future: impl FnOnce(&'a mut Self) -> F,
+    ) -> Result<F::Output> {
+        #[cfg(feature = "component-model-async")]
+        {
+            let async_cx = crate::component::concurrent::AsyncCx::try_new(self)
+                .expect("couldn't create AsyncCx to block on async operation");
+            let future = mk_future(self);
+            let mut future = core::pin::pin!(future);
+            unsafe { Ok(async_cx.block_on(future.as_mut(), None)?.0) }
+        }
+        #[cfg(not(feature = "component-model-async"))]
+        {
+            let cx = self
+                .inner
+                .async_cx()
+                .expect("async_cx is not present to block on async operation");
+            let future = mk_future(self);
+            let mut future = core::pin::pin!(future);
+            unsafe { cx.block_on(future.as_mut()) }
+        }
     }
 }
 
