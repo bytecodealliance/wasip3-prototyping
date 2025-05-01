@@ -1,7 +1,4 @@
 ;;! component_model_async = true
-;;! reference_types = true
-;;! gc_types = true
-;;! multi_memory = true
 
 ;; Create a future, start a read, close the write end, and cancel the read.
 (component
