@@ -133,6 +133,10 @@ pub const STATUS_RETURN_CANCELLED: u32 = 4;
 
 pub const EVENT_NONE: u32 = 0;
 pub const EVENT_SUBTASK: u32 = 1;
+pub const EVENT_STREAM_READ: u32 = 2;
+pub const EVENT_STREAM_WRITE: u32 = 3;
+pub const EVENT_FUTURE_READ: u32 = 4;
+pub const EVENT_FUTURE_WRITE: u32 = 5;
 pub const EVENT_CANCELLED: u32 = 6;
 
 pub const CALLBACK_CODE_EXIT: u32 = 0;

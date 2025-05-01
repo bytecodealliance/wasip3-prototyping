@@ -162,6 +162,10 @@ interface cancel {
   run: func(mode: mode);
 }
 
+interface intertask {
+  foo: func(fut: future);
+}
+
 world yield-caller {
   import continue;
   import ready;
@@ -308,4 +312,9 @@ world cancel-callee {
 
 world cancel-host {
   export cancel;
+}
+
+world intertask-communication {
+  import intertask;
+  export run;
 }

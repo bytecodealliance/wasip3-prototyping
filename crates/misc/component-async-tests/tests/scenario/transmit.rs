@@ -16,7 +16,7 @@ use wasmtime::{AsContextMut, Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::transmit::bindings::exports::local::local::transmit::Control;
-use component_async_tests::util::{annotate, compose, config, test_run};
+use component_async_tests::util::{annotate, compose, config, test_run, test_run_with_count};
 use component_async_tests::{sleep, transmit, Ctx};
 
 use cancel::exports::local::local::cancel::Mode;
@@ -120,6 +120,15 @@ async fn test_cancel(mode: Mode) -> Result<()> {
     instance.run(&mut store, run).await??;
 
     Ok(())
+}
+
+#[tokio::test]
+pub async fn async_intertask_communication() -> Result<()> {
+    test_run_with_count(
+        &fs::read(test_programs_artifacts::ASYNC_INTERTASK_COMMUNICATION_COMPONENT).await?,
+        2,
+    )
+    .await
 }
 
 #[tokio::test]
