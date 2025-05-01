@@ -142,7 +142,14 @@ fn waitable_state(ty: TableIndex, state: StreamFutureState) -> WaitableState {
     }
 }
 
-fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U>(
+/// Return a closure which matches a host write operation to a read (or close)
+/// operation.
+///
+/// SAFETY: The `ComponentInstance` passed to the returned closure must, when
+/// paired with a `Reader::Guest { .. }`, match the one the stream or future
+/// belongs to, and must itself belong to a store with a data type parameter of
+/// `U`.  Finally, the caller must confer exclusive access to that store.
+unsafe fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U>(
     mut buffer: B,
     tx: oneshot::Sender<HostResult<B>>,
 ) -> impl FnOnce(&mut ComponentInstance, Reader) -> Result<ReturnCode> + Send + Sync + 'static {
@@ -154,9 +161,19 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U>(
                 address,
                 count,
             } => {
+                // SAFETY: This `ComponentInstance` belongs to the store in
+                // which it resides, so if it is valid then so is its store, and
+                // per this function's contract, the caller has conferred
+                // exclusive access to that store.
+                //
+                // Finally, per the contract documented above for
+                // `accept_reader`, the data type of the store must be `U`.
                 let mut store = unsafe { StoreContextMut::<U>(&mut *instance.store().cast()) };
                 let ptr = instance as *mut _;
                 let types = instance.component_types();
+                // SAFETY: The instance pointer is valid and belongs to the
+                // store given that both were derived from the `&mut
+                // ComponentInstance` we received.
                 let lower =
                     unsafe { &mut LowerContext::new(store.as_context_mut(), options, types, ptr) };
                 if address % usize::try_from(T::ALIGN32)? != 0 {
@@ -185,6 +202,9 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U>(
                 ReturnCode::Completed(count.try_into().unwrap())
             }
             Reader::Host { accept } => {
+                // SAFETY: Per the requirements described in `host_read`'s
+                // documentation, we give up ownership of the items by calling
+                // `buffer.forget` immediately after the following call.
                 let count = accept(buffer.remaining().as_ptr().cast(), buffer.remaining().len());
                 buffer.forget(count);
                 _ = tx.send(HostResult {
@@ -206,7 +226,19 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U>(
     }
 }
 
-fn accept_writer<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
+/// Return a closure which matches a host read operation to a write (or close)
+/// operation.
+///
+/// SAFETY: If and when a `Writer::Host { .. }` is passed to the returned
+/// closure, the `pointer` field must be a valid `*mut T` array of `count`
+/// elements, and those elements must be forgotten using e.g. `mem::forget`
+/// after the call to the closure returns since they will have been moved into
+/// another buffer (i.e. the destination buffer will take ownership of them).
+// TODO: This should return a `impl UnsafeFnOnce` (where `UnsafeFnOnce` would
+// need to be a trait we define ourselves, since there's no standard equivalent)
+// rather than a `impl FnOnce`.  That would force the caller to use an unsafe
+// block and (hopefully) uphold the contract we've described above.
+unsafe fn accept_writer<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
     mut buffer: B,
     tx: oneshot::Sender<HostResult<B>>,
 ) -> impl FnOnce(Writer) -> Result<ReturnCode> + Send + Sync + 'static {
@@ -220,6 +252,9 @@ fn accept_writer<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
             } => {
                 let count = count.min(buffer.remaining_capacity());
                 if T::IS_RUST_UNIT_TYPE {
+                    // SAFETY: `T::IS_RUST_UNIT_TYPE` is only true for `()`, a
+                    // zero-sized type, so `MaybeUninit::uninit().assume_init()`
+                    // is a valid way to populate the zero-sized buffer.
                     buffer.extend(
                         iter::repeat_with(|| unsafe { MaybeUninit::uninit().assume_init() })
                             .take(count),
@@ -245,6 +280,9 @@ fn accept_writer<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
             }
             Writer::Host { pointer, count } => {
                 let count = count.min(buffer.remaining_capacity());
+                // SAFETY: Per the contact of `accept_writer`, `pointer` is a
+                // valid `*mut T` array of `count` elements which we may move
+                // (i.e. transfer ownership) into the destination buffer.
                 unsafe { buffer.copy_from(pointer.cast(), count) };
                 _ = tx.send(HostResult {
                     buffer,
@@ -498,6 +536,8 @@ impl<T> HostFuture<T> {
     fn new(rep: u32, instance: &mut ComponentInstance) -> Self {
         Self {
             instance: SendSyncPtr::new(NonNull::new(instance).unwrap()),
+            // SAFETY: This `ComponentInstance` belongs to the store in which it
+            // resides, so if it is valid then so is its store.
             id: unsafe { (*instance.store()).store_opaque().id() },
             rep,
             _phantom: PhantomData,
@@ -511,6 +551,10 @@ impl<T> HostFuture<T> {
     {
         let store = store.as_context_mut();
         assert_eq!(store.0.id(), self.id);
+        // SAFETY: The `StoreId` comparison we did above proved that this
+        // `ComponentInstance` belongs to this store, and since we have
+        // exclusive access to the store we also have exclusive access to the
+        // `ComponentInstance`.
         let instance = unsafe { &mut *self.instance.as_ptr() };
         FutureReader {
             instance: self.instance,
@@ -536,6 +580,9 @@ impl<T> HostFuture<T> {
             bail!("expected `future`; got `{}`", value.desc());
         };
         let store = store.as_context_mut();
+        // SAFETY: We have exclusive access to the store, which we means we have
+        // exclusive access to any `ComponentInstance` which resides in the
+        // store.
         let instance = unsafe { &mut *store.0[instance.0].as_ref().unwrap().instance_ptr() };
         instance.get(TableId::<TransmitHandle>::new(*rep))?; // Just make sure it's present
         Ok(Self::new(*rep, instance))
@@ -544,6 +591,9 @@ impl<T> HostFuture<T> {
     fn lift_from_index(cx: &mut LiftContext<'_>, ty: InterfaceType, index: u32) -> Result<Self> {
         match ty {
             InterfaceType::Future(src) => {
+                // SAFETY: Per the contract of `LiftContext::new`, the
+                // `instance` field must be valid for as long as the
+                // `LiftContext` itself is valid.
                 let instance = unsafe { &mut *cx.instance };
                 let state_table = instance.state_table(TableIndex::Future(src));
                 let (rep, state) =
@@ -571,6 +621,10 @@ pub(crate) fn lower_future_to_index<U>(
 ) -> Result<u32> {
     match ty {
         InterfaceType::Future(dst) => {
+            // SAFETY: Per the contract of `LowerContext::new`, the `instance`
+            // field must be valid for as long as the `LowerContext` itself is
+            // valid, as long as we don't try to access it via the `store` at
+            // the same time (which we don't).
             let instance = unsafe { &mut *cx.instance };
             let state = instance.get(TableId::<TransmitHandle>::new(rep))?.state;
             let rep = instance.get(state)?.read_handle.rep();
@@ -583,6 +637,8 @@ pub(crate) fn lower_future_to_index<U>(
     }
 }
 
+// SAFETY: This relies on the `ComponentType` implementation for `u32` being
+// safe and correct since we lift and lower future handles as `u32`s.
 unsafe impl<T> func::ComponentType for HostFuture<T> {
     const ABI: CanonicalAbiInfo = CanonicalAbiInfo::SCALAR4;
 
@@ -596,6 +652,7 @@ unsafe impl<T> func::ComponentType for HostFuture<T> {
     }
 }
 
+// SAFETY: See the comment on the `ComponentType` `impl` for this type.
 unsafe impl<T> func::Lower for HostFuture<T> {
     fn lower<U>(
         &self,
@@ -616,6 +673,7 @@ unsafe impl<T> func::Lower for HostFuture<T> {
     }
 }
 
+// SAFETY: See the comment on the `ComponentType` `impl` for this type.
 unsafe impl<T> func::Lift for HostFuture<T> {
     fn lift(cx: &mut LiftContext<'_>, ty: InterfaceType, src: &Self::Lower) -> Result<Self> {
         let index = u32::lift(cx, InterfaceType::U32, src)?;
@@ -660,6 +718,8 @@ impl<T> FutureReader<T> {
     ) -> Self {
         Self {
             instance: SendSyncPtr::new(NonNull::new(instance).unwrap()),
+            // SAFETY: This `ComponentInstance` belongs to the store in which it
+            // resides, so if it is valid then so is its store.
             id: unsafe { (*instance.store()).store_opaque().id() },
             rep,
             tx,
@@ -876,10 +936,12 @@ pub struct HostStream<T> {
 }
 
 impl<T> HostStream<T> {
-    fn new(rep: u32, instance: *mut ComponentInstance) -> Self {
+    fn new(rep: u32, instance: &mut ComponentInstance) -> Self {
         Self {
             instance: SendSyncPtr::new(NonNull::new(instance).unwrap()),
-            id: unsafe { (*(*instance).store()).store_opaque().id() },
+            // SAFETY: This `ComponentInstance` belongs to the store in which it
+            // resides, so if it is valid then so is its store.
+            id: unsafe { (*instance.store()).store_opaque().id() },
             rep,
             _phantom: PhantomData,
         }
@@ -893,6 +955,10 @@ impl<T> HostStream<T> {
     {
         let store = store.as_context_mut();
         assert_eq!(store.0.id(), self.id);
+        // SAFETY: The `StoreId` comparison we did above proved that this
+        // `ComponentInstance` belongs to this store, and since we have
+        // exclusive access to the store we also have exclusive access to the
+        // `ComponentInstance`.
         let instance = unsafe { &mut *self.instance.as_ptr() };
         StreamReader {
             instance: self.instance,
@@ -918,14 +984,20 @@ impl<T> HostStream<T> {
             bail!("expected `stream`; got `{}`", value.desc());
         };
         let store = store.as_context_mut();
+        // SAFETY: We have exclusive access to the store, which we means we have
+        // exclusive access to any `ComponentInstance` which resides in the
+        // store.
         let instance = unsafe { &mut *store.0[instance.0].as_ref().unwrap().instance_ptr() };
-        instance.get(TableId::<TransmitHandle>::new(*rep))?;
+        instance.get(TableId::<TransmitHandle>::new(*rep))?; // Just make sure it's present
         Ok(Self::new(*rep, instance))
     }
 
     fn lift_from_index(cx: &mut LiftContext<'_>, ty: InterfaceType, index: u32) -> Result<Self> {
         match ty {
             InterfaceType::Stream(src) => {
+                // SAFETY: Per the contract of `LiftContext::new`, the
+                // `instance` field must be valid for as long as the
+                // `LiftContext` itself is valid.
                 let instance = unsafe { &mut *cx.instance };
                 let state_table = instance.state_table(TableIndex::Stream(src));
                 let (rep, state) =
@@ -953,6 +1025,10 @@ pub(crate) fn lower_stream_to_index<U>(
 ) -> Result<u32> {
     match ty {
         InterfaceType::Stream(dst) => {
+            // SAFETY: Per the contract of `LowerContext::new`, the `instance`
+            // field must be valid for as long as the `LowerContext` itself is
+            // valid, as long as we don't try to access it via the `store` at
+            // the same time (which we don't).
             let instance = unsafe { &mut *cx.instance };
             let state = instance.get(TableId::<TransmitHandle>::new(rep))?.state;
             let rep = instance.get(state)?.read_handle.rep();
@@ -965,6 +1041,8 @@ pub(crate) fn lower_stream_to_index<U>(
     }
 }
 
+// SAFETY: This relies on the `ComponentType` implementation for `u32` being
+// safe and correct since we lift and lower stream handles as `u32`s.
 unsafe impl<T> func::ComponentType for HostStream<T> {
     const ABI: CanonicalAbiInfo = CanonicalAbiInfo::SCALAR4;
 
@@ -978,6 +1056,7 @@ unsafe impl<T> func::ComponentType for HostStream<T> {
     }
 }
 
+// SAFETY: See the comment on the `ComponentType` `impl` for this type.
 unsafe impl<T> func::Lower for HostStream<T> {
     fn lower<U>(
         &self,
@@ -998,6 +1077,7 @@ unsafe impl<T> func::Lower for HostStream<T> {
     }
 }
 
+// SAFETY: See the comment on the `ComponentType` `impl` for this type.
 unsafe impl<T> func::Lift for HostStream<T> {
     fn lift(cx: &mut LiftContext<'_>, ty: InterfaceType, src: &Self::Lower) -> Result<Self> {
         let index = u32::lift(cx, InterfaceType::U32, src)?;
@@ -1042,6 +1122,8 @@ impl<B> StreamReader<B> {
     ) -> Self {
         Self {
             instance: SendSyncPtr::new(NonNull::new(instance).unwrap()),
+            // SAFETY: This `ComponentInstance` belongs to the store in which it
+            // resides, so if it is valid then so is its store.
             id: unsafe { (*instance.store()).store_opaque().id() },
             rep,
             tx,
@@ -1142,15 +1224,15 @@ impl ErrorContext {
     fn lift_from_index(cx: &mut LiftContext<'_>, ty: InterfaceType, index: u32) -> Result<Self> {
         match ty {
             InterfaceType::ErrorContext(src) => {
-                let (rep, _) = unsafe {
-                    (*cx.instance)
-                        .error_context_tables()
-                        .get_mut(src)
-                        .expect(
-                            "error context table index present in (sub)component table during lift",
-                        )
-                        .get_mut_by_index(index)?
-                };
+                // SAFETY: Per the contract of `LiftContext::new`, the
+                // `instance` field must be valid for as long as the
+                // `LiftContext` itself is valid.
+                let instance = unsafe { &mut *cx.instance };
+                let (rep, _) = instance
+                    .error_context_tables()
+                    .get_mut(src)
+                    .expect("error context table index present in (sub)component table during lift")
+                    .get_mut_by_index(index)?;
 
                 Ok(Self { rep })
             }
@@ -1166,11 +1248,15 @@ pub(crate) fn lower_error_context_to_index<U>(
 ) -> Result<u32> {
     match ty {
         InterfaceType::ErrorContext(dst) => {
-            let tbl = unsafe {
-                &mut (*cx.instance).error_context_tables().get_mut(dst).expect(
-                    "error context table index present in (sub)component table during lower",
-                )
-            };
+            // SAFETY: Per the contract of `LowerContext::new`, the `instance`
+            // field must be valid for as long as the `LowerContext` itself is
+            // valid, as long as we don't try to access it via the `store` at
+            // the same time (which we don't).
+            let instance = unsafe { &mut *cx.instance };
+            let tbl = &mut instance
+                .error_context_tables()
+                .get_mut(dst)
+                .expect("error context table index present in (sub)component table during lower");
 
             if let Some((dst_idx, dst_state)) = tbl.get_mut_by_rep(rep) {
                 dst_state.0 += 1;
@@ -1183,6 +1269,8 @@ pub(crate) fn lower_error_context_to_index<U>(
     }
 }
 
+// SAFETY: This relies on the `ComponentType` implementation for `u32` being
+// safe and correct since we lift and lower future handles as `u32`s.
 unsafe impl func::ComponentType for ErrorContext {
     const ABI: CanonicalAbiInfo = CanonicalAbiInfo::SCALAR4;
 
@@ -1196,6 +1284,7 @@ unsafe impl func::ComponentType for ErrorContext {
     }
 }
 
+// SAFETY: See the comment on the `ComponentType` `impl` for this type.
 unsafe impl func::Lower for ErrorContext {
     fn lower<T>(
         &self,
@@ -1216,6 +1305,7 @@ unsafe impl func::Lower for ErrorContext {
     }
 }
 
+// SAFETY: See the comment on the `ComponentType` `impl` for this type.
 unsafe impl func::Lift for ErrorContext {
     fn lift(cx: &mut LiftContext<'_>, ty: InterfaceType, src: &Self::Lower) -> Result<Self> {
         let index = u32::lift(cx, InterfaceType::U32, src)?;
@@ -1360,6 +1450,9 @@ impl Instance {
         mut store: S,
     ) -> Result<(FutureWriter<T>, FutureReader<T>)> {
         let store = store.as_context_mut();
+        // SAFETY: We have exclusive access to the store, which we means we have
+        // exclusive access to any `ComponentInstance` which resides in the
+        // store.
         let instance = unsafe { &mut *store.0[self.0].as_ref().unwrap().instance_ptr() };
         let (write, read) = instance.new_transmit()?;
 
@@ -1389,6 +1482,9 @@ impl Instance {
         mut store: S,
     ) -> Result<(StreamWriter<W>, StreamReader<R>)> {
         let store = store.as_context_mut();
+        // SAFETY: We have exclusive access to the store, which we means we have
+        // exclusive access to any `ComponentInstance` which resides in the
+        // store.
         let instance = unsafe { &mut *store.0[self.0].as_ref().unwrap().instance_ptr() };
         let (write, read) = instance.new_transmit()?;
 
@@ -1406,7 +1502,13 @@ impl Instance {
     }
 }
 
-fn get_state_rep(instance: SendSyncPtr<ComponentInstance>, rep: u32) -> Result<u32> {
+/// Retrieve the `TransmitState` rep for the specified `TransmitHandle` rep.
+///
+/// SAFETY: `instance` must point to a valid `ComponentInstance` to which the
+/// caller may confer exclusive access.
+unsafe fn get_state_rep(instance: SendSyncPtr<ComponentInstance>, rep: u32) -> Result<u32> {
+    // SAFETY: Per the precondition for this function, the pointer is valid and
+    // we have exclusive access to the instance it points to.
     let instance = unsafe { &mut *instance.as_ptr() };
     let transmit_handle = TableId::<TransmitHandle>::new(rep);
     Ok(instance
@@ -1445,26 +1547,34 @@ impl ComponentInstance {
         &mut self,
         rep: u32,
     ) -> mpsc::Sender<WriteEvent<B>> {
-        fn write<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U>(
+        // SAFETY: `instance` must point to a valid `ComponentInstance` to which
+        // the caller may confer exclusive access.
+        unsafe fn write<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U>(
             instance: SendSyncPtr<ComponentInstance>,
             rep: u32,
             buffer: B,
             tx: oneshot::Sender<HostResult<B>>,
         ) -> Result<()> {
+            // SAFETY: Per the precondition for this function, the pointer is
+            // valid and we have exclusive access to the instance it points to.
             let instance = unsafe { &mut *instance.as_ptr() };
             instance.host_write::<_, _, U>(rep, buffer, PostWrite::Continue, tx)
         }
 
-        fn close(instance: SendSyncPtr<ComponentInstance>, rep: u32) -> Result<()> {
+        // SAFETY: See corresponding comment for `write` above.
+        unsafe fn close(instance: SendSyncPtr<ComponentInstance>, rep: u32) -> Result<()> {
+            // SAFETY: See corresponding comment in `write` above.
             let instance = unsafe { &mut *instance.as_ptr() };
             instance.host_close_writer(rep)
         }
 
-        fn watch(
+        // SAFETY: See corresponding comment for `write` above.
+        unsafe fn watch(
             instance: SendSyncPtr<ComponentInstance>,
             rep: u32,
             tx: oneshot::Sender<()>,
         ) -> Result<()> {
+            // SAFETY: See corresponding comment in `write` above.
             let instance = unsafe { &mut *instance.as_ptr() };
             let state = instance.get_mut(TableId::<TransmitState>::new(rep))?;
             if !matches!(&state.read, ReadState::Closed) {
@@ -1484,16 +1594,22 @@ impl ComponentInstance {
                     log::trace!("write event loop for {id:?} started");
                     let mut my_rep = None;
                     while let Some(event) = rx.next().await {
-                        if my_rep.is_none() {
-                            my_rep = Some(get_state_rep(instance, rep)?);
-                        }
-                        let rep = my_rep.unwrap();
-                        match event {
-                            WriteEvent::Write { buffer, tx } => {
-                                write::<T, B, U>(instance, rep, buffer, tx)?
+                        // SAFETY: This future is only polled from
+                        // `ComponentInstance::poll_until`, which has exclusive
+                        // access to both the same `ComponentInstance` pointed
+                        // to by `instance` and the store to which it belongs.
+                        unsafe {
+                            if my_rep.is_none() {
+                                my_rep = Some(get_state_rep(instance, rep)?);
                             }
-                            WriteEvent::Close => close(instance, rep)?,
-                            WriteEvent::Watch { tx } => watch(instance, rep, tx)?,
+                            let rep = my_rep.unwrap();
+                            match event {
+                                WriteEvent::Write { buffer, tx } => {
+                                    write::<T, B, U>(instance, rep, buffer, tx)?
+                                }
+                                WriteEvent::Close => close(instance, rep)?,
+                                WriteEvent::Watch { tx } => watch(instance, rep, tx)?,
+                            }
                         }
                     }
                     Ok(())
@@ -1513,27 +1629,39 @@ impl ComponentInstance {
         &mut self,
         rep: u32,
     ) -> mpsc::Sender<ReadEvent<B>> {
-        fn read<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
+        // SAFETY: `instance` must point to a valid `ComponentInstance` to which
+        // the caller may confer exclusive access.  In addition, the caller must
+        // also confer exclusive access to the store to which the
+        // `ComponentInstance` belongs, and the data type parameter for that
+        // store must be `U`.
+        unsafe fn read<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
             instance: SendSyncPtr<ComponentInstance>,
             rep: u32,
             buffer: B,
             tx: oneshot::Sender<HostResult<B>>,
         ) -> Result<()> {
-            let instance = unsafe { &mut *instance.as_ptr() };
-            let store = unsafe { StoreContextMut::<U>(&mut *instance.store().cast()) };
-            instance.host_read::<T, B, _, _>(store, rep, buffer, tx)
+            // SAFETY: Per the precondition for this function, the pointer is
+            // valid and we have exclusive access to the instance it points to.
+            unsafe {
+                let instance = &mut *instance.as_ptr();
+                instance.host_read::<T, B, U>(rep, buffer, tx)
+            }
         }
 
-        fn close(instance: SendSyncPtr<ComponentInstance>, rep: u32) -> Result<()> {
+        // SAFETY: See corresponding comment for `read` above.
+        unsafe fn close(instance: SendSyncPtr<ComponentInstance>, rep: u32) -> Result<()> {
+            // SAFETY: See corresponding comment in `read` above.
             let instance = unsafe { &mut *instance.as_ptr() };
             instance.host_close_reader(rep)
         }
 
-        fn watch(
+        // SAFETY: See corresponding comment for `read` above.
+        unsafe fn watch(
             instance: SendSyncPtr<ComponentInstance>,
             rep: u32,
             tx: oneshot::Sender<()>,
         ) -> Result<()> {
+            // SAFETY: See corresponding comment in `read` above.
             let instance = unsafe { &mut *instance.as_ptr() };
             let state = instance.get_mut(TableId::<TransmitState>::new(rep))?;
             if !matches!(&state.write, WriteState::Closed) {
@@ -1552,16 +1680,22 @@ impl ComponentInstance {
                     log::trace!("read event loop for {id:?} started");
                     let mut my_rep = None;
                     while let Some(event) = rx.next().await {
-                        if my_rep.is_none() {
-                            my_rep = Some(get_state_rep(instance, rep)?);
-                        }
-                        let rep = my_rep.unwrap();
-                        match event {
-                            ReadEvent::Read { buffer, tx } => {
-                                read::<T, B, U>(instance, rep, buffer, tx)?
+                        // SAFETY: This future is only polled from
+                        // `ComponentInstance::poll_until`, which has exclusive
+                        // access to both the same `ComponentInstance` pointed
+                        // to by `instance` and the store to which it belongs.
+                        unsafe {
+                            if my_rep.is_none() {
+                                my_rep = Some(get_state_rep(instance, rep)?);
                             }
-                            ReadEvent::Close => close(instance, rep)?,
-                            ReadEvent::Watch { tx } => watch(instance, rep, tx)?,
+                            let rep = my_rep.unwrap();
+                            match event {
+                                ReadEvent::Read { buffer, tx } => {
+                                    read::<T, B, U>(instance, rep, buffer, tx)?
+                                }
+                                ReadEvent::Close => close(instance, rep)?,
+                                ReadEvent::Watch { tx } => watch(instance, rep, tx)?,
+                            }
                         }
                     }
                     Ok(())
@@ -1638,7 +1772,7 @@ impl ComponentInstance {
         Ok(ResourcePair { write, read })
     }
 
-    /// Write to a waitable from the host
+    /// Write to a waitable from the host.
     ///
     /// # Arguments
     ///
@@ -1648,7 +1782,9 @@ impl ComponentInstance {
     /// * `post_write` - Whether the transmit should be closed after write, possibly with an error context
     /// * `tx` - Oneshot channel to notify when operation completes (or drop on error)
     ///
-    fn host_write<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U>(
+    /// SAFETY: `self` must belong to a store whose data type parameter is `U`,
+    /// and the caller must confer exclusive access to that store.
+    unsafe fn host_write<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U>(
         &mut self,
         transmit_rep: u32,
         mut buffer: B,
@@ -1672,7 +1808,11 @@ impl ComponentInstance {
                 assert!(matches!(&transmit.write, WriteState::Open));
 
                 transmit.write = WriteState::HostReady {
-                    accept: Box::new(accept_reader::<T, B, U>(buffer, tx)),
+                    // SAFETY: The closure we store here will only be called
+                    // with a `Reader::Guest { .. }` parameter from
+                    // `guest_read`, which upholds the requirements in
+                    // `accept_reader`'s documentation.
+                    accept: Box::new(unsafe { accept_reader::<T, B, U>(buffer, tx) }),
                     post_write,
                 };
                 post_write = PostWrite::Continue;
@@ -1688,7 +1828,10 @@ impl ComponentInstance {
                 ..
             } => {
                 let read_handle = transmit.read_handle;
-                let code = accept_reader::<T, B, U>(buffer, tx)(
+                // SAFETY: See the contract documented for this function and
+                // note that it covers the requirements specified in
+                // `accept_reader`'s documentation.
+                let code = unsafe { accept_reader::<T, B, U>(buffer, tx) }(
                     self,
                     Reader::Guest {
                         lower: RawLowerContext { options: &options },
@@ -1708,13 +1851,18 @@ impl ComponentInstance {
             }
 
             ReadState::HostReady { accept } => {
+                // SAFETY: Per the requirements described in `accept_writer`'s
+                // documentation, we give up ownership of the items by calling
+                // `buffer.forget` immediately after the following call.
                 let code = accept(Writer::Host {
                     pointer: buffer.remaining().as_ptr().cast(),
                     count: buffer.remaining().len(),
                 })?;
-                if let ReturnCode::Completed(n) = code {
-                    buffer.forget(n.try_into().unwrap());
-                }
+                let ReturnCode::Completed(n) = code else {
+                    unreachable!()
+                };
+                buffer.forget(n.try_into().unwrap());
+
                 _ = tx.send(HostResult {
                     buffer,
                     closed: false,
@@ -1736,14 +1884,29 @@ impl ComponentInstance {
         Ok(())
     }
 
-    fn host_read<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U, S: AsContextMut<Data = U>>(
+    /// Attempt to read items from the specified stream or future.
+    ///
+    /// SAFETY: `self` must belong to a store whose data type parameter is `U`,
+    /// and the caller must confer exclusive access to that store.
+    ///
+    /// Also, note that when the `TransmitState::write` field of the state to
+    /// which the stream or future belongs is `WriteState::HostReady`, its
+    /// `accept` callback will be passed a `Reader::Host` whose `accept` closure
+    /// requries a valid `*mut T` array of `count` elements, and those elements
+    /// must be forgotten using e.g. `mem::forget` after the call to that
+    /// closure returns since they will have been moved into another buffer
+    /// (i.e. the destination buffer will take ownership of them).
+    // TODO: `Reader::Host::accept` should really be a `Box<dyn UnsafeFnOnce>`
+    // (where `UnsafeFnOnce` would need to be a trait we define ourselves, since
+    // there's no standard equivalent) rather than a `Box<dyn FnOnce>`.  That
+    // would force the caller to use an unsafe block and (hopefully) uphold the
+    // contract described above.
+    unsafe fn host_read<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
         &mut self,
-        mut store: S,
         rep: u32,
         mut buffer: B,
         tx: oneshot::Sender<HostResult<B>>,
     ) -> Result<()> {
-        let store = store.as_context_mut();
         let transmit_id = TableId::<TransmitState>::new(rep);
         let transmit = self.get_mut(transmit_id).with_context(|| rep.to_string())?;
 
@@ -1775,7 +1938,18 @@ impl ComponentInstance {
                 let write_handle = transmit.write_handle;
                 let instance = self as *mut _;
                 let types = self.component_types();
-                let lift = unsafe { &mut LiftContext::new(store.0, &options, types, instance) };
+                // SAFETY: This `ComponentInstance` belongs to the store in
+                // which it resides, so if it is valid then so is its store, and
+                // per this function's contract, the caller has conferred
+                // exclusive access to that store.
+                let lift = unsafe {
+                    &mut LiftContext::new(
+                        (*self.store()).store_opaque_mut(),
+                        &options,
+                        types,
+                        instance,
+                    )
+                };
                 let code = accept_writer::<T, B, U>(buffer, tx)(Writer::Guest {
                     lift,
                     ty: payload(ty, types),
@@ -1811,6 +1985,10 @@ impl ComponentInstance {
                     Reader::Host {
                         accept: Box::new(move |pointer, count| {
                             let count = count.min(buffer.remaining_capacity());
+                            // SAFETY: Per the contact of `host_read`, `pointer`
+                            // is a valid `*mut T` array of `count` elements
+                            // which we may move (i.e. transfer ownership) into
+                            // the destination buffer.
                             unsafe { buffer.copy_from(pointer.cast(), count) };
                             _ = tx.send(HostResult {
                                 buffer,
@@ -2037,9 +2215,13 @@ impl ComponentInstance {
         Ok(())
     }
 
-    fn copy<T>(
+    /// Copy `count` items from `read_address` to `write_address` for the
+    /// specified stream or future.
+    ///
+    /// SAFETY: The caller must confer exclusive access to the store to which
+    /// `self` belongs, and the data type parameter for that store must be `T`.
+    unsafe fn copy<T>(
         &mut self,
-        mut store: StoreContextMut<'_, T>,
         flat_abi: Option<FlatAbi>,
         write_ty: TableIndex,
         write_options: &Options,
@@ -2065,10 +2247,18 @@ impl ComponentInstance {
                             bail!("write pointer not aligned");
                         }
 
+                        // SAFETY: This `ComponentInstance` belongs to the store
+                        // in which it resides, so if it is valid then so is its
+                        // store, and per this function's contract, the caller
+                        // has conferred exclusive access to that store.
                         let lift = unsafe {
-                            &mut LiftContext::new(store.0, write_options, types, instance)
+                            &mut LiftContext::new(
+                                (*self.store()).store_opaque_mut(),
+                                write_options,
+                                types,
+                                instance,
+                            )
                         };
-
                         let bytes = lift
                             .memory()
                             .get(write_address..)
@@ -2082,6 +2272,16 @@ impl ComponentInstance {
                     .transpose()?;
 
                 if let Some(val) = val {
+                    // SAFETY: This `ComponentInstance` belongs to the store in
+                    // which it resides, so if it is valid then so is its store,
+                    // and per this function's contract, the caller has
+                    // conferred exclusive access to that store.
+                    //
+                    // Finally, per this function's contract, the data type of
+                    // the store must be `T`.
+                    let mut store = unsafe { StoreContextMut::<T>(&mut *self.store().cast()) };
+                    // SAFETY: The instance pointer is valid and belongs to the
+                    // store given that both were derived from `self`.
                     let lower = unsafe {
                         &mut LowerContext::new(
                             store.as_context_mut(),
@@ -2102,8 +2302,10 @@ impl ComponentInstance {
             (TableIndex::Stream(write_ty), TableIndex::Stream(read_ty)) => {
                 let instance = self as *mut _;
                 let types = self.component_types();
-                let lift =
-                    unsafe { &mut LiftContext::new(store.0, write_options, types, instance) };
+                // SAFETY: See the corresponding comment for the
+                // `TableIndex::Future` case above.
+                let store = (*self.store()).store_opaque_mut();
+                let lift = unsafe { &mut LiftContext::new(store, write_options, types, instance) };
                 if let Some(flat_abi) = flat_abi {
                     // Fast path memcpy for "flat" (i.e. no pointers or handles) payloads:
                     let length_in_bytes = usize::try_from(flat_abi.size).unwrap() * count;
@@ -2117,7 +2319,7 @@ impl ComponentInstance {
 
                         {
                             let src = write_options
-                                .memory(store.0)
+                                .memory(store)
                                 .get(write_address..)
                                 .and_then(|b| b.get(..length_in_bytes))
                                 .ok_or_else(|| {
@@ -2125,13 +2327,15 @@ impl ComponentInstance {
                                 })?
                                 .as_ptr();
                             let dst = read_options
-                                .memory_mut(store.0)
+                                .memory_mut(store)
                                 .get_mut(read_address..)
                                 .and_then(|b| b.get_mut(..length_in_bytes))
                                 .ok_or_else(|| {
                                     anyhow::anyhow!("read pointer out of bounds of memory")
                                 })?
                                 .as_mut_ptr();
+                            // SAFETY: Both `src` and `dst` have been validated
+                            // above.
                             unsafe { src.copy_to(dst, length_in_bytes) };
                         }
                     }
@@ -2155,6 +2359,11 @@ impl ComponentInstance {
                     let id = TableId::<TransmitHandle>::new(rep);
                     log::trace!("copy values {values:?} for {id:?}");
 
+                    // SAFETY: See the corresponding comment for the
+                    // `TableIndex::Future` case above.
+                    let mut store = unsafe { StoreContextMut::<T>(&mut *self.store().cast()) };
+                    // SAFETY: See the corresponding comment for the
+                    // `TableIndex::Future` case above.
                     let lower = unsafe {
                         &mut LowerContext::new(
                             store.as_context_mut(),
@@ -2187,9 +2396,15 @@ impl ComponentInstance {
         Ok(())
     }
 
-    pub(super) fn guest_write<T>(
+    /// Write to the specified stream or future from the guest.
+    ///
+    /// SAFETY: The caller must confer exclusive access to the store to which
+    /// `self` belongs, and the data type parameter for that store must be `T`.
+    ///
+    /// Also, `memory` and `realloc` must be valid pointers to their respective
+    /// guest entities.
+    pub(super) unsafe fn guest_write<T>(
         &mut self,
-        mut store: StoreContextMut<T>,
         memory: *mut VMMemoryDefinition,
         realloc: *mut VMFuncRef,
         string_encoding: u8,
@@ -2206,9 +2421,16 @@ impl ComponentInstance {
 
         let address = usize::try_from(address).unwrap();
         let count = usize::try_from(count).unwrap();
+        // SAFETY: This `ComponentInstance` belongs to the store in which it
+        // resides, so if it is valid then so is its store, and per this
+        // function's contract, the caller has conferred exclusive access to
+        // that store.
+        //
+        // Also see the function's contract concerning the validity of `memory`
+        // and `realloc`.
         let options = unsafe {
             Options::new(
-                store.0.id(),
+                (*self.store()).store_opaque().id(),
                 NonNull::new(memory),
                 NonNull::new(realloc),
                 StringEncoding::from_u8(string_encoding).unwrap(),
@@ -2268,8 +2490,7 @@ impl ComponentInstance {
 
                 let count = count.min(read_count);
 
-                self.copy(
-                    store.as_context_mut(),
+                self.copy::<T>(
                     flat_abi,
                     ty,
                     &options,
@@ -2322,7 +2543,18 @@ impl ComponentInstance {
             ReadState::HostReady { accept } => {
                 let instance = self as *mut _;
                 let types = self.component_types();
-                let lift = unsafe { &mut LiftContext::new(store.0, &options, types, instance) };
+                // SAFETY: This `ComponentInstance` belongs to the store in
+                // which it resides, so if it is valid then so is its store, and
+                // per this function's contract, the caller has conferred
+                // exclusive access to that store.
+                let lift = unsafe {
+                    &mut LiftContext::new(
+                        (*self.store()).store_opaque_mut(),
+                        &options,
+                        types,
+                        instance,
+                    )
+                };
                 accept(Writer::Guest {
                     lift,
                     ty: payload(ty, types),
@@ -2346,9 +2578,15 @@ impl ComponentInstance {
         Ok(result)
     }
 
-    pub(super) fn guest_read<T>(
+    /// Read from the specified stream or future from the guest.
+    ///
+    /// SAFETY: The caller must confer exclusive access to the store to which
+    /// `self` belongs, and the data type parameter for that store must be `T`.
+    ///
+    /// Also, `memory` and `realloc` must be valid pointers to their respective
+    /// guest entities.
+    pub(super) unsafe fn guest_read<T>(
         &mut self,
-        mut store: StoreContextMut<T>,
         memory: *mut VMMemoryDefinition,
         realloc: *mut VMFuncRef,
         string_encoding: u8,
@@ -2364,9 +2602,16 @@ impl ComponentInstance {
         }
 
         let address = usize::try_from(address).unwrap();
+        // SAFETY: This `ComponentInstance` belongs to the store in which it
+        // resides, so if it is valid then so is its store, and per this
+        // function's contract, the caller has conferred exclusive access to
+        // that store.
+        //
+        // Also see the function's contract concerning the validity of `memory`
+        // and `realloc`.
         let options = unsafe {
             Options::new(
-                store.0.id(),
+                (*self.store()).store_opaque().id(),
                 NonNull::new(memory),
                 NonNull::new(realloc),
                 StringEncoding::from_u8(string_encoding).unwrap(),
@@ -2426,8 +2671,7 @@ impl ComponentInstance {
 
                 let count = usize::try_from(count).unwrap().min(write_count);
 
-                self.copy(
-                    store.as_context_mut(),
+                self.copy::<T>(
                     flat_abi,
                     write_ty,
                     &write_options,
@@ -2614,8 +2858,14 @@ impl ComponentInstance {
         self.host_close_reader(rep)
     }
 
-    /// Create a new error context for the given component
-    pub(crate) fn error_context_new(
+    /// Create a new error context for the given component.
+    ///
+    /// SAFETY: The caller must confer exclusive access to the store to which
+    /// `self` belongs, and the data type parameter for that store must be `T`.
+    ///
+    /// Also, `memory` and `realloc` must be valid pointers to their respective
+    /// guest entities.
+    pub(crate) unsafe fn error_context_new(
         &mut self,
         memory: *mut VMMemoryDefinition,
         realloc: *mut VMFuncRef,
@@ -2624,7 +2874,13 @@ impl ComponentInstance {
         debug_msg_address: u32,
         debug_msg_len: u32,
     ) -> Result<u32> {
-        //  Read string from guest memory
+        // SAFETY: This `ComponentInstance` belongs to the store in which it
+        // resides, so if it is valid then so is its store, and per this
+        // function's contract, the caller has conferred exclusive access to
+        // that store.
+        //
+        // Also see the function's contract concerning the validity of `memory`
+        // and `realloc`.
         let options = unsafe {
             Options::new(
                 (*self.store()).store_opaque().id(),
@@ -2638,6 +2894,10 @@ impl ComponentInstance {
             )
         };
         let interface = self as *mut _;
+        // SAFETY: This `ComponentInstance` belongs to the store in which it
+        // resides, so if it is valid then so is its store, and per this
+        // function's contract, the caller has conferred exclusive access to
+        // that store.
         let lift_ctx = unsafe {
             &mut LiftContext::new(
                 (*self.store()).store_opaque_mut(),
@@ -2646,6 +2906,7 @@ impl ComponentInstance {
                 interface,
             )
         };
+        //  Read string from guest memory
         let s = {
             let address = usize::try_from(debug_msg_address)?;
             let len = usize::try_from(debug_msg_len)?;
@@ -2667,6 +2928,10 @@ impl ComponentInstance {
 
         // Create a new ErrorContext that is tracked along with other concurrent state
         let err_ctx = ErrorContextState {
+            // SAFETY: This `ComponentInstance` belongs to the store in which it
+            // resides, so if it is valid then so is its store, and per this
+            // function's contract, the caller has conferred exclusive access to
+            // that store.
             debug_msg: s
                 .to_str_from_memory(options.memory(unsafe { (*self.store()).store_opaque() }))?
                 .to_string(),
@@ -2699,9 +2964,15 @@ impl ComponentInstance {
         Ok(local_idx)
     }
 
-    pub(super) fn error_context_debug_message<T>(
+    /// Retrieve the debug message from the specified error context.
+    ///
+    /// SAFETY: The caller must confer exclusive access to the store to which
+    /// `self` belongs, and the data type parameter for that store must be `T`.
+    ///
+    /// Also, `memory` and `realloc` must be valid pointers to their respective
+    /// guest entities.
+    pub(super) unsafe fn error_context_debug_message<T>(
         &mut self,
-        store: StoreContextMut<T>,
         memory: *mut VMMemoryDefinition,
         realloc: *mut VMFuncRef,
         string_encoding: u8,
@@ -2709,8 +2980,6 @@ impl ComponentInstance {
         err_ctx_handle: u32,
         debug_msg_address: u32,
     ) -> Result<()> {
-        let store_id = store.0.id();
-
         // Retrieve the error context and internal debug message
         let (state_table_id_rep, _) = self
             .error_context_tables()
@@ -2723,10 +2992,16 @@ impl ComponentInstance {
             self.get_mut(TableId::<ErrorContextState>::new(state_table_id_rep))?;
         let debug_msg = debug_msg.clone();
 
-        // Lower the string into the component's memory
+        // SAFETY: This `ComponentInstance` belongs to the store in which it
+        // resides, so if it is valid then so is its store, and per this
+        // function's contract, the caller has conferred exclusive access to
+        // that store.
+        //
+        // Also see the function's contract concerning the validity of `memory`
+        // and `realloc`.
         let options = unsafe {
             Options::new(
-                store_id,
+                (*self.store()).store_opaque().id(),
                 NonNull::new(memory),
                 NonNull::new(realloc),
                 StringEncoding::from_u8(string_encoding).ok_or_else(|| {
@@ -2736,10 +3011,21 @@ impl ComponentInstance {
                 None,
             )
         };
+        // SAFETY: This `ComponentInstance` belongs to the store in which it
+        // resides, so if it is valid then so is its store, and per this
+        // function's contract, the caller has conferred exclusive access to
+        // that store.
+        //
+        // Finally, per this function's contract, the data type of the store
+        // must be `T`.
+        let store = unsafe { StoreContextMut::<T>(&mut *self.store().cast()) };
         let interface = self as *mut _;
+        // SAFETY: The instance pointer is valid and belongs to the store given
+        // that both were derived from `self`.
         let lower_cx =
             unsafe { &mut LowerContext::new(store, &options, self.component_types(), interface) };
         let debug_msg_address = usize::try_from(debug_msg_address)?;
+        // Lower the string into the component's memory
         let offset = lower_cx
             .as_slice_mut()
             .get(debug_msg_address..)
