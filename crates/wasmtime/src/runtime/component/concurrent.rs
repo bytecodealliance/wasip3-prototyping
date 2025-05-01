@@ -763,7 +763,10 @@ impl ComponentInstance {
             log::trace!("push call context for {guest_task:?}");
             let call_context = task.call_context.take().unwrap();
             // SAFETY: This `ComponentInstance` belongs to the store in which it
-            // resides, so if it is valid then so is its store.
+            // resides, so if it is valid then so is its store.  Furthermore,
+            // this function is only called (transitively) from
+            // `ComponentInstance::poll_until`, which has exclusive access to
+            // both the `ComponentInstance` and the store.
             unsafe { &mut (*self.store()) }
                 .store_opaque_mut()
                 .component_resource_state()
@@ -779,6 +782,9 @@ impl ComponentInstance {
             let call_context = Some(
                 // SAFETY: This `ComponentInstance` belongs to the store in
                 // which it resides, so if it is valid then so is its store.
+                // Furthermore, this function is only called (transitively) from
+                // `ComponentInstance::poll_until`, which has exclusive access
+                // to both the `ComponentInstance` and the store.
                 unsafe { &mut (*self.store()) }
                     .component_resource_state()
                     .0
@@ -962,6 +968,9 @@ impl ComponentInstance {
             Box::new(move |instance: &mut ComponentInstance| {
                 // SAFETY: This `ComponentInstance` belongs to the store in
                 // which it resides, so if it is valid then so is its store.
+                // Furthermore, this closure is only called (transitively) from
+                // `ComponentInstance::poll_until`, which has exclusive access
+                // to both the `ComponentInstance` and the store.
                 //
                 // In addition, the store's data type is known to be `T` because
                 // this closure will have been called with the same
@@ -1126,6 +1135,9 @@ impl ComponentInstance {
             Box::new(move |instance, dst| {
                 // SAFETY: This `ComponentInstance` belongs to the store in
                 // which it resides, so if it is valid then so is its store.
+                // Furthermore, this closure is only called (transitively) from
+                // `ComponentInstance::poll_until`, which has exclusive access
+                // to both the `ComponentInstance` and the store.
                 //
                 // In addition, the store's data type is known to be `T` because
                 // this closure will have been called with the same
@@ -1250,7 +1262,10 @@ impl ComponentInstance {
         handle: u32,
     ) -> Result<u32> {
         // SAFETY: This `ComponentInstance` belongs to the store in which it
-        // resides, so if it is valid then so is its store.
+        // resides, so if it is valid then so is its store.  Furthermore, this
+        // function is only called (transitively) from
+        // `ComponentInstance::poll_until`, which has exclusive access to both
+        // the `ComponentInstance` and the store.
         //
         // In addition, the store's data type is known to be `T` because this
         // function will have been called with the same `ComponentInstance` that
@@ -1822,10 +1837,14 @@ impl ComponentInstance {
         // smuggling it as a `VMStoreRawPtr` in order to ensure the future is
         // `Send`.
         //
+        // By the time the future returned by `poll_fn` completes, we'll have
+        // exclusive access to it again.
+        //
         // SAFETY: This `ComponentInstance` belongs to the store in which it
-        // resides, so if it is valid then so is its store.  By the time the
-        // future returned by `poll_fn` completes, we'll have exclusive access
-        // to it again.
+        // resides, so if it is valid then so is its store.  Furthermore, this
+        // function is only called (transitively) from
+        // `ComponentInstance::poll_until`, which has exclusive access to both
+        // the `ComponentInstance` and the store.
         let fiber = unsafe {
             poll_fn(
                 VMStoreRawPtr(NonNull::new(self.store()).unwrap()),
@@ -2076,7 +2095,10 @@ impl ComponentInstance {
         status: Status,
     ) -> Result<()> {
         // SAFETY: This `ComponentInstance` belongs to the store in which it
-        // resides, so if it is valid then so is its store.
+        // resides, so if it is valid then so is its store.  Furthermore, this
+        // function is only called (transitively) from
+        // `ComponentInstance::poll_until`, which has exclusive access to both
+        // the `ComponentInstance` and the store.
         let (calls, host_table, _) = unsafe { &mut *self.store() }
             .store_opaque_mut()
             .component_resource_state();
@@ -2232,8 +2254,12 @@ impl ComponentInstance {
                 let event = self.get_event(guest_task, params.caller_instance, Some(params.set))?;
 
                 // SAFETY: This `ComponentInstance` belongs to the store in
-                // which it resides, so if it is valid then so is its store.  In
-                // addition, `params.memory` is a valid `*mut
+                // which it resides, so if it is valid then so is its store.
+                // Furthermore, this function is only called (transitively) from
+                // `ComponentInstance::poll_until`, which has exclusive access
+                // to both the `ComponentInstance` and the store.
+                //
+                // In addition, `params.memory` is a valid `*mut
                 // VMMemoryDefinition` passed to this intrinsic via
                 // `wasmtime_cranelift`-generated code.
                 let store_and_options = |me: &mut Self| unsafe {
@@ -3013,20 +3039,25 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         future: u32,
         address: u32,
     ) -> Result<u32> {
-        instance
-            .guest_write(
-                StoreContextMut(self),
-                memory,
-                realloc,
-                string_encoding,
-                async_,
-                TableIndex::Future(ty),
-                None,
-                future,
-                address,
-                1,
-            )
-            .map(|result| result.encode())
+        // SAFETY: This function is only called from
+        // `wasmtime-cranelift`-generated guest code, which ensures that
+        // `instance` belongs to `self`, to which we have (and may confer)
+        // exclusive access in the following call.
+        unsafe {
+            instance
+                .guest_write::<T>(
+                    memory,
+                    realloc,
+                    string_encoding,
+                    async_,
+                    TableIndex::Future(ty),
+                    None,
+                    future,
+                    address,
+                    1,
+                )
+                .map(|result| result.encode())
+        }
     }
 
     fn future_read(
@@ -3040,20 +3071,22 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         future: u32,
         address: u32,
     ) -> Result<u32> {
-        instance
-            .guest_read(
-                StoreContextMut(self),
-                memory,
-                realloc,
-                string_encoding,
-                async_,
-                TableIndex::Future(ty),
-                None,
-                future,
-                address,
-                1,
-            )
-            .map(|result| result.encode())
+        // SAFETY: See corresponding comment in `Self::future_write`.
+        unsafe {
+            instance
+                .guest_read::<T>(
+                    memory,
+                    realloc,
+                    string_encoding,
+                    async_,
+                    TableIndex::Future(ty),
+                    None,
+                    future,
+                    address,
+                    1,
+                )
+                .map(|result| result.encode())
+        }
     }
 
     fn stream_write(
@@ -3068,20 +3101,22 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         address: u32,
         count: u32,
     ) -> Result<u32> {
-        instance
-            .guest_write(
-                StoreContextMut(self),
-                memory,
-                realloc,
-                string_encoding,
-                async_,
-                TableIndex::Stream(ty),
-                None,
-                stream,
-                address,
-                count,
-            )
-            .map(|result| result.encode())
+        // SAFETY: See corresponding comment in `Self::future_write`.
+        unsafe {
+            instance
+                .guest_write::<T>(
+                    memory,
+                    realloc,
+                    string_encoding,
+                    async_,
+                    TableIndex::Stream(ty),
+                    None,
+                    stream,
+                    address,
+                    count,
+                )
+                .map(|result| result.encode())
+        }
     }
 
     fn stream_read(
@@ -3096,20 +3131,22 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         address: u32,
         count: u32,
     ) -> Result<u32> {
-        instance
-            .guest_read(
-                StoreContextMut(self),
-                memory,
-                realloc,
-                string_encoding,
-                async_,
-                TableIndex::Stream(ty),
-                None,
-                stream,
-                address,
-                count,
-            )
-            .map(|result| result.encode())
+        // SAFETY: See corresponding comment in `Self::future_write`.
+        unsafe {
+            instance
+                .guest_read::<T>(
+                    memory,
+                    realloc,
+                    string_encoding,
+                    async_,
+                    TableIndex::Stream(ty),
+                    None,
+                    stream,
+                    address,
+                    count,
+                )
+                .map(|result| result.encode())
+        }
     }
 
     fn flat_stream_write(
@@ -3125,23 +3162,25 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         address: u32,
         count: u32,
     ) -> Result<u32> {
-        instance
-            .guest_write(
-                StoreContextMut(self),
-                memory,
-                realloc,
-                StringEncoding::Utf8 as u8,
-                async_,
-                TableIndex::Stream(ty),
-                Some(FlatAbi {
-                    size: payload_size,
-                    align: payload_align,
-                }),
-                stream,
-                address,
-                count,
-            )
-            .map(|result| result.encode())
+        // SAFETY: See corresponding comment in `Self::future_write`.
+        unsafe {
+            instance
+                .guest_write::<T>(
+                    memory,
+                    realloc,
+                    StringEncoding::Utf8 as u8,
+                    async_,
+                    TableIndex::Stream(ty),
+                    Some(FlatAbi {
+                        size: payload_size,
+                        align: payload_align,
+                    }),
+                    stream,
+                    address,
+                    count,
+                )
+                .map(|result| result.encode())
+        }
     }
 
     fn flat_stream_read(
@@ -3157,23 +3196,25 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         address: u32,
         count: u32,
     ) -> Result<u32> {
-        instance
-            .guest_read(
-                StoreContextMut(self),
-                memory,
-                realloc,
-                StringEncoding::Utf8 as u8,
-                async_,
-                TableIndex::Stream(ty),
-                Some(FlatAbi {
-                    size: payload_size,
-                    align: payload_align,
-                }),
-                stream,
-                address,
-                count,
-            )
-            .map(|result| result.encode())
+        // SAFETY: See corresponding comment in `Self::future_write`.
+        unsafe {
+            instance
+                .guest_read::<T>(
+                    memory,
+                    realloc,
+                    StringEncoding::Utf8 as u8,
+                    async_,
+                    TableIndex::Stream(ty),
+                    Some(FlatAbi {
+                        size: payload_size,
+                        align: payload_align,
+                    }),
+                    stream,
+                    address,
+                    count,
+                )
+                .map(|result| result.encode())
+        }
     }
 
     fn error_context_debug_message(
@@ -3186,15 +3227,17 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         err_ctx_handle: u32,
         debug_msg_address: u32,
     ) -> Result<()> {
-        instance.error_context_debug_message(
-            StoreContextMut(self),
-            memory,
-            realloc,
-            string_encoding,
-            ty,
-            err_ctx_handle,
-            debug_msg_address,
-        )
+        // SAFETY: See corresponding comment in `Self::future_write`.
+        unsafe {
+            instance.error_context_debug_message::<T>(
+                memory,
+                realloc,
+                string_encoding,
+                ty,
+                err_ctx_handle,
+                debug_msg_address,
+            )
+        }
     }
 }
 
@@ -4253,9 +4296,11 @@ pub(crate) unsafe fn prepare_call<T: Send, R>(
                     // gracefully cancel the call without trapping or panicking.
                     todo!("gracefully cancel `call_async` tasks when future is dropped")
                 } else {
-                    // SAFETY: The provided `ComponentInstance` belongs to the
-                    // store in which it resides, so if it is valid then so is
-                    // its store.
+                    // SAFETY: This `ComponentInstance` belongs to the store in
+                    // which it resides, so if it is valid then so is its store.
+                    // Furthermore, this closure is only called (transitively)
+                    // from `ComponentInstance::poll_until`, which has exclusive
+                    // access to both the `ComponentInstance` and the store.
                     //
                     // Also, per the contract of `prepare_call`, `ptr` must be
                     // valid and `lower_params` must either use it safely or not at
@@ -4268,8 +4313,11 @@ pub(crate) unsafe fn prepare_call<T: Send, R>(
         })),
         LiftResult {
             lift: Box::new(for_any_lift(move |instance, result| {
-                // SAFETY: The provided `ComponentInstance` belongs to the store
-                // in which it resides, so if it is valid then so is its store.
+                // SAFETY: This `ComponentInstance` belongs to the store in
+                // which it resides, so if it is valid then so is its store.
+                // Furthermore, this closure is only called (transitively) from
+                // `ComponentInstance::poll_until`, which has exclusive access
+                // to both the `ComponentInstance` and the store.
                 unsafe { lift_result(handle, instance.store(), result) }
             })),
             ty: task_return_type,
