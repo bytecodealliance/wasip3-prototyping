@@ -2409,7 +2409,10 @@ impl ComponentInstance {
                 // Started, but not yet returned or cancelled; send the
                 // `CANCELLED` event
                 task.cancel_sent = true;
-                assert!(task.event.is_none());
+                // Note that this might overwrite an event that was set earlier
+                // (e.g. `Event::None` if the task is yielding, or
+                // `Event::Cancelled` if it was already cancelled), but that's
+                // okay -- this should supersede the previous state.
                 task.event = Some(Event::Cancelled);
                 if let Some(set) = task.waiting_on.take() {
                     let item = match self.get_mut(set)?.waiting.remove(&guest_task).unwrap() {
