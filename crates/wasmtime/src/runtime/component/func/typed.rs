@@ -210,9 +210,14 @@ where
             let mut params = params;
             let mut store = store;
             let instance = store.0[self.func.0].instance;
-            let prepared = self.prepare_call(store.as_context_mut(), drop)?;
+            // SAFETY: We uphold the contract documented in
+            // `concurrent::prepare_call` by only setting `PreparedCall::params`
+            // to a valid pointer while polling the event loop and resetting it
+            // to null afterward, thus ensuring that the parameter lowering code
+            // never sees a stale pointer.
+            let prepared = unsafe { self.prepare_call(store.as_context_mut(), drop) }?;
             let param_ptr = prepared.params().clone();
-            let call = concurrent::defer_call(store.as_context_mut(), prepared)?;
+            let call = concurrent::queue_call(store.as_context_mut(), prepared)?;
             let mut future = pin!(instance.run(store, call));
             future::poll_fn(move |cx| {
                 let params = &mut params;
@@ -260,12 +265,18 @@ where
         );
 
         let result = (|| {
-            let prepared =
-                self.prepare_call(store.as_context_mut(), concurrent::drop_params::<Params>)?;
+            // SAFETY: We uphold the contract documented in
+            // `concurrent::prepare_call` by setting `PreparedCall::params` to a
+            // valid pointer prior to polling the event loop for this function's
+            // instance and providing a `drop_params` parameter which will
+            // correctly dispose of it after lowering.
+            let prepared = unsafe {
+                self.prepare_call(store.as_context_mut(), concurrent::drop_params::<Params>)
+            }?;
             prepared
                 .params()
                 .store(Box::into_raw(Box::new(params)).cast(), Relaxed);
-            concurrent::defer_call(store, prepared)
+            concurrent::queue_call(store, prepared)
         })();
 
         match result {
@@ -274,8 +285,14 @@ where
         }
     }
 
+    /// Calls `concurrent::prepare_call` with monomorphized functions for
+    /// lowering the parameters and lifting the result according to the number
+    /// of core Wasm parameters and results in the signature of the function to
+    /// be called.
+    ///
+    /// SAFETY: See `concurrent::prepare_call`.
     #[cfg(feature = "component-model-async")]
-    fn prepare_call<'a, T: Send>(
+    unsafe fn prepare_call<'a, T: Send>(
         self,
         store: StoreContextMut<'a, T>,
         drop_params: unsafe fn(*mut u8),
@@ -288,74 +305,82 @@ where
         if store.0[self.func.0].options.async_() {
             if Params::flatten_count() <= MAX_FLAT_PARAMS {
                 if Return::flatten_count() <= MAX_FLAT_PARAMS {
-                    self.func.prepare_call(
+                    concurrent::prepare_call(
                         store,
                         Self::lower_stack_args_fn::<T>,
                         drop_params,
                         Self::lift_stack_result_fn::<T>,
+                        self.func,
                         param_count,
                     )
                 } else {
-                    self.func.prepare_call(
+                    concurrent::prepare_call(
                         store,
                         Self::lower_stack_args_fn::<T>,
                         drop_params,
                         Self::lift_heap_result_fn::<T>,
+                        self.func,
                         param_count,
                     )
                 }
             } else {
                 if Return::flatten_count() <= MAX_FLAT_PARAMS {
-                    self.func.prepare_call(
+                    concurrent::prepare_call(
                         store,
                         Self::lower_heap_args_fn::<T>,
                         drop_params,
                         Self::lift_stack_result_fn::<T>,
+                        self.func,
                         1,
                     )
                 } else {
-                    self.func.prepare_call(
+                    concurrent::prepare_call(
                         store,
                         Self::lower_heap_args_fn::<T>,
                         drop_params,
                         Self::lift_heap_result_fn::<T>,
+                        self.func,
                         1,
                     )
                 }
             }
         } else if Params::flatten_count() <= MAX_FLAT_PARAMS {
             if Return::flatten_count() <= MAX_FLAT_RESULTS {
-                self.func.prepare_call(
+                concurrent::prepare_call(
                     store,
                     Self::lower_stack_args_fn::<T>,
                     drop_params,
                     Self::lift_stack_result_fn::<T>,
+                    self.func,
                     param_count,
                 )
             } else {
-                self.func.prepare_call(
+                concurrent::prepare_call(
                     store,
                     Self::lower_stack_args_fn::<T>,
                     drop_params,
                     Self::lift_heap_result_fn::<T>,
+                    self.func,
                     param_count,
                 )
             }
         } else {
             if Return::flatten_count() <= MAX_FLAT_RESULTS {
-                self.func.prepare_call(
+                concurrent::prepare_call(
                     store,
                     Self::lower_heap_args_fn::<T>,
                     drop_params,
                     Self::lift_stack_result_fn::<T>,
+                    self.func,
                     1,
                 )
             } else {
-                self.func.prepare_call(
+                concurrent::prepare_call(
                     store,
                     Self::lower_heap_args_fn::<T>,
                     drop_params,
                     Self::lift_heap_result_fn::<T>,
+                    self.func,
                     1,
                 )
             }
