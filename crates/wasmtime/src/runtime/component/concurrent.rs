@@ -946,14 +946,23 @@ impl ComponentInstance {
         Ok(())
     }
 
-    fn queue_call<T>(
+    /// Add the specified guest call to the `Self::high_priority` queue, to be
+    /// started as soon as backpressure and/or reentrance rules allow.
+    ///
+    /// SAFETY: `self` must belong to a store whose data type parameter is `T`,
+    /// and the caller must confer exclusive access to that store.  Likewise,
+    /// when the closures queued by this function are run, the same rules apply
+    /// to their `&mut ComponentInstance` parameters.
+    // TODO: This should queue `impl UnsafeFnOnce` "closures" (where
+    // `UnsafeFnOnce` would need to be a trait we define ourselves, since
+    // there's no standard equivalent) rather than `impl FnOnce` closures.  That
+    // would force the caller to use an unsafe block and (hopefully) uphold the
+    // contract we've described above.
+    unsafe fn queue_call<T>(
         &mut self,
         guest_task: TableId<GuestTask>,
         async_: bool,
-        call: impl FnOnce(
-                StoreContextMut<T>,
-                &mut ComponentInstance,
-            ) -> Result<[MaybeUninit<ValRaw>; MAX_FLAT_PARAMS]>
+        call: impl FnOnce(&mut ComponentInstance) -> Result<[MaybeUninit<ValRaw>; MAX_FLAT_PARAMS]>
             + Send
             + Sync
             + 'static,
@@ -966,20 +975,6 @@ impl ComponentInstance {
             assert!(async_);
 
             Box::new(move |instance: &mut ComponentInstance| {
-                // SAFETY: This `ComponentInstance` belongs to the store in
-                // which it resides, so if it is valid then so is its store.
-                // Furthermore, this closure is only called (transitively) from
-                // `ComponentInstance::poll_until`, which has exclusive access
-                // to both the `ComponentInstance` and the store.
-                //
-                // In addition, the store's data type is known to be `T` because
-                // this closure will have been called with the same
-                // `ComponentInstance` that was passed to the outer `queue_call`
-                // scope.  See
-                // `ComponentInstance::{poll_until,handle_work_item,handle_guest_call}`,
-                // where we pop the work item containing this closure and pass
-                // it the same `ComponentInstance`.
-                let mut store = unsafe { StoreContextMut(&mut *instance.store().cast()) };
                 let old_task = instance.guest_task().replace(guest_task);
                 log::trace!(
                     "stackless call: replaced {old_task:?} with {guest_task:?} as current task"
@@ -989,7 +984,13 @@ impl ComponentInstance {
 
                 instance.enter_instance(callee_instance);
 
-                let storage = call(store.as_context_mut(), instance)?;
+                // SAFETY: See the documentation for `make_call` to review the
+                // contract we must uphold for `call` here.
+                //
+                // Per the contract described in the `queue_call` documentation,
+                // we can rely on exclusive access to the store, whose data type
+                // parameter is `T`.
+                let storage = call(instance)?;
 
                 instance.exit_instance(callee_instance)?;
 
@@ -1015,9 +1016,6 @@ impl ComponentInstance {
             }) as Box<dyn FnOnce(&mut ComponentInstance) -> Result<()> + Send + Sync>
         } else {
             Box::new(move |instance: &mut ComponentInstance| {
-                // SAFETY: See comment in the closure created in the
-                // `callback.is_some()` case above.
-                let mut store = unsafe { StoreContextMut::<T>(&mut *instance.store().cast()) };
                 let old_task = instance.guest_task().replace(guest_task);
                 log::trace!(
                     "stackful call: replaced {old_task:?} with {guest_task:?} as current task",
@@ -1031,7 +1029,10 @@ impl ComponentInstance {
                     instance.enter_instance(callee_instance);
                 }
 
-                let storage = call(store.as_context_mut(), instance)?;
+                // SAFETY: Per the contract described in the `queue_call`
+                // documentation, we can rely on exclusive access to the store,
+                // whose data type parameter is `T`.
+                let storage = call(instance)?;
 
                 if async_ {
                     if instance.get(guest_task)?.lift_result.is_some() {
@@ -1062,6 +1063,14 @@ impl ComponentInstance {
                             1 => unsafe { storage[0].assume_init() },
                             _ => unreachable!(),
                         };
+
+                        // SAFETY: Per the contract described in the
+                        // `queue_call` documentation, we can rely on exclusive
+                        // access to the store, whose data type parameter is
+                        // `T`.
+                        let mut store =
+                            unsafe { StoreContextMut::<T>(&mut *instance.store().cast()) };
+
                         // SAFETY: `func` is a valid `*mut VMFuncRef` from
                         // either `wasmtime-cranelift`-generated fused adapter
                         // code or `component::Options`.  Per `wasmparser`
@@ -1096,7 +1105,13 @@ impl ComponentInstance {
         Ok(())
     }
 
-    fn enter_call<T>(
+    /// Prepare (but do not start) a guest->guest call.
+    ///
+    /// SAFETY: All the pointer arguments must be valid pointers to guest
+    /// entities.  In addition the caller must confer exclusive access to the
+    /// store to which the passed `&mut ComponentInstance` belongs, which must
+    /// have a data type parameter of `T`.
+    unsafe fn prepare_call<T>(
         &mut self,
         start: *mut VMFuncRef,
         return_: *mut VMFuncRef,
@@ -1141,8 +1156,8 @@ impl ComponentInstance {
                 //
                 // In addition, the store's data type is known to be `T` because
                 // this closure will have been called with the same
-                // `ComponentInstance` that was passed to the outer `enter_call`
-                // scope.  See
+                // `ComponentInstance` that was passed to the outer
+                // `prepare_call` scope.  See
                 // `ComponentInstance::{poll_until,handle_work_item,handle_guest_call}`,
                 // where we pop the work item containing this closure and pass
                 // it the same `ComponentInstance`.
@@ -1269,7 +1284,7 @@ impl ComponentInstance {
         //
         // In addition, the store's data type is known to be `T` because this
         // function will have been called with the same `ComponentInstance` that
-        // was in scope in `ComponentInstance::exit_call` or `prepare_call` --
+        // was in scope in `ComponentInstance::start_call` or `prepare_call` --
         // the two functions where this function is monomophized and stored as
         // an `fn(..)` in `GuestTask::callback`.  See
         // `ComponentInstance::{poll_until,handle_work_item,handle_guest_call}`,
@@ -1300,7 +1315,14 @@ impl ComponentInstance {
         Ok(params[0].get_u32())
     }
 
-    fn exit_call<T>(
+    /// Start a guest->guest call previously prepared using
+    /// `Self::prepare_call`.
+    ///
+    /// SAFETY: All the pointer arguments must be valid pointers to guest
+    /// entities.  In addition the caller must confer exclusive access to the
+    /// store to which the passed `&mut ComponentInstance` belongs, which must
+    /// have a data type parameter of `T`.
+    unsafe fn start_call<T>(
         &mut self,
         callback: *mut VMFuncRef,
         post_return: *mut VMFuncRef,
@@ -1331,7 +1353,7 @@ impl ComponentInstance {
             instance,
         } = &task.caller
         else {
-            // As of this writing, `exit_call` is only used for
+            // As of this writing, `start_call` is only used for
             // guest->guest calls.
             unreachable!()
         };
@@ -1340,26 +1362,31 @@ impl ComponentInstance {
 
         let callee_instance = task.instance;
 
-        let call = make_call::<T>(
-            guest_task,
-            callee,
-            param_count,
-            result_count,
-            if callback.is_null() {
-                None
-            } else {
-                Some(self.instance_flags(callee_instance))
-            },
-        );
+        // SAFETY: Per the contract described in this function's documentation,
+        // we can rely on exclusive access to the store, whose data type
+        // parameter is `T`.
+        unsafe {
+            let call = make_call::<T>(
+                guest_task,
+                callee,
+                param_count,
+                result_count,
+                if callback.is_null() {
+                    None
+                } else {
+                    Some(self.instance_flags(callee_instance))
+                },
+            );
 
-        self.queue_call(
-            guest_task,
-            (flags & EXIT_FLAG_ASYNC_CALLEE) != 0,
-            call,
-            NonNull::new(callback).map(SendSyncPtr::new),
-            NonNull::new(post_return).map(SendSyncPtr::new),
-            result_count,
-        )?;
+            self.queue_call::<T>(
+                guest_task,
+                (flags & EXIT_FLAG_ASYNC_CALLEE) != 0,
+                call,
+                NonNull::new(callback).map(SendSyncPtr::new),
+                NonNull::new(post_return).map(SendSyncPtr::new),
+                result_count,
+            )?;
+        }
 
         let set = self.get_mut(caller)?.sync_call_set;
         Waitable::Guest(guest_task).join(self, Some(set))?;
@@ -1409,7 +1436,6 @@ impl ComponentInstance {
     /// transitively) using `ComponentInstance::poll_until`.
     pub(crate) unsafe fn wrap_call<T, F, P, R>(
         &mut self,
-        store: StoreContextMut<T>,
         closure: Arc<F>,
         params: P,
     ) -> Pin<Box<dyn Future<Output = Result<R>> + Send + 'static>>
@@ -1431,7 +1457,7 @@ impl ComponentInstance {
         let mut accessor =
             unsafe { Accessor::new(get_host_and_store, spawn_task, self.instance()) };
         let mut future = Box::pin(async move { closure(&mut accessor, params).await });
-        let store = VMStoreRawPtr(store.traitobj());
+        let store = VMStoreRawPtr(NonNull::new(self.store()).unwrap());
         let instance = SendSyncPtr::new(NonNull::new(self).unwrap());
         // SAFETY: `poll_with_state` will populate and reset the thread-local
         // state as described above.
@@ -1458,9 +1484,14 @@ impl ComponentInstance {
         }
     }
 
-    pub(crate) fn first_poll<T, R: Send + Sync + 'static>(
+    /// Poll the specified future once, and if it returns `Pending`, add it to
+    /// the set of futures to be polled as part of this instance's event loop
+    /// until it completes.
+    ///
+    /// SAFETY: `self` must belong to a store whose data type parameter is `T`,
+    /// and the caller must confer exclusive access to that store.
+    pub(crate) unsafe fn first_poll<T, R: Send + Sync + 'static>(
         &mut self,
-        store: StoreContextMut<T>,
         future: impl Future<Output = Result<R>> + Send + 'static,
         caller_instance: RuntimeComponentInstanceIndex,
         lower: impl FnOnce(StoreContextMut<T>, R) -> Result<()> + Send + 'static,
@@ -1490,7 +1521,8 @@ impl ComponentInstance {
             call_context: &mut Option<CallContext>,
             task: TableId<HostTask>,
         ) {
-            // SAFETY: See SAFETY comment in above in wrapping function.
+            // SAFETY: See SAFETY comment in above in `first_poll`, as well as
+            // the precondition documented for that function.
             let store = unsafe { StoreContextMut::<T>(&mut *store.0.as_ptr().cast()) };
             if let Some(call_context) = call_context.take() {
                 log::trace!("push call context for {task:?}");
@@ -1504,13 +1536,14 @@ impl ComponentInstance {
             task: TableId<HostTask>,
         ) {
             log::trace!("pop call context for {task:?}");
-            // SAFETY: See SAFETY comment in above in wrapping function.
+            // SAFETY: See SAFETY comment in above in `first_poll`, as well as
+            // the precondition documented for that function.
             let store = unsafe { StoreContextMut::<T>(&mut *store.0.as_ptr().cast()) };
             *call_context = Some(store.0.component_resource_state().0.pop().unwrap());
         }
 
         let future = future::poll_fn({
-            let store = VMStoreRawPtr(store.0.traitobj());
+            let store = VMStoreRawPtr(NonNull::new(self.store()).unwrap());
             let mut call_context = None;
             move |cx| {
                 let mut wrapped = wrapped.try_lock().unwrap();
@@ -1545,7 +1578,8 @@ impl ComponentInstance {
         let mut future = Box::pin(future.map(move |result| {
             if let Some(result) = result {
                 HostTaskOutput::Function(Box::new(move |instance| {
-                    // SAFETY: See SAFETY comment in above in wrapping function.
+                    // SAFETY: See SAFETY comment in above in `first_poll`, as
+                    // well as the precondition documented for that function.
                     let store = unsafe { StoreContextMut(&mut *instance.store().cast()) };
                     lower(store, result?)?;
                     instance.get_mut(task)?.abort_handle.take();
@@ -2766,10 +2800,21 @@ impl Instance {
 
 /// Trait representing component model ABI async intrinsics and fused adapter
 /// helper functions.
+///
+/// SAFETY (callers): Most of the methods in this trait accept raw pointers,
+/// which must be valid for at least the duration of the call.  In addition, the
+/// `&mut ComponentInstance` parameter must point to a `ComponentInstance` that
+/// belongs to `self` (i.e. both should have been derived from the same
+/// `VMComponentContext`).
+///
+/// SAFETY (implementors): Care must be taken to treat the `&mut Self` and `&mut
+/// ComponentInstance` parameters as if they were disjoint borrows and not
+/// create aliases by retrieving a `*mut ComponentInstance` from `self` and
+/// converting it to a `&mut ComponentInstance`.
 pub unsafe trait VMComponentAsyncStore {
     /// A helper function for fused adapter modules involving calls where the
     /// caller is sync-lowered but the callee is async-lifted.
-    fn sync_enter(
+    unsafe fn sync_enter(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -2786,7 +2831,7 @@ pub unsafe trait VMComponentAsyncStore {
 
     /// A helper function for fused adapter modules involving calls where the
     /// caller is sync-lowered but the callee is async-lifted.
-    fn sync_exit(
+    unsafe fn sync_exit(
         &mut self,
         instance: &mut ComponentInstance,
         callback: *mut VMFuncRef,
@@ -2798,7 +2843,7 @@ pub unsafe trait VMComponentAsyncStore {
 
     /// A helper function for fused adapter modules involving calls where the
     /// caller is async-lowered.
-    fn async_enter(
+    unsafe fn async_enter(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -2814,7 +2859,7 @@ pub unsafe trait VMComponentAsyncStore {
 
     /// A helper function for fused adapter modules involving calls where the
     /// caller is async-lowered.
-    fn async_exit(
+    unsafe fn async_exit(
         &mut self,
         instance: &mut ComponentInstance,
         callback: *mut VMFuncRef,
@@ -2826,7 +2871,7 @@ pub unsafe trait VMComponentAsyncStore {
     ) -> Result<u32>;
 
     /// The `future.write` intrinsic.
-    fn future_write(
+    unsafe fn future_write(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -2839,7 +2884,7 @@ pub unsafe trait VMComponentAsyncStore {
     ) -> Result<u32>;
 
     /// The `future.read` intrinsic.
-    fn future_read(
+    unsafe fn future_read(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -2852,7 +2897,7 @@ pub unsafe trait VMComponentAsyncStore {
     ) -> Result<u32>;
 
     /// The `stream.write` intrinsic.
-    fn stream_write(
+    unsafe fn stream_write(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -2866,7 +2911,7 @@ pub unsafe trait VMComponentAsyncStore {
     ) -> Result<u32>;
 
     /// The `stream.read` intrinsic.
-    fn stream_read(
+    unsafe fn stream_read(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -2881,7 +2926,7 @@ pub unsafe trait VMComponentAsyncStore {
 
     /// The "fast-path" implementation of the `stream.write` intrinsic for
     /// "flat" (i.e. memcpy-able) payloads.
-    fn flat_stream_write(
+    unsafe fn flat_stream_write(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -2897,7 +2942,7 @@ pub unsafe trait VMComponentAsyncStore {
 
     /// The "fast-path" implementation of the `stream.read` intrinsic for "flat"
     /// (i.e. memcpy-able) payloads.
-    fn flat_stream_read(
+    unsafe fn flat_stream_read(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -2912,7 +2957,7 @@ pub unsafe trait VMComponentAsyncStore {
     ) -> Result<u32>;
 
     /// The `error-context.debug-message` intrinsic.
-    fn error_context_debug_message(
+    unsafe fn error_context_debug_message(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -2924,8 +2969,9 @@ pub unsafe trait VMComponentAsyncStore {
     ) -> Result<()>;
 }
 
+/// SAFETY: See trait docs.
 unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
-    fn sync_enter(
+    unsafe fn sync_enter(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -2939,7 +2985,7 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         storage: *mut ValRaw,
         storage_len: usize,
     ) -> Result<()> {
-        instance.enter_call::<T>(
+        instance.prepare_call::<T>(
             start,
             return_,
             caller_instance,
@@ -2957,7 +3003,7 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         )
     }
 
-    fn sync_exit(
+    unsafe fn sync_exit(
         &mut self,
         instance: &mut ComponentInstance,
         callback: *mut VMFuncRef,
@@ -2967,7 +3013,7 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         storage_len: usize,
     ) -> Result<()> {
         instance
-            .exit_call::<T>(
+            .start_call::<T>(
                 callback,
                 ptr::null_mut(),
                 callee,
@@ -2982,7 +3028,7 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
             .map(drop)
     }
 
-    fn async_enter(
+    unsafe fn async_enter(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -2995,7 +3041,7 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         params: u32,
         results: u32,
     ) -> Result<()> {
-        instance.enter_call::<T>(
+        instance.prepare_call::<T>(
             start,
             return_,
             caller_instance,
@@ -3007,7 +3053,7 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         )
     }
 
-    fn async_exit(
+    unsafe fn async_exit(
         &mut self,
         instance: &mut ComponentInstance,
         callback: *mut VMFuncRef,
@@ -3017,7 +3063,7 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         result_count: u32,
         flags: u32,
     ) -> Result<u32> {
-        instance.exit_call::<T>(
+        instance.start_call::<T>(
             callback,
             post_return,
             callee,
@@ -3028,7 +3074,7 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         )
     }
 
-    fn future_write(
+    unsafe fn future_write(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -3060,7 +3106,7 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         }
     }
 
-    fn future_read(
+    unsafe fn future_read(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -3089,7 +3135,7 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         }
     }
 
-    fn stream_write(
+    unsafe fn stream_write(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -3119,7 +3165,7 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         }
     }
 
-    fn stream_read(
+    unsafe fn stream_read(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -3149,7 +3195,7 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         }
     }
 
-    fn flat_stream_write(
+    unsafe fn flat_stream_write(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -3183,7 +3229,7 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         }
     }
 
-    fn flat_stream_read(
+    unsafe fn flat_stream_read(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -3217,7 +3263,7 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         }
     }
 
-    fn error_context_debug_message(
+    unsafe fn error_context_debug_message(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -3905,10 +3951,14 @@ fn check_recursive_run() {
     });
 }
 
+/// Run the specified function on a newly-created fiber and `.await` its
+/// completion.
 pub(crate) async fn on_fiber<R: Send + 'static, T: Send>(
     store: StoreContextMut<'_, T>,
     func: impl FnOnce(&mut StoreContextMut<T>) -> R + Send,
 ) -> Result<R> {
+    // SAFETY: The returned future closes over `store`, so the borrow checker
+    // will ensure the requirements of `on_fiber_raw` are met.
     unsafe {
         on_fiber_raw(VMStoreRawPtr(store.traitobj()), move |store| {
             func(&mut StoreContextMut(&mut *store.cast()))
@@ -3917,11 +3967,15 @@ pub(crate) async fn on_fiber<R: Send + 'static, T: Send>(
     }
 }
 
+/// Same as `on_fiber`, but accepts a `&mut StoreOpaque` instead of a
+/// `StoreContextMut`.
 #[cfg(feature = "gc")]
 pub(crate) async fn on_fiber_opaque<R: Send + 'static>(
     store: &mut StoreOpaque,
     func: impl FnOnce(&mut StoreOpaque) -> R + Send,
 ) -> Result<R> {
+    // SAFETY: The returned future closes over `store`, so the borrow checker
+    // will ensure the requirements of `on_fiber_raw` are met.
     unsafe {
         on_fiber_raw(VMStoreRawPtr(store.traitobj()), move |store| {
             func((*store).store_opaque_mut())
@@ -3930,6 +3984,12 @@ pub(crate) async fn on_fiber_opaque<R: Send + 'static>(
     }
 }
 
+/// Wrap the specified function in a fiber and return it.
+///
+/// SAFETY: `store` must be a valid pointer to a store and remain so for as long
+/// as the returned fiber exists.  Furthermore, the resuming thread(s) must
+/// confer exclusive access to that fiber until it is either dropped, resolved,
+/// or forgotten.
 unsafe fn prepare_fiber<'a, R: Send + 'static>(
     store: VMStoreRawPtr,
     func: impl FnOnce(*mut dyn VMStore) -> R + Send + 'a,
@@ -3944,6 +4004,13 @@ unsafe fn prepare_fiber<'a, R: Send + 'static>(
     Ok((fiber, rx))
 }
 
+/// Run the specified function on a newly-created fiber and `.await` its
+/// completion.
+///
+/// SAFETY: `store` must be a valid pointer to a store and remain so for as long
+/// as the returned future exists.  Furthermore, the polling thread(s) must
+/// confer exclusive access to that future until it is either dropped, resolved,
+/// or forgotten.
 async unsafe fn on_fiber_raw<R: Send + 'static>(
     store: VMStoreRawPtr,
     func: impl FnOnce(*mut dyn VMStore) -> R + Send,
@@ -4006,6 +4073,9 @@ impl StoreFiber<'_> {
 impl Drop for StoreFiber<'_> {
     fn drop(&mut self) {
         if !self.fiber.as_ref().unwrap().done() {
+            // Safety: `self` is a valid pointer and we pass a `store`
+            // parameter of `None` to inform the resumed fiber that it does
+            // _not_ have access to the store.
             let result = unsafe { resume_fiber_raw(self, None, Err(anyhow!("future dropped"))) };
             debug_assert!(result.is_ok());
         }
@@ -4135,26 +4205,46 @@ pub(crate) enum WaitableCheck {
     Yield,
 }
 
-fn make_call<T>(
+/// Return a closure which will call the specified function in the scope of the
+/// specified task.
+///
+/// This will use `GuestTask::lower_params` to lower the parameters, but will
+/// not lift the result; instead, it returns a `[MaybeUninit<ValRaw>;
+/// MAX_FLAT_PARAMS]` from which the result, if any, may be lifted.  Note that
+/// an async-lifted export will have returned its result using the `task.return`
+/// intrinsic (or not returned a result at all, in the case of `task.cancel`),
+/// in which case the "result" of this call will either be a callback code or
+/// nothing.
+///
+/// SAFETY: `callee` must be a valid `*mut VMFuncRef` at the time when the
+/// returned closure is called.  In addition the caller must confer exclusive
+/// access to the store to which the passed `&mut ComponentInstance` belongs,
+/// which must have a data type parameter of `T`.
+// TODO: This should return a `impl UnsafeFnOnce` (where `UnsafeFnOnce` would
+// need to be a trait we define ourselves, since there's no standard equivalent)
+// rather than a `impl FnOnce`.  That would force the caller to use an unsafe
+// block and (hopefully) uphold the contract we've described above.
+unsafe fn make_call<T>(
     guest_task: TableId<GuestTask>,
     callee: SendSyncPtr<VMFuncRef>,
     param_count: usize,
     result_count: usize,
     flags: Option<InstanceFlags>,
-) -> impl FnOnce(
-    StoreContextMut<T>,
-    &mut ComponentInstance,
-) -> Result<[MaybeUninit<ValRaw>; MAX_FLAT_PARAMS]>
+) -> impl FnOnce(&mut ComponentInstance) -> Result<[MaybeUninit<ValRaw>; MAX_FLAT_PARAMS]>
        + Send
        + Sync
        + 'static {
-    move |mut store: StoreContextMut<T>, instance: &mut ComponentInstance| {
+    move |instance: &mut ComponentInstance| {
         let mut storage = [MaybeUninit::uninit(); MAX_FLAT_PARAMS];
         let lower = instance.get_mut(guest_task)?.lower_params.take().unwrap();
 
         lower(instance, &mut storage[..param_count])?;
 
+        // SAFETY: Per the contract documented above, `callee` is a valid
+        // pointer and we have exclusive access to the store this instance
+        // belongs to, which has a data type parameter of `T`.
         unsafe {
+            let mut store = StoreContextMut::<T>(&mut *instance.store().cast());
             if let Some(mut flags) = flags {
                 flags.set_may_enter(false);
             }
@@ -4184,8 +4274,10 @@ impl<'a> Drop for ResetPtr<'a> {
     }
 }
 
-// SAFETY: The specified pointer must be a valid `*mut T` which was originally
-// allocated as a `Box<T>`.
+/// Drop the specified pointer as a `Box<T>`.
+///
+/// SAFETY: The specified pointer must be a valid `*mut T` which was originally
+/// allocated as a `Box<T>`.
 pub(crate) unsafe fn drop_params<T>(pointer: *mut u8) {
     drop(unsafe { Box::from_raw(pointer as *mut T) })
 }
@@ -4392,29 +4484,33 @@ fn start_call<T>(
 
     log::trace!("starting call {guest_task:?}");
 
-    let call = make_call::<T>(
-        guest_task,
-        SendSyncPtr::new(callee),
-        param_count,
-        1,
-        if callback.is_none() {
-            None
-        } else {
-            Some(instance.instance_flags(component_instance))
-        },
-    );
-
     *instance.guest_task() = Some(guest_task);
     log::trace!("pushed {guest_task:?} as current task; old task was None");
 
-    instance.queue_call(
-        guest_task,
-        is_concurrent,
-        call,
-        callback.map(SendSyncPtr::new),
-        post_return.map(|f| SendSyncPtr::new(f.func_ref)),
-        1,
-    )?;
+    // SAFETY: We have exclusive access to the store, whose data type parameter
+    // is `T`, and `instance` was extracted from it above.
+    unsafe {
+        let call = make_call::<T>(
+            guest_task,
+            SendSyncPtr::new(callee),
+            param_count,
+            1,
+            if callback.is_none() {
+                None
+            } else {
+                Some(instance.instance_flags(component_instance))
+            },
+        );
+
+        instance.queue_call::<T>(
+            guest_task,
+            is_concurrent,
+            call,
+            callback.map(SendSyncPtr::new),
+            post_return.map(|f| SendSyncPtr::new(f.func_ref)),
+            1,
+        )?;
+    }
 
     *instance.guest_task() = None;
     log::trace!("popped current task {guest_task:?}; new task is None");

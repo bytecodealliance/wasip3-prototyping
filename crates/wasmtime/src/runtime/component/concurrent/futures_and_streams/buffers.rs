@@ -27,6 +27,10 @@ pub trait ReadBuffer<T>: Send + Sync + 'static {
     /// Number of items which may be read before this buffer is full.
     fn remaining_capacity(&self) -> usize;
     /// Move (i.e. take ownership of) the specified items into this buffer.
+    ///
+    /// SAFETY: `input` must be a valid `*const T` array of `count` items on
+    /// entry.  Those items will be invalidated on exit and must be forgotten
+    /// using e.g. `mem::forget` to avoid unsoundness.
     unsafe fn copy_from(&mut self, input: *const T, count: usize);
 }
 
@@ -41,6 +45,8 @@ impl<T, B: ReadBuffer<T>> Extend<T> for Extender<'_, B> {
 impl<T: Send + Sync + 'static> WriteBuffer<T> for Option<T> {
     fn remaining(&self) -> &[T] {
         if let Some(me) = self {
+            // SAFETY: This effectively transmutes a `&T` to a `&[T; 1]`, which
+            // should be sound.
             unsafe { slice::from_raw_parts(me, 1) }
         } else {
             &[]
@@ -87,6 +93,7 @@ impl<T: Send + Sync + 'static> ReadBuffer<T> for Option<T> {
         }
     }
 
+    /// SAFETY: See trait docs.
     unsafe fn copy_from(&mut self, input: *const T, count: usize) {
         match count {
             0 => {}
@@ -126,11 +133,15 @@ impl<T> VecBuffer<T> {
     }
 
     fn remaining_(&self) -> &[T] {
+        // SAFETY: This relies on the invariant (upheld in the other methods of
+        // this type) that all the elements from `self.offset` onward are
+        // initialized and valid for `self.buffer`.
         unsafe { mem::transmute::<&[MaybeUninit<T>], &[T]>(&self.buffer[self.offset..]) }
     }
 
     fn skip_(&mut self, count: usize) {
         assert!(count <= self.remaining_().len());
+        // SAFETY: See comment in `Self::remaining_`
         for item in &mut self.buffer[self.offset..][..count] {
             drop(unsafe { item.as_mut_ptr().read() })
         }
@@ -156,6 +167,8 @@ impl<T: Send + Sync + 'static> WriteBuffer<T> for VecBuffer<T> {
 impl<T> From<Vec<T>> for VecBuffer<T> {
     fn from(buffer: Vec<T>) -> Self {
         Self {
+            // SAFETY: Transmuting from `Vec<T>` to `Vec<MaybeUninit<T>>` should
+            // be sound for any `T`.
             buffer: unsafe { mem::transmute::<Vec<T>, Vec<MaybeUninit<T>>>(buffer) },
             offset: 0,
         }
@@ -177,6 +190,7 @@ impl<T: Send + Sync + 'static> ReadBuffer<T> for Vec<T> {
         self.capacity().checked_sub(self.len()).unwrap()
     }
 
+    /// SAFETY: See trait docs.
     unsafe fn copy_from(&mut self, input: *const T, count: usize) {
         assert!(count <= self.remaining_capacity());
         ptr::copy(input, self.as_mut_ptr().add(self.len()), count);
@@ -231,6 +245,7 @@ impl ReadBuffer<u8> for BytesMut {
         self.capacity().checked_sub(self.len()).unwrap()
     }
 
+    /// SAFETY: See trait docs.
     unsafe fn copy_from(&mut self, input: *const u8, count: usize) {
         assert!(count <= self.remaining_capacity());
         ptr::copy(input, self.as_mut_ptr().add(self.len()), count);

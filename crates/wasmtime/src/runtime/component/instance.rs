@@ -916,8 +916,6 @@ impl<T> InstancePre<T> {
         );
         #[cfg(feature = "component-model-async")]
         {
-            // TODO: do we need to return the store here due to the possible
-            // invalidation of the reference we were passed?
             crate::component::concurrent::on_fiber(store, move |store| self.instantiate_impl(store))
                 .await?
         }
@@ -947,6 +945,9 @@ impl<T> InstancePre<T> {
         store.0.push_component_instance(instance);
         #[cfg(feature = "component-model-async")]
         {
+            // SAFETY: We have exclusive access to the store, which we means we
+            // have exclusive access to any `ComponentInstance` which resides in
+            // the store.
             let reference = unsafe { &mut *store.0[instance.0].as_ref().unwrap().instance_ptr() };
             reference.instance = Some(instance);
         }
