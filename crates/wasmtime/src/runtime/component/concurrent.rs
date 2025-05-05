@@ -1744,8 +1744,32 @@ impl ComponentInstance {
                         if ready.is_empty() {
                             return match next {
                                 Poll::Ready(true) => Poll::Ready(Ok(Either::Right(Vec::new()))),
+                                // Here we return an error indicating we can't
+                                // make further progress.  The underlying
+                                // assumption is that `future` depends on this
+                                // component instance making such progress, and
+                                // thus there's no point in continuing to poll
+                                // it given we've run out of work to do.
+                                //
+                                // Note that we'd also reach this point if the
+                                // host embedder passed e.g. a
+                                // `std::future::Pending` to `Instance::run`, in
+                                // which case we'd return a "deadlock" error
+                                // even when any and all tasks have completed
+                                // normally.  However, that's not how
+                                // `Instance::run` is intended (and documented)
+                                // to be used, so it seems reasonable to lump
+                                // that case in with "real" deadlocks.
+                                //
+                                // TODO: Once we've added host APIs for
+                                // cancelling in-progress tasks, we can return
+                                // some other, non-error value here, treating it
+                                // as "normal" and giving the host embedder a
+                                // chance to intervene by cancelling one or more
+                                // tasks and/or starting new tasks capable of
+                                // waking the existing ones.
                                 Poll::Ready(false) => {
-                                    Poll::Ready(Err(anyhow!(crate::Trap::NoAsyncResult)))
+                                    Poll::Ready(Err(anyhow!(crate::Trap::AsyncDeadlock)))
                                 }
                                 Poll::Pending => Poll::Pending,
                             };
@@ -2602,6 +2626,20 @@ impl Instance {
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// Note that this function will return a "deadlock" error in either of the
+    /// following scenarios:
+    ///
+    /// - One or more guest tasks are still pending (i.e. have not yet returned,
+    /// or, in the case of async-lifted exports with callbacks, have not yet
+    /// returned `CALLBACK_CODE_EXIT`) even though all host tasks have completed
+    /// all host-owned stream and future handles have been closed, etc.
+    ///
+    /// - Any and all guest tasks complete normally, but the future passed to
+    /// this function continues to return `Pending` when polled.  In that case,
+    /// the future presumably does not depend on any guest task making further
+    /// progress (since no futher progress can be made) and thus is not an
+    /// appropriate future to poll using this function.
     pub async fn run<U: Send, V: Send + Sync + 'static>(
         &self,
         mut store: impl AsContextMut<Data = U>,

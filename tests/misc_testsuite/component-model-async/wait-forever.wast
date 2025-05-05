@@ -53,4 +53,4 @@
     (canon lift (core func $i "run")))
 )
 
-(assert_trap (invoke "run") "async-lifted export failed to produce a result")
+(assert_trap (invoke "run") "deadlock detected")
