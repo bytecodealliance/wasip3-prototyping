@@ -371,7 +371,9 @@ impl<'a> TrampolineCompiler<'a> {
                     (ir::types::I64, ir::types::I32) => {
                         self.raise_if_negative_one_and_truncate(result)
                     }
-                    (ir::types::I64, ir::types::I64) => self.raise_if_negative_one(result),
+                    (ir::types::I64, ir::types::I64) | (ir::types::I32, ir::types::I32) => {
+                        self.raise_if_negative_one(result)
+                    }
                     other => panic!("unsupported NegativeOne combo {other:?}"),
                 };
                 self.abi_store_results(&[result]);
@@ -715,7 +717,12 @@ impl<'a> TrampolineCompiler<'a> {
                 .iconst(ir::types::I8, if async_ { 1 } else { 0 }),
         ];
 
-        self.translate_intrinsic_libcall(vmctx, host::yield_, &callee_args, TrapSentinel::Falsy);
+        self.translate_intrinsic_libcall(
+            vmctx,
+            host::yield_,
+            &callee_args,
+            TrapSentinel::NegativeOne,
+        );
     }
 
     fn translate_subtask_drop_call(&mut self, caller_instance: RuntimeComponentInstanceIndex) {
@@ -1524,7 +1531,8 @@ impl<'a> TrampolineCompiler<'a> {
     }
 
     fn raise_if_negative_one(&mut self, ret: ir::Value) -> ir::Value {
-        let minus_one = self.builder.ins().iconst(ir::types::I64, -1);
+        let result_ty = self.builder.func.dfg.value_type(ret);
+        let minus_one = self.builder.ins().iconst(result_ty, -1);
         let succeeded = self.builder.ins().icmp(IntCC::NotEqual, ret, minus_one);
         self.raise_if_host_trapped(succeeded);
         ret

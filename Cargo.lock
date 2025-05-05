@@ -5256,7 +5256,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen"
 version = "0.41.0"
-source = "git+https://github.com/bytecodealliance/wit-bindgen#ce479c6faa6a28f2c089c4ace8ec2779223aea4e"
+source = "git+https://github.com/alexcrichton/wit-bindgen?branch=rejigger-yield#913724ffaf226be11982b2403de4f64555a32474"
 dependencies = [
  "wit-bindgen-rt 0.41.0",
  "wit-bindgen-rust-macro",
@@ -5265,7 +5265,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-core"
 version = "0.41.0"
-source = "git+https://github.com/bytecodealliance/wit-bindgen#ce479c6faa6a28f2c089c4ace8ec2779223aea4e"
+source = "git+https://github.com/alexcrichton/wit-bindgen?branch=rejigger-yield#913724ffaf226be11982b2403de4f64555a32474"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5293,7 +5293,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rt"
 version = "0.41.0"
-source = "git+https://github.com/bytecodealliance/wit-bindgen#ce479c6faa6a28f2c089c4ace8ec2779223aea4e"
+source = "git+https://github.com/alexcrichton/wit-bindgen?branch=rejigger-yield#913724ffaf226be11982b2403de4f64555a32474"
 dependencies = [
  "bitflags 2.6.0",
  "futures",
@@ -5303,7 +5303,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rust"
 version = "0.41.0"
-source = "git+https://github.com/bytecodealliance/wit-bindgen#ce479c6faa6a28f2c089c4ace8ec2779223aea4e"
+source = "git+https://github.com/alexcrichton/wit-bindgen?branch=rejigger-yield#913724ffaf226be11982b2403de4f64555a32474"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5318,7 +5318,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rust-macro"
 version = "0.41.0"
-source = "git+https://github.com/bytecodealliance/wit-bindgen#ce479c6faa6a28f2c089c4ace8ec2779223aea4e"
+source = "git+https://github.com/alexcrichton/wit-bindgen?branch=rejigger-yield#913724ffaf226be11982b2403de4f64555a32474"
 dependencies = [
  "anyhow",
  "prettyplease",
