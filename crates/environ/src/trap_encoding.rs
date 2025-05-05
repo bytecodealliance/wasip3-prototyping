@@ -92,6 +92,11 @@ pub enum Trap {
     /// Async-lifted export failed to produce a result by calling `task.return`
     /// before returning `STATUS_DONE` and/or after all host tasks completed.
     NoAsyncResult,
+
+    /// Async event loop deadlocked; i.e. it cannot make further progress given
+    /// that all host tasks have completed and any/all host-owned stream/future
+    /// handles have been dropped.
+    AsyncDeadlock,
     // if adding a variant here be sure to update the `check!` macro below
 }
 
@@ -129,6 +134,7 @@ impl Trap {
             CastFailure
             CannotEnterComponent
             NoAsyncResult
+            AsyncDeadlock
         }
 
         None
@@ -160,6 +166,7 @@ impl fmt::Display for Trap {
             CastFailure => "cast failure",
             CannotEnterComponent => "cannot enter component instance",
             NoAsyncResult => "async-lifted export failed to produce a result",
+            AsyncDeadlock => "deadlock detected: event loop cannot make further progress",
         };
         write!(f, "wasm trap: {desc}")
     }

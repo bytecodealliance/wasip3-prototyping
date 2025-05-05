@@ -1734,10 +1734,9 @@ impl ComponentInstance {
                                 // chance to intervene by cancelling one or more
                                 // tasks and/or starting new tasks capable of
                                 // waking the existing ones.
-                                Poll::Ready(false) => Poll::Ready(Err(anyhow!(
-                                    "deadlock detected: event loop cannot \
-                                     make further progress"
-                                ))),
+                                Poll::Ready(false) => {
+                                    Poll::Ready(Err(anyhow!(crate::Trap::AsyncDeadlock)))
+                                }
                                 Poll::Pending => Poll::Pending,
                             };
                         } else {
