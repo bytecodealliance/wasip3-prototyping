@@ -10,7 +10,7 @@ use crate::runtime::vm::component::{
 };
 use crate::runtime::vm::SendSyncPtr;
 use crate::runtime::vm::{VMFuncRef, VMGlobalDefinition, VMMemoryDefinition, VMOpaqueContext};
-use crate::{AsContextMut, CallHook, StoreContextMut, ValRaw};
+use crate::{CallHook, StoreContextMut, ValRaw};
 use alloc::sync::Arc;
 use core::any::Any;
 use core::future::Future;
@@ -39,8 +39,7 @@ impl HostFunc {
     fn from_canonical<T, F, P, R>(func: F) -> Arc<HostFunc>
     where
         F: for<'a> Fn(
-                StoreContextMut<'a, T>,
-                *mut ComponentInstance,
+                &mut ComponentInstance,
                 P,
             ) -> Pin<Box<dyn Future<Output = Result<R>> + Send + 'static>>
             + Send
@@ -63,7 +62,14 @@ impl HostFunc {
         P: ComponentNamedList + Lift + Send + Sync + 'static,
         R: ComponentNamedList + Lower + Send + Sync + 'static,
     {
-        Self::from_canonical(move |store, _, params| {
+        Self::from_canonical::<T, _, _, _>(move |instance, params| {
+            // SAFETY: This relies on `from_closure` being called from
+            // `LinkerInstance::<'_, T>::func_wrap`, ensuring it is only used
+            // with a store with a data type parameter of `T`.  In addition,
+            // this closure will only be called via `Self::entrypoint`, which
+            // confers exclusive access to the store via its `VMOpaqueContext`
+            // parameter.
+            let store = unsafe { StoreContextMut(&mut *instance.store().cast()) };
             let result = func(store, params);
             Box::pin(async move { result })
         })
@@ -83,8 +89,14 @@ impl HostFunc {
         R: ComponentNamedList + Lower + Send + Sync + 'static,
     {
         let func = Arc::new(func);
-        Self::from_canonical(move |store, instance, params| unsafe {
-            (*instance).wrap_call(store, func.clone(), params)
+        Self::from_canonical::<T, _, _, _>(move |instance, params| {
+            // SAFETY: This relies on `from_closure` being called from
+            // `LinkerInstance::<'_, T>::func_wrap_concurrent`, ensuring it is
+            // only used with a store with a data type parameter of `T`.  In
+            // addition, this closure will only be called via
+            // `Self::entrypoint`, which confers exclusive access to the store
+            // via its `VMOpaqueContext` parameter.
+            unsafe { instance.wrap_call(func.clone(), params) }
         })
     }
 
@@ -103,8 +115,7 @@ impl HostFunc {
     ) -> bool
     where
         F: for<'a> Fn(
-                StoreContextMut<'a, T>,
-                *mut ComponentInstance,
+                &mut ComponentInstance,
                 P,
             ) -> Pin<Box<dyn Future<Output = Result<R>> + Send + 'static>>
             + Send
@@ -115,11 +126,10 @@ impl HostFunc {
     {
         let data = SendSyncPtr::new(NonNull::new(data.as_ptr() as *mut F).unwrap());
         unsafe {
-            call_host_and_handle_result::<T>(cx, |instance, types, store| {
-                call_host(
+            call_host_and_handle_result::<T>(cx, |instance, types| {
+                call_host::<T, _, _, _>(
                     instance,
                     types,
-                    store,
                     TypeFuncIndex::from_u32(ty),
                     RuntimeComponentInstanceIndex::from_u32(caller_instance),
                     InstanceFlags::from_raw(flags),
@@ -128,7 +138,7 @@ impl HostFunc {
                     StringEncoding::from_u8(string_encoding).unwrap(),
                     async_ != 0,
                     NonNull::slice_from_raw_parts(storage, storage_len).as_mut(),
-                    move |store, instance, args| (*data.as_ptr())(store, instance, args),
+                    move |instance, args| (*data.as_ptr())(instance, args),
                 )
             })
         }
@@ -137,8 +147,7 @@ impl HostFunc {
     fn new_dynamic_canonical<T, F>(func: F) -> Arc<HostFunc>
     where
         F: for<'a> Fn(
-                StoreContextMut<'a, T>,
-                *mut ComponentInstance,
+                &mut ComponentInstance,
                 Vec<Val>,
                 usize,
             )
@@ -161,10 +170,17 @@ impl HostFunc {
     where
         F: Fn(StoreContextMut<'_, T>, &[Val], &mut [Val]) -> Result<()> + Send + Sync + 'static,
     {
-        Self::new_dynamic_canonical(move |store, _, params: Vec<Val>, result_count| {
+        Self::new_dynamic_canonical::<T, _>(move |instance, params: Vec<Val>, result_count| {
             let mut results = iter::repeat(Val::Bool(false))
                 .take(result_count)
                 .collect::<Vec<_>>();
+            // SAFETY: This relies on `new_dynamic` being called from
+            // `LinkerInstance::<'_, T>::func_new`, ensuring it is only used
+            // with a store with a data type parameter of `T`.  In addition,
+            // this closure will only be called via `dynamic_entrypoint`, which
+            // confers exclusive access to the store via its `VMOpaqueContext`
+            // parameter.
+            let store = unsafe { StoreContextMut(&mut *instance.store().cast()) };
             let result = func(store, &params, &mut results);
             let result = result.map(move |()| results);
             Box::pin(async move { result })
@@ -183,8 +199,8 @@ impl HostFunc {
             + 'static,
     {
         let func = Arc::new(func);
-        Self::new_dynamic_canonical(move |store, instance, params, _| unsafe {
-            (*instance).wrap_call(store, func.clone(), params)
+        Self::new_dynamic_canonical::<T, _>(move |instance, params, _| unsafe {
+            (*instance).wrap_call(func.clone(), params)
         })
     }
 
@@ -235,9 +251,8 @@ where
 /// must be upheld. Generally that's done by ensuring this is only called from
 /// the select few places it's intended to be called from.
 unsafe fn call_host<T, Params, Return, F>(
-    instance: *mut ComponentInstance,
+    instance: &mut ComponentInstance,
     types: &Arc<ComponentTypes>,
-    mut cx: StoreContextMut<'_, T>,
     ty: TypeFuncIndex,
     caller_instance: RuntimeComponentInstanceIndex,
     mut flags: InstanceFlags,
@@ -250,8 +265,7 @@ unsafe fn call_host<T, Params, Return, F>(
 ) -> Result<()>
 where
     F: for<'a> Fn(
-            StoreContextMut<'a, T>,
-            *mut ComponentInstance,
+            &mut ComponentInstance,
             Params,
         ) -> Pin<Box<dyn Future<Output = Result<Return>> + Send + 'static>>
         + Send
@@ -279,7 +293,7 @@ where
     }
 
     let options = Options::new(
-        cx.0.id(),
+        (*instance.store()).store_opaque().id(),
         NonNull::new(memory),
         NonNull::new(realloc),
         string_encoding,
@@ -305,20 +319,25 @@ where
             let retptr = storage[1].assume_init();
 
             let params = {
-                let lift = &mut LiftContext::new(cx.0, &options, types, instance);
+                let lift = &mut LiftContext::new(
+                    (*instance.store()).store_opaque_mut(),
+                    &options,
+                    types,
+                    instance,
+                );
                 lift.enter_call();
                 let ptr = validate_inbounds::<Params>(lift.memory(), &paramptr)?;
                 Params::load(lift, param_tys, &lift.memory()[ptr..][..Params::SIZE32])?
             };
 
-            let future = closure(cx.as_context_mut(), instance, params);
+            let future = closure(instance, params);
 
-            let task = (*instance).first_poll(cx.as_context_mut(), future, caller_instance, {
+            let instance_ptr = SendSyncPtr::new(NonNull::new(instance).unwrap());
+            let task = instance.first_poll(future, caller_instance, {
                 let types = types.clone();
-                let instance = SendSyncPtr::new(NonNull::new(instance).unwrap());
-                move |cx, ret: Return| {
+                move |cx: StoreContextMut<T>, ret: Return| {
                     flags.set_may_leave(false);
-                    let mut lower = LowerContext::new(cx, &options, &types, instance.as_ptr());
+                    let mut lower = LowerContext::new(cx, &options, &types, instance_ptr.as_ptr());
                     let ptr = validate_inbounds::<Return>(lower.as_slice_mut(), &retptr)?;
                     ret.store(&mut lower, result_tys, ptr)?;
                     flags.set_may_leave(true);
@@ -366,16 +385,26 @@ where
                 Storage::Indirect(slice_to_storage_mut(storage).assume_init_ref())
             }
         };
-        let mut lift = LiftContext::new(cx.0, &options, types, instance);
+        let mut lift = LiftContext::new(
+            (*instance.store()).store_opaque_mut(),
+            &options,
+            types,
+            instance,
+        );
         lift.enter_call();
         let params = storage.lift_params(&mut lift, param_tys)?;
 
-        let future = closure(cx.as_context_mut(), instance, params);
+        let future = closure(instance, params);
 
         let ret = (*instance).poll_and_block(future, caller_instance)?;
 
         flags.set_may_leave(false);
-        let mut lower = LowerContext::new(cx, &options, types, instance);
+        let mut lower = LowerContext::new(
+            StoreContextMut::<T>(&mut *instance.store().cast()),
+            &options,
+            types,
+            instance,
+        );
         storage.lower_results(&mut lower, result_tys, ret)?;
         flags.set_may_leave(true);
         lower.exit_call()?;
@@ -452,30 +481,25 @@ pub(crate) fn validate_inbounds<T: ComponentType>(memory: &[u8], ptr: &ValRaw) -
 
 unsafe fn call_host_and_handle_result<T>(
     cx: NonNull<VMOpaqueContext>,
-    func: impl FnOnce(
-        *mut ComponentInstance,
-        &Arc<ComponentTypes>,
-        StoreContextMut<'_, T>,
-    ) -> Result<()>,
+    func: impl FnOnce(&mut ComponentInstance, &Arc<ComponentTypes>) -> Result<()>,
 ) -> bool {
     let cx = VMComponentContext::from_opaque(cx);
-    let instance = cx.as_ref().instance();
-    let types = (*instance).component_types();
-    let raw_store = (*instance).store();
-    let mut store = StoreContextMut(&mut *raw_store.cast());
+    let instance_ptr = cx.as_ref().instance();
+    let types = (*instance_ptr).component_types();
+    let instance = &mut *instance_ptr;
+    let store = unsafe { StoreContextMut::<T>(&mut *instance.store().cast()) };
 
     crate::runtime::vm::catch_unwind_and_record_trap(|| {
         store.0.call_hook(CallHook::CallingHost)?;
-        let res = func(instance, types, store.as_context_mut());
+        let res = func(instance, types);
         store.0.call_hook(CallHook::ReturningFromHost)?;
         res
     })
 }
 
 unsafe fn call_host_dynamic<T, F>(
-    instance: *mut ComponentInstance,
+    instance: &mut ComponentInstance,
     types: &Arc<ComponentTypes>,
-    mut store: StoreContextMut<'_, T>,
     ty: TypeFuncIndex,
     caller_instance: RuntimeComponentInstanceIndex,
     mut flags: InstanceFlags,
@@ -488,8 +512,7 @@ unsafe fn call_host_dynamic<T, F>(
 ) -> Result<()>
 where
     F: for<'a> Fn(
-            StoreContextMut<'a, T>,
-            *mut ComponentInstance,
+            &mut ComponentInstance,
             Vec<Val>,
             usize,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<Val>>> + Send + 'static>>
@@ -498,7 +521,7 @@ where
         + 'static,
 {
     let options = Options::new(
-        store.0.id(),
+        (*instance.store()).store_opaque().id(),
         NonNull::new(memory),
         NonNull::new(realloc),
         string_encoding,
@@ -527,7 +550,12 @@ where
             let retptr = storage[1].assume_init();
 
             let params = {
-                let mut lift = &mut LiftContext::new(store.0, &options, types, instance);
+                let mut lift = &mut LiftContext::new(
+                    (*instance.store()).store_opaque_mut(),
+                    &options,
+                    types,
+                    instance,
+                );
                 lift.enter_call();
                 let mut offset =
                     validate_inbounds_dynamic(&param_tys.abi, lift.memory(), &paramptr)?;
@@ -543,45 +571,36 @@ where
                     .collect::<Result<Vec<_>>>()?
             };
 
-            let future = closure(
-                store.as_context_mut(),
-                instance,
-                params,
-                result_tys.types.len(),
-            );
+            let future = closure(instance, params, result_tys.types.len());
 
-            let task =
-                (*instance).first_poll(store.as_context_mut(), future, caller_instance, {
-                    let types = types.clone();
-                    let instance = SendSyncPtr::new(NonNull::new(instance).unwrap());
-                    let result_tys = func_ty.results;
-                    move |store, result_vals: Vec<Val>| {
-                        let result_tys = &types[result_tys];
-                        if result_vals.len() != result_tys.types.len() {
-                            bail!("result length mismatch");
-                        }
-
-                        flags.set_may_leave(false);
-
-                        let mut lower =
-                            LowerContext::new(store, &options, &types, instance.as_ptr());
-                        let mut ptr = validate_inbounds_dynamic(
-                            &result_tys.abi,
-                            lower.as_slice_mut(),
-                            &retptr,
-                        )?;
-                        for (val, ty) in result_vals.iter().zip(result_tys.types.iter()) {
-                            let offset = types.canonical_abi(ty).next_field32_size(&mut ptr);
-                            val.store(&mut lower, *ty, offset)?;
-                        }
-
-                        flags.set_may_leave(true);
-
-                        lower.exit_call()?;
-
-                        Ok(())
+            let instance_ptr = SendSyncPtr::new(NonNull::new(instance).unwrap());
+            let task = instance.first_poll(future, caller_instance, {
+                let types = types.clone();
+                let result_tys = func_ty.results;
+                move |store: StoreContextMut<T>, result_vals: Vec<Val>| {
+                    let result_tys = &types[result_tys];
+                    if result_vals.len() != result_tys.types.len() {
+                        bail!("result length mismatch");
                     }
-                })?;
+
+                    flags.set_may_leave(false);
+
+                    let mut lower =
+                        LowerContext::new(store, &options, &types, instance_ptr.as_ptr());
+                    let mut ptr =
+                        validate_inbounds_dynamic(&result_tys.abi, lower.as_slice_mut(), &retptr)?;
+                    for (val, ty) in result_vals.iter().zip(result_tys.types.iter()) {
+                        let offset = types.canonical_abi(ty).next_field32_size(&mut ptr);
+                        val.store(&mut lower, *ty, offset)?;
+                    }
+
+                    flags.set_may_leave(true);
+
+                    lower.exit_call()?;
+
+                    Ok(())
+                }
+            })?;
 
             let status = if let Some(task) = task {
                 Status::Started.pack(Some(task))
@@ -599,7 +618,12 @@ where
             );
         }
     } else {
-        let mut cx = LiftContext::new(store.0, &options, types, instance);
+        let mut cx = LiftContext::new(
+            (*instance.store()).store_opaque_mut(),
+            &options,
+            types,
+            instance,
+        );
         cx.enter_call();
         if let Some(param_count) = param_tys.abi.flat_count(MAX_FLAT_PARAMS) {
             // NB: can use `MaybeUninit::slice_assume_init_ref` when that's stable
@@ -631,17 +655,17 @@ where
             ret_index = 1;
         };
 
-        let future = closure(
-            store.as_context_mut(),
-            instance,
-            args,
-            result_tys.types.len(),
-        );
+        let future = closure(instance, args, result_tys.types.len());
         let result_vals = (*instance).poll_and_block(future, caller_instance)?;
 
         flags.set_may_leave(false);
 
-        let mut cx = LowerContext::new(store, &options, types, instance);
+        let mut cx = LowerContext::new(
+            StoreContextMut::<T>(&mut *instance.store().cast()),
+            &options,
+            types,
+            instance,
+        );
         if let Some(cnt) = result_tys.abi.flat_count(MAX_FLAT_RESULTS) {
             let mut dst = storage[..cnt].iter_mut();
             for (val, ty) in result_vals.iter().zip(result_tys.types.iter()) {
@@ -700,8 +724,7 @@ extern "C" fn dynamic_entrypoint<T, F>(
 ) -> bool
 where
     F: for<'a> Fn(
-            StoreContextMut<'a, T>,
-            *mut ComponentInstance,
+            &mut ComponentInstance,
             Vec<Val>,
             usize,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<Val>>> + Send + 'static>>
@@ -711,11 +734,10 @@ where
 {
     let data = SendSyncPtr::new(NonNull::new(data.as_ptr() as *mut F).unwrap());
     unsafe {
-        call_host_and_handle_result(cx, |instance, types, store| {
-            call_host_dynamic(
+        call_host_and_handle_result::<T>(cx, |instance, types| {
+            call_host_dynamic::<T, _>(
                 instance,
                 types,
-                store,
                 TypeFuncIndex::from_u32(ty),
                 RuntimeComponentInstanceIndex::from_u32(caller_instance),
                 InstanceFlags::from_raw(flags),
@@ -724,9 +746,7 @@ where
                 StringEncoding::from_u8(string_encoding).unwrap(),
                 async_ != 0,
                 NonNull::slice_from_raw_parts(storage, storage_len).as_mut(),
-                move |store, instance, params, results| {
-                    (*data.as_ptr())(store, instance, params, results)
-                },
+                move |instance, params, results| (*data.as_ptr())(instance, params, results),
             )
         })
     }

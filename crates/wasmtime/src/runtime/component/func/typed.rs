@@ -463,8 +463,14 @@ where
         Ok(())
     }
 
+    /// Equivalent to `lower_stack_args`, but with a monomorphic signature
+    /// suitable for use with `concurrent::prepare_call`.
+    ///
+    /// SAFETY: `store` must be a valid pointer to a store with data type
+    /// parameter `T`, and the caller must confer exclusive access to that
+    /// store.  Also, `params_in` must be a valid pointer to a `Self::Params`.
     #[cfg(feature = "component-model-async")]
-    fn lower_stack_args_fn<T>(
+    unsafe fn lower_stack_args_fn<T>(
         func: Func,
         store: *mut dyn VMStore,
         params_in: *mut u8,
@@ -474,6 +480,8 @@ where
             store,
             params_out,
             func,
+            // SAFETY: Per this function's precondition, `params_in` is a valid
+            // pointer to a `Self::Params`.
             unsafe { &*params_in.cast() },
             Self::lower_stack_args::<T>,
         )
@@ -516,8 +524,14 @@ where
         Ok(())
     }
 
+    /// Equivalent to `lower_heap_args`, but with a monomorphic signature
+    /// suitable for use with `concurrent::prepare_call`.
+    ///
+    /// SAFETY: `store` must be a valid pointer to a store with data type
+    /// parameter `T`, and the caller must confer exclusive access to that
+    /// store.  Also, `params_in` must be a valid pointer to a `Self::Params`.
     #[cfg(feature = "component-model-async")]
-    fn lower_heap_args_fn<T>(
+    unsafe fn lower_heap_args_fn<T>(
         func: Func,
         store: *mut dyn VMStore,
         params_in: *mut u8,
@@ -527,6 +541,8 @@ where
             store,
             params_out,
             func,
+            // SAFETY: Per this function's precondition, `params_in` is a valid
+            // pointer to a `Self::Params`.
             unsafe { &*params_in.cast() },
             Self::lower_heap_args::<T>,
         )
@@ -544,19 +560,40 @@ where
         Return::lift(cx, ty, dst)
     }
 
+    /// Equivalent to `lift_stack_result`, but with a partially-monomorphic
+    /// signature suitable for use with `super::lift_results`.
     #[cfg(feature = "component-model-async")]
     fn lift_stack_result_raw(
         cx: &mut LiftContext<'_>,
         ty: InterfaceType,
         dst: &[ValRaw],
     ) -> Result<Return> {
+        // SAFETY: Per the safety requiments documented for the `ComponentType`
+        // trait, `Return::Lower` must be compatible at the binary level with a
+        // `[ValRaw; N]`, where `N` is `mem::size_of::<Return::Lower>() /
+        // mem::size_of::<ValRaw>()`.  And since this function is only used when
+        // `Return::flatten_count() <= MAX_FLAT_RESULTS` and `MAX_FLAT_RESULTS
+        // == 1`, `N` can only either be 0 or 1.
+        //
+        // See `ComponentInstance::exit_call` for where we use the result count
+        // passed from `wasmtime_environ::fact::trampoline`-generated code to
+        // ensure the slice has the correct length, and also
+        // `concurrent::start_call` for where we conservatively use a slice
+        // length of 1 unconditionally.  Also note that, as of this writing
+        // `slice_to_storage` double-checks the slice length is sufficient.
         Self::lift_stack_result(cx, ty, unsafe {
             crate::component::storage::slice_to_storage(dst)
         })
     }
 
+    /// Equivalent to `lift_stack_result`, but with a monomorphic signature
+    /// suitable for use with `concurrent::prepare_call`.
+    ///
+    /// SAFETY: `store` must be a valid pointer to a store with data type
+    /// parameter `T`, and the caller must confer exclusive access to that
+    /// store.
     #[cfg(feature = "component-model-async")]
-    fn lift_stack_result_fn<T>(
+    unsafe fn lift_stack_result_fn<T>(
         func: Func,
         store: *mut dyn VMStore,
         results: &[ValRaw],
@@ -589,6 +626,8 @@ where
         Return::load(cx, ty, bytes)
     }
 
+    /// Equivalent to `lift_heap_result`, but with a partially-monomorphic
+    /// signature suitable for use with `super::lift_results`.
     #[cfg(feature = "component-model-async")]
     fn lift_heap_result_raw(
         cx: &mut LiftContext<'_>,
@@ -598,8 +637,14 @@ where
         Self::lift_heap_result(cx, ty, &dst[0])
     }
 
+    /// Equivalent to `lift_heap_result`, but with a monomorphic signature
+    /// suitable for use with `concurrent::prepare_call`.
+    ///
+    /// SAFETY: `store` must be a valid pointer to a store with data type
+    /// parameter `T`, and the caller must confer exclusive access to that
+    /// store.
     #[cfg(feature = "component-model-async")]
-    fn lift_heap_result_fn<T>(
+    unsafe fn lift_heap_result_fn<T>(
         func: Func,
         store: *mut dyn VMStore,
         results: &[ValRaw],
