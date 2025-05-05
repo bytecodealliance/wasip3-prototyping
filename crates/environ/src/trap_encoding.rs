@@ -93,6 +93,10 @@ pub enum Trap {
     /// before returning `STATUS_DONE` and/or after all host tasks completed.
     NoAsyncResult,
 
+    /// A Pulley opcode was executed at runtime when the opcode was disabled at
+    /// compile time.
+    DisabledOpcode,
+
     /// Async event loop deadlocked; i.e. it cannot make further progress given
     /// that all host tasks have completed and any/all host-owned stream/future
     /// handles have been dropped.
@@ -134,6 +138,7 @@ impl Trap {
             CastFailure
             CannotEnterComponent
             NoAsyncResult
+            DisabledOpcode
             AsyncDeadlock
         }
 
@@ -166,6 +171,7 @@ impl fmt::Display for Trap {
             CastFailure => "cast failure",
             CannotEnterComponent => "cannot enter component instance",
             NoAsyncResult => "async-lifted export failed to produce a result",
+            DisabledOpcode => "pulley opcode disabled at compile time was executed",
             AsyncDeadlock => "deadlock detected: event loop cannot make further progress",
         };
         write!(f, "wasm trap: {desc}")

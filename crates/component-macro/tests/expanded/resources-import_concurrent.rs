@@ -447,6 +447,41 @@ const _: () = {
                 )?;
             linker
                 .func_wrap_concurrent(
+                    "some-world-func",
+                    move |mut caller: wasmtime::StoreContextMut<'_, T>, (): ()| {
+                        let host = caller;
+                        let r = <G::Host as TheWorldImports>::some_world_func(host);
+                        Box::pin(async move {
+                            let fun = r.await;
+                            Box::new(move |mut caller: wasmtime::StoreContextMut<'_, T>| {
+                                let r = fun(caller);
+                                Ok((r,))
+                            })
+                                as Box<
+                                    dyn FnOnce(
+                                        wasmtime::StoreContextMut<'_, T>,
+                                    ) -> wasmtime::Result<
+                                            (wasmtime::component::Resource<WorldResource>,),
+                                        > + Send + Sync,
+                                >
+                        })
+                            as ::core::pin::Pin<
+                                Box<
+                                    dyn ::core::future::Future<
+                                        Output = Box<
+                                            dyn FnOnce(
+                                                wasmtime::StoreContextMut<'_, T>,
+                                            ) -> wasmtime::Result<
+                                                    (wasmtime::component::Resource<WorldResource>,),
+                                                > + Send + Sync,
+                                        >,
+                                    > + Send + Sync + 'static,
+                                >,
+                            >
+                    },
+                )?;
+            linker
+                .func_wrap_concurrent(
                     "[constructor]world-resource",
                     move |caller: &mut wasmtime::component::Accessor<T, T>, (): ()| {
                         let mut accessor = unsafe {
@@ -570,6 +605,7 @@ const _: () = {
                         )
                     },
                 )?;
+<<<<<<< HEAD
             linker
                 .func_wrap_concurrent(
                     "some-world-func",
@@ -611,6 +647,44 @@ const _: () = {
                         )
                     },
                 )?;
+||||||| d48b3856b
+            linker
+                .func_wrap_concurrent(
+                    "some-world-func",
+                    move |mut caller: wasmtime::StoreContextMut<'_, T>, (): ()| {
+                        let host = caller;
+                        let r = <G::Host as TheWorldImports>::some_world_func(host);
+                        Box::pin(async move {
+                            let fun = r.await;
+                            Box::new(move |mut caller: wasmtime::StoreContextMut<'_, T>| {
+                                let r = fun(caller);
+                                Ok((r,))
+                            })
+                                as Box<
+                                    dyn FnOnce(
+                                        wasmtime::StoreContextMut<'_, T>,
+                                    ) -> wasmtime::Result<
+                                            (wasmtime::component::Resource<WorldResource>,),
+                                        > + Send + Sync,
+                                >
+                        })
+                            as ::core::pin::Pin<
+                                Box<
+                                    dyn ::core::future::Future<
+                                        Output = Box<
+                                            dyn FnOnce(
+                                                wasmtime::StoreContextMut<'_, T>,
+                                            ) -> wasmtime::Result<
+                                                    (wasmtime::component::Resource<WorldResource>,),
+                                                > + Send + Sync,
+                                        >,
+                                    > + Send + Sync + 'static,
+                                >,
+                            >
+                    },
+                )?;
+=======
+>>>>>>> upstream/main
             Ok(())
         }
         pub fn add_to_linker<T, U>(

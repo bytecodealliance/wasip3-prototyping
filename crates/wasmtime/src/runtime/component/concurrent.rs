@@ -2163,7 +2163,7 @@ impl ComponentInstance {
         ResourceTables {
             calls,
             host_table: Some(host_table),
-            tables: Some(self.component_resource_tables()),
+            guest: Some(self.guest_tables()),
         }
         .exit_call()?;
 
