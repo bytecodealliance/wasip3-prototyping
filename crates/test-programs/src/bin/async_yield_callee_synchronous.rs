@@ -19,7 +19,7 @@ struct Component;
 impl Guest for Component {
     fn run() {
         while continue_::get_continue() {
-            async_support::task_yield();
+            assert!(async_support::yield_blocking());
         }
     }
 }

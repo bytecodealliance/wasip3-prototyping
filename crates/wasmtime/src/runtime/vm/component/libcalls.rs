@@ -707,7 +707,7 @@ unsafe fn waitable_join(
 }
 
 #[cfg(feature = "component-model-async")]
-unsafe fn yield_(vmctx: NonNull<VMComponentContext>, async_: u8) -> Result<()> {
+unsafe fn yield_(vmctx: NonNull<VMComponentContext>, async_: u8) -> Result<bool> {
     ComponentInstance::from_vmctx(vmctx, |instance| instance.yield_(async_ != 0))
 }
 

@@ -2163,7 +2163,7 @@ impl ComponentInstance {
         ResourceTables {
             calls,
             host_table: Some(host_table),
-            tables: Some(self.component_resource_tables()),
+            guest: Some(self.guest_tables()),
         }
         .exit_call()?;
 
@@ -2262,8 +2262,12 @@ impl ComponentInstance {
         )
     }
 
-    pub(crate) fn yield_(&mut self, async_: bool) -> Result<()> {
-        self.waitable_check(async_, WaitableCheck::Yield).map(drop)
+    pub(crate) fn yield_(&mut self, async_: bool) -> Result<bool> {
+        self.waitable_check(async_, WaitableCheck::Yield)
+            .map(|_code| {
+                // TODO: plumb cancellation to here
+                false
+            })
     }
 
     pub(crate) fn waitable_check(&mut self, async_: bool, check: WaitableCheck) -> Result<u32> {

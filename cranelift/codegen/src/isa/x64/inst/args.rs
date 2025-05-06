@@ -805,46 +805,6 @@ impl PrettyPrint for RegMem {
     }
 }
 
-/// Some basic ALU operations.
-#[derive(Copy, Clone, PartialEq)]
-pub enum AluRmiROpcode {
-    /// Add operation.
-    Add,
-    /// Add with carry.
-    Adc,
-    /// Integer subtraction.
-    Sub,
-    /// Integer subtraction with borrow.
-    Sbb,
-    /// Bitwise AND operation.
-    And,
-    /// Bitwise inclusive OR.
-    Or,
-    /// Bitwise exclusive OR.
-    Xor,
-}
-
-impl fmt::Debug for AluRmiROpcode {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        let name = match self {
-            AluRmiROpcode::Add => "add",
-            AluRmiROpcode::Adc => "adc",
-            AluRmiROpcode::Sub => "sub",
-            AluRmiROpcode::Sbb => "sbb",
-            AluRmiROpcode::And => "and",
-            AluRmiROpcode::Or => "or",
-            AluRmiROpcode::Xor => "xor",
-        };
-        write!(fmt, "{name}")
-    }
-}
-
-impl fmt::Display for AluRmiROpcode {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Debug::fmt(self, f)
-    }
-}
-
 pub use crate::isa::x64::lower::isle::generated_code::AluRmROpcode;
 
 impl AluRmROpcode {
@@ -981,14 +941,6 @@ pub(crate) enum InstructionSet {
 #[allow(dead_code)] // some variants here aren't used just yet
 #[allow(missing_docs)]
 pub enum SseOpcode {
-    Addps,
-    Addpd,
-    Addss,
-    Addsd,
-    Andps,
-    Andpd,
-    Andnps,
-    Andnpd,
     Blendvpd,
     Blendvps,
     Comiss,
@@ -1041,8 +993,6 @@ pub enum SseOpcode {
     Mulpd,
     Mulss,
     Mulsd,
-    Orps,
-    Orpd,
     Pabsb,
     Pabsw,
     Pabsd,
@@ -1050,14 +1000,6 @@ pub enum SseOpcode {
     Packsswb,
     Packusdw,
     Packuswb,
-    Paddb,
-    Paddd,
-    Paddq,
-    Paddw,
-    Paddsb,
-    Paddsw,
-    Paddusb,
-    Paddusw,
     Palignr,
     Pand,
     Pandn,
@@ -1149,17 +1091,11 @@ pub enum SseOpcode {
     Sqrtpd,
     Sqrtss,
     Sqrtsd,
-    Subps,
-    Subpd,
-    Subss,
-    Subsd,
     Ucomiss,
     Ucomisd,
     Unpcklps,
     Unpcklpd,
     Unpckhps,
-    Xorps,
-    Xorpd,
     Phaddw,
     Phaddd,
     Punpckhdq,
@@ -1177,11 +1113,7 @@ impl SseOpcode {
     pub(crate) fn available_from(&self) -> InstructionSet {
         use InstructionSet::*;
         match self {
-            SseOpcode::Addps
-            | SseOpcode::Addss
-            | SseOpcode::Andps
-            | SseOpcode::Andnps
-            | SseOpcode::Comiss
+            SseOpcode::Comiss
             | SseOpcode::Cmpps
             | SseOpcode::Cmpss
             | SseOpcode::Cvtsi2ss
@@ -1200,24 +1132,16 @@ impl SseOpcode {
             | SseOpcode::Movups
             | SseOpcode::Mulps
             | SseOpcode::Mulss
-            | SseOpcode::Orps
             | SseOpcode::Rcpss
             | SseOpcode::Rsqrtss
             | SseOpcode::Shufps
             | SseOpcode::Sqrtps
             | SseOpcode::Sqrtss
-            | SseOpcode::Subps
-            | SseOpcode::Subss
             | SseOpcode::Ucomiss
             | SseOpcode::Unpcklps
-            | SseOpcode::Unpckhps
-            | SseOpcode::Xorps => SSE,
+            | SseOpcode::Unpckhps => SSE,
 
-            SseOpcode::Addpd
-            | SseOpcode::Addsd
-            | SseOpcode::Andpd
-            | SseOpcode::Andnpd
-            | SseOpcode::Cmppd
+            SseOpcode::Cmppd
             | SseOpcode::Cmpsd
             | SseOpcode::Comisd
             | SseOpcode::Cvtdq2ps
@@ -1247,18 +1171,9 @@ impl SseOpcode {
             | SseOpcode::Movdqu
             | SseOpcode::Mulpd
             | SseOpcode::Mulsd
-            | SseOpcode::Orpd
             | SseOpcode::Packssdw
             | SseOpcode::Packsswb
             | SseOpcode::Packuswb
-            | SseOpcode::Paddb
-            | SseOpcode::Paddd
-            | SseOpcode::Paddq
-            | SseOpcode::Paddw
-            | SseOpcode::Paddsb
-            | SseOpcode::Paddsw
-            | SseOpcode::Paddusb
-            | SseOpcode::Paddusw
             | SseOpcode::Pand
             | SseOpcode::Pandn
             | SseOpcode::Pavgb
@@ -1306,10 +1221,7 @@ impl SseOpcode {
             | SseOpcode::Pxor
             | SseOpcode::Sqrtpd
             | SseOpcode::Sqrtsd
-            | SseOpcode::Subpd
-            | SseOpcode::Subsd
             | SseOpcode::Ucomisd
-            | SseOpcode::Xorpd
             | SseOpcode::Punpckldq
             | SseOpcode::Punpckhdq
             | SseOpcode::Punpcklqdq
@@ -1405,14 +1317,6 @@ impl SseOpcode {
 impl fmt::Debug for SseOpcode {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         let name = match self {
-            SseOpcode::Addps => "addps",
-            SseOpcode::Addpd => "addpd",
-            SseOpcode::Addss => "addss",
-            SseOpcode::Addsd => "addsd",
-            SseOpcode::Andpd => "andpd",
-            SseOpcode::Andps => "andps",
-            SseOpcode::Andnps => "andnps",
-            SseOpcode::Andnpd => "andnpd",
             SseOpcode::Blendvpd => "blendvpd",
             SseOpcode::Blendvps => "blendvps",
             SseOpcode::Cmpps => "cmpps",
@@ -1465,8 +1369,6 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Mulpd => "mulpd",
             SseOpcode::Mulss => "mulss",
             SseOpcode::Mulsd => "mulsd",
-            SseOpcode::Orpd => "orpd",
-            SseOpcode::Orps => "orps",
             SseOpcode::Pabsb => "pabsb",
             SseOpcode::Pabsw => "pabsw",
             SseOpcode::Pabsd => "pabsd",
@@ -1474,14 +1376,6 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Packsswb => "packsswb",
             SseOpcode::Packusdw => "packusdw",
             SseOpcode::Packuswb => "packuswb",
-            SseOpcode::Paddb => "paddb",
-            SseOpcode::Paddd => "paddd",
-            SseOpcode::Paddq => "paddq",
-            SseOpcode::Paddw => "paddw",
-            SseOpcode::Paddsb => "paddsb",
-            SseOpcode::Paddsw => "paddsw",
-            SseOpcode::Paddusb => "paddusb",
-            SseOpcode::Paddusw => "paddusw",
             SseOpcode::Palignr => "palignr",
             SseOpcode::Pand => "pand",
             SseOpcode::Pandn => "pandn",
@@ -1573,16 +1467,10 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Sqrtpd => "sqrtpd",
             SseOpcode::Sqrtss => "sqrtss",
             SseOpcode::Sqrtsd => "sqrtsd",
-            SseOpcode::Subps => "subps",
-            SseOpcode::Subpd => "subpd",
-            SseOpcode::Subss => "subss",
-            SseOpcode::Subsd => "subsd",
             SseOpcode::Ucomiss => "ucomiss",
             SseOpcode::Ucomisd => "ucomisd",
             SseOpcode::Unpcklps => "unpcklps",
             SseOpcode::Unpckhps => "unpckhps",
-            SseOpcode::Xorps => "xorps",
-            SseOpcode::Xorpd => "xorpd",
             SseOpcode::Phaddw => "phaddw",
             SseOpcode::Phaddd => "phaddd",
             SseOpcode::Punpckldq => "punpckldq",

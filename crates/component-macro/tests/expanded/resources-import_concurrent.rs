@@ -447,6 +447,47 @@ const _: () = {
                 )?;
             linker
                 .func_wrap_concurrent(
+                    "some-world-func",
+                    move |caller: &mut wasmtime::component::Accessor<T, T>, (): ()| {
+                        let mut accessor = unsafe {
+                            wasmtime::component::Accessor::<
+                                T,
+                                _,
+                            >::new(
+                                get_host_and_store,
+                                spawn_task,
+                                caller.maybe_instance(),
+                            )
+                        };
+                        let mut future = wasmtime::component::__internal::Box::pin(async move {
+                            let r = <G::Host as TheWorldImports>::some_world_func(
+                                    &mut accessor,
+                                )
+                                .await;
+                            Ok((r,))
+                        });
+                        let store = wasmtime::VMStoreRawPtr(
+                            caller
+                                .with(|mut v| {
+                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
+                                }),
+                        );
+                        let instance = caller.maybe_instance();
+                        wasmtime::component::__internal::Box::pin(
+                            wasmtime::component::__internal::poll_fn(move |cx| {
+                                poll_with_state(
+                                    host_getter,
+                                    store,
+                                    instance,
+                                    cx,
+                                    future.as_mut(),
+                                )
+                            }),
+                        )
+                    },
+                )?;
+            linker
+                .func_wrap_concurrent(
                     "[constructor]world-resource",
                     move |caller: &mut wasmtime::component::Accessor<T, T>, (): ()| {
                         let mut accessor = unsafe {
@@ -549,47 +590,6 @@ const _: () = {
                                 )
                                 .await;
                             Ok(r)
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
-                    },
-                )?;
-            linker
-                .func_wrap_concurrent(
-                    "some-world-func",
-                    move |caller: &mut wasmtime::component::Accessor<T, T>, (): ()| {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as TheWorldImports>::some_world_func(
-                                    &mut accessor,
-                                )
-                                .await;
-                            Ok((r,))
                         });
                         let store = wasmtime::VMStoreRawPtr(
                             caller

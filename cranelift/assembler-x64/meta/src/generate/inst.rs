@@ -69,13 +69,16 @@ impl dsl::Inst {
             self.format
                 .operands
                 .iter()
-                .map(|o| format!("{}: {}", o.location, o.generate_type())),
+                .map(|o| format!("{}: impl Into<{}>", o.location, o.generate_type())),
         );
-        let args = comma_join(self.format.operands.iter().map(|o| o.location.to_string()));
-
         fmtln!(f, "#[must_use]");
         f.add_block(&format!("pub fn new({params}) -> Self"), |f| {
-            fmtln!(f, "Self {{ {args} }}",);
+            f.add_block("Self", |f| {
+                for o in &self.format.operands {
+                    let loc = o.location;
+                    fmtln!(f, "{loc}: {loc}.into(),");
+                }
+            });
         });
     }
 
@@ -98,11 +101,8 @@ impl dsl::Inst {
                         });
                     }
                     RegMem(_) => {
-                        let ty = match op.bits() {
-                            128 => "XmmMem",
-                            _ => "GprMem",
-                        };
-                        f.add_block(&format!("if let {ty}::Mem({op}) = &self.{op}"), |f| {
+                        let ty = op.reg_class().unwrap();
+                        f.add_block(&format!("if let {ty}Mem::Mem({op}) = &self.{op}"), |f| {
                             f.add_block(&format!("if let Some(trap_code) = {op}.trap_code()"), |f| {
                                 fmtln!(f, "buf.add_trap(trap_code);");
                             });
@@ -128,23 +128,23 @@ impl dsl::Inst {
             |f| {
                 for o in &self.format.operands {
                     let mutability = o.mutability.generate_snake_case();
-                    let reg = o.location.generate_register_class();
+                    let reg = o.location.reg_class();
                     match o.location.kind() {
                         Imm(_) => {
                             // Immediates do not need register allocation.
                         }
                         FixedReg(loc) => {
-                            let reg_lower = reg.unwrap().to_lowercase();
+                            let reg_lower = reg.unwrap().to_string().to_lowercase();
                             fmtln!(f, "let enc = self.{loc}.expected_enc();");
                             fmtln!(f, "visitor.fixed_{mutability}_{reg_lower}(&mut self.{loc}.0, enc);");
                         }
                         Reg(loc) => {
-                            let reg_lower = reg.unwrap().to_lowercase();
+                            let reg_lower = reg.unwrap().to_string().to_lowercase();
                             fmtln!(f, "visitor.{mutability}_{reg_lower}(self.{loc}.as_mut());");
                         }
                         RegMem(loc) => {
                             let reg = reg.unwrap();
-                            let reg_lower = reg.to_lowercase();
+                            let reg_lower = reg.to_string().to_lowercase();
                             f.add_block(&format!("match &mut self.{loc}"), |f| {
                                 fmtln!(f, "{reg}Mem::{reg}(r) => visitor.{mutability}_{reg_lower}(r),");
                                 fmtln!(f, "{reg}Mem::Mem(m) => visit_amode(m, visitor),");
