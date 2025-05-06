@@ -308,9 +308,9 @@ io-lifetimes = { version = "2.0.3", default-features = false }
 io-extras = "0.18.1"
 rustix = "1.0.3"
 # wit-bindgen:
-wit-bindgen = { version = "0.41.0", default-features = false }
-wit-bindgen-rust-macro = { version = "0.41.0", default-features = false }
-wit-bindgen-rt = { version = "0.41.0", default-features = false }
+wit-bindgen = { version = "0.42.1", default-features = false }
+wit-bindgen-rust-macro = { version = "0.42.1", default-features = false }
+wit-bindgen-rt = { version = "0.42.1", default-features = false }
 
 # wasm-tools family:
 wasmparser = { version = "0.230.0", default-features = false, features = ['simd'] }
@@ -614,9 +614,9 @@ lto = true
 # wasm-wave = { git = "https://github.com/bytecodealliance/wasm-tools" }
 # wasm-compose = { git = "https://github.com/bytecodealliance/wasm-tools" }
 # wasm-metadata = { git = "https://github.com/bytecodealliance/wasm-tools" }
-wit-bindgen = { git = "https://github.com/alexcrichton/wit-bindgen", branch = 'rejigger-yield' }
-wit-bindgen-rt = { git = "https://github.com/alexcrichton/wit-bindgen", branch = 'rejigger-yield' }
-wit-bindgen-rust-macro = { git = "https://github.com/alexcrichton/wit-bindgen", branch = 'rejigger-yield' }
+# wit-bindgen = { git = "https://github.com/alexcrichton/wit-bindgen", branch = 'fix-a-tpyo' }
+# wit-bindgen-rt = { git = "https://github.com/alexcrichton/wit-bindgen", branch = 'fix-a-tpyo' }
+# wit-bindgen-rust-macro = { git = "https://github.com/alexcrichton/wit-bindgen", branch = 'fix-a-tpyo' }
 
 # wasmparser = { path = '../wasm-tools/crates/wasmparser' }
 # wat = { path = '../wasm-tools/crates/wat' }
