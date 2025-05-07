@@ -1425,34 +1425,8 @@ impl Wasmtime {
         });
 
         if has_concurrent_function {
-            self.src.push_str(&concurrent_declarations(
-                &wt,
-                &format!("{world_camel}ImportsGetHost"),
-            ))
+            self.src.push_str(&concurrent_declarations(&wt));
         }
-
-        uwriteln!(
-            self.src,
-            "
-                pub trait {world_camel}ImportsGetHost<T>:
-                    Fn(T) -> <Self as {world_camel}ImportsGetHost<T>>::Host
-                        + Send
-                        + Sync
-                        + Copy
-                        + 'static
-                {{
-                    type Host: {world_camel}Imports;
-                }}
-
-                impl<F, T, O> {world_camel}ImportsGetHost<T> for F
-                where
-                    F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                    O: {world_camel}Imports,
-                {{
-                    type Host = O;
-                }}
-            "
-        );
 
         // Generate impl WorldImports for &mut WorldImports
         if !self.opts.skip_mut_forwarding_impls {
@@ -1571,15 +1545,14 @@ impl Wasmtime {
             uwrite!(
                 self.src,
                 "
-                    pub fn add_to_linker_imports_get_host<
-                        T,
-                        G: for<'a> {camel}ImportsGetHost<&'a mut T, Host: {camel}Imports>
-                    >(
+                    pub fn add_to_linker_imports_get_host<T, G>(
                         linker: &mut {wt}::component::Linker<T>,
                         {options_param}
                         host_getter: G,
                     ) -> {wt}::Result<()>
-                        where {data_bounds}
+                        where
+                            G: for<'a> {wt}::component::GetHost<&'a mut T, Host: {camel}Imports>,
+                            {data_bounds}
                     {{
                         let mut linker = linker.root();
                 "
@@ -2601,36 +2574,20 @@ impl<'a> InterfaceGenerator<'a> {
         });
 
         if has_concurrent_function {
-            self.src.push_str(&concurrent_declarations(&wt, "GetHost"))
+            self.src.push_str(&concurrent_declarations(&wt))
         }
 
         uwriteln!(
             self.src,
             "
-                pub trait GetHost<T>:
-                    Fn(T) -> <Self as GetHost<T>>::Host
-                        + Send
-                        + Sync
-                        + Copy
-                        + 'static
-                {{
-                    type Host: {get_host_bounds};
-                }}
-
-                impl<F, T, O> GetHost<T> for F
-                where
-                    F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                    O: {get_host_bounds},
-                {{
-                    type Host = O;
-                }}
-
-                pub fn add_to_linker_get_host<T, G: for<'a> GetHost<&'a mut T, Host: {host_bounds}>>(
+                pub fn add_to_linker_get_host<T, G>(
                     linker: &mut {wt}::component::Linker<T>,
                     {options_param}
                     host_getter: G,
                 ) -> {wt}::Result<()>
-                    where {data_bounds}
+                    where
+                        G: for<'a> {wt}::component::GetHost<&'a mut T, Host: {host_bounds}>,
+                        {data_bounds}
                 {{
             "
         );
@@ -3659,7 +3616,7 @@ fn get_world_resources<'a>(
         })
 }
 
-fn concurrent_declarations(wt: &str, get_host: &str) -> String {
+fn concurrent_declarations(wt: &str) -> String {
     format!(
         "
         struct State {{
@@ -3686,7 +3643,7 @@ fn concurrent_declarations(wt: &str, get_host: &str) -> String {
             STATE.with(|v| v.borrow_mut().as_mut().unwrap().spawned.push(task));
         }}
 
-        fn poll_with_state<T, G: for<'a> {get_host}<&'a mut T>, F: {wt}::component::__internal::Future + ?Sized>(
+        fn poll_with_state<T, G: for<'a> {wt}::component::GetHost<&'a mut T>, F: {wt}::component::__internal::Future + ?Sized>(
             getter: G,
             store: {wt}::VMStoreRawPtr,
             instance: Option<{wt}::component::Instance>,

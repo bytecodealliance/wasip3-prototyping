@@ -126,7 +126,7 @@ fn spawn_task(task: wasmtime::component::__internal::Spawned) {
 }
 fn poll_with_state<
     T,
-    G: for<'a> FooImportsGetHost<&'a mut T>,
+    G: for<'a> wasmtime::component::GetHost<&'a mut T>,
     F: wasmtime::component::__internal::Future + ?Sized,
 >(
     getter: G,
@@ -187,18 +187,6 @@ fn poll_with_state<
             )
     }
     result
-}
-pub trait FooImportsGetHost<
-    T,
->: Fn(T) -> <Self as FooImportsGetHost<T>>::Host + Send + Sync + Copy + 'static {
-    type Host: FooImports;
-}
-impl<F, T, O> FooImportsGetHost<T> for F
-where
-    F: Fn(T) -> O + Send + Sync + Copy + 'static,
-    O: FooImports,
-{
-    type Host = O;
 }
 impl<_T: FooImports + Send> FooImports for &mut _T {
     async fn foo<T: 'static>(
@@ -271,14 +259,12 @@ const _: () = {
             let indices = FooIndices::new(&instance.instance_pre(&store))?;
             indices.load(&mut store, instance)
         }
-        pub fn add_to_linker_imports_get_host<
-            T,
-            G: for<'a> FooImportsGetHost<&'a mut T, Host: FooImports>,
-        >(
+        pub fn add_to_linker_imports_get_host<T, G>(
             linker: &mut wasmtime::component::Linker<T>,
             host_getter: G,
         ) -> wasmtime::Result<()>
         where
+            G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: FooImports>,
             T: Send + 'static,
         {
             let mut linker = linker.root();

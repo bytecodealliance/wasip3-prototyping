@@ -186,26 +186,12 @@ pub mod foo {
             pub trait Host: Send {
                 async fn a(&mut self) -> Foo;
             }
-            pub trait GetHost<
-                T,
-            >: Fn(T) -> <Self as GetHost<T>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host + Send;
-            }
-            impl<F, T, O> GetHost<T> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host + Send,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<
-                T,
-                G: for<'a> GetHost<&'a mut T, Host: Host + Send>,
-            >(
+            pub fn add_to_linker_get_host<T, G>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: G,
             ) -> wasmtime::Result<()>
             where
+                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host + Send>,
                 T: Send,
             {
                 let mut inst = linker.instance("foo:foo/a")?;
@@ -263,26 +249,12 @@ pub mod foo {
             pub trait Host: Send {
                 async fn a(&mut self) -> Foo;
             }
-            pub trait GetHost<
-                T,
-            >: Fn(T) -> <Self as GetHost<T>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host + Send;
-            }
-            impl<F, T, O> GetHost<T> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host + Send,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<
-                T,
-                G: for<'a> GetHost<&'a mut T, Host: Host + Send>,
-            >(
+            pub fn add_to_linker_get_host<T, G>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: G,
             ) -> wasmtime::Result<()>
             where
+                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host + Send>,
                 T: Send,
             {
                 let mut inst = linker.instance("foo:foo/b")?;
@@ -340,26 +312,12 @@ pub mod foo {
             pub trait Host: Send {
                 async fn a(&mut self) -> Foo;
             }
-            pub trait GetHost<
-                T,
-            >: Fn(T) -> <Self as GetHost<T>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host + Send;
-            }
-            impl<F, T, O> GetHost<T> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host + Send,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<
-                T,
-                G: for<'a> GetHost<&'a mut T, Host: Host + Send>,
-            >(
+            pub fn add_to_linker_get_host<T, G>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: G,
             ) -> wasmtime::Result<()>
             where
+                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host + Send>,
                 T: Send,
             {
                 let mut inst = linker.instance("foo:foo/c")?;
@@ -419,23 +377,12 @@ pub mod d {
     pub trait Host: Send {
         async fn b(&mut self) -> Foo;
     }
-    pub trait GetHost<
-        T,
-    >: Fn(T) -> <Self as GetHost<T>>::Host + Send + Sync + Copy + 'static {
-        type Host: Host + Send;
-    }
-    impl<F, T, O> GetHost<T> for F
-    where
-        F: Fn(T) -> O + Send + Sync + Copy + 'static,
-        O: Host + Send,
-    {
-        type Host = O;
-    }
-    pub fn add_to_linker_get_host<T, G: for<'a> GetHost<&'a mut T, Host: Host + Send>>(
+    pub fn add_to_linker_get_host<T, G>(
         linker: &mut wasmtime::component::Linker<T>,
         host_getter: G,
     ) -> wasmtime::Result<()>
     where
+        G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host + Send>,
         T: Send,
     {
         let mut inst = linker.instance("d")?;

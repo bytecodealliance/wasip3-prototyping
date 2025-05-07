@@ -194,18 +194,6 @@ pub struct TheWorld {}
 pub trait TheWorldImports: Send + HostBaz {
     async fn foo(&mut self) -> ();
 }
-pub trait TheWorldImportsGetHost<
-    T,
->: Fn(T) -> <Self as TheWorldImportsGetHost<T>>::Host + Send + Sync + Copy + 'static {
-    type Host: TheWorldImports;
-}
-impl<F, T, O> TheWorldImportsGetHost<T> for F
-where
-    F: Fn(T) -> O + Send + Sync + Copy + 'static,
-    O: TheWorldImports,
-{
-    type Host = O;
-}
 impl<_T: TheWorldImports + ?Sized + Send> TheWorldImports for &mut _T {
     async fn foo(&mut self) -> () {
         TheWorldImports::foo(*self).await
@@ -265,15 +253,13 @@ const _: () = {
             let indices = TheWorldIndices::new(&instance.instance_pre(&store))?;
             indices.load(&mut store, instance)
         }
-        pub fn add_to_linker_imports_get_host<
-            T,
-            G: for<'a> TheWorldImportsGetHost<&'a mut T, Host: TheWorldImports>,
-        >(
+        pub fn add_to_linker_imports_get_host<T, G>(
             linker: &mut wasmtime::component::Linker<T>,
             options: &LinkOptions,
             host_getter: G,
         ) -> wasmtime::Result<()>
         where
+            G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: TheWorldImports>,
             T: Send,
         {
             let mut linker = linker.root();
@@ -450,27 +436,13 @@ pub mod foo {
             pub trait Host: Send + HostBar + Sized {
                 async fn foo(&mut self) -> ();
             }
-            pub trait GetHost<
-                T,
-            >: Fn(T) -> <Self as GetHost<T>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host + Send;
-            }
-            impl<F, T, O> GetHost<T> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host + Send,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<
-                T,
-                G: for<'a> GetHost<&'a mut T, Host: Host + Send>,
-            >(
+            pub fn add_to_linker_get_host<T, G>(
                 linker: &mut wasmtime::component::Linker<T>,
                 options: &LinkOptions,
                 host_getter: G,
             ) -> wasmtime::Result<()>
             where
+                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host + Send>,
                 T: Send,
             {
                 if options.experimental_interface {

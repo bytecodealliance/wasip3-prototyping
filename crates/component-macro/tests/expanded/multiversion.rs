@@ -179,22 +179,13 @@ pub mod my {
             pub trait Host {
                 fn x(&mut self) -> ();
             }
-            pub trait GetHost<
-                T,
-            >: Fn(T) -> <Self as GetHost<T>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host;
-            }
-            impl<F, T, O> GetHost<T> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<T, G: for<'a> GetHost<&'a mut T, Host: Host>>(
+            pub fn add_to_linker_get_host<T, G>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: G,
-            ) -> wasmtime::Result<()> {
+            ) -> wasmtime::Result<()>
+            where
+                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host>,
+            {
                 let mut inst = linker.instance("my:dep/a@0.1.0")?;
                 inst.func_wrap(
                     "x",
@@ -230,22 +221,13 @@ pub mod my {
             pub trait Host {
                 fn x(&mut self) -> ();
             }
-            pub trait GetHost<
-                T,
-            >: Fn(T) -> <Self as GetHost<T>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host;
-            }
-            impl<F, T, O> GetHost<T> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<T, G: for<'a> GetHost<&'a mut T, Host: Host>>(
+            pub fn add_to_linker_get_host<T, G>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: G,
-            ) -> wasmtime::Result<()> {
+            ) -> wasmtime::Result<()>
+            where
+                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host>,
+            {
                 let mut inst = linker.instance("my:dep/a@0.2.0")?;
                 inst.func_wrap(
                     "x",
