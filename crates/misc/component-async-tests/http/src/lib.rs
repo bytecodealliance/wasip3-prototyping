@@ -217,7 +217,7 @@ impl<T: WasiHttpView> wasi::http::types::HostFields for WasiHttpImpl<T> {
 }
 
 impl<C: WasiHttpViewConcurrent> wasi::http::types::HostBodyConcurrent for WasiHttp<C> {
-    async fn new<T>(
+    async fn new<T: 'static>(
         accessor: &mut Accessor<T, Self>,
         stream: HostStream<u8>,
     ) -> wasmtime::Result<Resource<Body>> {
@@ -230,7 +230,7 @@ impl<C: WasiHttpViewConcurrent> wasi::http::types::HostBodyConcurrent for WasiHt
         })
     }
 
-    async fn new_with_trailers<T>(
+    async fn new_with_trailers<T: 'static>(
         accessor: &mut Accessor<T, Self>,
         stream: HostStream<u8>,
         trailers: HostFuture<Resource<Fields>>,
@@ -246,7 +246,7 @@ impl<C: WasiHttpViewConcurrent> wasi::http::types::HostBodyConcurrent for WasiHt
 
     // TODO: once access to the store is possible in a non-async context (similar to Accessor pattern)
     // we should convert this to a sync function that works w/ &mut self.
-    async fn finish<T>(
+    async fn finish<T: 'static>(
         accessor: &mut Accessor<T, Self>,
         this: Resource<Body>,
     ) -> wasmtime::Result<HostFuture<Resource<Fields>>> {

@@ -4,7 +4,7 @@ use {
             func::{self, Func, Options},
             HasData, HasSelf, Instance,
         },
-        store::{StoreInner, StoreOpaque},
+        store::{StoreInner, StoreOpaque, StoreToken},
         vm::{
             component::{CallContext, ComponentInstance, InstanceFlags, ResourceTables},
             mpk::{self, ProtectionMask},
@@ -422,9 +422,61 @@ struct State {
     spawned: Vec<Spawned>,
 }
 
+#[derive(Copy, Clone)]
+enum InstanceThreadLocalState {
+    None,
+    Polling,
+    Detached {
+        instance: SendSyncPtr<ComponentInstance>,
+        store: VMStoreRawPtr,
+    },
+    Attached {
+        instance: Instance,
+    },
+}
+
+impl fmt::Debug for InstanceThreadLocalState {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct(match self {
+            Self::None => "None",
+            Self::Polling => "Polling",
+            Self::Detached { .. } => "Detached",
+            Self::Attached { .. } => "Attached",
+        })
+        .finish()
+    }
+}
+
 thread_local! {
     static STATE: RefCell<Option<State>> = RefCell::new(None);
-    static INSTANCE: Cell<*mut ComponentInstance> = Cell::new(ptr::null_mut());
+    static INSTANCE_STATE: Cell<InstanceThreadLocalState> = Cell::new(InstanceThreadLocalState::None);
+}
+
+fn with_local_instance<R>(fun: impl FnOnce(&mut dyn VMStore, &mut ComponentInstance) -> R) -> R {
+    let state = ResetInstanceThreadLocalState(
+        INSTANCE_STATE.with(|v| v.replace(InstanceThreadLocalState::Polling)),
+    );
+
+    let InstanceThreadLocalState::Detached { instance, store } = state.0 else {
+        unreachable!("expected `Detached`; got `{:?}`", state.0)
+    };
+    let (store, instance) = unsafe { (&mut *store.0.as_ptr(), &mut *instance.as_ptr()) };
+    fun(store, instance)
+}
+
+unsafe fn poll_with_local_instance<F: Future + Send + ?Sized>(
+    store: VMStoreRawPtr,
+    instance: SendSyncPtr<ComponentInstance>,
+    future: &mut Pin<&mut F>,
+    cx: &mut Context,
+) -> Poll<F::Output> {
+    let state = ResetInstanceThreadLocalState(
+        INSTANCE_STATE.with(|v| v.replace(InstanceThreadLocalState::Detached { instance, store })),
+    );
+
+    assert!(matches!(state.0, InstanceThreadLocalState::None));
+
+    future.as_mut().poll(cx)
 }
 
 struct ResetState(Option<State>);
@@ -437,11 +489,11 @@ impl Drop for ResetState {
     }
 }
 
-struct ResetInstance(Option<SendSyncPtr<ComponentInstance>>);
+struct ResetInstanceThreadLocalState(InstanceThreadLocalState);
 
-impl Drop for ResetInstance {
+impl Drop for ResetInstanceThreadLocalState {
     fn drop(&mut self) {
-        INSTANCE.with(|v| v.set(self.0.map(|v| v.as_ptr()).unwrap_or_else(ptr::null_mut)))
+        INSTANCE_STATE.with(|v| v.set(self.0))
     }
 }
 
@@ -464,48 +516,47 @@ fn spawn_task(task: Spawned) {
 // `ComponentInstance::poll_until` is the only place those futures are polled,
 // that function has exclusive access to both the store and the
 // `ComponentInstance`.
-unsafe fn poll_with_state<T, F: Future + ?Sized>(
-    store: VMStoreRawPtr,
-    instance: SendSyncPtr<ComponentInstance>,
+fn poll_with_state<T: 'static, F: Future + ?Sized>(
+    token: StoreToken<T>,
     cx: &mut Context,
     future: Pin<&mut F>,
 ) -> Poll<F::Output> {
-    let (result, spawned) = {
-        let old_state = STATE.with(|v| {
-            v.replace(Some(State {
-                store: store.0.as_ptr().cast(),
-                spawned: Vec::new(),
-            }))
+    with_local_instance(|store, instance| {
+        let store_ptr = (store as *mut dyn VMStore).cast();
+        let mut store_cx = token.as_context_mut(store);
+
+        let (result, spawned) = store_cx.with_attached_instance(instance, |_, _| {
+            let old_state = STATE.with(|v| {
+                v.replace(Some(State {
+                    store: store_ptr,
+                    spawned: Vec::new(),
+                }))
+            });
+            let _reset_state = ResetState(old_state);
+            (future.poll(cx), STATE.with(|v| v.take()).unwrap().spawned)
         });
-        let _reset_state = ResetState(old_state);
-        let old_instance = INSTANCE.with(|v| v.replace(instance.as_ptr()));
-        let _reset_instance = ResetInstance(NonNull::new(old_instance).map(SendSyncPtr::new));
-        (future.poll(cx), STATE.with(|v| v.take()).unwrap().spawned)
-    };
 
-    // SAFETY: Per the function precondition, `instance` must be a valid `*mut
-    // ComponentInstance`
-    let instance_ref = unsafe { &mut *instance.as_ptr() };
-    for spawned in spawned {
-        instance_ref.spawn(future::poll_fn(move |cx| {
-            let mut spawned = spawned.try_lock().unwrap();
-            let inner = mem::replace(DerefMut::deref_mut(&mut spawned), AbortWrapper::Aborted);
-            if let AbortWrapper::Unpolled(mut future) | AbortWrapper::Polled { mut future, .. } =
-                inner
-            {
-                let result = poll_with_state::<T, _>(store, instance, cx, future.as_mut());
-                *DerefMut::deref_mut(&mut spawned) = AbortWrapper::Polled {
-                    future,
-                    waker: cx.waker().clone(),
-                };
-                result
-            } else {
-                Poll::Ready(Ok(()))
-            }
-        }))
-    }
+        for spawned in spawned {
+            instance.spawn(future::poll_fn(move |cx| {
+                let mut spawned = spawned.try_lock().unwrap();
+                let inner = mem::replace(DerefMut::deref_mut(&mut spawned), AbortWrapper::Aborted);
+                if let AbortWrapper::Unpolled(mut future)
+                | AbortWrapper::Polled { mut future, .. } = inner
+                {
+                    let result = poll_with_state::<T, _>(token, cx, future.as_mut());
+                    *DerefMut::deref_mut(&mut spawned) = AbortWrapper::Polled {
+                        future,
+                        waker: cx.waker().clone(),
+                    };
+                    result
+                } else {
+                    Poll::Ready(Ok(()))
+                }
+            }))
+        }
 
-    result
+        result
+    })
 }
 
 /// Represents the state of a waitable handle.
@@ -556,7 +607,7 @@ enum GuestCallKind {
         instance: RuntimeComponentInstanceIndex,
         set: Option<TableId<WaitableSet>>,
     },
-    Start(Box<dyn FnOnce(&mut ComponentInstance) -> Result<()> + Send + Sync>),
+    Start(Box<dyn FnOnce(&mut dyn VMStore, &mut ComponentInstance) -> Result<()> + Send + Sync>),
 }
 
 impl fmt::Debug for GuestCallKind {
@@ -617,6 +668,96 @@ impl fmt::Debug for WorkItem {
             Self::GuestCall(call) => f.debug_tuple("GuestCall").field(call).finish(),
             Self::Poll(params) => f.debug_tuple("Poll").field(params).finish(),
         }
+    }
+}
+
+impl<T> StoreContextMut<'_, T> {
+    fn with_detached_instance<R>(
+        &mut self,
+        instance: &Instance,
+        fun: impl FnOnce(StoreContextMut<'_, T>, &mut ComponentInstance) -> R,
+    ) -> R {
+        let _state = ResetInstanceThreadLocalState(INSTANCE_STATE.with(|v| match v.get() {
+            state @ (InstanceThreadLocalState::None | InstanceThreadLocalState::Polling) => state,
+            InstanceThreadLocalState::Attached { .. } => {
+                v.replace(InstanceThreadLocalState::Polling)
+            }
+            _ => unreachable!(),
+        }));
+        let data = self.0[instance.0].take().unwrap();
+        let (result, data) = {
+            // SAFETY: We've taken the instance out of the store, so now we own
+            // it and can take an exclusive reference to it.
+            let instance = unsafe { &mut *data.instance_ptr() };
+            assert!(instance.data.is_none());
+            instance.data = Some(data);
+            instance.set_store(None);
+            let result = fun(self.as_context_mut(), instance);
+            instance.set_store(Some(VMStoreRawPtr(self.traitobj())));
+            (result, instance.data.take())
+        };
+        if self.0[instance.0].is_none() {
+            self.0[instance.0] = data;
+        }
+        result
+    }
+
+    async fn with_detached_instance_async<R>(
+        &mut self,
+        instance: &Instance,
+        fun: impl AsyncFnOnce(StoreContextMut<'_, T>, &mut ComponentInstance) -> R,
+    ) -> R {
+        let _state = ResetInstanceThreadLocalState(INSTANCE_STATE.with(|v| match v.get() {
+            state @ (InstanceThreadLocalState::None | InstanceThreadLocalState::Polling) => state,
+            InstanceThreadLocalState::Attached { .. } => {
+                v.replace(InstanceThreadLocalState::Polling)
+            }
+            _ => unreachable!(),
+        }));
+        let data = self.0[instance.0].take().unwrap();
+        let (result, data) = {
+            // SAFETY: We've taken the instance out of the store, so now we own
+            // it and can take an exclusive reference to it.
+            let instance = unsafe { &mut *data.instance_ptr() };
+            assert!(instance.data.is_none());
+            instance.data = Some(data);
+            instance.set_store(None);
+            let result = fun(self.as_context_mut(), instance).await;
+            instance.set_store(Some(VMStoreRawPtr(self.traitobj())));
+            (result, instance.data.take())
+        };
+        if self.0[instance.0].is_none() {
+            self.0[instance.0] = data;
+        }
+        result
+    }
+
+    pub(crate) fn with_attached_instance<R>(
+        &mut self,
+        instance: &mut ComponentInstance,
+        fun: impl FnOnce(StoreContextMut<'_, T>, Option<Instance>) -> R,
+    ) -> R {
+        let _state = ResetInstanceThreadLocalState(INSTANCE_STATE.with(|v| match v.get() {
+            state @ InstanceThreadLocalState::None => state,
+            state @ InstanceThreadLocalState::Polling => {
+                if let Some(handle) = instance.instance {
+                    v.replace(InstanceThreadLocalState::Attached { instance: handle })
+                } else {
+                    state
+                }
+            }
+            _ => unreachable!(),
+        }));
+        if let Some(handle) = instance.instance {
+            self.0[handle.0] = Some(instance.data.take().unwrap());
+        }
+        instance.set_store(Some(VMStoreRawPtr(self.traitobj())));
+        let result = fun(self.as_context_mut(), instance.instance);
+        instance.set_store(None);
+        if let Some(handle) = instance.instance {
+            instance.data = Some(self.0[handle.0].take().unwrap());
+        }
+        result
     }
 }
 
@@ -727,40 +868,28 @@ impl ComponentInstance {
         &mut self.concurrent_state.guest_call
     }
 
-    fn maybe_push_call_context(&mut self, guest_task: TableId<GuestTask>) -> Result<()> {
+    fn maybe_push_call_context(
+        &mut self,
+        store: &mut StoreOpaque,
+        guest_task: TableId<GuestTask>,
+    ) -> Result<()> {
         let task = self.get_mut(guest_task)?;
         if task.lift_result.is_some() {
             log::trace!("push call context for {guest_task:?}");
             let call_context = task.call_context.take().unwrap();
-            // SAFETY: This `ComponentInstance` belongs to the store in which it
-            // resides, so if it is valid then so is its store.  Furthermore,
-            // this function is only called (transitively) from
-            // `ComponentInstance::poll_until`, which has exclusive access to
-            // both the `ComponentInstance` and the store.
-            unsafe { &mut (*self.store()) }
-                .store_opaque_mut()
-                .component_resource_state()
-                .0
-                .push(call_context);
+            store.component_resource_state().0.push(call_context);
         }
         Ok(())
     }
 
-    fn maybe_pop_call_context(&mut self, guest_task: TableId<GuestTask>) -> Result<()> {
+    fn maybe_pop_call_context(
+        &mut self,
+        store: &mut StoreOpaque,
+        guest_task: TableId<GuestTask>,
+    ) -> Result<()> {
         if self.get_mut(guest_task)?.lift_result.is_some() {
             log::trace!("pop call context for {guest_task:?}");
-            let call_context = Some(
-                // SAFETY: This `ComponentInstance` belongs to the store in
-                // which it resides, so if it is valid then so is its store.
-                // Furthermore, this function is only called (transitively) from
-                // `ComponentInstance::poll_until`, which has exclusive access
-                // to both the `ComponentInstance` and the store.
-                unsafe { &mut (*self.store()) }
-                    .component_resource_state()
-                    .0
-                    .pop()
-                    .unwrap(),
-            );
+            let call_context = Some(store.component_resource_state().0.pop().unwrap());
             self.get_mut(guest_task)?.call_context = call_context;
         }
         Ok(())
@@ -918,153 +1047,229 @@ impl ComponentInstance {
 
     /// Add the specified guest call to the `Self::high_priority` queue, to be
     /// started as soon as backpressure and/or reentrance rules allow.
-    ///
-    /// SAFETY: `self` must belong to a store whose data type parameter is `T`,
-    /// and the caller must confer exclusive access to that store.  Likewise,
-    /// when the closures queued by this function are run, the same rules apply
-    /// to their `&mut ComponentInstance` parameters.
-    // TODO: This should queue `impl UnsafeFnOnce` "closures" (where
-    // `UnsafeFnOnce` would need to be a trait we define ourselves, since
-    // there's no standard equivalent) rather than `impl FnOnce` closures.  That
-    // would force the caller to use an unsafe block and (hopefully) uphold the
-    // contract we've described above.
-    unsafe fn queue_call<T>(
+    fn queue_call<T: 'static>(
         &mut self,
+        mut store: StoreContextMut<T>,
         guest_task: TableId<GuestTask>,
+        callee: SendSyncPtr<VMFuncRef>,
+        param_count: usize,
+        result_count: usize,
+        flags: Option<InstanceFlags>,
         async_: bool,
-        call: impl FnOnce(&mut ComponentInstance) -> Result<[MaybeUninit<ValRaw>; MAX_FLAT_PARAMS]>
-            + Send
-            + Sync
-            + 'static,
         callback: Option<SendSyncPtr<VMFuncRef>>,
         post_return: Option<SendSyncPtr<VMFuncRef>>,
-        result_count: usize,
     ) -> Result<()> {
+        // TODO: This function should create and queue `impl UnsafeFnOnce`
+        // "closures" (where `UnsafeFnOnce` would need to be a trait we define
+        // ourselves, since there's no standard equivalent) rather than `impl
+        // FnOnce` closures.  That would force the caller to use an unsafe block
+        // and (hopefully) uphold the contract we've described above.
+
+        /// Return a closure which will call the specified function in the scope
+        /// of the specified task.
+        ///
+        /// This will use `GuestTask::lower_params` to lower the parameters, but
+        /// will not lift the result; instead, it returns a
+        /// `[MaybeUninit<ValRaw>; MAX_FLAT_PARAMS]` from which the result, if
+        /// any, may be lifted.  Note that an async-lifted export will have
+        /// returned its result using the `task.return` intrinsic (or not
+        /// returned a result at all, in the case of `task.cancel`), in which
+        /// case the "result" of this call will either be a callback code or
+        /// nothing.
+        ///
+        /// SAFETY: `callee` must be a valid `*mut VMFuncRef` at the time when
+        /// the returned closure is called.  In addition the caller must confer
+        /// exclusive access to the store to which the passed `&mut
+        /// ComponentInstance` belongs, which must have a data type parameter of
+        /// `T`.
+        fn make_call<T: 'static>(
+            store: StoreContextMut<T>,
+            guest_task: TableId<GuestTask>,
+            callee: SendSyncPtr<VMFuncRef>,
+            param_count: usize,
+            result_count: usize,
+            flags: Option<InstanceFlags>,
+        ) -> impl FnOnce(
+            &mut dyn VMStore,
+            &mut ComponentInstance,
+        ) -> Result<[MaybeUninit<ValRaw>; MAX_FLAT_PARAMS]>
+               + Send
+               + Sync
+               + 'static
+               + use<T> {
+            let token = StoreToken::new(store);
+            move |store: &mut dyn VMStore, instance: &mut ComponentInstance| {
+                let mut storage = [MaybeUninit::uninit(); MAX_FLAT_PARAMS];
+                let lower = instance.get_mut(guest_task)?.lower_params.take().unwrap();
+
+                lower(store, instance, &mut storage[..param_count])?;
+
+                let mut store = token.as_context_mut(store);
+
+                // SAFETY: Per the contract documented above, `callee` is a
+                // valid pointer and `store` has a data type parameter of `T`.
+                store.with_attached_instance(instance, |mut store, _| unsafe {
+                    if let Some(mut flags) = flags {
+                        flags.set_may_enter(false);
+                    }
+                    crate::Func::call_unchecked_raw(
+                        &mut store,
+                        callee.as_non_null(),
+                        NonNull::new(
+                            &mut storage[..param_count.max(result_count)]
+                                as *mut [MaybeUninit<ValRaw>] as _,
+                        )
+                        .unwrap(),
+                    )?;
+                    if let Some(mut flags) = flags {
+                        flags.set_may_enter(true);
+                    }
+                    Ok::<_, anyhow::Error>(())
+                })?;
+
+                Ok(storage)
+            }
+        }
+
+        let call = make_call(
+            store.as_context_mut(),
+            guest_task,
+            callee,
+            param_count,
+            result_count,
+            flags,
+        );
+
         let callee_instance = self.get(guest_task)?.instance;
         let fun = if callback.is_some() {
             assert!(async_);
 
-            Box::new(move |instance: &mut ComponentInstance| {
-                let old_task = instance.guest_task().replace(guest_task);
-                log::trace!(
-                    "stackless call: replaced {old_task:?} with {guest_task:?} as current task"
-                );
+            Box::new(
+                move |store: &mut dyn VMStore, instance: &mut ComponentInstance| {
+                    let old_task = instance.guest_task().replace(guest_task);
+                    log::trace!(
+                        "stackless call: replaced {old_task:?} with {guest_task:?} as current task"
+                    );
 
-                instance.maybe_push_call_context(guest_task)?;
+                    instance.maybe_push_call_context(store.store_opaque_mut(), guest_task)?;
 
-                instance.enter_instance(callee_instance);
-
-                // SAFETY: See the documentation for `make_call` to review the
-                // contract we must uphold for `call` here.
-                //
-                // Per the contract described in the `queue_call` documentation,
-                // we can rely on exclusive access to the store, whose data type
-                // parameter is `T`.
-                let storage = call(instance)?;
-
-                instance.exit_instance(callee_instance)?;
-
-                instance.maybe_pop_call_context(guest_task)?;
-
-                *instance.guest_task() = old_task;
-                log::trace!("stackless call: restored {old_task:?} as current task");
-
-                // SAFETY: `wasmparser` will have validated that the callback
-                // function returns a `i32` result.
-                let code = unsafe { storage[0].assume_init() }.get_i32() as u32;
-
-                instance.handle_callback_code(
-                    guest_task,
-                    callee_instance,
-                    code,
-                    Event::Subtask {
-                        status: Status::Started,
-                    },
-                )?;
-
-                Ok(())
-            }) as Box<dyn FnOnce(&mut ComponentInstance) -> Result<()> + Send + Sync>
-        } else {
-            Box::new(move |instance: &mut ComponentInstance| {
-                let old_task = instance.guest_task().replace(guest_task);
-                log::trace!(
-                    "stackful call: replaced {old_task:?} with {guest_task:?} as current task",
-                );
-
-                let mut flags = instance.instance_flags(callee_instance);
-
-                instance.maybe_push_call_context(guest_task)?;
-
-                if !async_ {
                     instance.enter_instance(callee_instance);
-                }
 
-                // SAFETY: Per the contract described in the `queue_call`
-                // documentation, we can rely on exclusive access to the store,
-                // whose data type parameter is `T`.
-                let storage = call(instance)?;
+                    // SAFETY: See the documentation for `make_call` to review the
+                    // contract we must uphold for `call` here.
+                    //
+                    // Per the contract described in the `queue_call` documentation,
+                    // we can rely on exclusive access to the store, whose data type
+                    // parameter is `T`.
+                    let storage = call(store, instance)?;
 
-                if async_ {
-                    if instance.get(guest_task)?.lift_result.is_some() {
-                        return Err(anyhow!(crate::Trap::NoAsyncResult));
-                    }
-                } else {
                     instance.exit_instance(callee_instance)?;
 
-                    let lift = instance.get_mut(guest_task)?.lift_result.take().unwrap();
+                    instance.maybe_pop_call_context(store.store_opaque_mut(), guest_task)?;
 
-                    assert!(instance.get(guest_task)?.result.is_none());
+                    *instance.guest_task() = old_task;
+                    log::trace!("stackless call: restored {old_task:?} as current task");
 
-                    // SAFETY: `result_count` represents the number of core Wasm
-                    // results returned, per `wasmparser`.
-                    let result = (lift.lift)(instance, unsafe {
-                        mem::transmute::<&[MaybeUninit<ValRaw>], &[ValRaw]>(
-                            &storage[..result_count],
-                        )
-                    })?;
+                    // SAFETY: `wasmparser` will have validated that the callback
+                    // function returns a `i32` result.
+                    let code = unsafe { storage[0].assume_init() }.get_i32() as u32;
 
-                    unsafe { flags.set_needs_post_return(false) }
+                    instance.handle_callback_code(
+                        guest_task,
+                        callee_instance,
+                        code,
+                        Event::Subtask {
+                            status: Status::Started,
+                        },
+                    )?;
 
-                    if let Some(func) = post_return {
-                        let arg = match result_count {
-                            0 => ValRaw::i32(0),
-                            // SAFETY: `result_count` represents the number of
-                            // core Wasm results returned, per `wasmparser`.
-                            1 => unsafe { storage[0].assume_init() },
-                            _ => unreachable!(),
-                        };
+                    Ok(())
+                },
+            )
+                as Box<
+                    dyn FnOnce(&mut dyn VMStore, &mut ComponentInstance) -> Result<()>
+                        + Send
+                        + Sync,
+                >
+        } else {
+            let token = StoreToken::new(store);
+            Box::new(
+                move |store: &mut dyn VMStore, instance: &mut ComponentInstance| {
+                    let old_task = instance.guest_task().replace(guest_task);
+                    log::trace!(
+                        "stackful call: replaced {old_task:?} with {guest_task:?} as current task",
+                    );
 
-                        // SAFETY: Per the contract described in the
-                        // `queue_call` documentation, we can rely on exclusive
-                        // access to the store, whose data type parameter is
-                        // `T`.
-                        let mut store =
-                            unsafe { StoreContextMut::<T>(&mut *instance.store().cast()) };
+                    let mut flags = instance.instance_flags(callee_instance);
 
-                        // SAFETY: `func` is a valid `*mut VMFuncRef` from
-                        // either `wasmtime-cranelift`-generated fused adapter
-                        // code or `component::Options`.  Per `wasmparser`
-                        // post-return signature validation, we know it takes a
-                        // single parameter.
-                        unsafe {
-                            crate::Func::call_unchecked_raw(
-                                &mut store,
-                                func.as_non_null(),
-                                NonNull::new(ptr::slice_from_raw_parts(&arg, 1).cast_mut())
-                                    .unwrap(),
-                            )?;
-                        }
+                    instance.maybe_push_call_context(store.store_opaque_mut(), guest_task)?;
+
+                    if !async_ {
+                        instance.enter_instance(callee_instance);
                     }
 
-                    unsafe { flags.set_may_enter(true) }
+                    // SAFETY: Per the contract described in the `queue_call`
+                    // documentation, we can rely on exclusive access to the store,
+                    // whose data type parameter is `T`.
+                    let storage = call(store, instance)?;
 
-                    instance.task_complete(guest_task, result, Status::Returned)?;
-                }
+                    if async_ {
+                        if instance.get(guest_task)?.lift_result.is_some() {
+                            return Err(anyhow!(crate::Trap::NoAsyncResult));
+                        }
+                    } else {
+                        instance.exit_instance(callee_instance)?;
 
-                instance.maybe_pop_call_context(guest_task)?;
+                        let lift = instance.get_mut(guest_task)?.lift_result.take().unwrap();
 
-                Ok(())
-            })
+                        assert!(instance.get(guest_task)?.result.is_none());
+
+                        // SAFETY: `result_count` represents the number of core Wasm
+                        // results returned, per `wasmparser`.
+                        let result = (lift.lift)(store, instance, unsafe {
+                            mem::transmute::<&[MaybeUninit<ValRaw>], &[ValRaw]>(
+                                &storage[..result_count],
+                            )
+                        })?;
+
+                        unsafe { flags.set_needs_post_return(false) }
+
+                        if let Some(func) = post_return {
+                            let arg = match result_count {
+                                0 => ValRaw::i32(0),
+                                // SAFETY: `result_count` represents the number of
+                                // core Wasm results returned, per `wasmparser`.
+                                1 => unsafe { storage[0].assume_init() },
+                                _ => unreachable!(),
+                            };
+
+                            let mut store = token.as_context_mut(store);
+
+                            // SAFETY: `func` is a valid `*mut VMFuncRef` from
+                            // either `wasmtime-cranelift`-generated fused adapter
+                            // code or `component::Options`.  Per `wasmparser`
+                            // post-return signature validation, we know it takes a
+                            // single parameter.
+                            store.with_attached_instance(instance, |mut store, _| unsafe {
+                                crate::Func::call_unchecked_raw(
+                                    &mut store,
+                                    func.as_non_null(),
+                                    NonNull::new(ptr::slice_from_raw_parts(&arg, 1).cast_mut())
+                                        .unwrap(),
+                                )
+                            })?;
+                        }
+
+                        unsafe { flags.set_may_enter(true) }
+
+                        instance.task_complete(store, guest_task, result, Status::Returned)?;
+                    }
+
+                    instance.maybe_pop_call_context(store.store_opaque_mut(), guest_task)?;
+
+                    Ok(())
+                },
+            )
         };
 
         self.push_high_priority(WorkItem::GuestCall(GuestCall {
@@ -1081,8 +1286,9 @@ impl ComponentInstance {
     /// entities.  In addition the caller must confer exclusive access to the
     /// store to which the passed `&mut ComponentInstance` belongs, which must
     /// have a data type parameter of `T`.
-    unsafe fn prepare_call<T>(
+    unsafe fn prepare_call<T: 'static>(
         &mut self,
+        store: StoreContextMut<T>,
         start: *mut VMFuncRef,
         return_: *mut VMFuncRef,
         caller_instance: RuntimeComponentInstanceIndex,
@@ -1115,9 +1321,10 @@ impl ComponentInstance {
         let start = SendSyncPtr::new(NonNull::new(start).unwrap());
         let return_ = SendSyncPtr::new(NonNull::new(return_).unwrap());
         let old_task = self.guest_task().take();
+        let token = StoreToken::new(store);
         let new_task = GuestTask::new(
             self,
-            Box::new(move |instance, dst| {
+            Box::new(move |store, instance, dst| {
                 // SAFETY: This `ComponentInstance` belongs to the store in
                 // which it resides, so if it is valid then so is its store.
                 // Furthermore, this closure is only called (transitively) from
@@ -1131,7 +1338,7 @@ impl ComponentInstance {
                 // `ComponentInstance::{poll_until,handle_work_item,handle_guest_call}`,
                 // where we pop the work item containing this closure and pass
                 // it the same `ComponentInstance`.
-                let mut store = unsafe { StoreContextMut::<T>(&mut *instance.store().cast()) };
+                let mut store = token.as_context_mut(store);
                 assert!(dst.len() <= MAX_FLAT_PARAMS);
                 let mut src = [MaybeUninit::uninit(); MAX_FLAT_PARAMS];
                 let count = match caller_info {
@@ -1154,7 +1361,7 @@ impl ComponentInstance {
                 // `wasmtime_environ::fact::trampoline::Compiler::compile_async_start_adapter`
                 // for details) we know it takes count parameters and returns
                 // `dst.len()` results.
-                unsafe {
+                store.with_attached_instance(instance, |mut store, _| unsafe {
                     crate::Func::call_unchecked_raw(
                         &mut store,
                         start.as_non_null(),
@@ -1162,8 +1369,8 @@ impl ComponentInstance {
                             &mut src[..count.max(dst.len())] as *mut [MaybeUninit<ValRaw>] as _,
                         )
                         .unwrap(),
-                    )?;
-                }
+                    )
+                })?;
                 dst.copy_from_slice(&src[..dst.len()]);
                 let task = instance.guest_task().unwrap();
                 Waitable::Guest(task).set_event(
@@ -1175,10 +1382,10 @@ impl ComponentInstance {
                 Ok(())
             }),
             LiftResult {
-                lift: Box::new(move |instance, src| {
+                lift: Box::new(move |store, instance, src| {
                     // SAFETY: See comment in closure passed as `lower_params`
                     // parameter above.
-                    let mut store = unsafe { StoreContextMut::<T>(&mut *instance.store().cast()) };
+                    let mut store = token.as_context_mut(store);
                     let mut my_src = src.to_owned(); // TODO: use stack to avoid allocation?
                     if let ResultInfo::Heap { results } = &result_info {
                         my_src.push(ValRaw::u32(*results));
@@ -1189,13 +1396,13 @@ impl ComponentInstance {
                     // `wasmtime_environ::fact::trampoline::Compiler::compile_async_return_adapter`
                     // for details) we know it takes `src.len()` parameters and
                     // returns up to 1 result.
-                    unsafe {
+                    store.with_attached_instance(instance, |mut store, _| unsafe {
                         crate::Func::call_unchecked_raw(
                             &mut store,
                             return_.as_non_null(),
                             my_src.as_mut_slice().into(),
-                        )?;
-                    }
+                        )
+                    })?;
                     let task = instance.guest_task().unwrap();
                     if sync_caller {
                         instance.get_mut(task)?.sync_result =
@@ -1239,8 +1446,9 @@ impl ComponentInstance {
         Ok(())
     }
 
-    fn call_callback<T>(
+    unsafe fn call_callback<T>(
         &mut self,
+        mut store: StoreContextMut<T>,
         callee_instance: RuntimeComponentInstanceIndex,
         function: SendSyncPtr<VMFuncRef>,
         event: Event,
@@ -1260,7 +1468,6 @@ impl ComponentInstance {
         // `ComponentInstance::{poll_until,handle_work_item,handle_guest_call}`,
         // where we pop the work item containing the pointer to this function
         // and pass it the same `ComponentInstance`.
-        let mut store = unsafe { StoreContextMut::<T>(&mut *self.store().cast()) };
         let mut flags = self.instance_flags(callee_instance);
 
         let (ordinal, result) = event.parts();
@@ -1273,7 +1480,7 @@ impl ComponentInstance {
         // `wasmtime-cranelift`-generated fused adapter code or
         // `component::Options`.  Per `wasmparser` callback signature
         // validation, we know it takes three parameters and returns one.
-        unsafe {
+        store.with_attached_instance(self, |mut store, _| unsafe {
             flags.set_may_enter(false);
             crate::Func::call_unchecked_raw(
                 &mut store,
@@ -1281,7 +1488,8 @@ impl ComponentInstance {
                 params.as_mut_slice().into(),
             )?;
             flags.set_may_enter(true);
-        }
+            Ok::<_, anyhow::Error>(())
+        })?;
         Ok(params[0].get_u32())
     }
 
@@ -1289,11 +1497,10 @@ impl ComponentInstance {
     /// `Self::prepare_call`.
     ///
     /// SAFETY: All the pointer arguments must be valid pointers to guest
-    /// entities.  In addition the caller must confer exclusive access to the
-    /// store to which the passed `&mut ComponentInstance` belongs, which must
-    /// have a data type parameter of `T`.
-    unsafe fn start_call<T>(
+    /// entities.
+    unsafe fn start_call<T: 'static>(
         &mut self,
+        mut store: StoreContextMut<T>,
         callback: *mut VMFuncRef,
         post_return: *mut VMFuncRef,
         callee: *mut VMFuncRef,
@@ -1312,10 +1519,22 @@ impl ComponentInstance {
 
         let task = self.get_mut(guest_task)?;
         if !callback.is_null() {
-            task.callback = Some(Callback {
-                function: SendSyncPtr::new(NonNull::new(callback).unwrap()),
-                caller: Self::call_callback::<T>,
-            });
+            let token = StoreToken::new(store.as_context_mut());
+            let callback = SendSyncPtr::new(NonNull::new(callback).unwrap());
+            task.callback = Some(Box::new(
+                move |store, instance, runtime_instance, event, handle| {
+                    let store = token.as_context_mut(store);
+                    unsafe {
+                        instance.call_callback::<T>(
+                            store,
+                            runtime_instance,
+                            callback,
+                            event,
+                            handle,
+                        )
+                    }
+                },
+            ));
         }
 
         let Caller::Guest {
@@ -1332,37 +1551,30 @@ impl ComponentInstance {
 
         let callee_instance = task.instance;
 
-        // SAFETY: Per the contract described in this function's documentation,
-        // we can rely on exclusive access to the store, whose data type
-        // parameter is `T`.
-        unsafe {
-            let call = make_call::<T>(
-                guest_task,
-                callee,
-                param_count,
-                result_count,
-                if callback.is_null() {
-                    None
-                } else {
-                    Some(self.instance_flags(callee_instance))
-                },
-            );
-
-            self.queue_call::<T>(
-                guest_task,
-                (flags & EXIT_FLAG_ASYNC_CALLEE) != 0,
-                call,
-                NonNull::new(callback).map(SendSyncPtr::new),
-                NonNull::new(post_return).map(SendSyncPtr::new),
-                result_count,
-            )?;
-        }
+        self.queue_call(
+            store.as_context_mut(),
+            guest_task,
+            callee,
+            param_count,
+            result_count,
+            if callback.is_null() {
+                None
+            } else {
+                Some(self.instance_flags(callee_instance))
+            },
+            (flags & EXIT_FLAG_ASYNC_CALLEE) != 0,
+            NonNull::new(callback).map(SendSyncPtr::new),
+            NonNull::new(post_return).map(SendSyncPtr::new),
+        )?;
 
         let set = self.get_mut(caller)?.sync_call_set;
         Waitable::Guest(guest_task).join(self, Some(set))?;
 
         let (status, waitable) = loop {
-            self.suspend(SuspendReason::Waiting { set, task: caller })?;
+            self.suspend(
+                store.0.traitobj_mut(),
+                SuspendReason::Waiting { set, task: caller },
+            )?;
 
             let event = Waitable::Guest(guest_task).take_event(self)?;
             let Some(Event::Subtask { status }) = event else {
@@ -1402,10 +1614,9 @@ impl ComponentInstance {
         Ok(status.pack(waitable))
     }
 
-    /// SAFETY: The returned future must only be polled (directly or
-    /// transitively) using `ComponentInstance::poll_until`.
-    pub(crate) unsafe fn wrap_call<T, F, P, R>(
+    pub(crate) fn wrap_call<T: 'static, F, P, R>(
         &mut self,
+        store: StoreContextMut<T>,
         closure: Arc<F>,
         params: P,
     ) -> Pin<Box<dyn Future<Output = Result<R>> + Send + 'static>>
@@ -1427,8 +1638,6 @@ impl ComponentInstance {
         // the returned future is polled, respectively.
         let mut accessor = unsafe { Accessor::new(get_store, |x| x, spawn_task, self.instance()) };
         let mut future = Box::pin(async move { closure(&mut accessor, params).await });
-        let store = VMStoreRawPtr(NonNull::new(self.store()).unwrap());
-        let instance = SendSyncPtr::new(NonNull::new(self).unwrap());
         // SAFETY: `poll_with_state` will populate and reset the thread-local
         // state as described above.
         //
@@ -1436,35 +1645,21 @@ impl ComponentInstance {
         // place we will poll this future (see the doc comment on this
         // function), and it has exclusive access to the store and
         // `ComponentInstance` when doing so.
-        let future = future::poll_fn(move |cx| unsafe {
-            poll_with_state::<T, _>(store, instance, cx, future.as_mut())
-        });
-
-        // This `transmute` is to avoid requiring a `T: 'static` bound, which
-        // should be unnecessary.
-        //
-        // SAFETY: We don't store a value of type `T` in the above future, and
-        // access to the data of type `T` will only happen via the thread-local
-        // state described above.
-        unsafe {
-            mem::transmute::<
-                Pin<Box<dyn Future<Output = Result<R>> + Send>>,
-                Pin<Box<dyn Future<Output = Result<R>> + Send + 'static>>,
-            >(Box::pin(future))
-        }
+        let token = StoreToken::new(store);
+        Box::pin(future::poll_fn(move |cx| {
+            poll_with_state(token, cx, future.as_mut())
+        }))
     }
 
     /// Poll the specified future once, and if it returns `Pending`, add it to
     /// the set of futures to be polled as part of this instance's event loop
     /// until it completes.
-    ///
-    /// SAFETY: `self` must belong to a store whose data type parameter is `T`,
-    /// and the caller must confer exclusive access to that store.
-    pub(crate) unsafe fn first_poll<T, R: Send + Sync + 'static>(
+    pub(crate) fn first_poll<T: 'static, R: Send + Sync + 'static>(
         &mut self,
+        mut store: StoreContextMut<T>,
         future: impl Future<Output = Result<R>> + Send + 'static,
         caller_instance: RuntimeComponentInstanceIndex,
-        lower: impl FnOnce(StoreContextMut<T>, R) -> Result<()> + Send + 'static,
+        lower: impl FnOnce(StoreContextMut<T>, &mut ComponentInstance, R) -> Result<()> + Send + 'static,
     ) -> Result<Option<u32>> {
         let caller = self.guest_task().unwrap();
         let wrapped = Arc::new(Mutex::new(AbortWrapper::Unpolled(Box::pin(future))));
@@ -1472,48 +1667,9 @@ impl ComponentInstance {
             caller_instance,
             Some(AbortHandle::new(wrapped.clone())),
         ))?;
-
-        // Here we wrap the future in a `future::poll_fn` to ensure that we restore
-        // and save the `CallContext` for this task before and after polling it,
-        // respectively.  This involves unsafe shenanigans in order to smuggle the
-        // store pointer into the wrapping future, alas.
-        //
-        // SAFETY: We'll only poll the future in (at most) two places: here in
-        // this function where we have exclusive access to the store, and (if
-        // necessary) in `ComponentInstance::poll_until`, where we will again
-        // have exclusive access to the same store.
-        //
-        // Note that we also wrap the future in order to provide cancellation
-        // support via `AbortWrapper`.
-
-        fn maybe_push<T>(
-            store: VMStoreRawPtr,
-            call_context: &mut Option<CallContext>,
-            task: TableId<HostTask>,
-        ) {
-            // SAFETY: See SAFETY comment in above in `first_poll`, as well as
-            // the precondition documented for that function.
-            let store = unsafe { StoreContextMut::<T>(&mut *store.0.as_ptr().cast()) };
-            if let Some(call_context) = call_context.take() {
-                log::trace!("push call context for {task:?}");
-                store.0.component_resource_state().0.push(call_context);
-            }
-        }
-
-        fn pop<T>(
-            store: VMStoreRawPtr,
-            call_context: &mut Option<CallContext>,
-            task: TableId<HostTask>,
-        ) {
-            log::trace!("pop call context for {task:?}");
-            // SAFETY: See SAFETY comment in above in `first_poll`, as well as
-            // the precondition documented for that function.
-            let store = unsafe { StoreContextMut::<T>(&mut *store.0.as_ptr().cast()) };
-            *call_context = Some(store.0.component_resource_state().0.pop().unwrap());
-        }
+        let token = StoreToken::new(store.as_context_mut());
 
         let future = future::poll_fn({
-            let store = VMStoreRawPtr(NonNull::new(self.store()).unwrap());
             let mut call_context = None;
             move |cx| {
                 let mut wrapped = wrapped.try_lock().unwrap();
@@ -1522,7 +1678,17 @@ impl ComponentInstance {
                 if let AbortWrapper::Unpolled(mut future)
                 | AbortWrapper::Polled { mut future, .. } = inner
                 {
-                    maybe_push::<T>(store, &mut call_context, task);
+                    with_local_instance(|store, _| {
+                        if let Some(call_context) = call_context.take() {
+                            log::trace!("push call context for {task:?}");
+                            token
+                                .as_context_mut(store)
+                                .0
+                                .component_resource_state()
+                                .0
+                                .push(call_context);
+                        }
+                    });
 
                     let result = future.as_mut().poll(cx);
 
@@ -1534,7 +1700,18 @@ impl ComponentInstance {
                     match result {
                         Poll::Ready(output) => Poll::Ready(Some(output)),
                         Poll::Pending => {
-                            pop::<T>(store, &mut call_context, task);
+                            with_local_instance(|store, _| {
+                                log::trace!("pop call context for {task:?}");
+                                call_context = Some(
+                                    token
+                                        .as_context_mut(store)
+                                        .0
+                                        .component_resource_state()
+                                        .0
+                                        .pop()
+                                        .unwrap(),
+                                );
+                            });
                             Poll::Pending
                         }
                     }
@@ -1545,13 +1722,12 @@ impl ComponentInstance {
         });
 
         log::trace!("new host task child of {caller:?}: {task:?}");
+        let token = StoreToken::new(store.as_context_mut());
         let mut future = Box::pin(future.map(move |result| {
             if let Some(result) = result {
-                HostTaskOutput::Function(Box::new(move |instance| {
-                    // SAFETY: See SAFETY comment in above in `first_poll`, as
-                    // well as the precondition documented for that function.
-                    let store = unsafe { StoreContextMut(&mut *instance.store().cast()) };
-                    lower(store, result?)?;
+                HostTaskOutput::Function(Box::new(move |store, instance| {
+                    let store = token.as_context_mut(store);
+                    lower(store, instance, result?)?;
                     instance.get_mut(task)?.abort_handle.take();
                     Waitable::Host(task).set_event(
                         instance,
@@ -1568,30 +1744,37 @@ impl ComponentInstance {
             }
         })) as HostTaskFuture;
 
-        Ok(
-            match future
-                .as_mut()
-                .poll(&mut Context::from_waker(&dummy_waker()))
-            {
-                Poll::Ready(output) => {
-                    output.consume(self)?;
-                    log::trace!("delete host task {task:?} (already ready)");
-                    self.delete(task)?;
-                    None
-                }
-                Poll::Pending => {
-                    self.push_future(future);
-                    let handle = self.waitable_tables()[caller_instance]
-                        .insert(task.rep(), WaitableState::HostTask)?;
-                    log::trace!("assign {task:?} handle {handle} for {caller:?} instance {caller_instance:?}");
-                    Some(handle)
-                }
-            },
-        )
+        let poll = unsafe {
+            poll_with_local_instance(
+                VMStoreRawPtr(store.traitobj()),
+                SendSyncPtr::new(NonNull::new(self).unwrap()),
+                &mut future.as_mut(),
+                &mut Context::from_waker(&dummy_waker()),
+            )
+        };
+
+        Ok(match poll {
+            Poll::Ready(output) => {
+                output.consume(store.0.traitobj_mut(), self)?;
+                log::trace!("delete host task {task:?} (already ready)");
+                self.delete(task)?;
+                None
+            }
+            Poll::Pending => {
+                self.push_future(future);
+                let handle = self.waitable_tables()[caller_instance]
+                    .insert(task.rep(), WaitableState::HostTask)?;
+                log::trace!(
+                    "assign {task:?} handle {handle} for {caller:?} instance {caller_instance:?}"
+                );
+                Some(handle)
+            }
+        })
     }
 
     pub(crate) fn poll_and_block<R: Send + Sync + 'static>(
         &mut self,
+        store: &mut dyn VMStore,
         future: impl Future<Output = Result<R>> + Send + 'static,
         caller_instance: RuntimeComponentInstanceIndex,
     ) -> Result<R> {
@@ -1612,7 +1795,7 @@ impl ComponentInstance {
 
         log::trace!("new host task child of {caller:?}: {task:?}");
         let mut future = Box::pin(future.map(move |result| {
-            HostTaskOutput::Function(Box::new(move |instance| {
+            HostTaskOutput::Function(Box::new(move |_, instance| {
                 instance.get_mut(caller)?.result = Some(Box::new(result?) as _);
 
                 Waitable::Host(task).set_event(
@@ -1626,51 +1809,46 @@ impl ComponentInstance {
             }))
         })) as HostTaskFuture;
 
-        Ok(
-            match future
-                .as_mut()
-                .poll(&mut Context::from_waker(&dummy_waker()))
-            {
-                Poll::Ready(output) => {
-                    output.consume(self)?;
-                    log::trace!("delete host task {task:?} (already ready)");
-                    self.delete(task)?;
-                    let result = *mem::replace(&mut self.get_mut(caller)?.result, old_result)
-                        .unwrap()
-                        .downcast()
-                        .unwrap();
-                    result
-                }
-                Poll::Pending => {
-                    self.push_future(future);
+        let poll = unsafe {
+            poll_with_local_instance(
+                VMStoreRawPtr(store.traitobj()),
+                SendSyncPtr::new(NonNull::new(self).unwrap()),
+                &mut future.as_mut(),
+                &mut Context::from_waker(&dummy_waker()),
+            )
+        };
 
-                    let set = self.get_mut(caller)?.sync_call_set;
-                    Waitable::Host(task).join(self, Some(set))?;
+        Ok(match poll {
+            Poll::Ready(output) => {
+                output.consume(store, self)?;
+                log::trace!("delete host task {task:?} (already ready)");
+                self.delete(task)?;
+                let result = *mem::replace(&mut self.get_mut(caller)?.result, old_result)
+                    .unwrap()
+                    .downcast()
+                    .unwrap();
+                result
+            }
+            Poll::Pending => {
+                self.push_future(future);
 
-                    self.suspend(SuspendReason::Waiting { set, task: caller })?;
+                let set = self.get_mut(caller)?.sync_call_set;
+                Waitable::Host(task).join(self, Some(set))?;
 
-                    let result = self.get_mut(caller)?.result.take().unwrap();
-                    self.get_mut(caller)?.result = old_result;
-                    *result.downcast().unwrap()
-                }
-            },
-        )
+                self.suspend(store, SuspendReason::Waiting { set, task: caller })?;
+
+                let result = self.get_mut(caller)?.result.take().unwrap();
+                self.get_mut(caller)?.result = old_result;
+                *result.downcast().unwrap()
+            }
+        })
     }
 
-    async fn poll_until<R: Send + Sync + 'static>(
+    async fn poll_until<T, R: Send + Sync + 'static>(
         &mut self,
+        store: StoreContextMut<'_, T>,
         future: impl Future<Output = R> + Send,
     ) -> Result<R> {
-        fn poll_with<F: Future + Send>(
-            instance: SendSyncPtr<ComponentInstance>,
-            future: &mut Pin<&mut F>,
-            cx: &mut Context,
-        ) -> Poll<F::Output> {
-            let old = INSTANCE.with(|v| v.replace(instance.as_ptr()));
-            let _reset_instance = ResetInstance(NonNull::new(old).map(SendSyncPtr::new));
-            future.as_mut().poll(cx)
-        }
-
         // Here we smuggle the `ComponentInstance` pointer into the future so we
         // can use it while polling without upsetting the borrow checker given
         // that we're also mutably borrowing `ConcurrentState::futures` to poll
@@ -1682,22 +1860,40 @@ impl ComponentInstance {
         // defers touching `futures` by queuing a work item which we'll run only
         // _after_ polling.
         let instance = SendSyncPtr::new(NonNull::new(self).unwrap());
+        let store_ptr = VMStoreRawPtr(store.traitobj());
         let mut future = pin!(future);
 
+        unsafe fn consume(
+            store: VMStoreRawPtr,
+            instance: SendSyncPtr<ComponentInstance>,
+            output: HostTaskOutput,
+        ) -> Result<()> {
+            let (store, instance) = unsafe { (&mut *store.0.as_ptr(), &mut *instance.as_ptr()) };
+            output.consume(store, instance)
+        }
+
         loop {
-            let result = {
-                let mut next = pin!(self.concurrent_state.futures.get_mut().unwrap().next());
+            let mut futures = self
+                .concurrent_state
+                .futures
+                .get_mut()
+                .unwrap()
+                .take()
+                .unwrap();
+            let mut next = pin!(futures.next());
 
-                future::poll_fn(|cx| {
-                    if let Poll::Ready(value) = poll_with(instance, &mut future, cx) {
-                        return Poll::Ready(Ok(Either::Left(value)));
-                    }
+            let result = future::poll_fn(|cx| {
+                if let Poll::Ready(value) =
+                    unsafe { poll_with_local_instance(store_ptr, instance, &mut future, cx) }
+                {
+                    return Poll::Ready(Ok(Either::Left(value)));
+                }
 
-                    let next = match poll_with(instance, &mut next, cx) {
+                let next =
+                    match unsafe { poll_with_local_instance(store_ptr, instance, &mut next, cx) } {
                         Poll::Ready(Some(output)) => {
                             // SAFETY: See SAFETY comment in outer scope above.
-                            let me = unsafe { &mut *instance.as_ptr() };
-                            if let Err(e) = output.consume(me) {
+                            if let Err(e) = unsafe { consume(store_ptr, instance, output) } {
                                 return Poll::Ready(Err(e));
                             }
                             Poll::Ready(true)
@@ -1706,60 +1902,60 @@ impl ComponentInstance {
                         Poll::Pending => Poll::Pending,
                     };
 
-                    // SAFETY: See SAFETY comment in outer scope above.
-                    let me = unsafe { &mut *instance.as_ptr() };
-                    let ready = mem::take(&mut me.concurrent_state.high_priority);
-                    let ready = if ready.is_empty() {
-                        let ready = mem::take(&mut me.concurrent_state.low_priority);
-                        if ready.is_empty() {
-                            return match next {
-                                Poll::Ready(true) => Poll::Ready(Ok(Either::Right(Vec::new()))),
-                                // Here we return an error indicating we can't
-                                // make further progress.  The underlying
-                                // assumption is that `future` depends on this
-                                // component instance making such progress, and
-                                // thus there's no point in continuing to poll
-                                // it given we've run out of work to do.
-                                //
-                                // Note that we'd also reach this point if the
-                                // host embedder passed e.g. a
-                                // `std::future::Pending` to `Instance::run`, in
-                                // which case we'd return a "deadlock" error
-                                // even when any and all tasks have completed
-                                // normally.  However, that's not how
-                                // `Instance::run` is intended (and documented)
-                                // to be used, so it seems reasonable to lump
-                                // that case in with "real" deadlocks.
-                                //
-                                // TODO: Once we've added host APIs for
-                                // cancelling in-progress tasks, we can return
-                                // some other, non-error value here, treating it
-                                // as "normal" and giving the host embedder a
-                                // chance to intervene by cancelling one or more
-                                // tasks and/or starting new tasks capable of
-                                // waking the existing ones.
-                                Poll::Ready(false) => {
-                                    Poll::Ready(Err(anyhow!(crate::Trap::AsyncDeadlock)))
-                                }
-                                Poll::Pending => Poll::Pending,
-                            };
-                        } else {
-                            ready
-                        }
+                // SAFETY: See SAFETY comment in outer scope above.
+                let me = unsafe { &mut *instance.as_ptr() };
+                let ready = mem::take(&mut me.concurrent_state.high_priority);
+                let ready = if ready.is_empty() {
+                    let ready = mem::take(&mut me.concurrent_state.low_priority);
+                    if ready.is_empty() {
+                        return match next {
+                            Poll::Ready(true) => Poll::Ready(Ok(Either::Right(Vec::new()))),
+                            // Here we return an error indicating we can't make
+                            // further progress.  The underlying assumption is
+                            // that `future` depends on this component instance
+                            // making such progress, and thus there's no point
+                            // in continuing to poll it given we've run out of
+                            // work to do.
+                            //
+                            // Note that we'd also reach this point if the host
+                            // embedder passed e.g. a `std::future::Pending` to
+                            // `Instance::run`, in which case we'd return a
+                            // "deadlock" error even when any and all tasks have
+                            // completed normally.  However, that's not how
+                            // `Instance::run` is intended (and documented) to
+                            // be used, so it seems reasonable to lump that case
+                            // in with "real" deadlocks.
+                            //
+                            // TODO: Once we've added host APIs for cancelling
+                            // in-progress tasks, we can return some other,
+                            // non-error value here, treating it as "normal" and
+                            // giving the host embedder a chance to intervene by
+                            // cancelling one or more tasks and/or starting new
+                            // tasks capable of waking the existing ones.
+                            Poll::Ready(false) => {
+                                Poll::Ready(Err(anyhow!(crate::Trap::AsyncDeadlock)))
+                            }
+                            Poll::Pending => Poll::Pending,
+                        };
                     } else {
                         ready
-                    };
+                    }
+                } else {
+                    ready
+                };
 
-                    Poll::Ready(Ok(Either::Right(ready)))
-                })
-                .await
-            };
+                Poll::Ready(Ok(Either::Right(ready)))
+            })
+            .await;
+
+            *self.concurrent_state.futures.get_mut().unwrap() = Some(futures);
 
             match result? {
                 Either::Left(value) => break Ok(value),
                 Either::Right(ready) => {
                     for item in ready {
-                        self.handle_work_item(item).await?;
+                        self.handle_work_item(VMStoreRawPtr(store.0.traitobj()), item)
+                            .await?;
                     }
                 }
             }
@@ -1812,19 +2008,17 @@ impl ComponentInstance {
         )
     }
 
-    fn handle_guest_call(&mut self, call: GuestCall) -> Result<()> {
+    fn handle_guest_call(&mut self, store: &mut dyn VMStore, call: GuestCall) -> Result<()> {
         match call.kind {
             GuestCallKind::DeliverEvent { instance, set } => {
                 let (event, waitable) = self.get_event(call.task, instance, set)?.unwrap();
                 let task = self.get_mut(call.task)?;
-                let callback = task.callback.unwrap();
                 let instance = task.instance;
                 let handle = waitable.map(|(_, v)| v).unwrap_or(0);
 
                 log::trace!(
-                    "use callback to deliver event {event:?} to {:?} for {waitable:?}: {:?}",
+                    "use callback to deliver event {event:?} to {:?} for {waitable:?}",
                     call.task,
-                    callback.function,
                 );
 
                 let old_task = self.guest_task().replace(call.task);
@@ -1833,15 +2027,19 @@ impl ComponentInstance {
                     call.task
                 );
 
-                self.maybe_push_call_context(call.task)?;
+                self.maybe_push_call_context(store.store_opaque_mut(), call.task)?;
 
                 self.enter_instance(instance);
 
-                let code = (callback.caller)(self, instance, callback.function, event, handle)?;
+                let callback = self.get_mut(call.task)?.callback.take().unwrap();
+
+                let code = callback(store, self, instance, event, handle)?;
+
+                self.get_mut(call.task)?.callback = Some(callback);
 
                 self.exit_instance(instance)?;
 
-                self.maybe_pop_call_context(call.task)?;
+                self.maybe_pop_call_context(store.store_opaque_mut(), call.task)?;
 
                 self.handle_callback_code(call.task, instance, code, Event::None)?;
 
@@ -1849,14 +2047,18 @@ impl ComponentInstance {
                 log::trace!("GuestCallKind::DeliverEvent: restored {old_task:?} as current task");
             }
             GuestCallKind::Start(fun) => {
-                fun(self)?;
+                fun(store, self)?;
             }
         }
 
         Ok(())
     }
 
-    async fn resume_fiber(&mut self, fiber: StoreFiber<'static>) -> Result<()> {
+    async fn resume_fiber(
+        &mut self,
+        store: VMStoreRawPtr,
+        fiber: StoreFiber<'static>,
+    ) -> Result<()> {
         let old_task = *self.guest_task();
         log::trace!("resume_fiber: save current task {old_task:?}");
         let guard_range = fiber.guard_range();
@@ -1874,14 +2076,8 @@ impl ComponentInstance {
         // `ComponentInstance::poll_until`, which has exclusive access to both
         // the `ComponentInstance` and the store.
         let fiber = unsafe {
-            poll_fn(
-                VMStoreRawPtr(NonNull::new(self.store()).unwrap()),
-                guard_range,
-                move |_, mut store| match resume_fiber(
-                    fiber.as_mut().unwrap(),
-                    store.take(),
-                    Ok(()),
-                ) {
+            poll_fn(store, guard_range, move |_, mut store| {
+                match resume_fiber(fiber.as_mut().unwrap(), store.take(), Ok(())) {
                     Ok(Ok((_, result))) => Ok(result.map(|()| None)),
                     Ok(Err(store)) => {
                         if store.is_some() {
@@ -1891,8 +2087,8 @@ impl ComponentInstance {
                         }
                     }
                     Err(error) => Ok(Err(error)),
-                },
-            )
+                }
+            })
         }
         .await?;
 
@@ -1922,7 +2118,7 @@ impl ComponentInstance {
         Ok(())
     }
 
-    async fn handle_work_item(&mut self, item: WorkItem) -> Result<()> {
+    async fn handle_work_item(&mut self, store: VMStoreRawPtr, item: WorkItem) -> Result<()> {
         log::trace!("handle work item {item:?}");
         match item {
             WorkItem::PushFuture(future) => {
@@ -1930,14 +2126,16 @@ impl ComponentInstance {
                     .futures
                     .get_mut()
                     .unwrap()
+                    .as_mut()
+                    .unwrap()
                     .push(future.into_inner().unwrap());
             }
             WorkItem::ResumeFiber(fiber) => {
-                self.resume_fiber(fiber).await?;
+                self.resume_fiber(store, fiber).await?;
             }
             WorkItem::GuestCall(call) => {
                 if call.is_ready(self)? {
-                    self.run_on_worker(call).await?;
+                    self.run_on_worker(store, call).await?;
                 } else {
                     let task = self.get_mut(call.task)?;
                     if !task.starting_sent {
@@ -1985,7 +2183,7 @@ impl ComponentInstance {
         Ok(())
     }
 
-    async fn run_on_worker(&mut self, call: GuestCall) -> Result<()> {
+    async fn run_on_worker(&mut self, store: VMStoreRawPtr, call: GuestCall) -> Result<()> {
         let worker = if let Some(fiber) = self.worker().take() {
             fiber
         } else {
@@ -2004,13 +2202,13 @@ impl ComponentInstance {
             // handoff more explicit.
             let instance = self as *mut Self;
             unsafe {
-                make_fiber(self.store(), move |_| {
+                make_fiber(store, move |store| {
                     let instance = &mut *instance;
                     loop {
                         let call = instance.guest_call().take().unwrap();
-                        instance.handle_guest_call(call)?;
+                        instance.handle_guest_call(&mut *store, call)?;
 
-                        instance.suspend(SuspendReason::NeedWork)?;
+                        instance.suspend(&mut *store, SuspendReason::NeedWork)?;
                     }
                 })?
             }
@@ -2019,10 +2217,10 @@ impl ComponentInstance {
         assert!(self.guest_call().is_none());
         *self.guest_call() = Some(call);
 
-        self.resume_fiber(worker).await
+        self.resume_fiber(store, worker).await
     }
 
-    fn suspend(&mut self, reason: SuspendReason) -> Result<()> {
+    fn suspend(&mut self, store: &mut dyn VMStore, reason: SuspendReason) -> Result<()> {
         log::trace!("suspend fiber: {reason:?}");
 
         let task = match &reason {
@@ -2031,7 +2229,7 @@ impl ComponentInstance {
         };
 
         let old_guest_task = if let Some(task) = task {
-            self.maybe_pop_call_context(task)?;
+            self.maybe_pop_call_context(store.store_opaque_mut(), task)?;
             *self.guest_task()
         } else {
             None
@@ -2040,19 +2238,16 @@ impl ComponentInstance {
         assert!(self.suspend_reason().is_none());
         *self.suspend_reason() = Some(reason);
 
-        // SAFETY: This `ComponentInstance` belongs to the store in which it
-        // resides, so if it is valid then so is its store.  In addition, this
-        // is only ever called from a fiber that belongs (via the
-        // `ComponentInstance`) to that store (and would in any case panic if
-        // called from outside any fiber).
+        let async_cx = AsyncCx::new(store.store_opaque_mut());
+        // SAFETY: This is only ever called from a fiber that belongs to this
+        // store (and would in any case panic if called from outside any fiber).
         unsafe {
-            let async_cx = AsyncCx::new((*self.store()).store_opaque_mut());
-            async_cx.suspend(Some(self.store()))?;
+            async_cx.suspend(Some(store))?;
         }
 
         if let Some(task) = task {
             *self.guest_task() = old_guest_task;
-            self.maybe_push_call_context(task)?;
+            self.maybe_push_call_context(store.store_opaque_mut(), task)?;
         }
 
         Ok(())
@@ -2060,6 +2255,7 @@ impl ComponentInstance {
 
     pub(crate) fn task_return(
         &mut self,
+        store: &mut dyn VMStore,
         ty: TypeTupleIndex,
         memory: *mut VMMemoryDefinition,
         string_encoding: u8,
@@ -2091,13 +2287,14 @@ impl ComponentInstance {
 
         log::trace!("task.return for {guest_task:?}");
 
-        let result = (lift.lift)(self, storage)?;
+        let result = (lift.lift)(store, self, storage)?;
 
-        self.task_complete(guest_task, result, Status::Returned)
+        self.task_complete(store, guest_task, result, Status::Returned)
     }
 
     pub(crate) fn task_cancel(
         &mut self,
+        store: &mut dyn VMStore,
         _caller_instance: RuntimeComponentInstanceIndex,
     ) -> Result<()> {
         let guest_task = self.guest_task().unwrap();
@@ -2113,23 +2310,22 @@ impl ComponentInstance {
 
         log::trace!("task.cancel for {guest_task:?}");
 
-        self.task_complete(guest_task, Box::new(DummyResult), Status::ReturnCancelled)
+        self.task_complete(
+            store,
+            guest_task,
+            Box::new(DummyResult),
+            Status::ReturnCancelled,
+        )
     }
 
     fn task_complete(
         &mut self,
+        store: &mut dyn VMStore,
         guest_task: TableId<GuestTask>,
         result: Box<dyn Any + Send + Sync>,
         status: Status,
     ) -> Result<()> {
-        // SAFETY: This `ComponentInstance` belongs to the store in which it
-        // resides, so if it is valid then so is its store.  Furthermore, this
-        // function is only called (transitively) from
-        // `ComponentInstance::poll_until`, which has exclusive access to both
-        // the `ComponentInstance` and the store.
-        let (calls, host_table, _) = unsafe { &mut *self.store() }
-            .store_opaque_mut()
-            .component_resource_state();
+        let (calls, host_table, _) = store.store_opaque_mut().component_resource_state();
         ResourceTables {
             calls,
             host_table: Some(host_table),
@@ -2184,6 +2380,7 @@ impl ComponentInstance {
 
     pub(crate) fn waitable_set_wait(
         &mut self,
+        store: &mut dyn VMStore,
         caller_instance: RuntimeComponentInstanceIndex,
         async_: bool,
         memory: *mut VMMemoryDefinition,
@@ -2197,6 +2394,7 @@ impl ComponentInstance {
         };
 
         self.waitable_check(
+            store,
             async_,
             WaitableCheck::Wait(WaitableCheckParams {
                 set: TableId::new(rep),
@@ -2209,6 +2407,7 @@ impl ComponentInstance {
 
     pub(crate) fn waitable_set_poll(
         &mut self,
+        store: &mut dyn VMStore,
         caller_instance: RuntimeComponentInstanceIndex,
         async_: bool,
         memory: *mut VMMemoryDefinition,
@@ -2222,6 +2421,7 @@ impl ComponentInstance {
         };
 
         self.waitable_check(
+            store,
             async_,
             WaitableCheck::Poll(WaitableCheckParams {
                 set: TableId::new(rep),
@@ -2232,15 +2432,20 @@ impl ComponentInstance {
         )
     }
 
-    pub(crate) fn yield_(&mut self, async_: bool) -> Result<bool> {
-        self.waitable_check(async_, WaitableCheck::Yield)
+    pub(crate) fn yield_(&mut self, store: &mut dyn VMStore, async_: bool) -> Result<bool> {
+        self.waitable_check(store, async_, WaitableCheck::Yield)
             .map(|_code| {
                 // TODO: plumb cancellation to here
                 false
             })
     }
 
-    pub(crate) fn waitable_check(&mut self, async_: bool, check: WaitableCheck) -> Result<u32> {
+    pub(crate) fn waitable_check(
+        &mut self,
+        store: &mut dyn VMStore,
+        async_: bool,
+        check: WaitableCheck,
+    ) -> Result<u32> {
         if async_ {
             bail!(
                 "todo: async `waitable-set.wait`, `waitable-set.poll`, and `yield` not yet implemented"
@@ -2255,7 +2460,7 @@ impl ComponentInstance {
             WaitableCheck::Yield => (false, None),
         };
 
-        self.suspend(SuspendReason::Yielding { task: guest_task })?;
+        self.suspend(store, SuspendReason::Yielding { task: guest_task })?;
 
         log::trace!("waitable check for {guest_task:?}; set {set:?}");
 
@@ -2272,10 +2477,13 @@ impl ComponentInstance {
                 let old = self.get_mut(guest_task)?.waiting_on.replace(set);
                 assert!(old.is_none());
 
-                self.suspend(SuspendReason::Waiting {
-                    set,
-                    task: guest_task,
-                })?;
+                self.suspend(
+                    store,
+                    SuspendReason::Waiting {
+                        set,
+                        task: guest_task,
+                    },
+                )?;
             }
         }
 
@@ -2284,28 +2492,6 @@ impl ComponentInstance {
         let result = match check {
             WaitableCheck::Wait(params) | WaitableCheck::Poll(params) => {
                 let event = self.get_event(guest_task, params.caller_instance, Some(params.set))?;
-
-                // SAFETY: This `ComponentInstance` belongs to the store in
-                // which it resides, so if it is valid then so is its store.
-                // Furthermore, this function is only called (transitively) from
-                // `ComponentInstance::poll_until`, which has exclusive access
-                // to both the `ComponentInstance` and the store.
-                //
-                // In addition, `params.memory` is a valid `*mut
-                // VMMemoryDefinition` passed to this intrinsic via
-                // `wasmtime_cranelift`-generated code.
-                let store_and_options = |me: &mut Self| unsafe {
-                    let store = (*me.store()).store_opaque_mut();
-                    let options = Options::new(
-                        store.id(),
-                        NonNull::new(params.memory),
-                        None,
-                        StringEncoding::Utf8,
-                        true,
-                        None,
-                    );
-                    (store, options)
-                };
 
                 let (ordinal, handle, result) = if wait {
                     let (event, waitable) = event.unwrap();
@@ -2326,7 +2512,17 @@ impl ComponentInstance {
                         (ordinal, 0, result)
                     }
                 };
-                let (store, options) = store_and_options(self);
+                let store = store.store_opaque_mut();
+                let options = unsafe {
+                    Options::new(
+                        store.id(),
+                        NonNull::new(params.memory),
+                        None,
+                        StringEncoding::Utf8,
+                        true,
+                        None,
+                    )
+                };
                 let ptr = func::validate_inbounds::<(u32, u32)>(
                     options.memory_mut(store),
                     &ValRaw::u32(params.payload),
@@ -2416,6 +2612,7 @@ impl ComponentInstance {
 
     pub(crate) fn subtask_cancel(
         &mut self,
+        store: &mut dyn VMStore,
         caller_instance: RuntimeComponentInstanceIndex,
         async_: bool,
         task_id: u32,
@@ -2485,7 +2682,7 @@ impl ComponentInstance {
                     };
                     self.push_high_priority(item);
 
-                    self.suspend(SuspendReason::Yielding { task: caller })?;
+                    self.suspend(store, SuspendReason::Yielding { task: caller })?;
                 }
 
                 let task = self.get_mut(guest_task)?;
@@ -2498,7 +2695,7 @@ impl ComponentInstance {
                         let set = self.get_mut(caller)?.sync_call_set;
                         Waitable::Guest(guest_task).join(self, Some(set))?;
 
-                        self.suspend(SuspendReason::Waiting { set, task: caller })?;
+                        self.suspend(store, SuspendReason::Waiting { set, task: caller })?;
                     }
                 }
             }
@@ -2620,12 +2817,12 @@ impl Instance {
         fut: impl Future<Output = V> + Send,
     ) -> Result<V> {
         check_recursive_run();
-        let store = store.as_context_mut();
-        // SAFETY: We have exclusive access to the store, which we means we have
-        // exclusive access to any `ComponentInstance` which resides in the
-        // store.
-        let instance = unsafe { &mut *store.0[self.0].as_ref().unwrap().instance_ptr() };
-        instance.poll_until(fut).await
+        store
+            .as_context_mut()
+            .with_detached_instance_async(self, async |store, instance| {
+                instance.poll_until(store, fut).await
+            })
+            .await
     }
 
     /// Run the specified task as part of this instance's event loop.
@@ -2714,7 +2911,7 @@ impl Instance {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn run_with<U: Send, V: Send + Sync + 'static, F>(
+    pub async fn run_with<U: Send + 'static, V: Send + Sync + 'static, F>(
         &self,
         mut store: impl AsContextMut<Data = U>,
         fun: F,
@@ -2730,7 +2927,7 @@ impl Instance {
         self.run(store, future).await
     }
 
-    fn run_with_raw<U: Send, V: Send + Sync + 'static, F>(
+    fn run_with_raw<U: Send + 'static, V: Send + Sync + 'static, F>(
         &self,
         mut store: impl AsContextMut<Data = U>,
         fun: F,
@@ -2741,30 +2938,18 @@ impl Instance {
             + Send
             + 'static,
     {
-        let store = store.as_context_mut();
-        // SAFETY: We have exclusive access to the store, which we means we have
-        // exclusive access to any `ComponentInstance` which resides in the
-        // store.
-        let instance = unsafe { &mut *store.0[self.0].as_ref().unwrap().instance_ptr() };
-
-        // SAFETY: See corresponding comment in `ComponentInstance::wrap_call`.
-        let mut accessor =
-            unsafe { Accessor::new(get_store, |x| x, spawn_task, instance.instance()) };
-        let mut future = Box::pin(async move { fun(&mut accessor).await });
-        let store = VMStoreRawPtr(store.traitobj());
-        let instance = SendSyncPtr::new(NonNull::new(instance).unwrap());
-        // SAFETY: See corresponding comment in `ComponentInstance::wrap_call`.
-        let future = future::poll_fn(move |cx| unsafe {
-            poll_with_state::<U, _>(store, instance, cx, future.as_mut())
-        });
-
-        // SAFETY: See corresponding comment in `ComponentInstance::wrap_call`.
-        unsafe {
-            mem::transmute::<
-                Pin<Box<dyn Future<Output = V> + Send>>,
-                Pin<Box<dyn Future<Output = V> + Send + 'static>>,
-            >(Box::pin(future))
-        }
+        store
+            .as_context_mut()
+            .with_detached_instance(self, |store, instance| {
+                // SAFETY: See corresponding comment in `ComponentInstance::wrap_call`.
+                let mut accessor =
+                    unsafe { Accessor::new(get_store, |x| x, spawn_task, instance.instance()) };
+                let mut future = Box::pin(async move { fun(&mut accessor).await });
+                let token = StoreToken::new(store);
+                Box::pin(future::poll_fn(move |cx| {
+                    poll_with_state::<U, _>(token, cx, future.as_mut())
+                }))
+            })
     }
 
     /// Spawn a background task to run as part of this instance's event loop.
@@ -2778,16 +2963,24 @@ impl Instance {
     /// The returned [`SpawnHandle`] may be used to cancel the task.
     pub fn spawn<U: Send + 'static>(
         &self,
-        store: impl AsContextMut<Data = U>,
+        mut store: impl AsContextMut<Data = U>,
         task: impl AccessorTask<U, HasSelf<U>, Result<()>>,
     ) -> AbortHandle {
-        let mut future = self.run_with_raw(store, move |accessor| {
+        let mut store = store.as_context_mut();
+        let mut future = self.run_with_raw(store.as_context_mut(), move |accessor| {
             Box::pin(future::ready(accessor.spawn(task)))
         });
-        match future
-            .as_mut()
-            .poll(&mut Context::from_waker(&dummy_waker()))
-        {
+
+        let poll = store.with_detached_instance(self, |store, instance| unsafe {
+            poll_with_local_instance(
+                VMStoreRawPtr(store.traitobj()),
+                SendSyncPtr::new(NonNull::new(instance).unwrap()),
+                &mut future.as_mut(),
+                &mut Context::from_waker(&dummy_waker()),
+            )
+        });
+
+        match poll {
             Poll::Ready(handle) => handle,
             Poll::Pending => unreachable!(),
         }
@@ -2799,16 +2992,9 @@ impl Instance {
         mut store: impl AsContextMut,
         task: impl std::future::Future<Output = Result<()>> + Send + 'static,
     ) {
-        // SAFETY: We have exclusive access to the store, which we means we have
-        // exclusive access to any `ComponentInstance` which resides in the
-        // store.
-        let instance = unsafe {
-            &mut *store.as_context_mut().0[self.0]
-                .as_ref()
-                .unwrap()
-                .instance_ptr()
-        };
-        instance.spawn(task)
+        store
+            .as_context_mut()
+            .with_detached_instance(self, |_, instance| instance.spawn(task))
     }
 }
 
@@ -2984,7 +3170,7 @@ pub unsafe trait VMComponentAsyncStore {
 }
 
 /// SAFETY: See trait docs.
-unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
+unsafe impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
     unsafe fn sync_enter(
         &mut self,
         instance: &mut ComponentInstance,
@@ -2999,7 +3185,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         storage: *mut ValRaw,
         storage_len: usize,
     ) -> Result<()> {
-        instance.prepare_call::<T>(
+        instance.prepare_call(
+            StoreContextMut(self),
             start,
             return_,
             caller_instance,
@@ -3027,7 +3214,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         storage_len: usize,
     ) -> Result<()> {
         instance
-            .start_call::<T>(
+            .start_call(
+                StoreContextMut(self),
                 callback,
                 ptr::null_mut(),
                 callee,
@@ -3055,7 +3243,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         params: u32,
         results: u32,
     ) -> Result<()> {
-        instance.prepare_call::<T>(
+        instance.prepare_call(
+            StoreContextMut(self),
             start,
             return_,
             caller_instance,
@@ -3077,7 +3266,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         result_count: u32,
         flags: u32,
     ) -> Result<u32> {
-        instance.start_call::<T>(
+        instance.start_call(
+            StoreContextMut(self),
             callback,
             post_return,
             callee,
@@ -3105,7 +3295,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         // exclusive access in the following call.
         unsafe {
             instance
-                .guest_write::<T>(
+                .guest_write(
+                    StoreContextMut(self),
                     memory,
                     realloc,
                     string_encoding,
@@ -3134,7 +3325,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         // SAFETY: See corresponding comment in `Self::future_write`.
         unsafe {
             instance
-                .guest_read::<T>(
+                .guest_read(
+                    StoreContextMut(self),
                     memory,
                     realloc,
                     string_encoding,
@@ -3164,7 +3356,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         // SAFETY: See corresponding comment in `Self::future_write`.
         unsafe {
             instance
-                .guest_write::<T>(
+                .guest_write(
+                    StoreContextMut(self),
                     memory,
                     realloc,
                     string_encoding,
@@ -3194,7 +3387,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         // SAFETY: See corresponding comment in `Self::future_write`.
         unsafe {
             instance
-                .guest_read::<T>(
+                .guest_read(
+                    StoreContextMut(self),
                     memory,
                     realloc,
                     string_encoding,
@@ -3225,7 +3419,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         // SAFETY: See corresponding comment in `Self::future_write`.
         unsafe {
             instance
-                .guest_write::<T>(
+                .guest_write(
+                    StoreContextMut(self),
                     memory,
                     realloc,
                     StringEncoding::Utf8 as u8,
@@ -3259,7 +3454,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
         // SAFETY: See corresponding comment in `Self::future_write`.
         unsafe {
             instance
-                .guest_read::<T>(
+                .guest_read(
+                    StoreContextMut(self),
                     memory,
                     realloc,
                     StringEncoding::Utf8 as u8,
@@ -3289,7 +3485,8 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
     ) -> Result<()> {
         // SAFETY: See corresponding comment in `Self::future_write`.
         unsafe {
-            instance.error_context_debug_message::<T>(
+            instance.error_context_debug_message(
+                StoreContextMut(self),
                 memory,
                 realloc,
                 string_encoding,
@@ -3303,13 +3500,13 @@ unsafe impl<T> VMComponentAsyncStore for StoreInner<T> {
 
 enum HostTaskOutput {
     Result(Result<()>),
-    Function(Box<dyn FnOnce(&mut ComponentInstance) -> Result<()> + Send>),
+    Function(Box<dyn FnOnce(&mut dyn VMStore, &mut ComponentInstance) -> Result<()> + Send>),
 }
 
 impl HostTaskOutput {
-    fn consume(self, instance: &mut ComponentInstance) -> Result<()> {
+    fn consume(self, store: &mut dyn VMStore, instance: &mut ComponentInstance) -> Result<()> {
         match self {
-            Self::Function(fun) => fun(instance),
+            Self::Function(fun) => fun(store, instance),
             Self::Result(result) => result,
         }
     }
@@ -3342,17 +3539,18 @@ impl TableDebug for HostTask {
     }
 }
 
-#[derive(Copy, Clone)]
-struct Callback {
-    function: SendSyncPtr<VMFuncRef>,
-    caller: fn(
-        &mut ComponentInstance,
-        RuntimeComponentInstanceIndex,
-        SendSyncPtr<VMFuncRef>,
-        Event,
-        u32,
-    ) -> Result<u32>,
-}
+type CallbackFn = Box<
+    dyn Fn(
+            &mut dyn VMStore,
+            &mut ComponentInstance,
+            RuntimeComponentInstanceIndex,
+            Event,
+            u32,
+        ) -> Result<u32>
+        + Send
+        + Sync
+        + 'static,
+>;
 
 enum Caller {
     Host(Option<oneshot::Sender<LiftedResult>>),
@@ -3374,7 +3572,7 @@ struct GuestTask {
     lower_params: Option<RawLower>,
     lift_result: Option<LiftResult>,
     result: Option<LiftedResult>,
-    callback: Option<Callback>,
+    callback: Option<CallbackFn>,
     caller: Caller,
     call_context: Option<CallContext>,
     sync_result: Option<Option<ValRaw>>,
@@ -3394,7 +3592,7 @@ impl GuestTask {
         lower_params: RawLower,
         lift_result: LiftResult,
         caller: Caller,
-        callback: Option<Callback>,
+        callback: Option<CallbackFn>,
         component_instance: RuntimeComponentInstanceIndex,
     ) -> Result<Self> {
         let sync_call_set = instance.push(WaitableSet::default())?;
@@ -3675,20 +3873,36 @@ impl TableDebug for WaitableSet {
     }
 }
 
-type RawLower =
-    Box<dyn FnOnce(&mut ComponentInstance, &mut [MaybeUninit<ValRaw>]) -> Result<()> + Send + Sync>;
-
-pub type LowerFn =
-    unsafe fn(Func, *mut dyn VMStore, *mut u8, &mut [MaybeUninit<ValRaw>]) -> Result<()>;
-
-type RawLift = Box<
-    dyn FnOnce(&mut ComponentInstance, &[ValRaw]) -> Result<Box<dyn Any + Send + Sync>>
+type RawLower = Box<
+    dyn FnOnce(&mut dyn VMStore, &mut ComponentInstance, &mut [MaybeUninit<ValRaw>]) -> Result<()>
         + Send
         + Sync,
 >;
 
-pub type LiftFn =
-    unsafe fn(Func, *mut dyn VMStore, &[ValRaw]) -> Result<Box<dyn Any + Send + Sync>>;
+pub type LowerFn<T> = unsafe fn(
+    Func,
+    StoreContextMut<T>,
+    &mut ComponentInstance,
+    *mut u8,
+    &mut [MaybeUninit<ValRaw>],
+) -> Result<()>;
+
+type RawLift = Box<
+    dyn FnOnce(
+            &mut dyn VMStore,
+            &mut ComponentInstance,
+            &[ValRaw],
+        ) -> Result<Box<dyn Any + Send + Sync>>
+        + Send
+        + Sync,
+>;
+
+pub type LiftFn<T> = fn(
+    Func,
+    StoreContextMut<T>,
+    &mut ComponentInstance,
+    &[ValRaw],
+) -> Result<Box<dyn Any + Send + Sync>>;
 
 type LiftedResult = Box<dyn Any + Send + Sync>;
 
@@ -3829,7 +4043,7 @@ struct InstanceState {
 
 pub struct ConcurrentState {
     guest_task: Option<TableId<GuestTask>>,
-    futures: Mutex<FuturesUnordered<HostTaskFuture>>,
+    futures: Mutex<Option<FuturesUnordered<HostTaskFuture>>>,
     table: Table,
     // TODO: this can and should be a `PrimaryMap`
     instance_states: HashMap<RuntimeComponentInstanceIndex, InstanceState>,
@@ -3887,7 +4101,7 @@ impl ConcurrentState {
         Self {
             guest_task: None,
             table: Table::new(),
-            futures: Mutex::new(FuturesUnordered::new()),
+            futures: Mutex::new(Some(FuturesUnordered::new())),
             instance_states: HashMap::new(),
             waitable_tables,
             high_priority: Vec::new(),
@@ -3921,7 +4135,9 @@ fn dummy_waker() -> Waker {
 }
 
 fn for_any_lower<
-    F: FnOnce(&mut ComponentInstance, &mut [MaybeUninit<ValRaw>]) -> Result<()> + Send + Sync,
+    F: FnOnce(&mut dyn VMStore, &mut ComponentInstance, &mut [MaybeUninit<ValRaw>]) -> Result<()>
+        + Send
+        + Sync,
 >(
     fun: F,
 ) -> F {
@@ -3929,7 +4145,13 @@ fn for_any_lower<
 }
 
 fn for_any_lift<
-    F: FnOnce(&mut ComponentInstance, &[ValRaw]) -> Result<Box<dyn Any + Send + Sync>> + Send + Sync,
+    F: FnOnce(
+            &mut dyn VMStore,
+            &mut ComponentInstance,
+            &[ValRaw],
+        ) -> Result<Box<dyn Any + Send + Sync>>
+        + Send
+        + Sync,
 >(
     fun: F,
 ) -> F {
@@ -3948,8 +4170,19 @@ fn checked<F: Future + Send + 'static>(
             instance from which they originated.  Please use \
             `Instance::{run,run_with,spawn}` to poll or await them.\
         ";
-        INSTANCE.with(|v| {
-            if v.get() != instance.as_ptr() {
+        INSTANCE_STATE.with(|v| {
+            let matched = match v.get() {
+                InstanceThreadLocalState::Detached {
+                    instance: local, ..
+                } => local.as_ptr() == instance.as_ptr(),
+                InstanceThreadLocalState::Attached { instance: local } => {
+                    local.0 == unsafe { (*instance.as_ptr()).instance.unwrap().0 }
+                }
+                InstanceThreadLocalState::None => false,
+                InstanceThreadLocalState::Polling => unreachable!(),
+            };
+
+            if !matched {
                 panic!("{message}")
             }
         });
@@ -3958,8 +4191,8 @@ fn checked<F: Future + Send + 'static>(
 }
 
 fn check_recursive_run() {
-    INSTANCE.with(|v| {
-        if !v.get().is_null() {
+    INSTANCE_STATE.with(|v| {
+        if !matches!(v.get(), InstanceThreadLocalState::None) {
             panic!("Recursive `Instance::run{{_with}}` calls not supported")
         }
     });
@@ -3968,14 +4201,15 @@ fn check_recursive_run() {
 /// Run the specified function on a newly-created fiber and `.await` its
 /// completion.
 pub(crate) async fn on_fiber<R: Send + 'static, T: Send>(
-    store: StoreContextMut<'_, T>,
+    mut store: StoreContextMut<'_, T>,
     func: impl FnOnce(&mut StoreContextMut<T>) -> R + Send,
 ) -> Result<R> {
     // SAFETY: The returned future closes over `store`, so the borrow checker
     // will ensure the requirements of `on_fiber_raw` are met.
+    let token = StoreToken::new(store.as_context_mut());
     unsafe {
         on_fiber_raw(VMStoreRawPtr(store.traitobj()), move |store| {
-            func(&mut StoreContextMut(&mut *store.cast()))
+            func(&mut token.as_context_mut(&mut *store))
         })
         .await
     }
@@ -4009,7 +4243,7 @@ unsafe fn prepare_fiber<'a, R: Send + 'static>(
     func: impl FnOnce(*mut dyn VMStore) -> R + Send + 'a,
 ) -> Result<(StoreFiber<'a>, oneshot::Receiver<R>)> {
     let (tx, rx) = oneshot::channel();
-    let fiber = make_fiber(store.0.as_ptr(), {
+    let fiber = make_fiber(store, {
         move |store| {
             _ = tx.send(func(store));
             Ok(())
@@ -4108,10 +4342,10 @@ unsafe impl Send for StoreFiber<'_> {}
 unsafe impl Sync for StoreFiber<'_> {}
 
 unsafe fn make_fiber<'a>(
-    store: *mut dyn VMStore,
+    store: VMStoreRawPtr,
     fun: impl FnOnce(*mut dyn VMStore) -> Result<()> + 'a,
 ) -> Result<StoreFiber<'a>> {
-    let engine = (*store).engine().clone();
+    let engine = (*store.0.as_ptr()).engine().clone();
     let stack = engine.allocator().allocate_fiber_stack()?;
     Ok(StoreFiber {
         fiber: Some(Fiber::new(
@@ -4134,12 +4368,12 @@ unsafe fn make_fiber<'a>(
         )?),
         state: Some(AsyncWasmCallState::new()),
         engine,
-        suspend: (*store)
+        suspend: (*store.0.as_ptr())
             .store_opaque_mut()
             .concurrent_async_state()
             .current_suspend
             .get(),
-        stack_limit: (*store).vm_store_context().stack_limit.get(),
+        stack_limit: (*store.0.as_ptr()).vm_store_context().stack_limit.get(),
     })
 }
 
@@ -4219,67 +4453,6 @@ pub(crate) enum WaitableCheck {
     Yield,
 }
 
-/// Return a closure which will call the specified function in the scope of the
-/// specified task.
-///
-/// This will use `GuestTask::lower_params` to lower the parameters, but will
-/// not lift the result; instead, it returns a `[MaybeUninit<ValRaw>;
-/// MAX_FLAT_PARAMS]` from which the result, if any, may be lifted.  Note that
-/// an async-lifted export will have returned its result using the `task.return`
-/// intrinsic (or not returned a result at all, in the case of `task.cancel`),
-/// in which case the "result" of this call will either be a callback code or
-/// nothing.
-///
-/// SAFETY: `callee` must be a valid `*mut VMFuncRef` at the time when the
-/// returned closure is called.  In addition the caller must confer exclusive
-/// access to the store to which the passed `&mut ComponentInstance` belongs,
-/// which must have a data type parameter of `T`.
-// TODO: This should return a `impl UnsafeFnOnce` (where `UnsafeFnOnce` would
-// need to be a trait we define ourselves, since there's no standard equivalent)
-// rather than a `impl FnOnce`.  That would force the caller to use an unsafe
-// block and (hopefully) uphold the contract we've described above.
-unsafe fn make_call<T>(
-    guest_task: TableId<GuestTask>,
-    callee: SendSyncPtr<VMFuncRef>,
-    param_count: usize,
-    result_count: usize,
-    flags: Option<InstanceFlags>,
-) -> impl FnOnce(&mut ComponentInstance) -> Result<[MaybeUninit<ValRaw>; MAX_FLAT_PARAMS]>
-       + Send
-       + Sync
-       + 'static {
-    move |instance: &mut ComponentInstance| {
-        let mut storage = [MaybeUninit::uninit(); MAX_FLAT_PARAMS];
-        let lower = instance.get_mut(guest_task)?.lower_params.take().unwrap();
-
-        lower(instance, &mut storage[..param_count])?;
-
-        // SAFETY: Per the contract documented above, `callee` is a valid
-        // pointer and we have exclusive access to the store this instance
-        // belongs to, which has a data type parameter of `T`.
-        unsafe {
-            let mut store = StoreContextMut::<T>(&mut *instance.store().cast());
-            if let Some(mut flags) = flags {
-                flags.set_may_enter(false);
-            }
-            crate::Func::call_unchecked_raw(
-                &mut store,
-                callee.as_non_null(),
-                NonNull::new(
-                    &mut storage[..param_count.max(result_count)] as *mut [MaybeUninit<ValRaw>]
-                        as _,
-                )
-                .unwrap(),
-            )?;
-            if let Some(mut flags) = flags {
-                flags.set_may_enter(true);
-            }
-        }
-
-        Ok(storage)
-    }
-}
-
 pub(crate) struct ResetPtr<'a>(pub(crate) &'a AtomicPtr<u8>);
 
 impl<'a> Drop for ResetPtr<'a> {
@@ -4338,11 +4511,11 @@ impl<R> PreparedCall<R> {
 /// long as it is stored in that field.  Also, the `lower_params` and
 /// `lift_result` functions must both use their other pointer arguments safely
 /// or not at all.
-pub(crate) unsafe fn prepare_call<T: Send, R>(
-    store: StoreContextMut<T>,
-    lower_params: LowerFn,
+pub(crate) unsafe fn prepare_call<T: Send + 'static, R>(
+    mut store: StoreContextMut<T>,
+    lower_params: LowerFn<T>,
     drop_params: unsafe fn(*mut u8),
-    lift_result: LiftFn,
+    lift_result: LiftFn<T>,
     handle: Func,
     param_count: usize,
 ) -> Result<PreparedCall<R>> {
@@ -4353,104 +4526,113 @@ pub(crate) unsafe fn prepare_call<T: Send, R>(
     let callback = func_data.options.callback;
     let memory = func_data.options.memory.map(SendSyncPtr::new);
     let string_encoding = func_data.options.string_encoding();
+    let token = StoreToken::new(store.as_context_mut());
 
-    // SAFETY: We have exclusive access to the store, which we means we have
-    // exclusive access to any `ComponentInstance` which resides in the store.
-    let instance = unsafe { &mut *store.0[instance.0].as_ref().unwrap().instance_ptr() };
+    store.with_detached_instance(&instance, |_, instance| {
+        let params = Arc::new(AtomicPtr::new(ptr::null_mut()));
 
-    let params = Arc::new(AtomicPtr::new(ptr::null_mut()));
+        assert!(instance.guest_task().is_none());
 
-    assert!(instance.guest_task().is_none());
+        let (tx, rx) = oneshot::channel();
 
-    let (tx, rx) = oneshot::channel();
+        struct DropParams {
+            params: Arc<AtomicPtr<u8>>,
+            dropper: unsafe fn(*mut u8),
+        }
 
-    struct DropParams {
-        params: Arc<AtomicPtr<u8>>,
-        dropper: unsafe fn(*mut u8),
-    }
-
-    impl Drop for DropParams {
-        fn drop(&mut self) {
-            let ptr = self.params.swap(ptr::null_mut(), Relaxed);
-            if !ptr.is_null() {
-                // SAFETY: Per the contract of the `prepare_call`, `ptr` must be
-                // valid and `self.dropper` must either use it safely or not at
-                // all.
-                unsafe {
-                    (self.dropper)(ptr);
+        impl Drop for DropParams {
+            fn drop(&mut self) {
+                let ptr = self.params.swap(ptr::null_mut(), Relaxed);
+                if !ptr.is_null() {
+                    // SAFETY: Per the contract of the `prepare_call`, `ptr`
+                    // must be valid and `self.dropper` must either use it
+                    // safely or not at all.
+                    unsafe {
+                        (self.dropper)(ptr);
+                    }
                 }
             }
         }
-    }
 
-    let drop_params = DropParams {
-        params: params.clone(),
-        dropper: drop_params,
-    };
+        let drop_params = DropParams {
+            params: params.clone(),
+            dropper: drop_params,
+        };
 
-    let task = GuestTask::new(
-        instance,
-        Box::new(for_any_lower({
-            let param_ptr = params.clone();
-            move |instance, params| {
-                let ptr = param_ptr.load(Relaxed);
-                let result = if ptr.is_null() {
-                    // If we've reached here, it presumably means we were called
-                    // via `TypedFunc::call_async` and the future was dropped or
-                    // `mem::forget`ed by the caller, meaning we no longer have
-                    // access to the parameters.  In that case, we should
-                    // gracefully cancel the call without trapping or panicking.
-                    todo!("gracefully cancel `call_async` tasks when future is dropped")
-                } else {
-                    // SAFETY: This `ComponentInstance` belongs to the store in
-                    // which it resides, so if it is valid then so is its store.
-                    // Furthermore, this closure is only called (transitively)
-                    // from `ComponentInstance::poll_until`, which has exclusive
-                    // access to both the `ComponentInstance` and the store.
-                    //
-                    // Also, per the contract of `prepare_call`, `ptr` must be
-                    // valid and `lower_params` must either use it safely or not at
-                    // all.
-                    unsafe { lower_params(handle, instance.store(), ptr, params) }
-                };
-                drop(drop_params);
-                result
-            }
-        })),
-        LiftResult {
-            lift: Box::new(for_any_lift(move |instance, result| {
-                // SAFETY: This `ComponentInstance` belongs to the store in
-                // which it resides, so if it is valid then so is its store.
-                // Furthermore, this closure is only called (transitively) from
-                // `ComponentInstance::poll_until`, which has exclusive access
-                // to both the `ComponentInstance` and the store.
-                unsafe { lift_result(handle, instance.store(), result) }
+        let task = GuestTask::new(
+            instance,
+            Box::new(for_any_lower({
+                let param_ptr = params.clone();
+                move |store, instance, params| {
+                    let ptr = param_ptr.load(Relaxed);
+                    let result = if ptr.is_null() {
+                        // If we've reached here, it presumably means we were
+                        // called via `TypedFunc::call_async` and the future was
+                        // dropped or `mem::forget`ed by the caller, meaning we
+                        // no longer have access to the parameters.  In that
+                        // case, we should gracefully cancel the call without
+                        // trapping or panicking.
+                        todo!("gracefully cancel `call_async` tasks when future is dropped")
+                    } else {
+                        // SAFETY: This `ComponentInstance` belongs to the store
+                        // in which it resides, so if it is valid then so is its
+                        // store.  Furthermore, this closure is only called
+                        // (transitively) from `ComponentInstance::poll_until`,
+                        // which has exclusive access to both the
+                        // `ComponentInstance` and the store.
+                        //
+                        // Also, per the contract of `prepare_call`, `ptr` must
+                        // be valid and `lower_params` must either use it safely
+                        // or not at all.
+                        unsafe {
+                            lower_params(handle, token.as_context_mut(store), instance, ptr, params)
+                        }
+                    };
+                    drop(drop_params);
+                    result
+                }
             })),
-            ty: task_return_type,
-            memory,
-            string_encoding,
-        },
-        Caller::Host(Some(tx)),
-        callback.map(|v| Callback {
-            function: SendSyncPtr::new(v),
-            caller: ComponentInstance::call_callback::<T>,
-        }),
-        component_instance,
-    )?;
+            LiftResult {
+                lift: Box::new(for_any_lift(move |store, instance, result| {
+                    lift_result(handle, token.as_context_mut(store), instance, result)
+                })),
+                ty: task_return_type,
+                memory,
+                string_encoding,
+            },
+            Caller::Host(Some(tx)),
+            callback.map(|callback| {
+                let callback = SendSyncPtr::new(callback);
+                Box::new(
+                    move |store: &mut dyn VMStore,
+                          instance: &mut ComponentInstance,
+                          runtime_instance,
+                          event,
+                          handle| {
+                        let store = token.as_context_mut(store);
+                        unsafe {
+                            instance.call_callback(store, runtime_instance, callback, event, handle)
+                        }
+                    },
+                ) as CallbackFn
+            }),
+            component_instance,
+        )?;
 
-    let task = instance.push(task)?;
+        let task = instance.push(task)?;
 
-    Ok(PreparedCall {
-        handle,
-        task,
-        param_count,
-        rx,
-        params,
-        _phantom: PhantomData,
+        Ok(PreparedCall {
+            handle,
+            task,
+            param_count,
+            rx,
+            params,
+            _phantom: PhantomData,
+        })
     })
 }
 
-pub(crate) fn queue_call<T, R: Send + 'static>(
+pub(crate) fn queue_call<T: 'static, R: Send + 'static>(
     mut store: StoreContextMut<T>,
     prepared: PreparedCall<R>,
 ) -> Result<impl Future<Output = Result<R>> + Send + 'static + use<T, R>> {
@@ -4478,8 +4660,8 @@ pub(crate) fn queue_call<T, R: Send + 'static>(
     ))
 }
 
-fn start_call<T>(
-    store: StoreContextMut<T>,
+fn start_call<T: 'static>(
+    mut store: StoreContextMut<T>,
     handle: Func,
     guest_task: TableId<GuestTask>,
     param_count: usize,
@@ -4492,19 +4674,14 @@ fn start_call<T>(
     let callback = func_data.options.callback;
     let post_return = func_data.post_return;
 
-    // SAFETY: We have exclusive access to the store, which we means we have
-    // exclusive access to any `ComponentInstance` which resides in the store.
-    let instance = unsafe { &mut *store.0[instance.0].as_ref().unwrap().instance_ptr() };
+    store.with_detached_instance(&instance, |store, instance| {
+        log::trace!("starting call {guest_task:?}");
 
-    log::trace!("starting call {guest_task:?}");
+        *instance.guest_task() = Some(guest_task);
+        log::trace!("pushed {guest_task:?} as current task; old task was None");
 
-    *instance.guest_task() = Some(guest_task);
-    log::trace!("pushed {guest_task:?} as current task; old task was None");
-
-    // SAFETY: We have exclusive access to the store, whose data type parameter
-    // is `T`, and `instance` was extracted from it above.
-    unsafe {
-        let call = make_call::<T>(
+        instance.queue_call(
+            store,
             guest_task,
             SendSyncPtr::new(callee),
             param_count,
@@ -4514,24 +4691,18 @@ fn start_call<T>(
             } else {
                 Some(instance.instance_flags(component_instance))
             },
-        );
-
-        instance.queue_call::<T>(
-            guest_task,
             is_concurrent,
-            call,
             callback.map(SendSyncPtr::new),
             post_return.map(|f| SendSyncPtr::new(f.func_ref)),
-            1,
         )?;
-    }
 
-    *instance.guest_task() = None;
-    log::trace!("popped current task {guest_task:?}; new task is None");
+        *instance.guest_task() = None;
+        log::trace!("popped current task {guest_task:?}; new task is None");
 
-    log::trace!("started call {guest_task:?}");
+        log::trace!("started call {guest_task:?}");
 
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Wrap the specified function in a future which, when polled, will store a

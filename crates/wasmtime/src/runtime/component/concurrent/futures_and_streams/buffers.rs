@@ -204,7 +204,11 @@ impl WriteBuffer<u8> for Cursor<Bytes> {
     }
 
     fn skip(&mut self, count: usize) {
-        assert!(count <= self.remaining().len());
+        assert!(
+            count <= self.remaining().len(),
+            "tried to skip {count} with {} remaining",
+            self.remaining().len()
+        );
         self.set_position(
             self.position()
                 .checked_add(u64::try_from(count).unwrap())

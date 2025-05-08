@@ -739,7 +739,7 @@ impl<T> HostRequestConcurrent for WasiHttp<T>
 where
     T: WasiHttpView + 'static,
 {
-    async fn new<U>(
+    async fn new<U: 'static>(
         store: &mut Accessor<U, Self>,
         headers: Resource<WithChildren<http::HeaderMap>>,
         contents: Option<HostStream<u8>>,
@@ -1066,7 +1066,7 @@ impl<T> HostResponseConcurrent for WasiHttp<T>
 where
     T: WasiHttpView + 'static,
 {
-    async fn new<U>(
+    async fn new<U: 'static>(
         store: &mut Accessor<U, Self>,
         headers: Resource<WithChildren<http::HeaderMap>>,
         contents: Option<HostStream<u8>>,

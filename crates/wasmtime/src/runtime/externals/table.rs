@@ -262,7 +262,12 @@ impl Table {
     /// (see also: [`Store::limiter_async`](`crate::Store::limiter_async`)).
     /// When using an async resource limiter, use [`Table::grow_async`]
     /// instead.
-    pub fn grow(&self, mut store: impl AsContextMut, delta: u64, init: Ref) -> Result<u64> {
+    pub fn grow<T: 'static>(
+        &self,
+        mut store: impl AsContextMut<Data = T>,
+        delta: u64,
+        init: Ref,
+    ) -> Result<u64> {
         let store = store.as_context_mut().0;
         let ty = self.ty(&store);
         let init = init.into_table_element(store, ty.element())?;
@@ -296,7 +301,7 @@ impl Table {
         init: Ref,
     ) -> Result<u64>
     where
-        T: Send,
+        T: Send + 'static,
     {
         let store = store.as_context_mut();
         assert!(

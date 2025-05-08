@@ -12,7 +12,7 @@ use crate::p3::{Request, Response};
 
 impl Proxy {
     /// Call `handle` on [Proxy] getting a [Future] back.
-    pub fn handle<T, S: AsContextMut<Data = T>, R: Into<Request>>(
+    pub fn handle<T: 'static, S: AsContextMut<Data = T>, R: Into<Request>>(
         &self,
         mut store: S,
         req: R,

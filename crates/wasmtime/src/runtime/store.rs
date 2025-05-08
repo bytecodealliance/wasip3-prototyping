@@ -109,6 +109,10 @@ mod data;
 pub use self::data::*;
 mod func_refs;
 use func_refs::FuncRefs;
+#[cfg(feature = "component-model-async")]
+mod token;
+#[cfg(feature = "component-model-async")]
+pub(crate) use token::StoreToken;
 #[cfg(feature = "async")]
 mod async_;
 #[cfg(all(feature = "async", feature = "call-hook"))]
@@ -527,7 +531,7 @@ enum StoreInstanceKind {
     Dummy,
 }
 
-impl<T> Store<T> {
+impl<T: 'static> Store<T> {
     /// Creates a new [`Store`] to be associated with the given [`Engine`] and
     /// `data` provided.
     ///
@@ -606,16 +610,7 @@ impl<T> Store<T> {
             data: ManuallyDrop::new(data),
         });
 
-        // Note the erasure of the lifetime here into `'static`, so in general
-        // usage of this trait object must be strictly bounded to the `Store`
-        // itself, and this is an invariant that we have to maintain throughout
-        // Wasmtime.
-        inner.traitobj = StorePtr::new(unsafe {
-            mem::transmute::<
-                NonNull<dyn crate::runtime::vm::VMStore + '_>,
-                NonNull<dyn crate::runtime::vm::VMStore + 'static>,
-            >(NonNull::from(&mut *inner))
-        });
+        inner.traitobj = StorePtr::new(NonNull::from(&mut *inner));
 
         // Wasmtime uses the callee argument to host functions to learn about
         // the original pointer to the `Store` itself, allowing it to
@@ -1996,7 +1991,7 @@ at https://bytecodealliance.org/security.
     }
 }
 
-unsafe impl<T> crate::runtime::vm::VMStore for StoreInner<T> {
+unsafe impl<T: 'static> crate::runtime::vm::VMStore for StoreInner<T> {
     #[cfg(feature = "component-model-async")]
     fn component_async_store(
         &mut self,
@@ -2221,7 +2216,7 @@ impl<T> StoreInner<T> {
     }
 }
 
-impl<T: Default> Default for Store<T> {
+impl<T: Default + 'static> Default for Store<T> {
     fn default() -> Store<T> {
         Store::new(&Engine::default(), T::default())
     }

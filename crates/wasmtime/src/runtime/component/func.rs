@@ -18,7 +18,7 @@ use wasmtime_environ::component::{
 #[cfg(feature = "component-model-async")]
 use crate::component::concurrent::{self, PreparedCall};
 #[cfg(feature = "component-model-async")]
-use crate::VMStore;
+use crate::runtime::vm::component::ComponentInstance;
 #[cfg(feature = "component-model-async")]
 use core::any::Any;
 #[cfg(feature = "component-model-async")]
@@ -319,7 +319,7 @@ impl Func {
     /// only works with functions defined within an asynchronous store. Also
     /// panics if `store` does not own this function.
     #[cfg(feature = "async")]
-    pub async fn call_async<T: Send>(
+    pub async fn call_async<T: Send + 'static>(
         &self,
         mut store: impl AsContextMut<Data = T>,
         params: &[Val],
@@ -374,7 +374,7 @@ impl Func {
     /// `Instance::spawn` to poll it from within the event loop.  See
     /// [`Instance::run`] for examples.
     #[cfg(feature = "component-model-async")]
-    pub fn call_concurrent<T: Send>(
+    pub fn call_concurrent<T: Send + 'static>(
         self,
         mut store: impl AsContextMut<Data = T>,
         params: Vec<Val>,
@@ -415,7 +415,7 @@ impl Func {
     ///
     /// SAFETY: See `concurrent::prepare_call`.
     #[cfg(feature = "component-model-async")]
-    unsafe fn prepare_call_dynamic<'a, T: Send>(
+    unsafe fn prepare_call_dynamic<'a, T: Send + 'static>(
         self,
         mut store: StoreContextMut<'a, T>,
         drop_params: unsafe fn(*mut u8),
@@ -789,12 +789,14 @@ impl Func {
     #[cfg(feature = "component-model-async")]
     unsafe fn lower_args_fn<T>(
         func: Func,
-        store: *mut dyn VMStore,
+        store: StoreContextMut<T>,
+        instance: &mut ComponentInstance,
         params_in: *mut u8,
         params_out: &mut [MaybeUninit<ValRaw>],
     ) -> Result<()> {
         lower_params(
             store,
+            instance,
             params_out,
             func,
             // SAFETY: Per this function's precondition, `params_in` is a valid
@@ -838,12 +840,13 @@ impl Func {
     /// parameter `T`, and the caller must confer exclusive access to that
     /// store.
     #[cfg(feature = "component-model-async")]
-    unsafe fn lift_results_sync_fn<T>(
+    fn lift_results_sync_fn<T>(
         func: Func,
-        store: *mut dyn VMStore,
+        store: StoreContextMut<T>,
+        instance: &mut ComponentInstance,
         results: &[ValRaw],
     ) -> Result<Box<dyn Any + Send + Sync>> {
-        lift_results::<_, T, _>(store, results, func, Self::lift_results_sync)
+        lift_results(store, instance, results, func, Self::lift_results_sync)
     }
 
     #[cfg(feature = "component-model-async")]
@@ -862,12 +865,13 @@ impl Func {
     /// parameter `T`, and the caller must confer exclusive access to that
     /// store.
     #[cfg(feature = "component-model-async")]
-    unsafe fn lift_results_async_fn<T>(
+    fn lift_results_async_fn<T>(
         func: Func,
-        store: *mut dyn VMStore,
+        store: StoreContextMut<T>,
+        instance: &mut ComponentInstance,
         results: &[ValRaw],
     ) -> Result<Box<dyn Any + Send + Sync>> {
-        lift_results::<_, T, _>(store, results, func, Self::lift_results_async)
+        lift_results(store, instance, results, func, Self::lift_results_async)
     }
 
     fn lift_results(
@@ -945,7 +949,8 @@ unsafe fn lower_params<
         + Send
         + Sync,
 >(
-    store: *mut dyn crate::vm::VMStore,
+    mut store: StoreContextMut<T>,
+    instance: &mut ComponentInstance,
     lowered: &mut [MaybeUninit<ValRaw>],
     me: Func,
     params: &Params,
@@ -953,26 +958,21 @@ unsafe fn lower_params<
 ) -> Result<()> {
     use crate::component::storage::slice_to_storage_mut;
 
-    // SAFETY: Per the function contract documented above, we have exclusive
-    // access to the store and the data type parameters is `T`.
-    let mut store = unsafe { StoreContextMut::<T>(&mut *store.cast()) };
     let FuncData {
         options,
-        instance,
         component_instance,
         ty,
         ..
     } = store.0[me.0];
 
-    let instance = store.0[instance.0].as_ref().unwrap();
     let types = instance.component_types().clone();
-    let instance_ptr = instance.instance_ptr();
-    let mut flags = instance.instance().instance_flags(component_instance);
+    let instance_ptr = instance as *mut _;
+    let mut flags = instance.instance_flags(component_instance);
 
     // SAFETY: We have exclusive access to the store, which we means we have
     // exclusive access to any `ComponentInstance` which resides in the
     // store, including the one we pass to `LowerContext::new` below.
-    unsafe {
+    store.with_attached_instance(instance, |mut store, _| unsafe {
         if !flags.may_enter() {
             bail!(crate::Trap::CannotEnterComponent);
         }
@@ -994,7 +994,7 @@ unsafe fn lower_params<
         }
 
         Ok(())
-    }
+    })
 }
 
 /// Lift results of the specified type using the specified function.
@@ -1002,29 +1002,21 @@ unsafe fn lower_params<
 /// SAFETY: `store` must be a valid pointer to a store with data type parameter
 /// `T`, and the caller must confer exclusive access to that store.
 #[cfg(feature = "component-model-async")]
-unsafe fn lift_results<
+fn lift_results<
     Return: Send + Sync + 'static,
     T,
     F: FnOnce(&mut LiftContext, InterfaceType, &[ValRaw]) -> Result<Return> + Send + Sync,
 >(
-    store: *mut dyn crate::vm::VMStore,
+    store: StoreContextMut<T>,
+    instance: &mut ComponentInstance,
     lowered: &[ValRaw],
     me: Func,
     lift: F,
 ) -> Result<Box<dyn std::any::Any + Send + Sync>> {
-    // SAFETY: Per the function contract documented above, we have exclusive
-    // access to the store and the data type parameters is `T`.
-    let store = unsafe { StoreContextMut::<T>(&mut *store.cast()) };
-    let FuncData {
-        options,
-        instance,
-        ty,
-        ..
-    } = store.0[me.0];
+    let FuncData { options, ty, .. } = store.0[me.0];
 
-    let instance = store.0[instance.0].as_ref().unwrap();
     let types = instance.component_types().clone();
-    let instance_ptr = instance.instance_ptr();
+    let instance_ptr = instance as *mut _;
 
     // SAFETY: We have exclusive access to the store, which we means we have
     // exclusive access to any `ComponentInstance` which resides in the store,

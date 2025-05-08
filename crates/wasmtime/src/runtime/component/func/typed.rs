@@ -21,8 +21,6 @@ use wasmtime_environ::component::{
 #[cfg(feature = "component-model-async")]
 use crate::component::concurrent::{self, PreparedCall, ResetPtr};
 #[cfg(feature = "component-model-async")]
-use crate::VMStore;
-#[cfg(feature = "component-model-async")]
 use core::any::Any;
 #[cfg(feature = "component-model-async")]
 use core::future::{self, Future};
@@ -191,7 +189,7 @@ where
     /// only works with functions defined within an asynchronous store. Also
     /// panics if `store` does not own this function.
     #[cfg(feature = "async")]
-    pub async fn call_async<T: Send>(
+    pub async fn call_async<T: Send + 'static>(
         self,
         mut store: impl AsContextMut<Data = T>,
         params: Params,
@@ -249,7 +247,7 @@ where
     /// `Instance::spawn` to poll it from within the event loop.  See
     /// [`Instance::run`] for examples.
     #[cfg(feature = "component-model-async")]
-    pub fn call_concurrent<T: Send>(
+    pub fn call_concurrent<T: Send + 'static>(
         self,
         mut store: impl AsContextMut<Data = T>,
         params: Params,
@@ -292,7 +290,7 @@ where
     ///
     /// SAFETY: See `concurrent::prepare_call`.
     #[cfg(feature = "component-model-async")]
-    unsafe fn prepare_call<'a, T: Send>(
+    unsafe fn prepare_call<'a, T: Send + 'static>(
         self,
         store: StoreContextMut<'a, T>,
         drop_params: unsafe fn(*mut u8),
@@ -307,18 +305,18 @@ where
                 if Return::flatten_count() <= MAX_FLAT_PARAMS {
                     concurrent::prepare_call(
                         store,
-                        Self::lower_stack_args_fn::<T>,
+                        Self::lower_stack_args_fn,
                         drop_params,
-                        Self::lift_stack_result_fn::<T>,
+                        Self::lift_stack_result_fn,
                         self.func,
                         param_count,
                     )
                 } else {
                     concurrent::prepare_call(
                         store,
-                        Self::lower_stack_args_fn::<T>,
+                        Self::lower_stack_args_fn,
                         drop_params,
-                        Self::lift_heap_result_fn::<T>,
+                        Self::lift_heap_result_fn,
                         self.func,
                         param_count,
                     )
@@ -327,18 +325,18 @@ where
                 if Return::flatten_count() <= MAX_FLAT_PARAMS {
                     concurrent::prepare_call(
                         store,
-                        Self::lower_heap_args_fn::<T>,
+                        Self::lower_heap_args_fn,
                         drop_params,
-                        Self::lift_stack_result_fn::<T>,
+                        Self::lift_stack_result_fn,
                         self.func,
                         1,
                     )
                 } else {
                     concurrent::prepare_call(
                         store,
-                        Self::lower_heap_args_fn::<T>,
+                        Self::lower_heap_args_fn,
                         drop_params,
-                        Self::lift_heap_result_fn::<T>,
+                        Self::lift_heap_result_fn,
                         self.func,
                         1,
                     )
@@ -348,18 +346,18 @@ where
             if Return::flatten_count() <= MAX_FLAT_RESULTS {
                 concurrent::prepare_call(
                     store,
-                    Self::lower_stack_args_fn::<T>,
+                    Self::lower_stack_args_fn,
                     drop_params,
-                    Self::lift_stack_result_fn::<T>,
+                    Self::lift_stack_result_fn,
                     self.func,
                     param_count,
                 )
             } else {
                 concurrent::prepare_call(
                     store,
-                    Self::lower_stack_args_fn::<T>,
+                    Self::lower_stack_args_fn,
                     drop_params,
-                    Self::lift_heap_result_fn::<T>,
+                    Self::lift_heap_result_fn,
                     self.func,
                     param_count,
                 )
@@ -368,18 +366,18 @@ where
             if Return::flatten_count() <= MAX_FLAT_RESULTS {
                 concurrent::prepare_call(
                     store,
-                    Self::lower_heap_args_fn::<T>,
+                    Self::lower_heap_args_fn,
                     drop_params,
-                    Self::lift_stack_result_fn::<T>,
+                    Self::lift_stack_result_fn,
                     self.func,
                     1,
                 )
             } else {
                 concurrent::prepare_call(
                     store,
-                    Self::lower_heap_args_fn::<T>,
+                    Self::lower_heap_args_fn,
                     drop_params,
-                    Self::lift_heap_result_fn::<T>,
+                    Self::lift_heap_result_fn,
                     self.func,
                     1,
                 )
@@ -472,18 +470,20 @@ where
     #[cfg(feature = "component-model-async")]
     unsafe fn lower_stack_args_fn<T>(
         func: Func,
-        store: *mut dyn VMStore,
+        store: StoreContextMut<T>,
+        instance: &mut ComponentInstance,
         params_in: *mut u8,
         params_out: &mut [MaybeUninit<ValRaw>],
     ) -> Result<()> {
         super::lower_params(
             store,
+            instance,
             params_out,
             func,
             // SAFETY: Per this function's precondition, `params_in` is a valid
             // pointer to a `Self::Params`.
             unsafe { &*params_in.cast() },
-            Self::lower_stack_args::<T>,
+            Self::lower_stack_args,
         )
     }
 
@@ -533,18 +533,20 @@ where
     #[cfg(feature = "component-model-async")]
     unsafe fn lower_heap_args_fn<T>(
         func: Func,
-        store: *mut dyn VMStore,
+        store: StoreContextMut<T>,
+        instance: &mut ComponentInstance,
         params_in: *mut u8,
         params_out: &mut [MaybeUninit<ValRaw>],
     ) -> Result<()> {
         super::lower_params(
             store,
+            instance,
             params_out,
             func,
             // SAFETY: Per this function's precondition, `params_in` is a valid
             // pointer to a `Self::Params`.
             unsafe { &*params_in.cast() },
-            Self::lower_heap_args::<T>,
+            Self::lower_heap_args,
         )
     }
 
@@ -593,15 +595,16 @@ where
     /// parameter `T`, and the caller must confer exclusive access to that
     /// store.
     #[cfg(feature = "component-model-async")]
-    unsafe fn lift_stack_result_fn<T>(
+    fn lift_stack_result_fn<T>(
         func: Func,
-        store: *mut dyn VMStore,
+        store: StoreContextMut<T>,
+        instance: &mut ComponentInstance,
         results: &[ValRaw],
     ) -> Result<Box<dyn Any + Send + Sync>>
     where
         Return: Send + Sync + 'static,
     {
-        super::lift_results::<_, T, _>(store, results, func, Self::lift_stack_result_raw)
+        super::lift_results(store, instance, results, func, Self::lift_stack_result_raw)
     }
 
     /// Lift the result of a function where the result is stored indirectly on
@@ -644,15 +647,16 @@ where
     /// parameter `T`, and the caller must confer exclusive access to that
     /// store.
     #[cfg(feature = "component-model-async")]
-    unsafe fn lift_heap_result_fn<T>(
+    fn lift_heap_result_fn<T>(
         func: Func,
-        store: *mut dyn VMStore,
+        store: StoreContextMut<T>,
+        instance: &mut ComponentInstance,
         results: &[ValRaw],
     ) -> Result<Box<dyn Any + Send + Sync>>
     where
         Return: Send + Sync + 'static,
     {
-        super::lift_results::<_, T, _>(store, results, func, Self::lift_heap_result_raw)
+        super::lift_results(store, instance, results, func, Self::lift_heap_result_raw)
     }
 
     /// See [`Func::post_return`]

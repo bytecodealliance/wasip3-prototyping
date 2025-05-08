@@ -854,12 +854,12 @@ pub fn new<_T>(
 /// has been created through a [`Linker`]({wt}::component::Linker).
 ///
 /// For more information see [`{camel}`] as well.
-pub struct {camel}Pre<T> {{
+pub struct {camel}Pre<T: 'static> {{
     instance_pre: {wt}::component::InstancePre<T>,
     indices: {camel}Indices,
 }}
 
-impl<T> Clone for {camel}Pre<T> {{
+impl<T: 'static> Clone for {camel}Pre<T> {{
     fn clone(&self) -> Self {{
         Self {{
             instance_pre: self.instance_pre.clone(),
@@ -868,7 +868,7 @@ impl<T> Clone for {camel}Pre<T> {{
     }}
 }}
 
-impl<_T> {camel}Pre<_T> {{
+impl<_T: 'static> {camel}Pre<_T> {{
     /// Creates a new copy of `{camel}Pre` bindings which can then
     /// be used to instantiate into a particular store.
     ///
@@ -1028,7 +1028,7 @@ impl<_T> {camel}Pre<_T> {{
             "impl {camel} {{
                 /// Convenience wrapper around [`{camel}Pre::new`] and
                 /// [`{camel}Pre::instantiate{async__}`].
-                pub {async_} fn instantiate{async__}<_T>(
+                pub {async_} fn instantiate{async__}<_T: 'static>(
                     store: impl {wt}::AsContextMut<Data = _T>,
                     component: &{wt}::component::Component,
                     linker: &{wt}::component::Linker<_T>,
@@ -2771,14 +2771,23 @@ impl<'a> InterfaceGenerator<'a> {
 
         match style {
             CallStyle::Concurrent => {
-                uwrite!(self.src, " where <S as {wt}::AsContext>::Data: Send",);
+                uwrite!(
+                    self.src,
+                    " where <S as {wt}::AsContext>::Data: Send + 'static",
+                );
             }
             CallStyle::Async => {
-                uwrite!(self.src, " where <S as {wt}::AsContext>::Data: Send");
+                uwrite!(
+                    self.src,
+                    " where <S as {wt}::AsContext>::Data: Send + 'static"
+                );
             }
             CallStyle::Sync => {
                 // TODO: should not require `Send` or 'static here.
-                uwrite!(self.src, " where <S as {wt}::AsContext>::Data: Send");
+                uwrite!(
+                    self.src,
+                    " where <S as {wt}::AsContext>::Data: Send + 'static"
+                );
             }
         }
         uwrite!(self.src, "{{\n");
