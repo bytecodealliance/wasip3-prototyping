@@ -1,17 +1,14 @@
+use crate::p3::bindings::LinkOptions;
+use anyhow::{anyhow, bail};
 use core::future::Future;
 use core::ops::{Deref, DerefMut};
-
 use std::collections::HashMap;
 use std::sync::Arc;
-
-use anyhow::{anyhow, bail};
 use tokio::sync::mpsc;
 use wasmtime::component::{
-    AbortOnDropHandle, Accessor, AccessorTask, FutureWriter, Linker, Lower, ResourceTable,
+    AbortOnDropHandle, Accessor, AccessorTask, FutureWriter, HasData, Linker, Lower, ResourceTable,
     StreamWriter, VecBuffer,
 };
-
-use crate::p3::bindings::LinkOptions;
 
 pub mod bindings;
 pub mod cli;
@@ -146,6 +143,7 @@ pub struct AccessorTaskFn<F>(pub F);
 
 impl<T, U, R, F, Fut> AccessorTask<T, U, R> for AccessorTaskFn<F>
 where
+    U: HasData,
     F: FnOnce(&mut Accessor<T, U>) -> Fut + Send + 'static,
     Fut: Future<Output = R> + Send,
 {
@@ -162,6 +160,7 @@ pub struct IoTask<T, E> {
 
 impl<T, U, O, E> AccessorTask<T, U, wasmtime::Result<()>> for IoTask<O, E>
 where
+    U: HasData,
     O: Lower + Send + Sync + 'static,
     E: Lower + Send + Sync + 'static,
 {

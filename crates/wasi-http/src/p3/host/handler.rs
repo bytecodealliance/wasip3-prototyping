@@ -1,38 +1,39 @@
-use core::iter;
-
-use std::sync::Arc;
-
-use anyhow::bail;
-use bytes::Bytes;
-use futures::StreamExt as _;
-use http::header::HOST;
-use http::{HeaderValue, Uri};
-use http_body_util::{BodyExt as _, BodyStream, StreamBody};
-use tokio::sync::oneshot;
-use tracing::debug;
-use wasmtime::component::{Accessor, AccessorTask, Resource};
-use wasmtime_wasi::p3::{AccessorTaskFn, ResourceView as _};
-
+use super::{delete_request, get_fields_inner, push_response};
 use crate::p3::bindings::http::handler;
 use crate::p3::bindings::http::types::ErrorCode;
 use crate::p3::{
     empty_body, Body, BodyFrame, Client as _, ContentLength, OutgoingRequestBody,
-    OutgoingRequestTrailers, OutgoingTrailerFuture, Request, Response, WasiHttpImpl, WasiHttpView,
+    OutgoingRequestTrailers, OutgoingTrailerFuture, Request, Response, WasiHttp, WasiHttpImpl,
+    WasiHttpView,
 };
-
-use super::{delete_request, get_fields_inner, push_response};
+use anyhow::bail;
+use bytes::Bytes;
+use core::iter;
+use futures::StreamExt as _;
+use http::header::HOST;
+use http::{HeaderValue, Uri};
+use http_body_util::{BodyExt as _, BodyStream, StreamBody};
+use std::sync::Arc;
+use tokio::sync::oneshot;
+use tracing::debug;
+use wasmtime::component::{Accessor, AccessorTask, Resource};
+use wasmtime_wasi::p3::{AccessorTaskFn, ResourceView as _};
 
 struct TrailerTask {
     rx: OutgoingTrailerFuture,
     tx: oneshot::Sender<Result<Option<http::HeaderMap>, ErrorCode>>,
 }
 
-impl<T, U: WasiHttpView> AccessorTask<T, U, wasmtime::Result<()>> for TrailerTask {
-    async fn run(self, store: &mut Accessor<T, U>) -> wasmtime::Result<()> {
+impl<T, U: WasiHttpView> AccessorTask<T, WasiHttp<U>, wasmtime::Result<()>> for TrailerTask
+where
+    U: 'static,
+{
+    async fn run(self, store: &mut Accessor<T, WasiHttp<U>>) -> wasmtime::Result<()> {
         match self.rx.await {
             Some(Ok(trailers)) => store.with(|mut view| {
+                let mut binding = view.get();
                 let trailers = trailers
-                    .map(|trailers| get_fields_inner(view.table(), &trailers))
+                    .map(|trailers| get_fields_inner(binding.table(), &trailers))
                     .transpose()?;
                 _ = self.tx.send(Ok(trailers.as_deref().cloned()));
                 Ok(())
@@ -46,7 +47,7 @@ impl<T, U: WasiHttpView> AccessorTask<T, U, wasmtime::Result<()>> for TrailerTas
     }
 }
 
-impl<T> handler::Host for WasiHttpImpl<&mut T>
+impl<T> handler::HostConcurrent for WasiHttp<T>
 where
     T: WasiHttpView + 'static,
 {
@@ -63,9 +64,9 @@ where
             body,
             options,
             ..
-        } = store.with(|mut view| delete_request(view.table(), request))?;
+        } = store.with(|mut view| delete_request(view.get().table(), request))?;
 
-        let mut client = store.with(|view| view.http().client.clone());
+        let mut client = store.with(|mut view| view.get().http().client.clone());
 
         let options = options
             .map(|options| options.unwrap_or_clone())
@@ -172,8 +173,8 @@ where
                 content_length: None,
             } => {
                 let trailers = store.with(|mut view| {
-                    let trailers = get_fields_inner(view.table(), &trailers)?;
-                    anyhow::Ok(trailers.clone())
+                    let trailers = get_fields_inner(view.get().table(), &trailers)?.clone();
+                    anyhow::Ok(trailers)
                 })?;
                 let body = empty_body().with_trailers(async move { Some(Ok(trailers)) });
                 let request = http::Request::from_parts(request, body);
@@ -336,8 +337,8 @@ where
                 buffer: Some(BodyFrame::Trailers(Ok(Some(trailers)))),
             } => {
                 let trailers = store.with(|mut view| {
-                    let trailers = get_fields_inner(view.table(), &trailers)?;
-                    anyhow::Ok(trailers.clone())
+                    let trailers = get_fields_inner(view.get().table(), &trailers)?.clone();
+                    anyhow::Ok(trailers)
                 })?;
                 let body = empty_body().with_trailers(async move { Some(Ok(trailers)) });
                 let request = http::Request::from_parts(request, body);
@@ -416,8 +417,10 @@ where
                 buffer: None,
             };
             let response = Response::new(status, headers, body);
-            let response = push_response(view.table(), response)?;
+            let response = push_response(view.get().table(), response)?;
             Ok(Ok(response))
         })
     }
 }
+
+impl<T> handler::Host for WasiHttpImpl<T> where T: WasiHttpView {}

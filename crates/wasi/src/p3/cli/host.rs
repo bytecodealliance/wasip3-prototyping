@@ -1,3 +1,9 @@
+use crate::p3::bindings::cli::{
+    environment, exit, stderr, stdin, stdout, terminal_input, terminal_output, terminal_stderr,
+    terminal_stdin, terminal_stdout,
+};
+use crate::p3::cli::{I32Exit, TerminalInput, TerminalOutput, WasiCli, WasiCliImpl, WasiCliView};
+use crate::p3::ResourceView as _;
 use anyhow::{anyhow, Context as _};
 use bytes::BytesMut;
 use std::io::Cursor;
@@ -6,23 +12,18 @@ use wasmtime::component::{
     Accessor, AccessorTask, HostStream, Resource, StreamReader, StreamWriter,
 };
 
-use crate::p3::bindings::cli::{
-    environment, exit, stderr, stdin, stdout, terminal_input, terminal_output, terminal_stderr,
-    terminal_stdin, terminal_stdout,
-};
-use crate::p3::cli::{I32Exit, TerminalInput, TerminalOutput, WasiCliImpl, WasiCliView};
-use crate::p3::ResourceView as _;
-
 struct InputTask<T> {
     input: T,
     tx: StreamWriter<Cursor<BytesMut>>,
 }
 
-impl<T, U, V> AccessorTask<T, U, wasmtime::Result<()>> for InputTask<V>
+impl<T, U, V> AccessorTask<T, WasiCli<U>, wasmtime::Result<()>> for InputTask<V>
 where
+    T: 'static,
+    U: 'static,
     V: AsyncRead + Send + Sync + Unpin + 'static,
 {
-    async fn run(mut self, _: &mut Accessor<T, U>) -> wasmtime::Result<()> {
+    async fn run(mut self, _: &mut Accessor<T, WasiCli<U>>) -> wasmtime::Result<()> {
         let mut tx = self.tx;
         let mut buf = BytesMut::with_capacity(8096);
         loop {
@@ -51,11 +52,13 @@ struct OutputTask<T> {
     data: StreamReader<BytesMut>,
 }
 
-impl<T, U, V> AccessorTask<T, U, wasmtime::Result<()>> for OutputTask<V>
+impl<T, U, V> AccessorTask<T, WasiCli<U>, wasmtime::Result<()>> for OutputTask<V>
 where
+    T: 'static,
+    U: 'static,
     V: AsyncWrite + Send + Sync + Unpin + 'static,
 {
-    async fn run(mut self, _: &mut Accessor<T, U>) -> wasmtime::Result<()> {
+    async fn run(mut self, _: &mut Accessor<T, WasiCli<U>>) -> wasmtime::Result<()> {
         let mut buf = BytesMut::with_capacity(8096);
         let mut fut = self.data.read(buf);
         loop {
@@ -158,9 +161,9 @@ where
     }
 }
 
-impl<T> stdin::Host for WasiCliImpl<T>
+impl<T> stdin::HostConcurrent for WasiCli<T>
 where
-    T: WasiCliView,
+    T: WasiCliView + 'static,
 {
     async fn get_stdin<U: 'static>(
         store: &mut Accessor<U, Self>,
@@ -170,23 +173,25 @@ where
             let (tx, rx) = instance
                 .stream::<_, _, Vec<_>, _, _>(&mut view)
                 .context("failed to create stream")?;
-            let stdin = view.cli().stdin.reader();
+            let stdin = view.get().cli().stdin.reader();
             view.spawn(InputTask { input: stdin, tx });
             Ok(rx.into())
         })
     }
 }
 
-impl<T> stdout::Host for WasiCliImpl<T>
+impl<T> stdin::Host for WasiCliImpl<T> where T: WasiCliView {}
+
+impl<T> stdout::HostConcurrent for WasiCli<T>
 where
-    T: WasiCliView,
+    T: WasiCliView + 'static,
 {
     async fn set_stdout<U: 'static>(
         store: &mut Accessor<U, Self>,
         data: HostStream<u8>,
     ) -> wasmtime::Result<()> {
         store.with(|mut view| {
-            let stdout = view.cli().stdout.writer();
+            let stdout = view.get().cli().stdout.writer();
             let data = data.into_reader(&mut view);
             view.spawn(OutputTask {
                 output: stdout,
@@ -197,16 +202,18 @@ where
     }
 }
 
-impl<T> stderr::Host for WasiCliImpl<T>
+impl<T> stdout::Host for WasiCliImpl<T> where T: WasiCliView {}
+
+impl<T> stderr::HostConcurrent for WasiCli<T>
 where
-    T: WasiCliView,
+    T: WasiCliView + 'static,
 {
     async fn set_stderr<U: 'static>(
         store: &mut Accessor<U, Self>,
         data: HostStream<u8>,
     ) -> wasmtime::Result<()> {
         store.with(|mut view| {
-            let stderr = view.cli().stderr.writer();
+            let stderr = view.get().cli().stderr.writer();
             let data = data.into_reader(&mut view);
             view.spawn(OutputTask {
                 output: stderr,
@@ -216,6 +223,8 @@ where
         })
     }
 }
+
+impl<T> stderr::Host for WasiCliImpl<T> where T: WasiCliView {}
 
 impl<T> environment::Host for WasiCliImpl<T>
 where

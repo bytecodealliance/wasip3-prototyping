@@ -13,22 +13,25 @@ use wasmtime::component::{
 };
 
 use crate::p3::bindings::sockets::types::{
-    Duration, ErrorCode, HostTcpSocket, IpAddressFamily, IpSocketAddress, TcpSocket,
+    Duration, ErrorCode, HostTcpSocket, HostTcpSocketConcurrent, IpAddressFamily, IpSocketAddress,
+    TcpSocket,
 };
 use crate::p3::sockets::tcp::TcpState;
 use crate::p3::sockets::util::{
     is_valid_address_family, is_valid_remote_address, is_valid_unicast_address,
 };
-use crate::p3::sockets::{SocketAddrUse, SocketAddressFamily, WasiSocketsImpl, WasiSocketsView};
+use crate::p3::sockets::{
+    SocketAddrUse, SocketAddressFamily, WasiSockets, WasiSocketsImpl, WasiSocketsView,
+};
 use crate::p3::{AccessorTaskFn, IoTask, ResourceView as _};
 
 use super::is_addr_allowed;
 
-fn is_tcp_allowed<T, U>(store: &mut Accessor<T, U>) -> bool
+fn is_tcp_allowed<T, U>(store: &mut Accessor<T, WasiSockets<U>>) -> bool
 where
-    U: WasiSocketsView,
+    U: WasiSocketsView + 'static,
 {
-    store.with(|view| view.sockets().allowed_network_uses.tcp)
+    store.with(|mut view| view.get().sockets().allowed_network_uses.tcp)
 }
 
 fn get_socket<'a>(
@@ -67,8 +70,11 @@ struct ListenTask {
     keep_alive_idle_time: Arc<core::sync::atomic::AtomicU64>, // nanoseconds
 }
 
-impl<T, U: WasiSocketsView> AccessorTask<T, U, wasmtime::Result<()>> for ListenTask {
-    async fn run(mut self, store: &mut Accessor<T, U>) -> wasmtime::Result<()> {
+impl<T, U> AccessorTask<T, WasiSockets<U>, wasmtime::Result<()>> for ListenTask
+where
+    U: WasiSocketsView + 'static,
+{
+    async fn run(mut self, store: &mut Accessor<T, WasiSockets<U>>) -> wasmtime::Result<()> {
         let mut tx = self.tx;
         while let Some(res) = self.rx.recv().await {
             let state = match res {
@@ -167,6 +173,7 @@ impl<T, U: WasiSocketsView> AccessorTask<T, U, wasmtime::Result<()>> for ListenT
             };
             let fut = store.with(|mut view| {
                 let socket = view
+                    .get()
                     .table()
                     .push(TcpSocket::from_state(state, self.family))
                     .context("failed to push socket to table")?;
@@ -181,17 +188,10 @@ impl<T, U: WasiSocketsView> AccessorTask<T, U, wasmtime::Result<()>> for ListenT
     }
 }
 
-impl<T> HostTcpSocket for WasiSocketsImpl<&mut T>
+impl<T> HostTcpSocketConcurrent for WasiSockets<T>
 where
     T: WasiSocketsView + 'static,
 {
-    fn new(&mut self, address_family: IpAddressFamily) -> wasmtime::Result<Resource<TcpSocket>> {
-        let socket = TcpSocket::new(address_family.into()).context("failed to create socket")?;
-        self.table()
-            .push(socket)
-            .context("failed to push socket resource to table")
-    }
-
     async fn bind<U>(
         store: &mut Accessor<U, Self>,
         socket: Resource<TcpSocket>,
@@ -204,7 +204,8 @@ where
             return Ok(Err(ErrorCode::AccessDenied));
         }
         store.with(|mut view| {
-            let socket = get_socket_mut(view.table(), &socket)?;
+            let mut binding = view.get();
+            let socket = get_socket_mut(binding.table(), &socket)?;
             Ok(socket.bind(local_address))
         })
     }
@@ -222,7 +223,8 @@ where
         }
         match store.with(|mut view| {
             let ip = remote_address.ip();
-            let socket = get_socket_mut(view.table(), &socket)?;
+            let mut binding = view.get();
+            let socket = get_socket_mut(binding.table(), &socket)?;
             if !is_valid_unicast_address(ip)
                 || !is_valid_remote_address(remote_address)
                 || !is_valid_address_family(ip, socket.family)
@@ -240,7 +242,8 @@ where
             Ok(Ok(sock)) => {
                 let res = sock.connect(remote_address).await;
                 store.with(|mut view| {
-                    let socket = get_socket_mut(view.table(), &socket)?;
+                    let mut binding = view.get();
+                    let socket = get_socket_mut(binding.table(), &socket)?;
                     ensure!(
                         matches!(socket.tcp_state, TcpState::Connecting),
                         "corrupted socket state"
@@ -270,11 +273,12 @@ where
         socket: Resource<TcpSocket>,
     ) -> wasmtime::Result<Result<HostStream<Resource<TcpSocket>>, ErrorCode>> {
         match store.with(|mut view| {
-            if !view.sockets().allowed_network_uses.tcp {
+            if !view.get().sockets().allowed_network_uses.tcp {
                 return Ok(Err(ErrorCode::AccessDenied));
             }
             let sock = {
-                let socket = get_socket_mut(view.table(), &socket)?;
+                let mut binding = view.get();
+                let socket = get_socket_mut(binding.table(), &socket)?;
                 match mem::replace(&mut socket.tcp_state, TcpState::Closed) {
                     TcpState::Default(sock) | TcpState::Bound(sock) => sock,
                     tcp_state => {
@@ -290,7 +294,7 @@ where
             let &TcpSocket {
                 listen_backlog_size,
                 ..
-            } = get_socket(view.table(), &socket)?;
+            } = get_socket(view.get().table(), &socket)?;
 
             match sock.listen(listen_backlog_size) {
                 Ok(listener) => {
@@ -305,6 +309,7 @@ where
                             Ok(())
                         }
                     }));
+                    let mut binding = view.get();
                     let TcpSocket {
                         tcp_state,
                         family,
@@ -317,7 +322,7 @@ where
                         #[cfg(target_os = "macos")]
                         keep_alive_idle_time,
                         ..
-                    } = get_socket_mut(view.table(), &socket)?;
+                    } = get_socket_mut(binding.table(), &socket)?;
                     *tcp_state = TcpState::Listening {
                         listener,
                         task: task.abort_on_drop_handle(),
@@ -376,7 +381,8 @@ where
         let (stream, fut) = match store.with(|mut view| {
             let data = data.into_reader::<Vec<u8>, _, _>(&mut view);
             let fut = data.read(buf);
-            let sock = get_socket(view.table(), &socket)?;
+            let mut binding = view.get();
+            let sock = get_socket(binding.table(), &socket)?;
             if let TcpState::Connected { stream, .. } = &sock.tcp_state {
                 Ok(Ok((Arc::clone(&stream), fut)))
             } else {
@@ -439,7 +445,8 @@ where
             let (res_tx, res_rx) = instance
                 .future(&mut view)
                 .context("failed to create future")?;
-            let sock = get_socket(view.table(), &socket)?;
+            let mut binding = view.get();
+            let sock = get_socket(binding.table(), &socket)?;
             match &sock.tcp_state {
                 TcpState::Connected {
                     stream,
@@ -480,10 +487,11 @@ where
                         result: res_tx,
                         rx: task_rx,
                     });
+                    let mut binding = view.get();
                     let TcpSocket {
                         tcp_state: TcpState::Connected { rx_task, .. },
                         ..
-                    } = get_socket_mut(view.table(), &socket)?
+                    } = get_socket_mut(binding.table(), &socket)?
                     else {
                         bail!("corrupted socket state");
                     };
@@ -499,6 +507,18 @@ where
             }
             Ok((data_rx.into(), res_rx.into()))
         })
+    }
+}
+
+impl<T> HostTcpSocket for WasiSocketsImpl<T>
+where
+    T: WasiSocketsView,
+{
+    fn new(&mut self, address_family: IpAddressFamily) -> wasmtime::Result<Resource<TcpSocket>> {
+        let socket = TcpSocket::new(address_family.into()).context("failed to create socket")?;
+        self.table()
+            .push(socket)
+            .context("failed to push socket resource to table")
     }
 
     fn local_address(

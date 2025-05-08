@@ -1,7 +1,9 @@
+#![expect(clippy::allow_attributes_without_reason)]
+
 use std::sync::{Arc, Mutex};
 use std::task::Waker;
 
-use wasmtime::component::ResourceTable;
+use wasmtime::component::{HasData, ResourceTable};
 use wasmtime_wasi::p2::{IoView, WasiCtx, WasiView};
 
 pub mod borrowing_host;
@@ -34,4 +36,8 @@ impl WasiView for Ctx {
     fn ctx(&mut self) -> &mut WasiCtx {
         &mut self.wasi
     }
+}
+
+impl HasData for Ctx {
+    type Data<'a> = &'a mut Self;
 }

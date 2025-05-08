@@ -1,6 +1,5 @@
-use std::time::Duration;
-
 use super::Ctx;
+use std::time::Duration;
 use wasmtime::component::Accessor;
 
 wasmtime::component::bindgen!({
@@ -15,8 +14,10 @@ wasmtime::component::bindgen!({
     },
 });
 
-impl local::local::sleep::Host for &mut Ctx {
+impl local::local::sleep::HostConcurrent for Ctx {
     async fn sleep_millis<T>(_: &mut Accessor<T, Self>, time_in_millis: u64) {
         tokio::time::sleep(Duration::from_millis(time_in_millis)).await;
     }
 }
+
+impl local::local::sleep::Host for Ctx {}

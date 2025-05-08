@@ -1,14 +1,10 @@
+use crate::p3::ResourceView;
 use core::future::Future;
 use core::net::SocketAddr;
 use core::ops::Deref;
 use core::pin::Pin;
-
 use std::sync::Arc;
-
-use wasmtime::component::Linker;
-use wasmtime::component::ResourceTable;
-
-use crate::p3::ResourceView;
+use wasmtime::component::{HasData, Linker, ResourceTable};
 
 mod host;
 pub mod tcp;
@@ -198,15 +194,18 @@ impl Default for AllowedNetworkUses {
 /// }
 /// ```
 pub fn add_to_linker<T: WasiSocketsView + 'static>(linker: &mut Linker<T>) -> wasmtime::Result<()> {
-    let closure = annotate_sockets(|cx| WasiSocketsImpl(cx));
-    crate::p3::bindings::sockets::types::add_to_linker_get_host(linker, closure)?;
-    crate::p3::bindings::sockets::ip_name_lookup::add_to_linker_get_host(linker, closure)?;
+    crate::p3::bindings::sockets::types::add_to_linker::<_, WasiSockets<T>>(linker, |x| {
+        WasiSocketsImpl(x)
+    })?;
+    crate::p3::bindings::sockets::ip_name_lookup::add_to_linker::<_, WasiSockets<T>>(
+        linker,
+        |x| WasiSocketsImpl(x),
+    )?;
     Ok(())
 }
 
-fn annotate_sockets<T, F>(val: F) -> F
-where
-    F: Fn(&mut T) -> WasiSocketsImpl<&mut T>,
-{
-    val
+struct WasiSockets<T>(T);
+
+impl<T: 'static> HasData for WasiSockets<T> {
+    type Data<'a> = WasiSocketsImpl<&'a mut T>;
 }

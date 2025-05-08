@@ -1,20 +1,19 @@
-use std::collections::hash_map;
-use std::path::Path;
-use std::sync::Arc;
-
-use bitflags::bitflags;
-use cap_fs_ext::{FileTypeExt as _, MetadataExt as _};
-use cap_std::ambient_authority;
-use tracing::debug;
-use wasmtime::component::{Linker, ResourceTable};
-
 use crate::p3::bindings::clocks::wall_clock;
+use crate::p3::bindings::filesystem;
 use crate::p3::bindings::filesystem::types::{
     Advice, DescriptorFlags, DescriptorStat, DescriptorType, ErrorCode, MetadataHashValue,
     NewTimestamp, OpenFlags, PathFlags,
 };
 use crate::p3::{ResourceView, TaskTable};
 use crate::runtime::{spawn_blocking, AbortOnDropJoinHandle};
+use bitflags::bitflags;
+use cap_fs_ext::{FileTypeExt as _, MetadataExt as _};
+use cap_std::ambient_authority;
+use std::collections::hash_map;
+use std::path::Path;
+use std::sync::Arc;
+use tracing::debug;
+use wasmtime::component::{HasData, Linker, ResourceTable};
 
 mod host;
 
@@ -183,17 +182,15 @@ impl WasiFilesystemCtx {
 pub fn add_to_linker<T: WasiFilesystemView + 'static>(
     linker: &mut Linker<T>,
 ) -> wasmtime::Result<()> {
-    let closure = annotate_filesystem(|cx| WasiFilesystemImpl(cx));
-    crate::p3::bindings::filesystem::types::add_to_linker_get_host(linker, closure)?;
-    crate::p3::bindings::filesystem::preopens::add_to_linker_get_host(linker, closure)?;
+    filesystem::types::add_to_linker::<_, WasiFilesystem<T>>(linker, |x| WasiFilesystemImpl(x))?;
+    filesystem::preopens::add_to_linker::<_, WasiFilesystem<T>>(linker, |x| WasiFilesystemImpl(x))?;
     Ok(())
 }
 
-fn annotate_filesystem<T, F>(val: F) -> F
-where
-    F: Fn(&mut T) -> WasiFilesystemImpl<&mut T>,
-{
-    val
+struct WasiFilesystem<T>(T);
+
+impl<T: 'static> HasData for WasiFilesystem<T> {
+    type Data<'a> = WasiFilesystemImpl<&'a mut T>;
 }
 
 fn datetime_from(t: std::time::SystemTime) -> wall_clock::Datetime {

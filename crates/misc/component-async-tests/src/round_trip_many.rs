@@ -1,9 +1,7 @@
-use std::time::Duration;
-
-use anyhow::Result;
-use wasmtime::component::Accessor;
-
 use super::Ctx;
+use anyhow::Result;
+use std::time::Duration;
+use wasmtime::component::Accessor;
 
 pub mod bindings {
     wasmtime::component::bindgen!({
@@ -30,7 +28,7 @@ pub mod non_concurrent_export_bindings {
 
 use bindings::local::local::many::Stuff;
 
-impl bindings::local::local::many::Host for &mut Ctx {
+impl bindings::local::local::many::HostConcurrent for Ctx {
     async fn foo<T>(
         _: &mut Accessor<T, Self>,
         a: String,
@@ -61,3 +59,5 @@ impl bindings::local::local::many::Host for &mut Ctx {
         ))
     }
 }
+
+impl bindings::local::local::many::Host for Ctx {}

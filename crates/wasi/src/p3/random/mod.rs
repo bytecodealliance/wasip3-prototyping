@@ -1,7 +1,8 @@
 mod host;
 
+use crate::p3::bindings::random;
 use cap_rand::{Rng as _, RngCore, SeedableRng as _};
-use wasmtime::component::Linker;
+use wasmtime::component::{HasData, Linker};
 
 #[repr(transparent)]
 pub struct WasiRandomImpl<T>(pub T);
@@ -156,16 +157,14 @@ pub fn thread_rng() -> Box<dyn RngCore + Send> {
 /// }
 /// ```
 pub fn add_to_linker<T: WasiRandomView + 'static>(linker: &mut Linker<T>) -> wasmtime::Result<()> {
-    let closure = annotate_random(|cx| WasiRandomImpl(cx));
-    crate::p3::bindings::random::random::add_to_linker_get_host(linker, closure)?;
-    crate::p3::bindings::random::insecure::add_to_linker_get_host(linker, closure)?;
-    crate::p3::bindings::random::insecure_seed::add_to_linker_get_host(linker, closure)?;
+    random::random::add_to_linker::<_, WasiRandom<T>>(linker, |x| WasiRandomImpl(x))?;
+    random::insecure::add_to_linker::<_, WasiRandom<T>>(linker, |x| WasiRandomImpl(x))?;
+    random::insecure_seed::add_to_linker::<_, WasiRandom<T>>(linker, |x| WasiRandomImpl(x))?;
     Ok(())
 }
 
-fn annotate_random<T, F>(val: F) -> F
-where
-    F: Fn(&mut T) -> WasiRandomImpl<&mut T>,
-{
-    val
+struct WasiRandom<T>(T);
+
+impl<T: 'static> HasData for WasiRandom<T> {
+    type Data<'a> = WasiRandomImpl<&'a mut T>;
 }

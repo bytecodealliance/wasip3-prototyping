@@ -1,13 +1,12 @@
 mod host;
 
+use crate::p3::bindings::cli;
+use crate::p3::ResourceView;
 use core::fmt;
-
 use tokio::io::{
     empty, stderr, stdin, stdout, AsyncRead, AsyncWrite, Empty, Stderr, Stdin, Stdout,
 };
-use wasmtime::component::{Linker, ResourceTable};
-
-use crate::p3::ResourceView;
+use wasmtime::component::{HasData, Linker, ResourceTable};
 
 #[repr(transparent)]
 pub struct WasiCliImpl<T>(pub T);
@@ -116,37 +115,47 @@ pub fn add_to_linker<T>(linker: &mut Linker<T>) -> wasmtime::Result<()>
 where
     T: WasiCliView + 'static,
 {
-    let exit_options = crate::p3::bindings::cli::exit::LinkOptions::default();
+    let exit_options = cli::exit::LinkOptions::default();
     add_to_linker_with_options(linker, &exit_options)
 }
 
 /// Similar to [`add_to_linker`], but with the ability to enable unstable features.
 pub fn add_to_linker_with_options<T>(
     linker: &mut Linker<T>,
-    exit_options: &crate::p3::bindings::cli::exit::LinkOptions,
+    exit_options: &cli::exit::LinkOptions,
 ) -> anyhow::Result<()>
 where
     T: WasiCliView + 'static,
 {
-    let closure = annotate_cli(|cx| WasiCliImpl(cx));
-    crate::p3::bindings::cli::environment::add_to_linker_get_host(linker, closure)?;
-    crate::p3::bindings::cli::exit::add_to_linker_get_host(linker, exit_options, closure)?;
-    crate::p3::bindings::cli::stdin::add_to_linker_get_host(linker, closure)?;
-    crate::p3::bindings::cli::stdout::add_to_linker_get_host(linker, closure)?;
-    crate::p3::bindings::cli::stderr::add_to_linker_get_host(linker, closure)?;
-    crate::p3::bindings::cli::terminal_input::add_to_linker_get_host(linker, closure)?;
-    crate::p3::bindings::cli::terminal_output::add_to_linker_get_host(linker, closure)?;
-    crate::p3::bindings::cli::terminal_stdin::add_to_linker_get_host(linker, closure)?;
-    crate::p3::bindings::cli::terminal_stdout::add_to_linker_get_host(linker, closure)?;
-    crate::p3::bindings::cli::terminal_stderr::add_to_linker_get_host(linker, closure)?;
+    add_stdio_to_linker(linker)?;
+
+    let f: fn(&mut T) -> WasiCliImpl<&mut T> = |x| WasiCliImpl(x);
+    cli::environment::add_to_linker::<_, WasiCli<T>>(linker, f)?;
+    cli::exit::add_to_linker::<_, WasiCli<T>>(linker, exit_options, f)?;
+    cli::terminal_input::add_to_linker::<_, WasiCli<T>>(linker, f)?;
+    cli::terminal_output::add_to_linker::<_, WasiCli<T>>(linker, f)?;
+    cli::terminal_stdin::add_to_linker::<_, WasiCli<T>>(linker, f)?;
+    cli::terminal_stdout::add_to_linker::<_, WasiCli<T>>(linker, f)?;
+    cli::terminal_stderr::add_to_linker::<_, WasiCli<T>>(linker, f)?;
     Ok(())
 }
 
-fn annotate_cli<T, F>(val: F) -> F
+/// TODO
+pub fn add_stdio_to_linker<T>(linker: &mut Linker<T>) -> wasmtime::Result<()>
 where
-    F: Fn(&mut T) -> WasiCliImpl<&mut T>,
+    T: WasiCliView + 'static,
 {
-    val
+    let f: fn(&mut T) -> WasiCliImpl<&mut T> = |x| WasiCliImpl(x);
+    cli::stdin::add_to_linker::<_, WasiCli<T>>(linker, f)?;
+    cli::stdout::add_to_linker::<_, WasiCli<T>>(linker, f)?;
+    cli::stderr::add_to_linker::<_, WasiCli<T>>(linker, f)?;
+    Ok(())
+}
+
+struct WasiCli<T>(T);
+
+impl<T: 'static> HasData for WasiCli<T> {
+    type Data<'a> = WasiCliImpl<&'a mut T>;
 }
 
 /// An error returned from the `proc_exit` host syscall.

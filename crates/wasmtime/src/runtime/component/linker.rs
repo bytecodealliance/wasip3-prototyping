@@ -470,8 +470,9 @@ impl<T> LinkerInstance<'_, T> {
     #[cfg(feature = "component-model-async")]
     pub fn func_wrap_concurrent<Params, Return, F>(&mut self, name: &str, f: F) -> Result<()>
     where
+        T: 'static,
         F: for<'a> Fn(
-                &'a mut Accessor<T, T>,
+                &'a mut Accessor<T>,
                 Params,
             ) -> Pin<Box<dyn Future<Output = Result<Return>> + Send + 'a>>
             + Send
@@ -644,8 +645,9 @@ impl<T> LinkerInstance<'_, T> {
     #[cfg(feature = "component-model-async")]
     pub fn func_new_concurrent<F>(&mut self, name: &str, f: F) -> Result<()>
     where
+        T: 'static,
         F: for<'a> Fn(
-                &'a mut Accessor<T, T>,
+                &'a mut Accessor<T>,
                 Vec<Val>,
             ) -> Pin<Box<dyn Future<Output = Result<Vec<Val>>> + Send + 'a>>
             + Send

@@ -86,7 +86,6 @@ pub async fn async_watch_streams() -> Result<()> {
     drop(tx);
     instance.run(&mut store, rx.watch_writer().0).await?;
 
-    #[allow(clippy::type_complexity)]
     enum Event {
         Write(Option<StreamWriter<Option<u8>>>),
         Read(Option<StreamReader<Option<u8>>>, Option<u8>),
@@ -169,7 +168,6 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
 
     let closed_streams = closed_streams::bindings::ClosedStreams::new(&mut store, &instance)?;
 
-    #[allow(clippy::type_complexity)]
     enum StreamEvent {
         FirstWrite(Option<StreamWriter<VecBuffer<u8>>>),
         FirstRead(Option<StreamReader<Vec<u8>>>, Vec<u8>),

@@ -78,8 +78,9 @@ impl HostFunc {
     #[cfg(feature = "component-model-async")]
     pub(crate) fn from_concurrent<T, F, P, R>(func: F) -> Arc<HostFunc>
     where
+        T: 'static,
         F: for<'a> Fn(
-                &'a mut Accessor<T, T>,
+                &'a mut Accessor<T>,
                 P,
             ) -> Pin<Box<dyn Future<Output = Result<R>> + Send + 'a>>
             + Send
@@ -190,8 +191,9 @@ impl HostFunc {
     #[cfg(feature = "component-model-async")]
     pub(crate) fn new_dynamic_concurrent<T, F>(func: F) -> Arc<HostFunc>
     where
+        T: 'static,
         F: for<'a> Fn(
-                &'a mut Accessor<T, T>,
+                &'a mut Accessor<T>,
                 Vec<Val>,
             ) -> Pin<Box<dyn Future<Output = Result<Vec<Val>>> + Send + 'a>>
             + Send

@@ -11,13 +11,6 @@ use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use super::{sleep, Ctx};
 
-pub fn annotate<T, F>(val: F) -> F
-where
-    F: Fn(&mut T) -> &mut T,
-{
-    val
-}
-
 pub fn init_logger() {
     static ONCE: Once = Once::new();
     ONCE.call_once(env_logger::init);
@@ -78,19 +71,19 @@ pub async fn test_run_with_count(component: &[u8], count: usize) -> Result<()> {
     let mut linker = Linker::new(&engine);
 
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
-    super::yield_host::bindings::local::local::continue_::add_to_linker_get_host(
+    super::yield_host::bindings::local::local::continue_::add_to_linker::<_, Ctx>(
         &mut linker,
-        annotate(|ctx| ctx),
+        |ctx| ctx,
     )?;
-    super::yield_host::bindings::local::local::ready::add_to_linker_get_host(
+    super::yield_host::bindings::local::local::ready::add_to_linker::<_, Ctx>(
         &mut linker,
-        annotate(|ctx| ctx),
+        |ctx| ctx,
     )?;
-    super::resource_stream::bindings::local::local::resource_stream::add_to_linker_get_host(
+    super::resource_stream::bindings::local::local::resource_stream::add_to_linker::<_, Ctx>(
         &mut linker,
-        annotate(|ctx| ctx),
+        |ctx| ctx,
     )?;
-    sleep::local::local::sleep::add_to_linker_get_host(&mut linker, annotate(|ctx| ctx))?;
+    sleep::local::local::sleep::add_to_linker::<_, Ctx>(&mut linker, |ctx| ctx)?;
 
     let mut store = Store::new(
         &engine,
