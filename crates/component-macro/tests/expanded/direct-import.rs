@@ -90,7 +90,7 @@ pub struct Foo {}
 pub trait FooImports {
     fn foo(&mut self) -> ();
 }
-impl<_T: FooImports + ?Sized> FooImports for &mut _T {
+impl<_T: FooImports> FooImports for &mut _T {
     fn foo(&mut self) -> () {
         FooImports::foo(*self)
     }
@@ -146,12 +146,14 @@ const _: () = {
             let indices = FooIndices::new(&instance.instance_pre(&store))?;
             indices.load(&mut store, instance)
         }
-        pub fn add_to_linker_imports_get_host<T, G>(
+        pub fn add_to_linker_imports<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
-            host_getter: G,
+            host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: FooImports>,
+            D: wasmtime::component::HasData,
+            for<'a> D::Data<'a>: FooImports,
+            T: 'static,
         {
             let mut linker = linker.root();
             linker
@@ -165,14 +167,16 @@ const _: () = {
                 )?;
             Ok(())
         }
-        pub fn add_to_linker<T, U>(
+        pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
-            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            U: FooImports,
+            D: wasmtime::component::HasData,
+            for<'a> D::Data<'a>: FooImports,
+            T: 'static,
         {
-            Self::add_to_linker_imports_get_host(linker, get)?;
+            Self::add_to_linker_imports::<T, D>(linker, host_getter)?;
             Ok(())
         }
     }

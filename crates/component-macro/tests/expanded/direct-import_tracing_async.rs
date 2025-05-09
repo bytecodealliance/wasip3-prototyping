@@ -91,10 +91,11 @@ pub struct FooIndices {}
 /// [`Linker`]: wasmtime::component::Linker
 pub struct Foo {}
 #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
+#[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
 pub trait FooImports: Send {
     async fn foo(&mut self) -> ();
 }
-impl<_T: FooImports + ?Sized + Send> FooImports for &mut _T {
+impl<_T: FooImports + Send> FooImports for &mut _T {
     async fn foo(&mut self) -> () {
         FooImports::foo(*self).await
     }
@@ -153,13 +154,14 @@ const _: () = {
             let indices = FooIndices::new(&instance.instance_pre(&store))?;
             indices.load(&mut store, instance)
         }
-        pub fn add_to_linker_imports_get_host<T, G>(
+        pub fn add_to_linker_imports<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
-            host_getter: G,
+            host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: FooImports>,
-            T: Send,
+            D: wasmtime::component::HasData,
+            for<'a> D::Data<'a>: FooImports,
+            T: 'static + Send,
         {
             let mut linker = linker.root();
             linker
@@ -188,15 +190,16 @@ const _: () = {
                 )?;
             Ok(())
         }
-        pub fn add_to_linker<T, U>(
+        pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
-            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            T: Send,
-            U: FooImports + Send,
+            D: wasmtime::component::HasData,
+            for<'a> D::Data<'a>: FooImports + Send,
+            T: 'static + Send,
         {
-            Self::add_to_linker_imports_get_host(linker, get)?;
+            Self::add_to_linker_imports::<T, D>(linker, host_getter)?;
             Ok(())
         }
     }

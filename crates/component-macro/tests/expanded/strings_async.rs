@@ -152,15 +152,16 @@ const _: () = {
             let indices = TheWorldIndices::new(&instance.instance_pre(&store))?;
             indices.load(&mut store, instance)
         }
-        pub fn add_to_linker<T, U>(
+        pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
-            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            T: Send,
-            U: foo::foo::strings::Host + Send,
+            D: wasmtime::component::HasData,
+            for<'a> D::Data<'a>: foo::foo::strings::Host + Send,
+            T: 'static + Send,
         {
-            foo::foo::strings::add_to_linker(linker, get)?;
+            foo::foo::strings::add_to_linker::<T, D>(linker, host_getter)?;
             Ok(())
         }
         pub fn foo_foo_strings(&self) -> &exports::foo::foo::strings::Guest {
@@ -184,13 +185,29 @@ pub mod foo {
                     b: wasmtime::component::__internal::String,
                 ) -> wasmtime::component::__internal::String;
             }
-            pub fn add_to_linker_get_host<T, G>(
+            impl<_T: Host + Send> Host for &mut _T {
+                async fn a(&mut self, x: wasmtime::component::__internal::String) -> () {
+                    Host::a(*self, x).await
+                }
+                async fn b(&mut self) -> wasmtime::component::__internal::String {
+                    Host::b(*self).await
+                }
+                async fn c(
+                    &mut self,
+                    a: wasmtime::component::__internal::String,
+                    b: wasmtime::component::__internal::String,
+                ) -> wasmtime::component::__internal::String {
+                    Host::c(*self, a, b).await
+                }
+            }
+            pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
-                host_getter: G,
+                host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host + Send>,
-                T: Send,
+                D: wasmtime::component::HasData,
+                for<'a> D::Data<'a>: Host,
+                T: 'static + Send,
             {
                 let mut inst = linker.instance("foo:foo/strings")?;
                 inst.func_wrap_async(
@@ -236,31 +253,6 @@ pub mod foo {
                     },
                 )?;
                 Ok(())
-            }
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host + Send,
-                T: Send,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + ?Sized + Send> Host for &mut _T {
-                async fn a(&mut self, x: wasmtime::component::__internal::String) -> () {
-                    Host::a(*self, x).await
-                }
-                async fn b(&mut self) -> wasmtime::component::__internal::String {
-                    Host::b(*self).await
-                }
-                async fn c(
-                    &mut self,
-                    a: wasmtime::component::__internal::String,
-                    b: wasmtime::component::__internal::String,
-                ) -> wasmtime::component::__internal::String {
-                    Host::c(*self, a, b).await
-                }
             }
         }
     }

@@ -144,14 +144,16 @@ const _: () = {
             let indices = TheWorldIndices::new(&instance.instance_pre(&store))?;
             indices.load(&mut store, instance)
         }
-        pub fn add_to_linker<T, U>(
+        pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
-            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            U: foo::foo::chars::Host,
+            D: wasmtime::component::HasData,
+            for<'a> D::Data<'a>: foo::foo::chars::Host,
+            T: 'static,
         {
-            foo::foo::chars::add_to_linker(linker, get)?;
+            foo::foo::chars::add_to_linker::<T, D>(linker, host_getter)?;
             Ok(())
         }
         pub fn foo_foo_chars(&self) -> &exports::foo::foo::chars::Guest {
@@ -171,12 +173,24 @@ pub mod foo {
                 /// A function that returns a character
                 fn return_char(&mut self) -> char;
             }
-            pub fn add_to_linker_get_host<T, G>(
+            impl<_T: Host> Host for &mut _T {
+                /// A function that accepts a character
+                fn take_char(&mut self, x: char) -> () {
+                    Host::take_char(*self, x)
+                }
+                /// A function that returns a character
+                fn return_char(&mut self) -> char {
+                    Host::return_char(*self)
+                }
+            }
+            pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
-                host_getter: G,
+                host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host>,
+                D: wasmtime::component::HasData,
+                for<'a> D::Data<'a>: Host,
+                T: 'static,
             {
                 let mut inst = linker.instance("foo:foo/chars")?;
                 inst.func_wrap(
@@ -199,25 +213,6 @@ pub mod foo {
                     },
                 )?;
                 Ok(())
-            }
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + ?Sized> Host for &mut _T {
-                /// A function that accepts a character
-                fn take_char(&mut self, x: char) -> () {
-                    Host::take_char(*self, x)
-                }
-                /// A function that returns a character
-                fn return_char(&mut self) -> char {
-                    Host::return_char(*self)
-                }
             }
         }
     }

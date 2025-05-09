@@ -80,14 +80,14 @@ impl core::convert::From<&LinkOptions> for foo::foo::the_interface::LinkOptions 
 }
 pub enum Baz {}
 #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-pub trait HostBaz: Sized {
+pub trait HostBaz: Send {
     async fn foo(&mut self, self_: wasmtime::component::Resource<Baz>) -> ();
     async fn drop(
         &mut self,
         rep: wasmtime::component::Resource<Baz>,
     ) -> wasmtime::Result<()>;
 }
-impl<_T: HostBaz + ?Sized + Send> HostBaz for &mut _T {
+impl<_T: HostBaz + Send> HostBaz for &mut _T {
     async fn foo(&mut self, self_: wasmtime::component::Resource<Baz>) -> () {
         HostBaz::foo(*self, self_).await
     }
@@ -191,10 +191,11 @@ pub struct TheWorldIndices {}
 /// [`Linker`]: wasmtime::component::Linker
 pub struct TheWorld {}
 #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
+#[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
 pub trait TheWorldImports: Send + HostBaz {
     async fn foo(&mut self) -> ();
 }
-impl<_T: TheWorldImports + ?Sized + Send> TheWorldImports for &mut _T {
+impl<_T: TheWorldImports + Send> TheWorldImports for &mut _T {
     async fn foo(&mut self) -> () {
         TheWorldImports::foo(*self).await
     }
@@ -253,14 +254,15 @@ const _: () = {
             let indices = TheWorldIndices::new(&instance.instance_pre(&store))?;
             indices.load(&mut store, instance)
         }
-        pub fn add_to_linker_imports_get_host<T, G>(
+        pub fn add_to_linker_imports<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
             options: &LinkOptions,
-            host_getter: G,
+            host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: TheWorldImports>,
-            T: Send,
+            D: wasmtime::component::HasData,
+            for<'a> D::Data<'a>: TheWorldImports,
+            T: 'static + Send,
         {
             let mut linker = linker.root();
             if options.experimental_world {
@@ -341,23 +343,23 @@ const _: () = {
             }
             Ok(())
         }
-        pub fn add_to_linker<T, U>(
+        pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
             options: &LinkOptions,
-            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            T: Send,
-            U: foo::foo::the_interface::Host + TheWorldImports + Send,
+            D: wasmtime::component::HasData,
+            for<'a> D::Data<'a>: foo::foo::the_interface::Host + TheWorldImports + Send,
+            T: 'static + Send,
         {
             if options.experimental_world {
-                Self::add_to_linker_imports_get_host(linker, options, get)?;
+                Self::add_to_linker_imports::<T, D>(linker, options, host_getter)?;
                 if options.experimental_world_interface_import {
-                    foo::foo::the_interface::add_to_linker(
-                        linker,
-                        &options.into(),
-                        get,
-                    )?;
+                    foo::foo::the_interface::add_to_linker::<
+                        T,
+                        D,
+                    >(linker, &options.into(), host_getter)?;
                 }
             }
             Ok(())
@@ -411,14 +413,14 @@ pub mod foo {
             }
             pub enum Bar {}
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait HostBar: Sized {
+            pub trait HostBar: Send {
                 async fn foo(&mut self, self_: wasmtime::component::Resource<Bar>) -> ();
                 async fn drop(
                     &mut self,
                     rep: wasmtime::component::Resource<Bar>,
                 ) -> wasmtime::Result<()>;
             }
-            impl<_T: HostBar + ?Sized + Send> HostBar for &mut _T {
+            impl<_T: HostBar + Send> HostBar for &mut _T {
                 async fn foo(
                     &mut self,
                     self_: wasmtime::component::Resource<Bar>,
@@ -433,17 +435,23 @@ pub mod foo {
                 }
             }
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait Host: Send + HostBar + Sized {
+            pub trait Host: Send + HostBar {
                 async fn foo(&mut self) -> ();
             }
-            pub fn add_to_linker_get_host<T, G>(
+            impl<_T: Host + Send> Host for &mut _T {
+                async fn foo(&mut self) -> () {
+                    Host::foo(*self).await
+                }
+            }
+            pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 options: &LinkOptions,
-                host_getter: G,
+                host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host + Send>,
-                T: Send,
+                D: wasmtime::component::HasData,
+                for<'a> D::Data<'a>: Host,
+                T: 'static + Send,
             {
                 if options.experimental_interface {
                     let mut inst = linker.instance("foo:foo/the-interface")?;
@@ -520,22 +528,6 @@ pub mod foo {
                     }
                 }
                 Ok(())
-            }
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                options: &LinkOptions,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host + Send,
-                T: Send,
-            {
-                add_to_linker_get_host(linker, options, get)
-            }
-            impl<_T: Host + ?Sized + Send> Host for &mut _T {
-                async fn foo(&mut self) -> () {
-                    Host::foo(*self).await
-                }
             }
         }
     }

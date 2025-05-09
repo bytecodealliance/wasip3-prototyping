@@ -1,6 +1,6 @@
 pub enum WorldResource {}
 #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-pub trait HostWorldResource: Sized {
+pub trait HostWorldResourceConcurrent: wasmtime::component::HasData + Send {
     fn new<T: 'static>(
         accessor: &mut wasmtime::component::Accessor<T, Self>,
     ) -> impl ::core::future::Future<
@@ -19,70 +19,15 @@ pub trait HostWorldResource: Sized {
     ) -> impl ::core::future::Future<Output = ()> + Send
     where
         Self: Sized;
+}
+#[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
+pub trait HostWorldResource: Send {
     async fn drop(
         &mut self,
         rep: wasmtime::component::Resource<WorldResource>,
     ) -> wasmtime::Result<()>;
 }
-impl<_T: HostWorldResource> HostWorldResource for &mut _T {
-    async fn new<T: 'static>(
-        accessor: &mut wasmtime::component::Accessor<T, Self>,
-    ) -> wasmtime::component::Resource<WorldResource> {
-        struct Task {}
-        impl<
-            T: 'static,
-            U: HostWorldResource,
-        > wasmtime::component::AccessorTask<
-            T,
-            U,
-            wasmtime::component::Resource<WorldResource>,
-        > for Task {
-            async fn run(
-                self,
-                accessor: &mut wasmtime::component::Accessor<T, U>,
-            ) -> wasmtime::component::Resource<WorldResource> {
-                <U as HostWorldResource>::new(accessor).await
-            }
-        }
-        accessor.forward(|v| *v, Task {}).await
-    }
-    async fn foo<T: 'static>(
-        accessor: &mut wasmtime::component::Accessor<T, Self>,
-        self_: wasmtime::component::Resource<WorldResource>,
-    ) -> () {
-        struct Task {
-            self_: wasmtime::component::Resource<WorldResource>,
-        }
-        impl<
-            T: 'static,
-            U: HostWorldResource,
-        > wasmtime::component::AccessorTask<T, U, ()> for Task {
-            async fn run(
-                self,
-                accessor: &mut wasmtime::component::Accessor<T, U>,
-            ) -> () {
-                <U as HostWorldResource>::foo(accessor, self.self_).await
-            }
-        }
-        accessor.forward(|v| *v, Task { self_ }).await
-    }
-    async fn static_foo<T: 'static>(
-        accessor: &mut wasmtime::component::Accessor<T, Self>,
-    ) -> () {
-        struct Task {}
-        impl<
-            T: 'static,
-            U: HostWorldResource,
-        > wasmtime::component::AccessorTask<T, U, ()> for Task {
-            async fn run(
-                self,
-                accessor: &mut wasmtime::component::Accessor<T, U>,
-            ) -> () {
-                <U as HostWorldResource>::static_foo(accessor).await
-            }
-        }
-        accessor.forward(|v| *v, Task {}).await
-    }
+impl<_T: HostWorldResource + Send> HostWorldResource for &mut _T {
     async fn drop(
         &mut self,
         rep: wasmtime::component::Resource<WorldResource>,
@@ -189,7 +134,8 @@ pub struct TheWorld {
     some_world_func2: wasmtime::component::Func,
 }
 #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-pub trait TheWorldImports: Send + HostWorldResource {
+#[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
+pub trait TheWorldImportsConcurrent: wasmtime::component::HasData + Send + HostWorldResourceConcurrent {
     fn some_world_func<T: 'static>(
         accessor: &mut wasmtime::component::Accessor<T, Self>,
     ) -> impl ::core::future::Future<
@@ -198,119 +144,9 @@ pub trait TheWorldImports: Send + HostWorldResource {
     where
         Self: Sized;
 }
-struct State {
-    host: *mut u8,
-    store: *mut u8,
-    spawned: Vec<wasmtime::component::__internal::Spawned>,
-}
-thread_local! {
-    static STATE : wasmtime::component::__internal::RefCell < Option < State >> =
-    wasmtime::component::__internal::RefCell::new(None);
-}
-struct ResetState(Option<State>);
-impl Drop for ResetState {
-    fn drop(&mut self) {
-        STATE
-            .with(|v| {
-                *v.borrow_mut() = self.0.take();
-            })
-    }
-}
-fn get_host_and_store() -> (*mut u8, *mut u8) {
-    STATE
-        .with(|v| v.borrow().as_ref().map(|State { host, store, .. }| (*host, *store)))
-        .unwrap()
-}
-fn spawn_task(task: wasmtime::component::__internal::Spawned) {
-    STATE.with(|v| v.borrow_mut().as_mut().unwrap().spawned.push(task));
-}
-fn poll_with_state<
-    T,
-    G: for<'a> wasmtime::component::GetHost<&'a mut T>,
-    F: wasmtime::component::__internal::Future + ?Sized,
->(
-    getter: G,
-    store: wasmtime::VMStoreRawPtr,
-    instance: Option<wasmtime::component::Instance>,
-    cx: &mut wasmtime::component::__internal::Context,
-    future: wasmtime::component::__internal::Pin<&mut F>,
-) -> wasmtime::component::__internal::Poll<F::Output> {
-    use wasmtime::component::__internal::{AbortWrapper, mem, DerefMut, Poll};
-    let mut store_cx = unsafe {
-        wasmtime::StoreContextMut::new(&mut *store.0.as_ptr().cast())
-    };
-    let (result, spawned) = {
-        let host = &mut getter(store_cx.data_mut());
-        let old = STATE
-            .with(|v| {
-                v
-                    .replace(
-                        Some(State {
-                            host: (host as *mut G::Host).cast(),
-                            store: store.0.as_ptr().cast(),
-                            spawned: Vec::new(),
-                        }),
-                    )
-            });
-        let _reset = ResetState(old);
-        (future.poll(cx), STATE.with(|v| v.take()).unwrap().spawned)
-    };
-    for spawned in spawned {
-        instance
-            .unwrap()
-            .spawn_raw(
-                &mut store_cx,
-                wasmtime::component::__internal::poll_fn(move |cx| {
-                    let mut spawned = spawned.try_lock().unwrap();
-                    let inner = mem::replace(
-                        DerefMut::deref_mut(&mut spawned),
-                        AbortWrapper::Aborted,
-                    );
-                    if let AbortWrapper::Unpolled(mut future)
-                    | AbortWrapper::Polled { mut future, .. } = inner {
-                        let result = poll_with_state(
-                            getter,
-                            store,
-                            instance,
-                            cx,
-                            future.as_mut(),
-                        );
-                        *DerefMut::deref_mut(&mut spawned) = AbortWrapper::Polled {
-                            future,
-                            waker: cx.waker().clone(),
-                        };
-                        result
-                    } else {
-                        Poll::Ready(Ok(()))
-                    }
-                }),
-            )
-    }
-    result
-}
-impl<_T: TheWorldImports + Send> TheWorldImports for &mut _T {
-    async fn some_world_func<T: 'static>(
-        accessor: &mut wasmtime::component::Accessor<T, Self>,
-    ) -> wasmtime::component::Resource<WorldResource> {
-        struct Task {}
-        impl<
-            T: 'static,
-            U: TheWorldImports,
-        > wasmtime::component::AccessorTask<
-            T,
-            U,
-            wasmtime::component::Resource<WorldResource>,
-        > for Task {
-            async fn run(
-                self,
-                accessor: &mut wasmtime::component::Accessor<T, U>,
-            ) -> wasmtime::component::Resource<WorldResource> {
-                <U as TheWorldImports>::some_world_func(accessor).await
-            }
-        }
-        accessor.forward(|v| *v, Task {}).await
-    }
-}
+#[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
+pub trait TheWorldImports: Send + HostWorldResource {}
+impl<_T: TheWorldImports + Send> TheWorldImports for &mut _T {}
 const _: () = {
     #[allow(unused_imports)]
     use wasmtime::component::__internal::anyhow;
@@ -408,13 +244,14 @@ const _: () = {
             let indices = TheWorldIndices::new(&instance.instance_pre(&store))?;
             indices.load(&mut store, instance)
         }
-        pub fn add_to_linker_imports_get_host<T, G>(
+        pub fn add_to_linker_imports<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
-            host_getter: G,
+            host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: TheWorldImports>,
-            T: Send + 'static,
+            D: TheWorldImportsConcurrent,
+            for<'a> D::Data<'a>: TheWorldImports,
+            T: 'static + Send,
         {
             let mut linker = linker.root();
             linker
@@ -434,190 +271,90 @@ const _: () = {
             linker
                 .func_wrap_concurrent(
                     "some-world-func",
-                    move |caller: &mut wasmtime::component::Accessor<T, T>, (): ()| {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as TheWorldImports>::some_world_func(
-                                    &mut accessor,
+                    move |caller: &mut wasmtime::component::Accessor<T>, (): ()| {
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as TheWorldImportsConcurrent>::some_world_func(
+                                    accessor,
                                 )
                                 .await;
                             Ok((r,))
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
             linker
                 .func_wrap_concurrent(
                     "[constructor]world-resource",
-                    move |caller: &mut wasmtime::component::Accessor<T, T>, (): ()| {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as HostWorldResource>::new(&mut accessor)
+                    move |caller: &mut wasmtime::component::Accessor<T>, (): ()| {
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostWorldResourceConcurrent>::new(accessor)
                                 .await;
                             Ok((r,))
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
             linker
                 .func_wrap_concurrent(
                     "[method]world-resource.foo",
                     move |
-                        caller: &mut wasmtime::component::Accessor<T, T>,
+                        caller: &mut wasmtime::component::Accessor<T>,
                         (arg0,): (wasmtime::component::Resource<WorldResource>,)|
                     {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as HostWorldResource>::foo(
-                                    &mut accessor,
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostWorldResourceConcurrent>::foo(
+                                    accessor,
                                     arg0,
                                 )
                                 .await;
                             Ok(r)
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
             linker
                 .func_wrap_concurrent(
                     "[static]world-resource.static-foo",
-                    move |caller: &mut wasmtime::component::Accessor<T, T>, (): ()| {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as HostWorldResource>::static_foo(
-                                    &mut accessor,
+                    move |caller: &mut wasmtime::component::Accessor<T>, (): ()| {
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostWorldResourceConcurrent>::static_foo(
+                                    accessor,
                                 )
                                 .await;
                             Ok(r)
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
             Ok(())
         }
-        pub fn add_to_linker<T, U>(
+        pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
-            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            T: Send + 'static,
-            U: foo::foo::resources::Host + foo::foo::long_use_chain1::Host
+            D: foo::foo::resources::HostConcurrent
+                + foo::foo::long_use_chain4::HostConcurrent + TheWorldImportsConcurrent
+                + Send,
+            for<'a> D::Data<
+                'a,
+            >: foo::foo::resources::Host + foo::foo::long_use_chain1::Host
                 + foo::foo::long_use_chain2::Host + foo::foo::long_use_chain3::Host
                 + foo::foo::long_use_chain4::Host
                 + foo::foo::transitive_interface_with_resource::Host + TheWorldImports
                 + Send,
+            T: 'static + Send,
         {
-            Self::add_to_linker_imports_get_host(linker, get)?;
-            foo::foo::resources::add_to_linker(linker, get)?;
-            foo::foo::long_use_chain1::add_to_linker(linker, get)?;
-            foo::foo::long_use_chain2::add_to_linker(linker, get)?;
-            foo::foo::long_use_chain3::add_to_linker(linker, get)?;
-            foo::foo::long_use_chain4::add_to_linker(linker, get)?;
-            foo::foo::transitive_interface_with_resource::add_to_linker(linker, get)?;
+            Self::add_to_linker_imports::<T, D>(linker, host_getter)?;
+            foo::foo::resources::add_to_linker::<T, D>(linker, host_getter)?;
+            foo::foo::long_use_chain1::add_to_linker::<T, D>(linker, host_getter)?;
+            foo::foo::long_use_chain2::add_to_linker::<T, D>(linker, host_getter)?;
+            foo::foo::long_use_chain3::add_to_linker::<T, D>(linker, host_getter)?;
+            foo::foo::long_use_chain4::add_to_linker::<T, D>(linker, host_getter)?;
+            foo::foo::transitive_interface_with_resource::add_to_linker::<
+                T,
+                D,
+            >(linker, host_getter)?;
             Ok(())
         }
         pub fn call_some_world_func2<S: wasmtime::AsContextMut>(
@@ -655,7 +392,7 @@ pub mod foo {
             use wasmtime::component::__internal::{anyhow, Box};
             pub enum Bar {}
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait HostBar: Sized {
+            pub trait HostBarConcurrent: wasmtime::component::HasData + Send {
                 fn new<T: 'static>(
                     accessor: &mut wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<
@@ -674,70 +411,15 @@ pub mod foo {
                 ) -> impl ::core::future::Future<Output = u32> + Send
                 where
                     Self: Sized;
+            }
+            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
+            pub trait HostBar: Send {
                 async fn drop(
                     &mut self,
                     rep: wasmtime::component::Resource<Bar>,
                 ) -> wasmtime::Result<()>;
             }
-            impl<_T: HostBar> HostBar for &mut _T {
-                async fn new<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                ) -> wasmtime::component::Resource<Bar> {
-                    struct Task {}
-                    impl<
-                        T: 'static,
-                        U: HostBar,
-                    > wasmtime::component::AccessorTask<
-                        T,
-                        U,
-                        wasmtime::component::Resource<Bar>,
-                    > for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> wasmtime::component::Resource<Bar> {
-                            <U as HostBar>::new(accessor).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task {}).await
-                }
-                async fn static_a<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                ) -> u32 {
-                    struct Task {}
-                    impl<
-                        T: 'static,
-                        U: HostBar,
-                    > wasmtime::component::AccessorTask<T, U, u32> for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> u32 {
-                            <U as HostBar>::static_a(accessor).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task {}).await
-                }
-                async fn method_a<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                    self_: wasmtime::component::Resource<Bar>,
-                ) -> u32 {
-                    struct Task {
-                        self_: wasmtime::component::Resource<Bar>,
-                    }
-                    impl<
-                        T: 'static,
-                        U: HostBar,
-                    > wasmtime::component::AccessorTask<T, U, u32> for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> u32 {
-                            <U as HostBar>::method_a(accessor, self.self_).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task { self_ }).await
-                }
+            impl<_T: HostBar + Send> HostBar for &mut _T {
                 async fn drop(
                     &mut self,
                     rep: wasmtime::component::Resource<Bar>,
@@ -801,7 +483,7 @@ pub mod foo {
                 );
             };
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait Host: Send + HostBar + Sized {
+            pub trait HostConcurrent: wasmtime::component::HasData + Send + HostBarConcurrent {
                 fn bar_own_arg<T: 'static>(
                     accessor: &mut wasmtime::component::Accessor<T, Self>,
                     x: wasmtime::component::Resource<Bar>,
@@ -927,108 +609,17 @@ pub mod foo {
                 where
                     Self: Sized;
             }
-            struct State {
-                host: *mut u8,
-                store: *mut u8,
-                spawned: Vec<wasmtime::component::__internal::Spawned>,
-            }
-            thread_local! {
-                static STATE : wasmtime::component::__internal::RefCell < Option < State
-                >> = wasmtime::component::__internal::RefCell::new(None);
-            }
-            struct ResetState(Option<State>);
-            impl Drop for ResetState {
-                fn drop(&mut self) {
-                    STATE
-                        .with(|v| {
-                            *v.borrow_mut() = self.0.take();
-                        })
-                }
-            }
-            fn get_host_and_store() -> (*mut u8, *mut u8) {
-                STATE
-                    .with(|v| {
-                        v
-                            .borrow()
-                            .as_ref()
-                            .map(|State { host, store, .. }| (*host, *store))
-                    })
-                    .unwrap()
-            }
-            fn spawn_task(task: wasmtime::component::__internal::Spawned) {
-                STATE.with(|v| v.borrow_mut().as_mut().unwrap().spawned.push(task));
-            }
-            fn poll_with_state<
-                T,
-                G: for<'a> wasmtime::component::GetHost<&'a mut T>,
-                F: wasmtime::component::__internal::Future + ?Sized,
-            >(
-                getter: G,
-                store: wasmtime::VMStoreRawPtr,
-                instance: Option<wasmtime::component::Instance>,
-                cx: &mut wasmtime::component::__internal::Context,
-                future: wasmtime::component::__internal::Pin<&mut F>,
-            ) -> wasmtime::component::__internal::Poll<F::Output> {
-                use wasmtime::component::__internal::{AbortWrapper, mem, DerefMut, Poll};
-                let mut store_cx = unsafe {
-                    wasmtime::StoreContextMut::new(&mut *store.0.as_ptr().cast())
-                };
-                let (result, spawned) = {
-                    let host = &mut getter(store_cx.data_mut());
-                    let old = STATE
-                        .with(|v| {
-                            v
-                                .replace(
-                                    Some(State {
-                                        host: (host as *mut G::Host).cast(),
-                                        store: store.0.as_ptr().cast(),
-                                        spawned: Vec::new(),
-                                    }),
-                                )
-                        });
-                    let _reset = ResetState(old);
-                    (future.poll(cx), STATE.with(|v| v.take()).unwrap().spawned)
-                };
-                for spawned in spawned {
-                    instance
-                        .unwrap()
-                        .spawn_raw(
-                            &mut store_cx,
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                let mut spawned = spawned.try_lock().unwrap();
-                                let inner = mem::replace(
-                                    DerefMut::deref_mut(&mut spawned),
-                                    AbortWrapper::Aborted,
-                                );
-                                if let AbortWrapper::Unpolled(mut future)
-                                | AbortWrapper::Polled { mut future, .. } = inner {
-                                    let result = poll_with_state(
-                                        getter,
-                                        store,
-                                        instance,
-                                        cx,
-                                        future.as_mut(),
-                                    );
-                                    *DerefMut::deref_mut(&mut spawned) = AbortWrapper::Polled {
-                                        future,
-                                        waker: cx.waker().clone(),
-                                    };
-                                    result
-                                } else {
-                                    Poll::Ready(Ok(()))
-                                }
-                            }),
-                        )
-                }
-                result
-            }
-            pub fn add_to_linker_get_host<T, G>(
+            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
+            pub trait Host: Send + HostBar {}
+            impl<_T: Host + Send> Host for &mut _T {}
+            pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
-                host_getter: G,
+                host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host + Send>,
-                T: Send + 'static,
+                D: HostConcurrent,
+                for<'a> D::Data<'a>: Host,
+                T: 'static + Send,
             {
                 let mut inst = linker.instance("foo:foo/resources")?;
                 inst.resource_async(
@@ -1046,619 +637,203 @@ pub mod foo {
                 )?;
                 inst.func_wrap_concurrent(
                     "[constructor]bar",
-                    move |caller: &mut wasmtime::component::Accessor<T, T>, (): ()| {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as HostBar>::new(&mut accessor).await;
+                    move |caller: &mut wasmtime::component::Accessor<T>, (): ()| {
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostBarConcurrent>::new(accessor).await;
                             Ok((r,))
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "[static]bar.static-a",
-                    move |caller: &mut wasmtime::component::Accessor<T, T>, (): ()| {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as HostBar>::static_a(&mut accessor).await;
+                    move |caller: &mut wasmtime::component::Accessor<T>, (): ()| {
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostBarConcurrent>::static_a(accessor).await;
                             Ok((r,))
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "[method]bar.method-a",
                     move |
-                        caller: &mut wasmtime::component::Accessor<T, T>,
+                        caller: &mut wasmtime::component::Accessor<T>,
                         (arg0,): (wasmtime::component::Resource<Bar>,)|
                     {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as HostBar>::method_a(&mut accessor, arg0)
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostBarConcurrent>::method_a(accessor, arg0)
                                 .await;
                             Ok((r,))
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "bar-own-arg",
                     move |
-                        caller: &mut wasmtime::component::Accessor<T, T>,
+                        caller: &mut wasmtime::component::Accessor<T>,
                         (arg0,): (wasmtime::component::Resource<Bar>,)|
                     {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::bar_own_arg(&mut accessor, arg0)
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::bar_own_arg(accessor, arg0)
                                 .await;
                             Ok(r)
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "bar-borrow-arg",
                     move |
-                        caller: &mut wasmtime::component::Accessor<T, T>,
+                        caller: &mut wasmtime::component::Accessor<T>,
                         (arg0,): (wasmtime::component::Resource<Bar>,)|
                     {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::bar_borrow_arg(
-                                    &mut accessor,
-                                    arg0,
-                                )
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::bar_borrow_arg(accessor, arg0)
                                 .await;
                             Ok(r)
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "bar-result",
-                    move |caller: &mut wasmtime::component::Accessor<T, T>, (): ()| {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::bar_result(&mut accessor).await;
+                    move |caller: &mut wasmtime::component::Accessor<T>, (): ()| {
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::bar_result(accessor).await;
                             Ok((r,))
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "tuple-own-arg",
                     move |
-                        caller: &mut wasmtime::component::Accessor<T, T>,
+                        caller: &mut wasmtime::component::Accessor<T>,
                         (arg0,): ((wasmtime::component::Resource<Bar>, u32),)|
                     {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::tuple_own_arg(&mut accessor, arg0)
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::tuple_own_arg(accessor, arg0)
                                 .await;
                             Ok(r)
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "tuple-borrow-arg",
                     move |
-                        caller: &mut wasmtime::component::Accessor<T, T>,
+                        caller: &mut wasmtime::component::Accessor<T>,
                         (arg0,): ((wasmtime::component::Resource<Bar>, u32),)|
                     {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::tuple_borrow_arg(
-                                    &mut accessor,
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::tuple_borrow_arg(
+                                    accessor,
                                     arg0,
                                 )
                                 .await;
                             Ok(r)
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "tuple-result",
-                    move |caller: &mut wasmtime::component::Accessor<T, T>, (): ()| {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::tuple_result(&mut accessor).await;
+                    move |caller: &mut wasmtime::component::Accessor<T>, (): ()| {
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::tuple_result(accessor).await;
                             Ok((r,))
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "option-own-arg",
                     move |
-                        caller: &mut wasmtime::component::Accessor<T, T>,
+                        caller: &mut wasmtime::component::Accessor<T>,
                         (arg0,): (Option<wasmtime::component::Resource<Bar>>,)|
                     {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::option_own_arg(
-                                    &mut accessor,
-                                    arg0,
-                                )
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::option_own_arg(accessor, arg0)
                                 .await;
                             Ok(r)
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "option-borrow-arg",
                     move |
-                        caller: &mut wasmtime::component::Accessor<T, T>,
+                        caller: &mut wasmtime::component::Accessor<T>,
                         (arg0,): (Option<wasmtime::component::Resource<Bar>>,)|
                     {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::option_borrow_arg(
-                                    &mut accessor,
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::option_borrow_arg(
+                                    accessor,
                                     arg0,
                                 )
                                 .await;
                             Ok(r)
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "option-result",
-                    move |caller: &mut wasmtime::component::Accessor<T, T>, (): ()| {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::option_result(&mut accessor)
-                                .await;
+                    move |caller: &mut wasmtime::component::Accessor<T>, (): ()| {
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::option_result(accessor).await;
                             Ok((r,))
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "result-own-arg",
                     move |
-                        caller: &mut wasmtime::component::Accessor<T, T>,
+                        caller: &mut wasmtime::component::Accessor<T>,
                         (arg0,): (Result<wasmtime::component::Resource<Bar>, ()>,)|
                     {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::result_own_arg(
-                                    &mut accessor,
-                                    arg0,
-                                )
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::result_own_arg(accessor, arg0)
                                 .await;
                             Ok(r)
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "result-borrow-arg",
                     move |
-                        caller: &mut wasmtime::component::Accessor<T, T>,
+                        caller: &mut wasmtime::component::Accessor<T>,
                         (arg0,): (Result<wasmtime::component::Resource<Bar>, ()>,)|
                     {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::result_borrow_arg(
-                                    &mut accessor,
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::result_borrow_arg(
+                                    accessor,
                                     arg0,
                                 )
                                 .await;
                             Ok(r)
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "result-result",
-                    move |caller: &mut wasmtime::component::Accessor<T, T>, (): ()| {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::result_result(&mut accessor)
-                                .await;
+                    move |caller: &mut wasmtime::component::Accessor<T>, (): ()| {
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::result_result(accessor).await;
                             Ok((r,))
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "list-own-arg",
                     move |
-                        caller: &mut wasmtime::component::Accessor<T, T>,
+                        caller: &mut wasmtime::component::Accessor<T>,
                         (
                             arg0,
                         ): (
@@ -1667,45 +842,18 @@ pub mod foo {
                             >,
                         )|
                     {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::list_own_arg(&mut accessor, arg0)
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::list_own_arg(accessor, arg0)
                                 .await;
                             Ok(r)
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "list-borrow-arg",
                     move |
-                        caller: &mut wasmtime::component::Accessor<T, T>,
+                        caller: &mut wasmtime::component::Accessor<T>,
                         (
                             arg0,
                         ): (
@@ -1714,634 +862,86 @@ pub mod foo {
                             >,
                         )|
                     {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::list_borrow_arg(
-                                    &mut accessor,
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::list_borrow_arg(
+                                    accessor,
                                     arg0,
                                 )
                                 .await;
                             Ok(r)
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "list-result",
-                    move |caller: &mut wasmtime::component::Accessor<T, T>, (): ()| {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::list_result(&mut accessor).await;
+                    move |caller: &mut wasmtime::component::Accessor<T>, (): ()| {
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::list_result(accessor).await;
                             Ok((r,))
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "record-own-arg",
                     move |
-                        caller: &mut wasmtime::component::Accessor<T, T>,
+                        caller: &mut wasmtime::component::Accessor<T>,
                         (arg0,): (NestedOwn,)|
                     {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::record_own_arg(
-                                    &mut accessor,
-                                    arg0,
-                                )
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::record_own_arg(accessor, arg0)
                                 .await;
                             Ok(r)
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "record-borrow-arg",
                     move |
-                        caller: &mut wasmtime::component::Accessor<T, T>,
+                        caller: &mut wasmtime::component::Accessor<T>,
                         (arg0,): (NestedBorrow,)|
                     {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::record_borrow_arg(
-                                    &mut accessor,
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::record_borrow_arg(
+                                    accessor,
                                     arg0,
                                 )
                                 .await;
                             Ok(r)
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "record-result",
-                    move |caller: &mut wasmtime::component::Accessor<T, T>, (): ()| {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::record_result(&mut accessor)
-                                .await;
+                    move |caller: &mut wasmtime::component::Accessor<T>, (): ()| {
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::record_result(accessor).await;
                             Ok((r,))
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 inst.func_wrap_concurrent(
                     "func-with-handle-typedef",
                     move |
-                        caller: &mut wasmtime::component::Accessor<T, T>,
+                        caller: &mut wasmtime::component::Accessor<T>,
                         (arg0,): (SomeHandle,)|
                     {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::func_with_handle_typedef(
-                                    &mut accessor,
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::func_with_handle_typedef(
+                                    accessor,
                                     arg0,
                                 )
                                 .await;
                             Ok(r)
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 Ok(())
-            }
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host + Send,
-                T: Send + 'static,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + Send> Host for &mut _T {
-                async fn bar_own_arg<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                    x: wasmtime::component::Resource<Bar>,
-                ) -> () {
-                    struct Task {
-                        x: wasmtime::component::Resource<Bar>,
-                    }
-                    impl<T: 'static, U: Host> wasmtime::component::AccessorTask<T, U, ()>
-                    for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> () {
-                            <U as Host>::bar_own_arg(accessor, self.x).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task { x }).await
-                }
-                async fn bar_borrow_arg<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                    x: wasmtime::component::Resource<Bar>,
-                ) -> () {
-                    struct Task {
-                        x: wasmtime::component::Resource<Bar>,
-                    }
-                    impl<T: 'static, U: Host> wasmtime::component::AccessorTask<T, U, ()>
-                    for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> () {
-                            <U as Host>::bar_borrow_arg(accessor, self.x).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task { x }).await
-                }
-                async fn bar_result<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                ) -> wasmtime::component::Resource<Bar> {
-                    struct Task {}
-                    impl<
-                        T: 'static,
-                        U: Host,
-                    > wasmtime::component::AccessorTask<
-                        T,
-                        U,
-                        wasmtime::component::Resource<Bar>,
-                    > for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> wasmtime::component::Resource<Bar> {
-                            <U as Host>::bar_result(accessor).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task {}).await
-                }
-                async fn tuple_own_arg<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                    x: (wasmtime::component::Resource<Bar>, u32),
-                ) -> () {
-                    struct Task {
-                        x: (wasmtime::component::Resource<Bar>, u32),
-                    }
-                    impl<T: 'static, U: Host> wasmtime::component::AccessorTask<T, U, ()>
-                    for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> () {
-                            <U as Host>::tuple_own_arg(accessor, self.x).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task { x }).await
-                }
-                async fn tuple_borrow_arg<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                    x: (wasmtime::component::Resource<Bar>, u32),
-                ) -> () {
-                    struct Task {
-                        x: (wasmtime::component::Resource<Bar>, u32),
-                    }
-                    impl<T: 'static, U: Host> wasmtime::component::AccessorTask<T, U, ()>
-                    for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> () {
-                            <U as Host>::tuple_borrow_arg(accessor, self.x).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task { x }).await
-                }
-                async fn tuple_result<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                ) -> (wasmtime::component::Resource<Bar>, u32) {
-                    struct Task {}
-                    impl<
-                        T: 'static,
-                        U: Host,
-                    > wasmtime::component::AccessorTask<
-                        T,
-                        U,
-                        (wasmtime::component::Resource<Bar>, u32),
-                    > for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> (wasmtime::component::Resource<Bar>, u32) {
-                            <U as Host>::tuple_result(accessor).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task {}).await
-                }
-                async fn option_own_arg<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                    x: Option<wasmtime::component::Resource<Bar>>,
-                ) -> () {
-                    struct Task {
-                        x: Option<wasmtime::component::Resource<Bar>>,
-                    }
-                    impl<T: 'static, U: Host> wasmtime::component::AccessorTask<T, U, ()>
-                    for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> () {
-                            <U as Host>::option_own_arg(accessor, self.x).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task { x }).await
-                }
-                async fn option_borrow_arg<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                    x: Option<wasmtime::component::Resource<Bar>>,
-                ) -> () {
-                    struct Task {
-                        x: Option<wasmtime::component::Resource<Bar>>,
-                    }
-                    impl<T: 'static, U: Host> wasmtime::component::AccessorTask<T, U, ()>
-                    for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> () {
-                            <U as Host>::option_borrow_arg(accessor, self.x).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task { x }).await
-                }
-                async fn option_result<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                ) -> Option<wasmtime::component::Resource<Bar>> {
-                    struct Task {}
-                    impl<
-                        T: 'static,
-                        U: Host,
-                    > wasmtime::component::AccessorTask<
-                        T,
-                        U,
-                        Option<wasmtime::component::Resource<Bar>>,
-                    > for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> Option<wasmtime::component::Resource<Bar>> {
-                            <U as Host>::option_result(accessor).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task {}).await
-                }
-                async fn result_own_arg<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                    x: Result<wasmtime::component::Resource<Bar>, ()>,
-                ) -> () {
-                    struct Task {
-                        x: Result<wasmtime::component::Resource<Bar>, ()>,
-                    }
-                    impl<T: 'static, U: Host> wasmtime::component::AccessorTask<T, U, ()>
-                    for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> () {
-                            <U as Host>::result_own_arg(accessor, self.x).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task { x }).await
-                }
-                async fn result_borrow_arg<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                    x: Result<wasmtime::component::Resource<Bar>, ()>,
-                ) -> () {
-                    struct Task {
-                        x: Result<wasmtime::component::Resource<Bar>, ()>,
-                    }
-                    impl<T: 'static, U: Host> wasmtime::component::AccessorTask<T, U, ()>
-                    for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> () {
-                            <U as Host>::result_borrow_arg(accessor, self.x).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task { x }).await
-                }
-                async fn result_result<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                ) -> Result<wasmtime::component::Resource<Bar>, ()> {
-                    struct Task {}
-                    impl<
-                        T: 'static,
-                        U: Host,
-                    > wasmtime::component::AccessorTask<
-                        T,
-                        U,
-                        Result<wasmtime::component::Resource<Bar>, ()>,
-                    > for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> Result<wasmtime::component::Resource<Bar>, ()> {
-                            <U as Host>::result_result(accessor).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task {}).await
-                }
-                async fn list_own_arg<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                    x: wasmtime::component::__internal::Vec<
-                        wasmtime::component::Resource<Bar>,
-                    >,
-                ) -> () {
-                    struct Task {
-                        x: wasmtime::component::__internal::Vec<
-                            wasmtime::component::Resource<Bar>,
-                        >,
-                    }
-                    impl<T: 'static, U: Host> wasmtime::component::AccessorTask<T, U, ()>
-                    for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> () {
-                            <U as Host>::list_own_arg(accessor, self.x).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task { x }).await
-                }
-                async fn list_borrow_arg<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                    x: wasmtime::component::__internal::Vec<
-                        wasmtime::component::Resource<Bar>,
-                    >,
-                ) -> () {
-                    struct Task {
-                        x: wasmtime::component::__internal::Vec<
-                            wasmtime::component::Resource<Bar>,
-                        >,
-                    }
-                    impl<T: 'static, U: Host> wasmtime::component::AccessorTask<T, U, ()>
-                    for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> () {
-                            <U as Host>::list_borrow_arg(accessor, self.x).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task { x }).await
-                }
-                async fn list_result<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                ) -> wasmtime::component::__internal::Vec<
-                    wasmtime::component::Resource<Bar>,
-                > {
-                    struct Task {}
-                    impl<
-                        T: 'static,
-                        U: Host,
-                    > wasmtime::component::AccessorTask<
-                        T,
-                        U,
-                        wasmtime::component::__internal::Vec<
-                            wasmtime::component::Resource<Bar>,
-                        >,
-                    > for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> wasmtime::component::__internal::Vec<
-                            wasmtime::component::Resource<Bar>,
-                        > {
-                            <U as Host>::list_result(accessor).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task {}).await
-                }
-                async fn record_own_arg<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                    x: NestedOwn,
-                ) -> () {
-                    struct Task {
-                        x: NestedOwn,
-                    }
-                    impl<T: 'static, U: Host> wasmtime::component::AccessorTask<T, U, ()>
-                    for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> () {
-                            <U as Host>::record_own_arg(accessor, self.x).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task { x }).await
-                }
-                async fn record_borrow_arg<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                    x: NestedBorrow,
-                ) -> () {
-                    struct Task {
-                        x: NestedBorrow,
-                    }
-                    impl<T: 'static, U: Host> wasmtime::component::AccessorTask<T, U, ()>
-                    for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> () {
-                            <U as Host>::record_borrow_arg(accessor, self.x).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task { x }).await
-                }
-                async fn record_result<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                ) -> NestedOwn {
-                    struct Task {}
-                    impl<
-                        T: 'static,
-                        U: Host,
-                    > wasmtime::component::AccessorTask<T, U, NestedOwn> for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> NestedOwn {
-                            <U as Host>::record_result(accessor).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task {}).await
-                }
-                async fn func_with_handle_typedef<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                    x: SomeHandle,
-                ) -> () {
-                    struct Task {
-                        x: SomeHandle,
-                    }
-                    impl<T: 'static, U: Host> wasmtime::component::AccessorTask<T, U, ()>
-                    for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> () {
-                            <U as Host>::func_with_handle_typedef(accessor, self.x).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task { x }).await
-                }
             }
         }
         #[allow(clippy::all)]
@@ -2350,13 +950,13 @@ pub mod foo {
             use wasmtime::component::__internal::{anyhow, Box};
             pub enum A {}
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait HostA: Sized {
+            pub trait HostA: Send {
                 async fn drop(
                     &mut self,
                     rep: wasmtime::component::Resource<A>,
                 ) -> wasmtime::Result<()>;
             }
-            impl<_T: HostA> HostA for &mut _T {
+            impl<_T: HostA + Send> HostA for &mut _T {
                 async fn drop(
                     &mut self,
                     rep: wasmtime::component::Resource<A>,
@@ -2365,14 +965,16 @@ pub mod foo {
                 }
             }
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait Host: Send + HostA + Sized {}
-            pub fn add_to_linker_get_host<T, G>(
+            pub trait Host: Send + HostA {}
+            impl<_T: Host + Send> Host for &mut _T {}
+            pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
-                host_getter: G,
+                host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host + Send>,
-                T: Send + 'static,
+                D: wasmtime::component::HasData,
+                for<'a> D::Data<'a>: Host,
+                T: 'static + Send,
             {
                 let mut inst = linker.instance("foo:foo/long-use-chain1")?;
                 inst.resource_async(
@@ -2390,17 +992,6 @@ pub mod foo {
                 )?;
                 Ok(())
             }
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host + Send,
-                T: Send + 'static,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + Send> Host for &mut _T {}
         }
         #[allow(clippy::all)]
         pub mod long_use_chain2 {
@@ -2409,28 +1000,19 @@ pub mod foo {
             pub type A = super::super::super::foo::foo::long_use_chain1::A;
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send {}
-            pub fn add_to_linker_get_host<T, G>(
+            impl<_T: Host + Send> Host for &mut _T {}
+            pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
-                host_getter: G,
+                host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host + Send>,
-                T: Send + 'static,
+                D: wasmtime::component::HasData,
+                for<'a> D::Data<'a>: Host,
+                T: 'static + Send,
             {
                 let mut inst = linker.instance("foo:foo/long-use-chain2")?;
                 Ok(())
             }
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host + Send,
-                T: Send + 'static,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + Send> Host for &mut _T {}
         }
         #[allow(clippy::all)]
         pub mod long_use_chain3 {
@@ -2439,28 +1021,19 @@ pub mod foo {
             pub type A = super::super::super::foo::foo::long_use_chain2::A;
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send {}
-            pub fn add_to_linker_get_host<T, G>(
+            impl<_T: Host + Send> Host for &mut _T {}
+            pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
-                host_getter: G,
+                host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host + Send>,
-                T: Send + 'static,
+                D: wasmtime::component::HasData,
+                for<'a> D::Data<'a>: Host,
+                T: 'static + Send,
             {
                 let mut inst = linker.instance("foo:foo/long-use-chain3")?;
                 Ok(())
             }
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host + Send,
-                T: Send + 'static,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + Send> Host for &mut _T {}
         }
         #[allow(clippy::all)]
         pub mod long_use_chain4 {
@@ -2468,7 +1041,7 @@ pub mod foo {
             use wasmtime::component::__internal::{anyhow, Box};
             pub type A = super::super::super::foo::foo::long_use_chain3::A;
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait Host: Send {
+            pub trait HostConcurrent: wasmtime::component::HasData + Send {
                 fn foo<T: 'static>(
                     accessor: &mut wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<
@@ -2477,181 +1050,30 @@ pub mod foo {
                 where
                     Self: Sized;
             }
-            struct State {
-                host: *mut u8,
-                store: *mut u8,
-                spawned: Vec<wasmtime::component::__internal::Spawned>,
-            }
-            thread_local! {
-                static STATE : wasmtime::component::__internal::RefCell < Option < State
-                >> = wasmtime::component::__internal::RefCell::new(None);
-            }
-            struct ResetState(Option<State>);
-            impl Drop for ResetState {
-                fn drop(&mut self) {
-                    STATE
-                        .with(|v| {
-                            *v.borrow_mut() = self.0.take();
-                        })
-                }
-            }
-            fn get_host_and_store() -> (*mut u8, *mut u8) {
-                STATE
-                    .with(|v| {
-                        v
-                            .borrow()
-                            .as_ref()
-                            .map(|State { host, store, .. }| (*host, *store))
-                    })
-                    .unwrap()
-            }
-            fn spawn_task(task: wasmtime::component::__internal::Spawned) {
-                STATE.with(|v| v.borrow_mut().as_mut().unwrap().spawned.push(task));
-            }
-            fn poll_with_state<
-                T,
-                G: for<'a> wasmtime::component::GetHost<&'a mut T>,
-                F: wasmtime::component::__internal::Future + ?Sized,
-            >(
-                getter: G,
-                store: wasmtime::VMStoreRawPtr,
-                instance: Option<wasmtime::component::Instance>,
-                cx: &mut wasmtime::component::__internal::Context,
-                future: wasmtime::component::__internal::Pin<&mut F>,
-            ) -> wasmtime::component::__internal::Poll<F::Output> {
-                use wasmtime::component::__internal::{AbortWrapper, mem, DerefMut, Poll};
-                let mut store_cx = unsafe {
-                    wasmtime::StoreContextMut::new(&mut *store.0.as_ptr().cast())
-                };
-                let (result, spawned) = {
-                    let host = &mut getter(store_cx.data_mut());
-                    let old = STATE
-                        .with(|v| {
-                            v
-                                .replace(
-                                    Some(State {
-                                        host: (host as *mut G::Host).cast(),
-                                        store: store.0.as_ptr().cast(),
-                                        spawned: Vec::new(),
-                                    }),
-                                )
-                        });
-                    let _reset = ResetState(old);
-                    (future.poll(cx), STATE.with(|v| v.take()).unwrap().spawned)
-                };
-                for spawned in spawned {
-                    instance
-                        .unwrap()
-                        .spawn_raw(
-                            &mut store_cx,
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                let mut spawned = spawned.try_lock().unwrap();
-                                let inner = mem::replace(
-                                    DerefMut::deref_mut(&mut spawned),
-                                    AbortWrapper::Aborted,
-                                );
-                                if let AbortWrapper::Unpolled(mut future)
-                                | AbortWrapper::Polled { mut future, .. } = inner {
-                                    let result = poll_with_state(
-                                        getter,
-                                        store,
-                                        instance,
-                                        cx,
-                                        future.as_mut(),
-                                    );
-                                    *DerefMut::deref_mut(&mut spawned) = AbortWrapper::Polled {
-                                        future,
-                                        waker: cx.waker().clone(),
-                                    };
-                                    result
-                                } else {
-                                    Poll::Ready(Ok(()))
-                                }
-                            }),
-                        )
-                }
-                result
-            }
-            pub fn add_to_linker_get_host<T, G>(
+            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
+            pub trait Host: Send {}
+            impl<_T: Host + Send> Host for &mut _T {}
+            pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
-                host_getter: G,
+                host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host + Send>,
-                T: Send + 'static,
+                D: HostConcurrent,
+                for<'a> D::Data<'a>: Host,
+                T: 'static + Send,
             {
                 let mut inst = linker.instance("foo:foo/long-use-chain4")?;
                 inst.func_wrap_concurrent(
                     "foo",
-                    move |caller: &mut wasmtime::component::Accessor<T, T>, (): ()| {
-                        let mut accessor = unsafe {
-                            wasmtime::component::Accessor::<
-                                T,
-                                _,
-                            >::new(
-                                get_host_and_store,
-                                spawn_task,
-                                caller.maybe_instance(),
-                            )
-                        };
-                        let mut future = wasmtime::component::__internal::Box::pin(async move {
-                            let r = <G::Host as Host>::foo(&mut accessor).await;
+                    move |caller: &mut wasmtime::component::Accessor<T>, (): ()| {
+                        wasmtime::component::__internal::Box::pin(async move {
+                            let accessor = &mut unsafe { caller.with_data(host_getter) };
+                            let r = <D as HostConcurrent>::foo(accessor).await;
                             Ok((r,))
-                        });
-                        let store = wasmtime::VMStoreRawPtr(
-                            caller
-                                .with(|mut v| {
-                                    wasmtime::AsContextMut::as_context_mut(&mut v).traitobj()
-                                }),
-                        );
-                        let instance = caller.maybe_instance();
-                        wasmtime::component::__internal::Box::pin(
-                            wasmtime::component::__internal::poll_fn(move |cx| {
-                                poll_with_state(
-                                    host_getter,
-                                    store,
-                                    instance,
-                                    cx,
-                                    future.as_mut(),
-                                )
-                            }),
-                        )
+                        })
                     },
                 )?;
                 Ok(())
-            }
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host + Send,
-                T: Send + 'static,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + Send> Host for &mut _T {
-                async fn foo<T: 'static>(
-                    accessor: &mut wasmtime::component::Accessor<T, Self>,
-                ) -> wasmtime::component::Resource<A> {
-                    struct Task {}
-                    impl<
-                        T: 'static,
-                        U: Host,
-                    > wasmtime::component::AccessorTask<
-                        T,
-                        U,
-                        wasmtime::component::Resource<A>,
-                    > for Task {
-                        async fn run(
-                            self,
-                            accessor: &mut wasmtime::component::Accessor<T, U>,
-                        ) -> wasmtime::component::Resource<A> {
-                            <U as Host>::foo(accessor).await
-                        }
-                    }
-                    accessor.forward(|v| *v, Task {}).await
-                }
             }
         }
         #[allow(clippy::all)]
@@ -2660,13 +1082,13 @@ pub mod foo {
             use wasmtime::component::__internal::{anyhow, Box};
             pub enum Foo {}
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait HostFoo: Sized {
+            pub trait HostFoo: Send {
                 async fn drop(
                     &mut self,
                     rep: wasmtime::component::Resource<Foo>,
                 ) -> wasmtime::Result<()>;
             }
-            impl<_T: HostFoo> HostFoo for &mut _T {
+            impl<_T: HostFoo + Send> HostFoo for &mut _T {
                 async fn drop(
                     &mut self,
                     rep: wasmtime::component::Resource<Foo>,
@@ -2675,14 +1097,16 @@ pub mod foo {
                 }
             }
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait Host: Send + HostFoo + Sized {}
-            pub fn add_to_linker_get_host<T, G>(
+            pub trait Host: Send + HostFoo {}
+            impl<_T: Host + Send> Host for &mut _T {}
+            pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
-                host_getter: G,
+                host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host + Send>,
-                T: Send + 'static,
+                D: wasmtime::component::HasData,
+                for<'a> D::Data<'a>: Host,
+                T: 'static + Send,
             {
                 let mut inst = linker
                     .instance("foo:foo/transitive-interface-with-resource")?;
@@ -2701,17 +1125,6 @@ pub mod foo {
                 )?;
                 Ok(())
             }
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host + Send,
-                T: Send + 'static,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + Send> Host for &mut _T {}
         }
     }
 }

@@ -150,15 +150,16 @@ const _: () = {
             let indices = TheWorldIndices::new(&instance.instance_pre(&store))?;
             indices.load(&mut store, instance)
         }
-        pub fn add_to_linker<T, U>(
+        pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
-            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            T: Send,
-            U: foo::foo::anon::Host + Send,
+            D: wasmtime::component::HasData,
+            for<'a> D::Data<'a>: foo::foo::anon::Host + Send,
+            T: 'static + Send,
         {
-            foo::foo::anon::add_to_linker(linker, get)?;
+            foo::foo::anon::add_to_linker::<T, D>(linker, host_getter)?;
             Ok(())
         }
         pub fn foo_foo_anon(&self) -> &exports::foo::foo::anon::Guest {
@@ -223,13 +224,21 @@ pub mod foo {
                     &mut self,
                 ) -> Result<Option<wasmtime::component::__internal::String>, Error>;
             }
-            pub fn add_to_linker_get_host<T, G>(
+            impl<_T: Host + Send> Host for &mut _T {
+                async fn option_test(
+                    &mut self,
+                ) -> Result<Option<wasmtime::component::__internal::String>, Error> {
+                    Host::option_test(*self).await
+                }
+            }
+            pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
-                host_getter: G,
+                host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host + Send>,
-                T: Send,
+                D: wasmtime::component::HasData,
+                for<'a> D::Data<'a>: Host,
+                T: 'static + Send,
             {
                 let mut inst = linker.instance("foo:foo/anon")?;
                 inst.func_wrap_async(
@@ -243,23 +252,6 @@ pub mod foo {
                     },
                 )?;
                 Ok(())
-            }
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host + Send,
-                T: Send,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + ?Sized + Send> Host for &mut _T {
-                async fn option_test(
-                    &mut self,
-                ) -> Result<Option<wasmtime::component::__internal::String>, Error> {
-                    Host::option_test(*self).await
-                }
             }
         }
     }
