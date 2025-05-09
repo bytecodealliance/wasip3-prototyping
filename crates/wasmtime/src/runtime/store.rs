@@ -1084,7 +1084,7 @@ impl<T> StoreInner<T> {
     }
 
     #[inline]
-    fn data_mut(&mut self) -> &mut T {
+    pub(crate) fn data_mut(&mut self) -> &mut T {
         &mut self.data
     }
 

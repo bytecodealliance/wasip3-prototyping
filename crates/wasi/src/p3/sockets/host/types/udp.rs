@@ -4,19 +4,19 @@ use anyhow::Context as _;
 use wasmtime::component::{Accessor, Resource, ResourceTable};
 
 use crate::p3::bindings::sockets::types::{
-    ErrorCode, HostUdpSocket, IpAddressFamily, IpSocketAddress,
+    ErrorCode, HostUdpSocket, HostUdpSocketConcurrent, IpAddressFamily, IpSocketAddress,
 };
 use crate::p3::sockets::udp::{UdpSocket, MAX_UDP_DATAGRAM_SIZE};
-use crate::p3::sockets::{SocketAddrUse, WasiSocketsImpl, WasiSocketsView};
+use crate::p3::sockets::{SocketAddrUse, WasiSockets, WasiSocketsImpl, WasiSocketsView};
 use crate::p3::ResourceView as _;
 
 use super::is_addr_allowed;
 
-fn is_udp_allowed<T, U>(store: &mut Accessor<T, U>) -> bool
+fn is_udp_allowed<T, U>(store: &mut Accessor<T, WasiSockets<U>>) -> bool
 where
-    U: WasiSocketsView,
+    U: WasiSocketsView + 'static,
 {
-    store.with(|view| view.sockets().allowed_network_uses.udp)
+    store.with(|mut view| view.get().sockets().allowed_network_uses.udp)
 }
 
 fn get_socket<'a>(
@@ -37,17 +37,10 @@ fn get_socket_mut<'a>(
         .context("failed to get socket resource from table")
 }
 
-impl<T> HostUdpSocket for WasiSocketsImpl<T>
+impl<T> HostUdpSocketConcurrent for WasiSockets<T>
 where
-    T: WasiSocketsView,
+    T: WasiSocketsView + 'static,
 {
-    fn new(&mut self, address_family: IpAddressFamily) -> wasmtime::Result<Resource<UdpSocket>> {
-        let socket = UdpSocket::new(address_family.into()).context("failed to create socket")?;
-        self.table()
-            .push(socket)
-            .context("failed to push socket resource to table")
-    }
-
     async fn bind<U>(
         store: &mut Accessor<U, Self>,
         socket: Resource<UdpSocket>,
@@ -60,7 +53,8 @@ where
             return Ok(Err(ErrorCode::AccessDenied));
         }
         store.with(|mut view| {
-            let socket = get_socket_mut(view.table(), &socket)?;
+            let mut binding = view.get();
+            let socket = get_socket_mut(binding.table(), &socket)?;
             Ok(socket.bind(local_address))
         })
     }
@@ -77,17 +71,10 @@ where
             return Ok(Err(ErrorCode::AccessDenied));
         }
         store.with(|mut view| {
-            let socket = get_socket_mut(view.table(), &socket)?;
+            let mut binding = view.get();
+            let socket = get_socket_mut(binding.table(), &socket)?;
             Ok(socket.connect(remote_address))
         })
-    }
-
-    fn disconnect(
-        &mut self,
-        socket: Resource<UdpSocket>,
-    ) -> wasmtime::Result<Result<(), ErrorCode>> {
-        let socket = get_socket_mut(self.table(), &socket)?;
-        Ok(socket.disconnect())
     }
 
     async fn send<U>(
@@ -108,12 +95,13 @@ where
                 return Ok(Err(ErrorCode::AccessDenied));
             }
             let fut = store.with(|mut view| {
-                get_socket(view.table(), &socket).map(|sock| sock.send_to(data, addr))
+                get_socket(view.get().table(), &socket).map(|sock| sock.send_to(data, addr))
             })?;
             Ok(fut.await)
         } else {
-            let fut = store
-                .with(|mut view| get_socket(view.table(), &socket).map(|sock| sock.send(data)))?;
+            let fut = store.with(|mut view| {
+                get_socket(view.get().table(), &socket).map(|sock| sock.send(data))
+            })?;
             Ok(fut.await)
         }
     }
@@ -125,9 +113,29 @@ where
         if !is_udp_allowed(store) {
             return Ok(Err(ErrorCode::AccessDenied));
         }
-        let fut =
-            store.with(|mut view| get_socket(view.table(), &socket).map(|sock| sock.receive()))?;
+        let fut = store
+            .with(|mut view| get_socket(view.get().table(), &socket).map(|sock| sock.receive()))?;
         Ok(fut.await)
+    }
+}
+
+impl<T> HostUdpSocket for WasiSocketsImpl<T>
+where
+    T: WasiSocketsView,
+{
+    fn new(&mut self, address_family: IpAddressFamily) -> wasmtime::Result<Resource<UdpSocket>> {
+        let socket = UdpSocket::new(address_family.into()).context("failed to create socket")?;
+        self.table()
+            .push(socket)
+            .context("failed to push socket resource to table")
+    }
+
+    fn disconnect(
+        &mut self,
+        socket: Resource<UdpSocket>,
+    ) -> wasmtime::Result<Result<(), ErrorCode>> {
+        let socket = get_socket_mut(self.table(), &socket)?;
+        Ok(socket.disconnect())
     }
 
     fn local_address(

@@ -2,7 +2,7 @@ use anyhow::Context;
 use std::{fs, path::Path};
 
 use wasmtime::{
-    component::{bindgen, Component, Linker},
+    component::{bindgen, Component, HasData, Linker},
     Config, Engine, Result, Store,
 };
 
@@ -20,6 +20,10 @@ impl host::Host for HostComponent {
 
 struct MyState {
     host: HostComponent,
+}
+
+impl HasData for MyState {
+    type Data<'a> = &'a mut HostComponent;
 }
 
 /// This function is only needed until rust can natively output a component.
@@ -54,7 +58,7 @@ fn main() -> Result<()> {
         },
     );
     let mut linker = Linker::new(&engine);
-    host::add_to_linker(&mut linker, |state: &mut MyState| &mut state.host)?;
+    host::add_to_linker::<MyState, MyState>(&mut linker, |state| &mut state.host)?;
     let convert = Convert::instantiate(&mut store, &component, &linker)?;
     let result = convert.call_convert_celsius_to_fahrenheit(&mut store, 23.4)?;
     println!("Converted to: {result:?}");

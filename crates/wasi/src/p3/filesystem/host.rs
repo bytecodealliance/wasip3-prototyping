@@ -13,7 +13,7 @@ use crate::p3::bindings::filesystem::types::{
 };
 use crate::p3::bindings::filesystem::{preopens, types};
 use crate::p3::filesystem::{
-    Descriptor, DirPerms, FilePerms, WasiFilesystemImpl, WasiFilesystemView,
+    Descriptor, DirPerms, FilePerms, WasiFilesystem, WasiFilesystemImpl, WasiFilesystemView,
 };
 use crate::p3::{AccessorTaskFn, IoTask, ResourceView as _, TaskTable};
 
@@ -34,6 +34,7 @@ pub struct ReadTask<T> {
 
 impl<T, U, V> AccessorTask<T, U, wasmtime::Result<()>> for ReadTask<V>
 where
+    U: wasmtime::component::HasData,
     V: Lower + Send + Sync + 'static,
 {
     async fn run(self, store: &mut Accessor<T, U>) -> wasmtime::Result<()> {
@@ -46,9 +47,11 @@ where
 
 impl<T> types::Host for WasiFilesystemImpl<T> where T: WasiFilesystemView {}
 
-impl<T> types::HostDescriptor for WasiFilesystemImpl<T>
+impl<T> types::HostConcurrent for WasiFilesystem<T> where T: WasiFilesystemView + 'static {}
+
+impl<T> types::HostDescriptorConcurrent for WasiFilesystem<T>
 where
-    T: WasiFilesystemView,
+    T: WasiFilesystemView + 'static,
 {
     async fn read_via_stream<U: 'static>(
         store: &mut Accessor<U, Self>,
@@ -63,7 +66,8 @@ where
             let (res_tx, res_rx) = instance
                 .future(&mut view)
                 .context("failed to create future")?;
-            let fd = get_descriptor(view.table(), &fd)?;
+            let mut binding = view.get();
+            let fd = get_descriptor(binding.table(), &fd)?;
             match fd.file() {
                 Ok(f) => {
                     let (task_tx, task_rx) = mpsc::channel(1);
@@ -148,7 +152,7 @@ where
         let (fd, fut) = store.with(|mut view| {
             let data = data.into_reader::<Vec<u8>, _, _>(&mut view);
             let fut = data.read(buf);
-            let fd = get_descriptor(view.table(), &fd)?;
+            let fd = get_descriptor(view.get().table(), &fd)?.clone();
             anyhow::Ok((fd.clone(), fut))
         })?;
         let f = match fd.file() {
@@ -196,8 +200,8 @@ where
         let (fd, fut) = store.with(|mut view| {
             let data = data.into_reader::<Vec<u8>, _, _>(&mut view);
             let fut = data.read(buf);
-            let fd = get_descriptor(view.table(), &fd)?;
-            anyhow::Ok((fd.clone(), fut))
+            let fd = get_descriptor(view.get().table(), &fd)?.clone();
+            anyhow::Ok((fd, fut))
         })?;
         let f = match fd.file() {
             Ok(f) => f,
@@ -242,7 +246,8 @@ where
         advice: Advice,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let fut = store.with(|mut view| {
-            get_descriptor(view.table(), &fd).map(|fd| fd.clone().advise(offset, length, advice))
+            get_descriptor(view.get().table(), &fd)
+                .map(|fd| fd.clone().advise(offset, length, advice))
         })?;
         Ok(fut.await)
     }
@@ -251,8 +256,9 @@ where
         store: &mut Accessor<U, Self>,
         fd: Resource<Descriptor>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
-        let fut = store
-            .with(|mut view| get_descriptor(view.table(), &fd).map(|fd| fd.clone().sync_data()))?;
+        let fut = store.with(|mut view| {
+            get_descriptor(view.get().table(), &fd).map(|fd| fd.clone().sync_data())
+        })?;
         Ok(fut.await)
     }
 
@@ -260,8 +266,9 @@ where
         store: &mut Accessor<U, Self>,
         fd: Resource<Descriptor>,
     ) -> wasmtime::Result<Result<DescriptorFlags, ErrorCode>> {
-        let fut = store
-            .with(|mut view| get_descriptor(view.table(), &fd).map(|fd| fd.clone().get_flags()))?;
+        let fut = store.with(|mut view| {
+            get_descriptor(view.get().table(), &fd).map(|fd| fd.clone().get_flags())
+        })?;
         Ok(fut.await)
     }
 
@@ -269,8 +276,9 @@ where
         store: &mut Accessor<U, Self>,
         fd: Resource<Descriptor>,
     ) -> wasmtime::Result<Result<DescriptorType, ErrorCode>> {
-        let fut = store
-            .with(|mut view| get_descriptor(view.table(), &fd).map(|fd| fd.clone().get_type()))?;
+        let fut = store.with(|mut view| {
+            get_descriptor(view.get().table(), &fd).map(|fd| fd.clone().get_type())
+        })?;
         Ok(fut.await)
     }
 
@@ -280,7 +288,7 @@ where
         size: Filesize,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let fut = store.with(|mut view| {
-            get_descriptor(view.table(), &fd).map(|fd| fd.clone().set_size(size))
+            get_descriptor(view.get().table(), &fd).map(|fd| fd.clone().set_size(size))
         })?;
         Ok(fut.await)
     }
@@ -292,7 +300,7 @@ where
         data_modification_timestamp: NewTimestamp,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let fut = store.with(|mut view| {
-            get_descriptor(view.table(), &fd).map(|fd| {
+            get_descriptor(view.get().table(), &fd).map(|fd| {
                 fd.clone()
                     .set_times(data_access_timestamp, data_modification_timestamp)
             })
@@ -315,7 +323,8 @@ where
             let (res_tx, res_rx) = instance
                 .future(&mut view)
                 .context("failed to create future")?;
-            let fd = get_descriptor(view.table(), &fd)?;
+            let mut binding = view.get();
+            let fd = get_descriptor(binding.table(), &fd)?;
             match fd.dir().and_then(|d| {
                 if !d.perms.contains(DirPerms::READ) {
                     Err(ErrorCode::NotPermitted)
@@ -429,8 +438,8 @@ where
         store: &mut Accessor<U, Self>,
         fd: Resource<Descriptor>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
-        let fut =
-            store.with(|mut view| get_descriptor(view.table(), &fd).map(|fd| fd.clone().sync()))?;
+        let fut = store
+            .with(|mut view| get_descriptor(view.get().table(), &fd).map(|fd| fd.clone().sync()))?;
         Ok(fut.await)
     }
 
@@ -440,7 +449,7 @@ where
         path: String,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let fut = store.with(|mut view| {
-            get_descriptor(view.table(), &fd).map(|fd| fd.clone().create_directory_at(path))
+            get_descriptor(view.get().table(), &fd).map(|fd| fd.clone().create_directory_at(path))
         })?;
         Ok(fut.await)
     }
@@ -449,8 +458,8 @@ where
         store: &mut Accessor<U, Self>,
         fd: Resource<Descriptor>,
     ) -> wasmtime::Result<Result<DescriptorStat, ErrorCode>> {
-        let fut =
-            store.with(|mut view| get_descriptor(view.table(), &fd).map(|fd| fd.clone().stat()))?;
+        let fut = store
+            .with(|mut view| get_descriptor(view.get().table(), &fd).map(|fd| fd.clone().stat()))?;
         Ok(fut.await)
     }
 
@@ -461,7 +470,7 @@ where
         path: String,
     ) -> wasmtime::Result<Result<DescriptorStat, ErrorCode>> {
         let fut = store.with(|mut view| {
-            get_descriptor(view.table(), &fd).map(|fd| fd.clone().stat_at(path_flags, path))
+            get_descriptor(view.get().table(), &fd).map(|fd| fd.clone().stat_at(path_flags, path))
         })?;
         Ok(fut.await)
     }
@@ -475,7 +484,7 @@ where
         data_modification_timestamp: NewTimestamp,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let fut = store.with(|mut view| {
-            get_descriptor(view.table(), &fd).map(|fd| {
+            get_descriptor(view.get().table(), &fd).map(|fd| {
                 fd.clone().set_times_at(
                     path_flags,
                     path,
@@ -496,8 +505,8 @@ where
         new_path: String,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let fut = store.with(|mut view| {
-            let new_fd = get_descriptor(view.table(), &new_fd).cloned()?;
-            get_descriptor(view.table(), &fd).map(|fd| {
+            let new_fd = get_descriptor(view.get().table(), &new_fd).cloned()?;
+            get_descriptor(view.get().table(), &fd).map(|fd| {
                 fd.clone()
                     .link_at(old_path_flags, old_path, new_fd, new_path)
             })
@@ -514,8 +523,9 @@ where
         flags: DescriptorFlags,
     ) -> wasmtime::Result<Result<Resource<Descriptor>, ErrorCode>> {
         let fut = store.with(|mut view| {
-            let allow_blocking_current_thread = view.filesystem().allow_blocking_current_thread;
-            get_descriptor(view.table(), &fd).map(|fd| {
+            let allow_blocking_current_thread =
+                view.get().filesystem().allow_blocking_current_thread;
+            get_descriptor(view.get().table(), &fd).map(|fd| {
                 fd.clone().open_at(
                     path_flags,
                     path,
@@ -528,6 +538,7 @@ where
         match fut.await {
             Ok(fd) => store.with(|mut view| {
                 let fd = view
+                    .get()
                     .table()
                     .push(fd)
                     .context("failed to push descriptor resource to table")?;
@@ -543,7 +554,7 @@ where
         path: String,
     ) -> wasmtime::Result<Result<String, ErrorCode>> {
         let fut = store.with(|mut view| {
-            get_descriptor(view.table(), &fd).map(|fd| fd.clone().readlink_at(path))
+            get_descriptor(view.get().table(), &fd).map(|fd| fd.clone().readlink_at(path))
         })?;
         Ok(fut.await)
     }
@@ -554,7 +565,7 @@ where
         path: String,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let fut = store.with(|mut view| {
-            get_descriptor(view.table(), &fd).map(|fd| fd.clone().remove_directory_at(path))
+            get_descriptor(view.get().table(), &fd).map(|fd| fd.clone().remove_directory_at(path))
         })?;
         Ok(fut.await)
     }
@@ -567,8 +578,8 @@ where
         new_path: String,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let fut = store.with(|mut view| {
-            let new_fd = get_descriptor(view.table(), &new_fd).cloned()?;
-            get_descriptor(view.table(), &fd)
+            let new_fd = get_descriptor(view.get().table(), &new_fd).cloned()?;
+            get_descriptor(view.get().table(), &fd)
                 .map(|fd| fd.clone().rename_at(old_path, new_fd, new_path))
         })?;
         Ok(fut.await)
@@ -581,7 +592,8 @@ where
         new_path: String,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let fut = store.with(|mut view| {
-            get_descriptor(view.table(), &fd).map(|fd| fd.clone().symlink_at(old_path, new_path))
+            get_descriptor(view.get().table(), &fd)
+                .map(|fd| fd.clone().symlink_at(old_path, new_path))
         })?;
         Ok(fut.await)
     }
@@ -592,7 +604,7 @@ where
         path: String,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let fut = store.with(|mut view| {
-            get_descriptor(view.table(), &fd).map(|fd| fd.clone().unlink_file_at(path))
+            get_descriptor(view.get().table(), &fd).map(|fd| fd.clone().unlink_file_at(path))
         })?;
         Ok(fut.await)
     }
@@ -603,8 +615,8 @@ where
         other: Resource<Descriptor>,
     ) -> wasmtime::Result<bool> {
         let fut = store.with(|mut view| {
-            let other = get_descriptor(view.table(), &other).cloned()?;
-            get_descriptor(view.table(), &fd).map(|fd| fd.clone().is_same_object(other))
+            let other = get_descriptor(view.get().table(), &other).cloned()?;
+            get_descriptor(view.get().table(), &fd).map(|fd| fd.clone().is_same_object(other))
         })?;
         fut.await
     }
@@ -614,7 +626,7 @@ where
         fd: Resource<Descriptor>,
     ) -> wasmtime::Result<Result<MetadataHashValue, ErrorCode>> {
         let fut = store.with(|mut view| {
-            get_descriptor(view.table(), &fd).map(|fd| fd.clone().metadata_hash())
+            get_descriptor(view.get().table(), &fd).map(|fd| fd.clone().metadata_hash())
         })?;
         Ok(fut.await)
     }
@@ -626,12 +638,17 @@ where
         path: String,
     ) -> wasmtime::Result<Result<MetadataHashValue, ErrorCode>> {
         let fut = store.with(|mut view| {
-            get_descriptor(view.table(), &fd)
+            get_descriptor(view.get().table(), &fd)
                 .map(|fd| fd.clone().metadata_hash_at(path_flags, path))
         })?;
         Ok(fut.await)
     }
+}
 
+impl<T> types::HostDescriptor for WasiFilesystemImpl<T>
+where
+    T: WasiFilesystemView,
+{
     fn drop(&mut self, rep: Resource<Descriptor>) -> wasmtime::Result<()> {
         self.table()
             .delete(rep)

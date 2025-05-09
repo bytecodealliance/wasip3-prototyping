@@ -13,14 +13,14 @@ use futures::{
 use once_cell::sync::Lazy;
 use tokio::fs;
 use wasmtime::component::{
-    Accessor, AccessorTask, Component, Instance, Linker, ResourceTable, Val,
+    Accessor, AccessorTask, Component, HasSelf, Instance, Linker, ResourceTable, Val,
 };
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::Ctx;
 
-pub use component_async_tests::util::{annotate, compose, config};
+pub use component_async_tests::util::{compose, config};
 
 #[tokio::test]
 pub async fn async_round_trip_stackful() -> Result<()> {
@@ -206,9 +206,9 @@ pub async fn test_round_trip(component: &[u8], inputs_and_outputs: &[(&str, &str
         let mut linker = Linker::new(&engine);
 
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
-        component_async_tests::round_trip::bindings::local::local::baz::add_to_linker_get_host(
+        component_async_tests::round_trip::bindings::local::local::baz::add_to_linker::<_, Ctx>(
             &mut linker,
-            annotate(|ctx| ctx),
+            |ctx| ctx,
         )?;
 
         let mut store = make_store();
@@ -274,8 +274,8 @@ pub async fn test_round_trip(component: &[u8], inputs_and_outputs: &[(&str, &str
             tx: oneshot::Sender<()>,
         }
 
-        impl AccessorTask<Ctx, Ctx, Result<()>> for Task {
-            async fn run(self, accessor: &mut Accessor<Ctx, Ctx>) -> Result<()> {
+        impl AccessorTask<Ctx, HasSelf<Ctx>, Result<()>> for Task {
+            async fn run(self, accessor: &mut Accessor<Ctx>) -> Result<()> {
                 let mut futures = FuturesUnordered::new();
                 accessor.with(|mut store| {
                     let round_trip = component_async_tests::round_trip::bindings::RoundTrip::new(
@@ -523,9 +523,9 @@ async fn test_panic(component: &[u8], kind: PanicKind) -> Result<()> {
     let mut linker = Linker::new(&engine);
 
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
-    component_async_tests::round_trip::bindings::local::local::baz::add_to_linker_get_host(
+    component_async_tests::round_trip::bindings::local::local::baz::add_to_linker::<_, Ctx>(
         &mut linker,
-        annotate(|ctx| ctx),
+        |ctx| ctx,
     )?;
 
     let mut store = make_store();

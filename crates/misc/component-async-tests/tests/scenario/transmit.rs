@@ -16,7 +16,7 @@ use wasmtime::{AsContextMut, Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::transmit::bindings::exports::local::local::transmit::Control;
-use component_async_tests::util::{annotate, compose, config, test_run, test_run_with_count};
+use component_async_tests::util::{compose, config, test_run, test_run_with_count};
 use component_async_tests::{sleep, transmit, Ctx};
 
 use cancel::exports::local::local::cancel::Mode;
@@ -102,7 +102,7 @@ async fn test_cancel(mode: Mode) -> Result<()> {
     let mut linker = Linker::new(&engine);
 
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
-    sleep::local::local::sleep::add_to_linker_get_host(&mut linker, annotate(|ctx| ctx))?;
+    sleep::local::local::sleep::add_to_linker::<_, Ctx>(&mut linker, |ctx| ctx)?;
 
     let mut store = Store::new(
         &engine,
@@ -329,7 +329,6 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
 
     let (test, instance) = Test::instantiate(&mut store, &component, &linker).await?;
 
-    #[allow(clippy::type_complexity)]
     enum Event<Test: TransmitTest> {
         Result(Test::Result),
         ControlWriteA(Option<StreamWriter<Option<Control>>>),

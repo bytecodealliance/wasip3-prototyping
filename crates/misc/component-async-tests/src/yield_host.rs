@@ -1,10 +1,8 @@
+use super::Ctx;
+use futures::future;
 use std::ops::DerefMut;
 use std::task::Poll;
-
-use futures::future;
 use wasmtime::component::Accessor;
-
-use super::Ctx;
 
 pub mod bindings {
     wasmtime::component::bindgen!({
@@ -20,7 +18,7 @@ pub mod bindings {
     });
 }
 
-impl bindings::local::local::continue_::Host for &mut Ctx {
+impl bindings::local::local::continue_::Host for Ctx {
     fn set_continue(&mut self, v: bool) {
         self.continue_ = v;
     }
@@ -30,7 +28,7 @@ impl bindings::local::local::continue_::Host for &mut Ctx {
     }
 }
 
-impl bindings::local::local::ready::Host for &mut Ctx {
+impl bindings::local::local::ready::Host for Ctx {
     fn set_ready(&mut self, ready: bool) {
         let mut wakers = self.wakers.lock().unwrap();
         if ready {
@@ -43,9 +41,11 @@ impl bindings::local::local::ready::Host for &mut Ctx {
             *wakers = Some(Vec::new());
         }
     }
+}
 
+impl bindings::local::local::ready::HostConcurrent for Ctx {
     async fn when_ready<T>(accessor: &mut Accessor<T, Self>) {
-        let wakers = accessor.with(|view| view.wakers.clone());
+        let wakers = accessor.with(|mut view| view.get().wakers.clone());
         future::poll_fn(move |cx| {
             let mut wakers = wakers.lock().unwrap();
             if let Some(wakers) = wakers.deref_mut() {

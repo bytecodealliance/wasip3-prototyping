@@ -1,9 +1,10 @@
 mod host;
 
+use crate::p3::bindings::clocks;
 use cap_std::time::{Duration, Instant, SystemClock};
 use cap_std::{ambient_authority, AmbientAuthority};
 use cap_time_ext::{MonotonicClockExt as _, SystemClockExt as _};
-use wasmtime::component::Linker;
+use wasmtime::component::{HasData, Linker};
 
 #[repr(transparent)]
 pub struct WasiClocksImpl<T>(pub T);
@@ -179,15 +180,13 @@ pub fn wall_clock() -> Box<dyn HostWallClock + Send> {
 /// }
 /// ```
 pub fn add_to_linker<T: WasiClocksView + 'static>(linker: &mut Linker<T>) -> wasmtime::Result<()> {
-    let closure = annotate_clocks(|cx| WasiClocksImpl(cx));
-    crate::p3::bindings::clocks::wall_clock::add_to_linker_get_host(linker, closure)?;
-    crate::p3::bindings::clocks::monotonic_clock::add_to_linker_get_host(linker, closure)?;
+    clocks::wall_clock::add_to_linker::<_, WasiClocks<T>>(linker, |x| WasiClocksImpl(x))?;
+    clocks::monotonic_clock::add_to_linker::<_, WasiClocks<T>>(linker, |x| WasiClocksImpl(x))?;
     Ok(())
 }
 
-fn annotate_clocks<T, F>(val: F) -> F
-where
-    F: Fn(&mut T) -> WasiClocksImpl<&mut T>,
-{
-    val
+struct WasiClocks<T>(T);
+
+impl<T: 'static> HasData for WasiClocks<T> {
+    type Data<'a> = WasiClocksImpl<&'a mut T>;
 }

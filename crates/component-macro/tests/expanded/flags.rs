@@ -144,14 +144,16 @@ const _: () = {
             let indices = TheFlagsIndices::new(&instance.instance_pre(&store))?;
             indices.load(&mut store, instance)
         }
-        pub fn add_to_linker<T, U>(
+        pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
-            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            U: foo::foo::flegs::Host,
+            D: wasmtime::component::HasData,
+            for<'a> D::Data<'a>: foo::foo::flegs::Host,
+            T: 'static,
         {
-            foo::foo::flegs::add_to_linker(linker, get)?;
+            foo::foo::flegs::add_to_linker::<T, D>(linker, host_getter)?;
             Ok(())
         }
         pub fn foo_foo_flegs(&self) -> &exports::foo::foo::flegs::Guest {
@@ -288,22 +290,38 @@ pub mod foo {
                 fn roundtrip_flag32(&mut self, x: Flag32) -> Flag32;
                 fn roundtrip_flag64(&mut self, x: Flag64) -> Flag64;
             }
-            pub trait GetHost<
-                T,
-            >: Fn(T) -> <Self as GetHost<T>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host;
+            impl<_T: Host> Host for &mut _T {
+                fn roundtrip_flag1(&mut self, x: Flag1) -> Flag1 {
+                    Host::roundtrip_flag1(*self, x)
+                }
+                fn roundtrip_flag2(&mut self, x: Flag2) -> Flag2 {
+                    Host::roundtrip_flag2(*self, x)
+                }
+                fn roundtrip_flag4(&mut self, x: Flag4) -> Flag4 {
+                    Host::roundtrip_flag4(*self, x)
+                }
+                fn roundtrip_flag8(&mut self, x: Flag8) -> Flag8 {
+                    Host::roundtrip_flag8(*self, x)
+                }
+                fn roundtrip_flag16(&mut self, x: Flag16) -> Flag16 {
+                    Host::roundtrip_flag16(*self, x)
+                }
+                fn roundtrip_flag32(&mut self, x: Flag32) -> Flag32 {
+                    Host::roundtrip_flag32(*self, x)
+                }
+                fn roundtrip_flag64(&mut self, x: Flag64) -> Flag64 {
+                    Host::roundtrip_flag64(*self, x)
+                }
             }
-            impl<F, T, O> GetHost<T> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<T, G: for<'a> GetHost<&'a mut T, Host: Host>>(
+            pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
-                host_getter: G,
-            ) -> wasmtime::Result<()> {
+                host_getter: fn(&mut T) -> D::Data<'_>,
+            ) -> wasmtime::Result<()>
+            where
+                D: wasmtime::component::HasData,
+                for<'a> D::Data<'a>: Host,
+                T: 'static,
+            {
                 let mut inst = linker.instance("foo:foo/flegs")?;
                 inst.func_wrap(
                     "roundtrip-flag1",
@@ -383,38 +401,6 @@ pub mod foo {
                     },
                 )?;
                 Ok(())
-            }
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + ?Sized> Host for &mut _T {
-                fn roundtrip_flag1(&mut self, x: Flag1) -> Flag1 {
-                    Host::roundtrip_flag1(*self, x)
-                }
-                fn roundtrip_flag2(&mut self, x: Flag2) -> Flag2 {
-                    Host::roundtrip_flag2(*self, x)
-                }
-                fn roundtrip_flag4(&mut self, x: Flag4) -> Flag4 {
-                    Host::roundtrip_flag4(*self, x)
-                }
-                fn roundtrip_flag8(&mut self, x: Flag8) -> Flag8 {
-                    Host::roundtrip_flag8(*self, x)
-                }
-                fn roundtrip_flag16(&mut self, x: Flag16) -> Flag16 {
-                    Host::roundtrip_flag16(*self, x)
-                }
-                fn roundtrip_flag32(&mut self, x: Flag32) -> Flag32 {
-                    Host::roundtrip_flag32(*self, x)
-                }
-                fn roundtrip_flag64(&mut self, x: Flag64) -> Flag64 {
-                    Host::roundtrip_flag64(*self, x)
-                }
             }
         }
     }

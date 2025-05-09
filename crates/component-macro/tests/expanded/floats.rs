@@ -146,14 +146,16 @@ const _: () = {
             let indices = TheWorldIndices::new(&instance.instance_pre(&store))?;
             indices.load(&mut store, instance)
         }
-        pub fn add_to_linker<T, U>(
+        pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
-            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            U: foo::foo::floats::Host,
+            D: wasmtime::component::HasData,
+            for<'a> D::Data<'a>: foo::foo::floats::Host,
+            T: 'static,
         {
-            foo::foo::floats::add_to_linker(linker, get)?;
+            foo::foo::floats::add_to_linker::<T, D>(linker, host_getter)?;
             Ok(())
         }
         pub fn foo_foo_floats(&self) -> &exports::foo::foo::floats::Guest {
@@ -173,22 +175,29 @@ pub mod foo {
                 fn f32_result(&mut self) -> f32;
                 fn f64_result(&mut self) -> f64;
             }
-            pub trait GetHost<
-                T,
-            >: Fn(T) -> <Self as GetHost<T>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host;
+            impl<_T: Host> Host for &mut _T {
+                fn f32_param(&mut self, x: f32) -> () {
+                    Host::f32_param(*self, x)
+                }
+                fn f64_param(&mut self, x: f64) -> () {
+                    Host::f64_param(*self, x)
+                }
+                fn f32_result(&mut self) -> f32 {
+                    Host::f32_result(*self)
+                }
+                fn f64_result(&mut self) -> f64 {
+                    Host::f64_result(*self)
+                }
             }
-            impl<F, T, O> GetHost<T> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<T, G: for<'a> GetHost<&'a mut T, Host: Host>>(
+            pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
-                host_getter: G,
-            ) -> wasmtime::Result<()> {
+                host_getter: fn(&mut T) -> D::Data<'_>,
+            ) -> wasmtime::Result<()>
+            where
+                D: wasmtime::component::HasData,
+                for<'a> D::Data<'a>: Host,
+                T: 'static,
+            {
                 let mut inst = linker.instance("foo:foo/floats")?;
                 inst.func_wrap(
                     "f32-param",
@@ -223,29 +232,6 @@ pub mod foo {
                     },
                 )?;
                 Ok(())
-            }
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + ?Sized> Host for &mut _T {
-                fn f32_param(&mut self, x: f32) -> () {
-                    Host::f32_param(*self, x)
-                }
-                fn f64_param(&mut self, x: f64) -> () {
-                    Host::f64_param(*self, x)
-                }
-                fn f32_result(&mut self) -> f32 {
-                    Host::f32_result(*self)
-                }
-                fn f64_result(&mut self) -> f64 {
-                    Host::f64_result(*self)
-                }
             }
         }
     }

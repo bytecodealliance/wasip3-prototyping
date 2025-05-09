@@ -2,7 +2,7 @@ use {
     crate::{
         component::{
             func::{self, Func, Options},
-            Instance,
+            HasData, HasSelf, Instance,
         },
         store::{StoreInner, StoreOpaque},
         vm::{
@@ -33,7 +33,7 @@ use {
         future::Future,
         marker::PhantomData,
         mem::{self, MaybeUninit},
-        ops::{Deref, DerefMut, Range},
+        ops::{DerefMut, Range},
         pin::{pin, Pin},
         ptr::{self, NonNull},
         sync::{
@@ -156,40 +156,27 @@ const EXIT_FLAG_ASYNC_CALLEE: u32 = fact::EXIT_FLAG_ASYNC_CALLEE as u32;
 /// itself (via [`AsContext`]/[`AsContextMut`]).
 ///
 /// See [`Accessor::with`] for details.
-pub struct Access<'a, T, U>(&'a mut Accessor<T, U>);
+pub struct Access<'a, T, D: HasData = HasSelf<T>>(&'a mut Accessor<T, D>);
 
-impl<'a, T, U> Access<'a, T, U> {
+impl<'a, T, D> Access<'a, T, D>
+where
+    D: HasData,
+{
     /// Get mutable access to the store data.
-    pub fn get(&mut self) -> &mut U {
-        // SAFETY: This relies on `Accessor::get` either returning a pair of
-        // pointers such that the first is a valid `*mut U` and the second is a
-        // `*mut dyn VMStore` whose data is of type `T` _or_ panicking if it is
-        // called outside its intended scope.
-        //
-        // See `ComponentInstance::wrap_call`, `Instance::run_with_raw`, and the
-        // code generated in
-        // `wasmtime_wit_bindgen::InterfaceGenerator::generate_guest_import_closure`
-        // for where we create `Accessor` instances and pass them `get`
-        // functions backed by thread-local state, thereby ensuring type- and
-        // lifetime-safety.
-        //
-        // See also `poll_with_state` in this module and in the code generated
-        // by `wasmtime_wit_bindgen::concurrent_declarations`, where we populate
-        // and then clear the thread-local state before and after polling
-        // futures which have `Accessor` instances, respectively.
-        //
-        // Finally, see `ComponentInstance::poll_until` for which is the only
-        // place we poll `ConcurrentState::futures`, which contains all futures
-        // which have `Accessor` instances, and note that we do so while we have
-        // exclusive access to the store and `ComponentInstance` can thus
-        // soundly populate the thread-local state to match.
-        unsafe { &mut *(self.0.get)().0.cast() }
+    pub fn data_mut(&mut self) -> &mut T {
+        self.as_context_mut().0.data_mut()
+    }
+
+    /// Get mutable access to the store data.
+    pub fn get(&mut self) -> D::Data<'_> {
+        let get_data = self.0.get_data;
+        get_data(self.data_mut())
     }
 
     /// Spawn a background task.
     ///
     /// See [`Accessor::spawn`] for details.
-    pub fn spawn(&mut self, task: impl AccessorTask<T, U, Result<()>>) -> AbortHandle
+    pub fn spawn(&mut self, task: impl AccessorTask<T, D, Result<()>>) -> AbortHandle
     where
         T: 'static,
     {
@@ -202,34 +189,25 @@ impl<'a, T, U> Access<'a, T, U> {
     }
 }
 
-impl<'a, T, U> Deref for Access<'a, T, U> {
-    type Target = U;
-
-    fn deref(&self) -> &U {
-        // SAFETY: See comment in `Access::get`
-        unsafe { &*(self.0.get)().0.cast() }
-    }
-}
-
-impl<'a, T, U> DerefMut for Access<'a, T, U> {
-    fn deref_mut(&mut self) -> &mut U {
-        self.get()
-    }
-}
-
-impl<'a, T, U> AsContext for Access<'a, T, U> {
+impl<'a, T, D> AsContext for Access<'a, T, D>
+where
+    D: HasData,
+{
     type Data = T;
 
     fn as_context(&self) -> StoreContext<T> {
-        // SAFETY: See comment in `Access::get`
-        unsafe { StoreContext(&*(self.0.get)().1.cast()) }
+        // SAFETY: TODO
+        unsafe { StoreContext(&*(self.0.get)().cast()) }
     }
 }
 
-impl<'a, T, U> AsContextMut for Access<'a, T, U> {
+impl<'a, T, D> AsContextMut for Access<'a, T, D>
+where
+    D: HasData,
+{
     fn as_context_mut(&mut self) -> StoreContextMut<T> {
-        // SAFETY: See comment in `Access::get`
-        unsafe { StoreContextMut(&mut *(self.0.get)().1.cast()) }
+        // SAFETY: TODO
+        unsafe { StoreContextMut(&mut *(self.0.get)().cast()) }
     }
 }
 
@@ -238,14 +216,21 @@ impl<'a, T, U> AsContextMut for Access<'a, T, U> {
 ///
 /// This allows multiple host import futures to execute concurrently and access
 /// the store data between (but not across) `await` points.
-pub struct Accessor<T, U> {
-    get: Arc<dyn Fn() -> (*mut u8, *mut u8) + Send + Sync>,
+pub struct Accessor<T, D = HasSelf<T>>
+where
+    D: HasData,
+{
+    get: Arc<dyn Fn() -> *mut u8 + Send + Sync>,
+    get_data: fn(&mut T) -> D::Data<'_>,
     spawn: fn(Spawned),
     instance: Option<Instance>,
-    _phantom: PhantomData<fn() -> (*mut U, *mut StoreInner<T>)>,
+    _phantom: PhantomData<fn() -> *mut StoreInner<T>>,
 }
 
-impl<T, U> Accessor<T, U> {
+impl<T, D> Accessor<T, D>
+where
+    D: HasData,
+{
     /// Creates a new `Accessor` backed by the specified functions.
     ///
     /// - `get`: used to retrieve the host data and store
@@ -261,12 +246,14 @@ impl<T, U> Accessor<T, U> {
     /// intended scope.  See the comment in `Access::get` for further details.
     #[doc(hidden)]
     pub unsafe fn new(
-        get: fn() -> (*mut u8, *mut u8),
+        get: fn() -> *mut u8,
+        get_data: fn(&mut T) -> D::Data<'_>,
         spawn: fn(Spawned),
         instance: Option<Instance>,
     ) -> Self {
         Self {
             get: Arc::new(get),
+            get_data,
             spawn,
             instance,
             _phantom: PhantomData,
@@ -279,34 +266,24 @@ impl<T, U> Accessor<T, U> {
     /// cannot borrow from the store data.  If you need shared access to
     /// something in the store data, it must be cloned (using e.g. `Arc::clone`
     /// if appropriate).
-    pub fn with<R: 'static>(&mut self, fun: impl FnOnce(Access<'_, T, U>) -> R) -> R {
+    pub fn with<R>(&mut self, fun: impl FnOnce(Access<'_, T, D>) -> R) -> R {
         fun(Access(self))
     }
 
-    /// Run the specified task using a `Accessor` of a different type via the
-    /// provided mapping function.
-    ///
-    /// This can be useful for projecting an `Accessor<T, U>` to an `Accessor<T,
-    /// V>`, where `V` is the type of e.g. a field that can be mutably borrowed
-    /// from a `&mut U`.
-    pub async fn forward<R, V>(
+    /// TODO: is this safe? unsafe? should there be a lifetime in the
+    /// returned value? no?
+    #[doc(hidden)]
+    pub unsafe fn with_data<D2: HasData>(
         &mut self,
-        fun: impl Fn(&mut U) -> &mut V + Send + Sync + 'static,
-        task: impl AccessorTask<T, V, R>,
-    ) -> R {
-        let get = self.get.clone();
-        let mut accessor = Accessor {
-            get: Arc::new(move || {
-                let (host, store) = get();
-                // SAFETY: See `Accessor::new` doc comment
-                let host = unsafe { &mut *host.cast() };
-                ((fun(host) as *mut V).cast(), store)
-            }),
+        get_data: fn(&mut T) -> D2::Data<'_>,
+    ) -> Accessor<T, D2> {
+        Accessor {
+            get: self.get.clone(),
+            get_data,
             spawn: self.spawn,
             instance: self.instance,
             _phantom: PhantomData,
-        };
-        task.run(&mut accessor).await
+        }
     }
 
     /// Spawn a background task which will receive an `&mut Accessor<T, U>` and
@@ -318,9 +295,10 @@ impl<T, U> Accessor<T, U> {
     /// `stream` or `future` must run after the function returns.
     ///
     /// The returned [`AbortHandle`] may be used to cancel the task.
-    pub fn spawn(&mut self, task: impl AccessorTask<T, U, Result<()>>) -> AbortHandle {
+    pub fn spawn(&mut self, task: impl AccessorTask<T, D, Result<()>>) -> AbortHandle {
         let mut accessor = Self {
             get: self.get.clone(),
+            get_data: self.get_data,
             spawn: self.spawn,
             instance: self.instance,
             _phantom: PhantomData,
@@ -431,13 +409,15 @@ impl Drop for AbortOnDropHandle {
 // FN: FnOnce(&mut Accessor<T>) -> F + Send + Sync + 'static` fails with a type
 // mismatch error when we try to pass it an async closure (e.g. `async move |_|
 // { ... }`).  So this seems to be the best we can do for the time being.
-pub trait AccessorTask<T, U, R>: Send + 'static {
+pub trait AccessorTask<T, D, R>: Send + 'static
+where
+    D: HasData,
+{
     /// Run the task.
-    fn run(self, accessor: &mut Accessor<T, U>) -> impl Future<Output = R> + Send;
+    fn run(self, accessor: &mut Accessor<T, D>) -> impl Future<Output = R> + Send;
 }
 
 struct State {
-    host: *mut u8,
     store: *mut u8,
     spawned: Vec<Spawned>,
 }
@@ -465,13 +445,9 @@ impl Drop for ResetInstance {
     }
 }
 
-fn get_host_and_store() -> (*mut u8, *mut u8) {
+fn get_store() -> *mut u8 {
     STATE
-        .with(|v| {
-            v.borrow()
-                .as_ref()
-                .map(|State { host, store, .. }| (*host, *store))
-        })
+        .with(|v| v.borrow().as_ref().map(|State { store, .. }| *store))
         .unwrap()
 }
 
@@ -494,15 +470,9 @@ unsafe fn poll_with_state<T, F: Future + ?Sized>(
     cx: &mut Context,
     future: Pin<&mut F>,
 ) -> Poll<F::Output> {
-    // SAFETY: Per the function precondition, `store` must be a valid `*mut dyn
-    // VMStore` with a data type of `T`.
-    let mut store_cx = unsafe { StoreContextMut::new(&mut *store.0.as_ptr().cast()) };
-
     let (result, spawned) = {
-        let host = store_cx.data_mut();
         let old_state = STATE.with(|v| {
             v.replace(Some(State {
-                host: (host as *mut T).cast(),
                 store: store.0.as_ptr().cast(),
                 spawned: Vec::new(),
             }))
@@ -1440,8 +1410,9 @@ impl ComponentInstance {
         params: P,
     ) -> Pin<Box<dyn Future<Output = Result<R>> + Send + 'static>>
     where
+        T: 'static,
         F: for<'a> Fn(
-                &'a mut Accessor<T, T>,
+                &'a mut Accessor<T>,
                 P,
             ) -> Pin<Box<dyn Future<Output = Result<R>> + Send + 'a>>
             + Send
@@ -1450,12 +1421,11 @@ impl ComponentInstance {
         P: Send + Sync + 'static,
         R: Send + Sync + 'static,
     {
-        // SAFETY: The `get_host_and_store` function we pass here is backed by a
+        // SAFETY: The `get_store` function we pass here is backed by a
         // thread-local variable which `poll_with_state` will populate and reset
         // with valid pointers to the store data and the store itself each time
         // the returned future is polled, respectively.
-        let mut accessor =
-            unsafe { Accessor::new(get_host_and_store, spawn_task, self.instance()) };
+        let mut accessor = unsafe { Accessor::new(get_store, |x| x, spawn_task, self.instance()) };
         let mut future = Box::pin(async move { closure(&mut accessor, params).await });
         let store = VMStoreRawPtr(NonNull::new(self.store()).unwrap());
         let instance = SendSyncPtr::new(NonNull::new(self).unwrap());
@@ -2714,7 +2684,7 @@ impl Instance {
     /// # use {
     /// #   anyhow::{Result, Error},
     /// #   wasmtime::{
-    /// #     component::{ Component, Linker, Resource, ResourceTable, Accessor, Access },
+    /// #     component::{ Component, Linker, Resource, ResourceTable, Accessor },
     /// #     Config, Engine, Store
     /// #   },
     /// # };
@@ -2731,13 +2701,13 @@ impl Instance {
     /// # let instance = linker.instantiate_async(&mut store, &component).await?;
     /// # let foo = instance.get_typed_func::<(Resource<MyResource>,), (Resource<MyResource>,)>(&mut store, "foo")?;
     /// # let bar = instance.get_typed_func::<(u32,), ()>(&mut store, "bar")?;
-    /// instance.run_with(&mut store, move |accessor: &mut Accessor<_, _>| Box::pin(async move {
-    ///    let (another_resource,) = accessor.with(|mut access: Access<Ctx, Ctx>| {
-    ///        let resource = access.table.push(MyResource(42))?;
+    /// instance.run_with(&mut store, move |accessor: &mut Accessor<_>| Box::pin(async move {
+    ///    let (another_resource,) = accessor.with(|mut access| {
+    ///        let resource = access.get().table.push(MyResource(42))?;
     ///        Ok::<_, Error>(foo.call_concurrent(access, (resource,)))
     ///    })?.await?;
-    ///    accessor.with(|mut access: Access<Ctx, Ctx>| {
-    ///        let value = access.table.delete(another_resource)?;
+    ///    accessor.with(|mut access| {
+    ///        let value = access.get().table.delete(another_resource)?;
     ///        Ok::<_, Error>(bar.call_concurrent(access, (value.0,)))
     ///    })?.await
     /// })).await??;
@@ -2750,7 +2720,8 @@ impl Instance {
         fun: F,
     ) -> Result<V>
     where
-        F: for<'a> FnOnce(&'a mut Accessor<U, U>) -> Pin<Box<dyn Future<Output = V> + Send + 'a>>
+        U: 'static,
+        F: for<'a> FnOnce(&'a mut Accessor<U>) -> Pin<Box<dyn Future<Output = V> + Send + 'a>>
             + Send
             + 'static,
     {
@@ -2765,7 +2736,8 @@ impl Instance {
         fun: F,
     ) -> Pin<Box<dyn Future<Output = V> + Send + 'static>>
     where
-        F: for<'a> FnOnce(&'a mut Accessor<U, U>) -> Pin<Box<dyn Future<Output = V> + Send + 'a>>
+        U: 'static,
+        F: for<'a> FnOnce(&'a mut Accessor<U>) -> Pin<Box<dyn Future<Output = V> + Send + 'a>>
             + Send
             + 'static,
     {
@@ -2777,7 +2749,7 @@ impl Instance {
 
         // SAFETY: See corresponding comment in `ComponentInstance::wrap_call`.
         let mut accessor =
-            unsafe { Accessor::new(get_host_and_store, spawn_task, instance.instance()) };
+            unsafe { Accessor::new(get_store, |x| x, spawn_task, instance.instance()) };
         let mut future = Box::pin(async move { fun(&mut accessor).await });
         let store = VMStoreRawPtr(store.traitobj());
         let instance = SendSyncPtr::new(NonNull::new(instance).unwrap());
@@ -2804,10 +2776,10 @@ impl Instance {
     /// for this instance is run.
     ///
     /// The returned [`SpawnHandle`] may be used to cancel the task.
-    pub fn spawn<U: Send>(
+    pub fn spawn<U: Send + 'static>(
         &self,
         store: impl AsContextMut<Data = U>,
-        task: impl AccessorTask<U, U, Result<()>>,
+        task: impl AccessorTask<U, HasSelf<U>, Result<()>>,
     ) -> AbortHandle {
         let mut future = self.run_with_raw(store, move |accessor| {
             Box::pin(future::ready(accessor.spawn(task)))

@@ -91,22 +91,11 @@ pub struct Host_Indices {}
 /// [`Linker`]: wasmtime::component::Linker
 pub struct Host_ {}
 #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
+#[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
 pub trait Host_Imports: Send {
     async fn foo(&mut self) -> ();
 }
-pub trait Host_ImportsGetHost<
-    T,
->: Fn(T) -> <Self as Host_ImportsGetHost<T>>::Host + Send + Sync + Copy + 'static {
-    type Host: Host_Imports;
-}
-impl<F, T, O> Host_ImportsGetHost<T> for F
-where
-    F: Fn(T) -> O + Send + Sync + Copy + 'static,
-    O: Host_Imports,
-{
-    type Host = O;
-}
-impl<_T: Host_Imports + ?Sized + Send> Host_Imports for &mut _T {
+impl<_T: Host_Imports + Send> Host_Imports for &mut _T {
     async fn foo(&mut self) -> () {
         Host_Imports::foo(*self).await
     }
@@ -165,15 +154,14 @@ const _: () = {
             let indices = Host_Indices::new(&instance.instance_pre(&store))?;
             indices.load(&mut store, instance)
         }
-        pub fn add_to_linker_imports_get_host<
-            T,
-            G: for<'a> Host_ImportsGetHost<&'a mut T, Host: Host_Imports>,
-        >(
+        pub fn add_to_linker_imports<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
-            host_getter: G,
+            host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            T: Send,
+            D: wasmtime::component::HasData,
+            for<'a> D::Data<'a>: Host_Imports,
+            T: 'static + Send,
         {
             let mut linker = linker.root();
             linker
@@ -189,15 +177,16 @@ const _: () = {
                 )?;
             Ok(())
         }
-        pub fn add_to_linker<T, U>(
+        pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
-            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            T: Send,
-            U: Host_Imports + Send,
+            D: wasmtime::component::HasData,
+            for<'a> D::Data<'a>: Host_Imports + Send,
+            T: 'static + Send,
         {
-            Self::add_to_linker_imports_get_host(linker, get)?;
+            Self::add_to_linker_imports::<T, D>(linker, host_getter)?;
             Ok(())
         }
     }

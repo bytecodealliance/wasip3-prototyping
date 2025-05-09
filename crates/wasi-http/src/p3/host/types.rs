@@ -1,29 +1,7 @@
-use core::future::poll_fn;
-use core::future::Future;
-use core::mem;
-use core::ops::{Deref, DerefMut};
-use core::pin::Pin;
-use core::str;
-use core::task::Poll;
-
-use std::io::Cursor;
-use std::sync::Arc;
-
-use anyhow::{bail, Context as _};
-use bytes::{Bytes, BytesMut};
-use futures::join;
-use http::header::CONTENT_LENGTH;
-use http_body::Body as _;
-use wasmtime::component::{
-    Accessor, AccessorTask, FutureWriter, HostFuture, HostStream, Resource, StreamWriter,
-};
-use wasmtime_wasi::p3::bindings::clocks::monotonic_clock::Duration;
-use wasmtime_wasi::p3::{ResourceView as _, WithChildren};
-use wasmtime_wasi::ResourceTable;
-
 use crate::p3::bindings::http::types::{
-    ErrorCode, FieldName, FieldValue, HeaderError, Host, HostFields, HostRequest,
-    HostRequestOptions, HostResponse, Method, RequestOptionsError, Scheme, StatusCode, Trailers,
+    ErrorCode, FieldName, FieldValue, HeaderError, Host, HostConcurrent, HostFields, HostRequest,
+    HostRequestConcurrent, HostRequestOptions, HostResponse, HostResponseConcurrent, Method,
+    RequestOptionsError, Scheme, StatusCode, Trailers,
 };
 use crate::p3::host::{
     delete_fields, delete_response, get_fields, get_fields_inner, get_fields_inner_mut,
@@ -31,9 +9,29 @@ use crate::p3::host::{
     push_request, push_response,
 };
 use crate::p3::{
-    Body, BodyContext, BodyFrame, ContentLength, Request, RequestOptions, Response, WasiHttpImpl,
-    WasiHttpView, DEFAULT_BUFFER_CAPACITY,
+    Body, BodyContext, BodyFrame, ContentLength, Request, RequestOptions, Response, WasiHttp,
+    WasiHttpImpl, WasiHttpView, DEFAULT_BUFFER_CAPACITY,
 };
+use anyhow::{bail, Context as _};
+use bytes::{Bytes, BytesMut};
+use core::future::poll_fn;
+use core::future::Future;
+use core::mem;
+use core::ops::{Deref, DerefMut};
+use core::pin::Pin;
+use core::str;
+use core::task::Poll;
+use futures::join;
+use http::header::CONTENT_LENGTH;
+use http_body::Body as _;
+use std::io::Cursor;
+use std::sync::Arc;
+use wasmtime::component::{
+    Accessor, AccessorTask, FutureWriter, HostFuture, HostStream, Resource, StreamWriter,
+};
+use wasmtime_wasi::p3::bindings::clocks::monotonic_clock::Duration;
+use wasmtime_wasi::p3::{ResourceView as _, WithChildren};
+use wasmtime_wasi::ResourceTable;
 
 fn get_request_options<'a>(
     table: &'a ResourceTable,
@@ -118,11 +116,11 @@ struct BodyTask {
     trailers_tx: FutureWriter<Result<Option<Resource<Trailers>>, ErrorCode>>,
 }
 
-impl<T, U> AccessorTask<T, U, wasmtime::Result<()>> for BodyTask
+impl<T, U> AccessorTask<T, WasiHttp<U>, wasmtime::Result<()>> for BodyTask
 where
-    U: WasiHttpView,
+    U: WasiHttpView + 'static,
 {
-    async fn run(self, store: &mut Accessor<T, U>) -> wasmtime::Result<()> {
+    async fn run(self, store: &mut Accessor<T, WasiHttp<U>>) -> wasmtime::Result<()> {
         let body = {
             let Ok(mut body) = self.body.lock() else {
                 bail!("lock poisoned");
@@ -468,7 +466,7 @@ where
                                 Err(Ok(trailers)) => {
                                     drop(contents_tx.into_inner());
                                     let trailers = store.with(|mut view| {
-                                        push_fields(view.table(), WithChildren::new(trailers))
+                                        push_fields(view.get().table(), WithChildren::new(trailers))
                                     })?;
                                     if !self
                                         .trailers_tx
@@ -545,6 +543,8 @@ where
 }
 
 impl<T> Host for WasiHttpImpl<T> where T: WasiHttpView {}
+
+impl<T> HostConcurrent for WasiHttp<T> where T: WasiHttpView + 'static {}
 
 fn parse_header_value(
     name: &http::HeaderName,
@@ -735,9 +735,9 @@ where
     }
 }
 
-impl<T> HostRequest for WasiHttpImpl<T>
+impl<T> HostRequestConcurrent for WasiHttp<T>
 where
-    T: WasiHttpView,
+    T: WasiHttpView + 'static,
 {
     async fn new<U>(
         store: &mut Accessor<U, Self>,
@@ -757,7 +757,8 @@ where
                     .read(BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY))
             });
             let trailers = trailers.into_reader(&mut view).read();
-            let table = view.table();
+            let mut binding = view.get();
+            let table = binding.table();
             let headers = delete_fields(table, headers)?;
             let headers = headers.unwrap_or_clone()?;
             let content_length = get_content_length(&headers)?;
@@ -782,6 +783,50 @@ where
         })
     }
 
+    async fn body<U: 'static>(
+        store: &mut Accessor<U, Self>,
+        req: Resource<Request>,
+    ) -> wasmtime::Result<Result<(HostStream<u8>, TrailerFuture), ()>> {
+        store.with(|mut view| {
+            let instance = view.instance();
+            let (contents_tx, contents_rx) = instance
+                .stream::<_, _, Vec<_>, _, _>(&mut view)
+                .context("failed to create stream")?;
+            let (trailers_tx, trailers_rx) = instance
+                .future(&mut view)
+                .context("failed to create future")?;
+            let mut binding = view.get();
+            let Request { body, .. } = get_request_mut(binding.table(), &req)?;
+            {
+                let Some(body) = Arc::get_mut(body) else {
+                    return Ok(Err(()));
+                };
+                let Ok(body) = body.get_mut() else {
+                    bail!("lock poisoned");
+                };
+                if matches!(body, Body::Consumed) {
+                    return Ok(Err(()));
+                }
+            }
+            let body = Arc::clone(&body);
+            let task = view.spawn(BodyTask {
+                cx: BodyContext::Request,
+                body,
+                contents_tx,
+                trailers_tx,
+            });
+            let mut binding = view.get();
+            let req = get_request_mut(binding.table(), &req)?;
+            req.task = Some(task.abort_on_drop_handle());
+            Ok(Ok((contents_rx.into(), trailers_rx.into())))
+        })
+    }
+}
+
+impl<T> HostRequest for WasiHttpImpl<T>
+where
+    T: WasiHttpView,
+{
     fn method(&mut self, req: Resource<Request>) -> wasmtime::Result<Method> {
         let Request { method, .. } = get_request(self.table(), &req)?;
         Ok(method.into())
@@ -893,43 +938,6 @@ where
         let table = self.table();
         let Request { headers, .. } = get_request(table, &req)?;
         push_fields_child(table, headers.child(), &req)
-    }
-
-    async fn body<U: 'static>(
-        store: &mut Accessor<U, Self>,
-        req: Resource<Request>,
-    ) -> wasmtime::Result<Result<(HostStream<u8>, TrailerFuture), ()>> {
-        store.with(|mut view| {
-            let instance = view.instance();
-            let (contents_tx, contents_rx) = instance
-                .stream::<_, _, Vec<_>, _, _>(&mut view)
-                .context("failed to create stream")?;
-            let (trailers_tx, trailers_rx) = instance
-                .future(&mut view)
-                .context("failed to create future")?;
-            let Request { body, .. } = get_request_mut(view.table(), &req)?;
-            {
-                let Some(body) = Arc::get_mut(body) else {
-                    return Ok(Err(()));
-                };
-                let Ok(body) = body.get_mut() else {
-                    bail!("lock poisoned");
-                };
-                if matches!(body, Body::Consumed) {
-                    return Ok(Err(()));
-                }
-            }
-            let body = Arc::clone(&body);
-            let task = view.spawn(BodyTask {
-                cx: BodyContext::Request,
-                body,
-                contents_tx,
-                trailers_tx,
-            });
-            let req = get_request_mut(view.table(), &req)?;
-            req.task = Some(task.abort_on_drop_handle());
-            Ok(Ok((contents_rx.into(), trailers_rx.into())))
-        })
     }
 
     fn drop(&mut self, req: Resource<Request>) -> wasmtime::Result<()> {
@@ -1054,9 +1062,9 @@ where
     }
 }
 
-impl<T> HostResponse for WasiHttpImpl<T>
+impl<T> HostResponseConcurrent for WasiHttp<T>
 where
-    T: WasiHttpView,
+    T: WasiHttpView + 'static,
 {
     async fn new<U>(
         store: &mut Accessor<U, Self>,
@@ -1075,7 +1083,8 @@ where
                     .read(BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY))
             });
             let trailers = trailers.into_reader(&mut view).read();
-            let table = view.table();
+            let mut binding = view.get();
+            let table = binding.table();
             let headers = delete_fields(table, headers)?;
             let headers = headers.unwrap_or_clone()?;
             let content_length = get_content_length(&headers)?;
@@ -1091,6 +1100,49 @@ where
         })
     }
 
+    async fn body<U: 'static>(
+        store: &mut Accessor<U, Self>,
+        res: Resource<Response>,
+    ) -> wasmtime::Result<Result<(HostStream<u8>, TrailerFuture), ()>> {
+        store.with(|mut view| {
+            let instance = view.instance();
+            let (contents_tx, contents_rx) = instance
+                .stream::<_, _, Vec<_>, _, _>(&mut view)
+                .context("failed to create stream")?;
+            let (trailers_tx, trailers_rx) = instance
+                .future(&mut view)
+                .context("failed to create future")?;
+            let mut binding = view.get();
+            let Response { body, .. } = get_response_mut(binding.table(), &res)?;
+            {
+                let Some(body) = Arc::get_mut(body) else {
+                    return Ok(Err(()));
+                };
+                let Ok(body) = body.get_mut() else {
+                    bail!("lock poisoned");
+                };
+                if matches!(body, Body::Consumed) {
+                    return Ok(Err(()));
+                }
+            }
+            let body = Arc::clone(&body);
+            let task = view.spawn(BodyTask {
+                cx: BodyContext::Response,
+                body,
+                contents_tx,
+                trailers_tx,
+            });
+            let mut binding = view.get();
+            let res = get_response_mut(binding.table(), &res)?;
+            res.body_task = Some(task.abort_on_drop_handle());
+            Ok(Ok((contents_rx.into(), trailers_rx.into())))
+        })
+    }
+}
+impl<T> HostResponse for WasiHttpImpl<T>
+where
+    T: WasiHttpView,
+{
     fn status_code(&mut self, res: Resource<Response>) -> wasmtime::Result<StatusCode> {
         let res = get_response(self.table(), &res)?;
         Ok(res.status.into())
@@ -1116,43 +1168,6 @@ where
         let table = self.table();
         let Response { headers, .. } = get_response(table, &res)?;
         push_fields_child(table, headers.child(), &res)
-    }
-
-    async fn body<U: 'static>(
-        store: &mut Accessor<U, Self>,
-        res: Resource<Response>,
-    ) -> wasmtime::Result<Result<(HostStream<u8>, TrailerFuture), ()>> {
-        store.with(|mut view| {
-            let instance = view.instance();
-            let (contents_tx, contents_rx) = instance
-                .stream::<_, _, Vec<_>, _, _>(&mut view)
-                .context("failed to create stream")?;
-            let (trailers_tx, trailers_rx) = instance
-                .future(&mut view)
-                .context("failed to create future")?;
-            let Response { body, .. } = get_response_mut(view.table(), &res)?;
-            {
-                let Some(body) = Arc::get_mut(body) else {
-                    return Ok(Err(()));
-                };
-                let Ok(body) = body.get_mut() else {
-                    bail!("lock poisoned");
-                };
-                if matches!(body, Body::Consumed) {
-                    return Ok(Err(()));
-                }
-            }
-            let body = Arc::clone(&body);
-            let task = view.spawn(BodyTask {
-                cx: BodyContext::Response,
-                body,
-                contents_tx,
-                trailers_tx,
-            });
-            let res = get_response_mut(view.table(), &res)?;
-            res.body_task = Some(task.abort_on_drop_handle());
-            Ok(Ok((contents_rx.into(), trailers_rx.into())))
-        })
     }
 
     fn drop(&mut self, res: Resource<Response>) -> wasmtime::Result<()> {

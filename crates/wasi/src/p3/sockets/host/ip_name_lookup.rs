@@ -4,14 +4,14 @@ use core::str::FromStr as _;
 use tokio::net::lookup_host;
 use wasmtime::component::Accessor;
 
-use crate::p3::bindings::sockets::ip_name_lookup::{ErrorCode, Host};
+use crate::p3::bindings::sockets::ip_name_lookup::{ErrorCode, Host, HostConcurrent};
 use crate::p3::bindings::sockets::types;
 use crate::p3::sockets::util::{from_ipv4_addr, from_ipv6_addr};
-use crate::p3::sockets::{WasiSocketsImpl, WasiSocketsView};
+use crate::p3::sockets::{WasiSockets, WasiSocketsImpl, WasiSocketsView};
 
-impl<T> Host for WasiSocketsImpl<&mut T>
+impl<T> HostConcurrent for WasiSockets<T>
 where
-    T: WasiSocketsView,
+    T: WasiSocketsView + 'static,
 {
     async fn resolve_addresses<U>(
         store: &mut Accessor<U, Self>,
@@ -28,7 +28,7 @@ where
         } else {
             return Ok(Err(ErrorCode::InvalidArgument));
         };
-        if !store.with(|view| view.sockets().allowed_network_uses.ip_name_lookup) {
+        if !store.with(|mut view| view.get().sockets().allowed_network_uses.ip_name_lookup) {
             return Ok(Err(ErrorCode::PermanentResolverFailure));
         }
         match host {
@@ -48,3 +48,5 @@ where
         }
     }
 }
+
+impl<T> Host for WasiSocketsImpl<T> where T: WasiSocketsView {}
