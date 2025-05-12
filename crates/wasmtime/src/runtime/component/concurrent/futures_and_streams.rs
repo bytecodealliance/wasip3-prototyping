@@ -42,7 +42,7 @@ use {
     },
 };
 
-pub use buffers::{ReadBuffer, VecBuffer, WriteBuffer};
+pub use buffers::{ReadBuffer, TakeBuffer, VecBuffer, WriteBuffer};
 
 mod buffers;
 
@@ -144,11 +144,7 @@ fn waitable_state(ty: TableIndex, state: StreamFutureState) -> WaitableState {
 
 /// Return a closure which matches a host write operation to a read (or close)
 /// operation.
-///
-/// SAFETY: The `ComponentInstance` passed to the returned closure must, when
-/// paired with a `Reader::Guest { .. }`, match the one the stream or future
-/// belongs to.
-unsafe fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>(
+fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>(
     store: StoreContextMut<U>,
     mut buffer: B,
     tx: oneshot::Sender<HostResult<B>>,
@@ -203,11 +199,8 @@ unsafe fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: '
                 ReturnCode::Completed(count.try_into().unwrap())
             }
             Reader::Host { accept } => {
-                // SAFETY: Per the requirements described in `host_read`'s
-                // documentation, we give up ownership of the items by calling
-                // `buffer.forget` immediately after the following call.
-                let count = accept(buffer.remaining().as_ptr().cast(), buffer.remaining().len());
-                buffer.forget(count);
+                let count = buffer.remaining().len();
+                let count = accept(&mut buffer, count);
                 _ = tx.send(HostResult {
                     buffer,
                     closed: false,
@@ -229,17 +222,7 @@ unsafe fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: '
 
 /// Return a closure which matches a host read operation to a write (or close)
 /// operation.
-///
-/// SAFETY: If and when a `Writer::Host { .. }` is passed to the returned
-/// closure, the `pointer` field must be a valid `*mut T` array of `count`
-/// elements, and those elements must be forgotten using e.g. `mem::forget`
-/// after the call to the closure returns since they will have been moved into
-/// another buffer (i.e. the destination buffer will take ownership of them).
-// TODO: This should return a `impl UnsafeFnOnce` (where `UnsafeFnOnce` would
-// need to be a trait we define ourselves, since there's no standard equivalent)
-// rather than a `impl FnOnce`.  That would force the caller to use an unsafe
-// block and (hopefully) uphold the contract we've described above.
-unsafe fn accept_writer<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
+fn accept_writer<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
     mut buffer: B,
     tx: oneshot::Sender<HostResult<B>>,
 ) -> impl FnOnce(Writer) -> Result<ReturnCode> + Send + Sync + 'static {
@@ -279,12 +262,12 @@ unsafe fn accept_writer<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
                 });
                 ReturnCode::Completed(count.try_into().unwrap())
             }
-            Writer::Host { pointer, count } => {
+            Writer::Host {
+                buffer: input,
+                count,
+            } => {
                 let count = count.min(buffer.remaining_capacity());
-                // SAFETY: Per the contact of `accept_writer`, `pointer` is a
-                // valid `*mut T` array of `count` elements which we may move
-                // (i.e. transfer ownership) into the destination buffer.
-                unsafe { buffer.copy_from(pointer.cast(), count) };
+                buffer.move_from(input, count);
                 _ = tx.send(HostResult {
                     buffer,
                     closed: false,
@@ -1423,7 +1406,7 @@ enum Writer<'a> {
         count: usize,
     },
     Host {
-        pointer: *const u8,
+        buffer: &'a mut dyn TakeBuffer,
         count: usize,
     },
     End,
@@ -1441,7 +1424,7 @@ enum Reader<'a> {
         count: usize,
     },
     Host {
-        accept: Box<dyn FnOnce(*const u8, usize) -> usize>,
+        accept: Box<dyn FnOnce(&mut dyn TakeBuffer, usize) -> usize>,
     },
     End,
 }
@@ -1642,11 +1625,7 @@ impl ComponentInstance {
                     let rep = my_rep.unwrap();
                     match event {
                         ReadEvent::Read { buffer, tx } => {
-                            // SAFETY: See the `Reader::Host` case of the
-                            // closure returned by `accept_reader` for where we
-                            // satisfy the requirements documented for
-                            // `host_read`.
-                            super::with_local_instance(|store, instance| unsafe {
+                            super::with_local_instance(|store, instance| {
                                 instance.host_read::<_, _, U>(
                                     token.as_context_mut(store),
                                     rep,
@@ -1774,11 +1753,7 @@ impl ComponentInstance {
                 assert!(matches!(&transmit.write, WriteState::Open));
 
                 transmit.write = WriteState::HostReady {
-                    // SAFETY: The closure we store here will only be called
-                    // with a `Reader::Guest { .. }` parameter from
-                    // `guest_read`, which upholds the requirements in
-                    // `accept_reader`'s documentation.
-                    accept: Box::new(unsafe { accept_reader::<T, B, U>(store, buffer, tx) }),
+                    accept: Box::new(accept_reader::<T, B, U>(store, buffer, tx)),
                     post_write,
                 };
                 post_write = PostWrite::Continue;
@@ -1794,10 +1769,7 @@ impl ComponentInstance {
                 ..
             } => {
                 let read_handle = transmit.read_handle;
-                // SAFETY: See the contract documented for this function and
-                // note that it covers the requirements specified in
-                // `accept_reader`'s documentation.
-                let code = unsafe { accept_reader::<T, B, U>(store.as_context_mut(), buffer, tx) }(
+                let code = accept_reader::<T, B, U>(store.as_context_mut(), buffer, tx)(
                     store.0.traitobj_mut(),
                     self,
                     Reader::Guest {
@@ -1818,17 +1790,14 @@ impl ComponentInstance {
             }
 
             ReadState::HostReady { accept } => {
-                // SAFETY: Per the requirements described in `accept_writer`'s
-                // documentation, we give up ownership of the items by calling
-                // `buffer.forget` immediately after the following call.
+                let count = buffer.remaining().len();
                 let code = accept(Writer::Host {
-                    pointer: buffer.remaining().as_ptr().cast(),
-                    count: buffer.remaining().len(),
+                    buffer: &mut buffer,
+                    count,
                 })?;
-                let ReturnCode::Completed(n) = code else {
+                let ReturnCode::Completed(_) = code else {
                     unreachable!()
                 };
-                buffer.forget(n.try_into().unwrap());
 
                 _ = tx.send(HostResult {
                     buffer,
@@ -1852,20 +1821,7 @@ impl ComponentInstance {
     }
 
     /// Attempt to read items from the specified stream or future.
-    ///
-    /// SAFETY: When the `TransmitState::write` field of the state to
-    /// which the stream or future belongs is `WriteState::HostReady`, its
-    /// `accept` callback will be passed a `Reader::Host` whose `accept` closure
-    /// requries a valid `*mut T` array of `count` elements, and those elements
-    /// must be forgotten using e.g. `mem::forget` after the call to that
-    /// closure returns since they will have been moved into another buffer
-    /// (i.e. the destination buffer will take ownership of them).
-    // TODO: `Reader::Host::accept` should really be a `Box<dyn UnsafeFnOnce>`
-    // (where `UnsafeFnOnce` would need to be a trait we define ourselves, since
-    // there's no standard equivalent) rather than a `Box<dyn FnOnce>`.  That
-    // would force the caller to use an unsafe block and (hopefully) uphold the
-    // contract described above.
-    unsafe fn host_read<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U: 'static>(
+    fn host_read<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U: 'static>(
         &mut self,
         store: StoreContextMut<U>,
         rep: u32,
@@ -1941,13 +1897,9 @@ impl ComponentInstance {
                     store.0.traitobj_mut(),
                     self,
                     Reader::Host {
-                        accept: Box::new(move |pointer, count| {
+                        accept: Box::new(move |input, count| {
                             let count = count.min(buffer.remaining_capacity());
-                            // SAFETY: Per the contact of `host_read`, `pointer`
-                            // is a valid `*mut T` array of `count` elements
-                            // which we may move (i.e. transfer ownership) into
-                            // the destination buffer.
-                            unsafe { buffer.copy_from(pointer.cast(), count) };
+                            buffer.move_from(input, count);
                             _ = tx.send(HostResult {
                                 buffer,
                                 closed: false,
