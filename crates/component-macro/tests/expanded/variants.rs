@@ -6,11 +6,11 @@
 /// has been created through a [`Linker`](wasmtime::component::Linker).
 ///
 /// For more information see [`MyWorld`] as well.
-pub struct MyWorldPre<T> {
+pub struct MyWorldPre<T: 'static> {
     instance_pre: wasmtime::component::InstancePre<T>,
     indices: MyWorldIndices,
 }
-impl<T> Clone for MyWorldPre<T> {
+impl<T: 'static> Clone for MyWorldPre<T> {
     fn clone(&self) -> Self {
         Self {
             instance_pre: self.instance_pre.clone(),
@@ -18,7 +18,7 @@ impl<T> Clone for MyWorldPre<T> {
         }
     }
 }
-impl<_T> MyWorldPre<_T> {
+impl<_T: 'static> MyWorldPre<_T> {
     /// Creates a new copy of `MyWorldPre` bindings which can then
     /// be used to instantiate into a particular store.
     ///
@@ -129,7 +129,7 @@ const _: () = {
     impl MyWorld {
         /// Convenience wrapper around [`MyWorldPre::new`] and
         /// [`MyWorldPre::instantiate`].
-        pub fn instantiate<_T>(
+        pub fn instantiate<_T: 'static>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,
@@ -1515,7 +1515,7 @@ pub mod exports {
                         arg0: E1,
                     ) -> wasmtime::Result<()>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1532,7 +1532,7 @@ pub mod exports {
                         mut store: S,
                     ) -> wasmtime::Result<E1>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1550,7 +1550,7 @@ pub mod exports {
                         arg0: &V1,
                     ) -> wasmtime::Result<()>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1567,7 +1567,7 @@ pub mod exports {
                         mut store: S,
                     ) -> wasmtime::Result<V1>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1585,7 +1585,7 @@ pub mod exports {
                         arg0: bool,
                     ) -> wasmtime::Result<()>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1602,7 +1602,7 @@ pub mod exports {
                         mut store: S,
                     ) -> wasmtime::Result<bool>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1625,7 +1625,7 @@ pub mod exports {
                         arg5: Option<Option<bool>>,
                     ) -> wasmtime::Result<()>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1662,7 +1662,7 @@ pub mod exports {
                         ),
                     >
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1696,7 +1696,7 @@ pub mod exports {
                         (Casts1, Casts2, Casts3, Casts4, Casts5, Casts6),
                     >
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1723,7 +1723,7 @@ pub mod exports {
                         arg5: Result<&str, &[u8]>,
                     ) -> wasmtime::Result<()>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1763,7 +1763,7 @@ pub mod exports {
                         ),
                     >
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1792,7 +1792,7 @@ pub mod exports {
                         mut store: S,
                     ) -> wasmtime::Result<Result<i32, MyErrno>>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1809,7 +1809,7 @@ pub mod exports {
                         mut store: S,
                     ) -> wasmtime::Result<Result<(), MyErrno>>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1826,7 +1826,7 @@ pub mod exports {
                         mut store: S,
                     ) -> wasmtime::Result<Result<MyErrno, MyErrno>>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1843,7 +1843,7 @@ pub mod exports {
                         mut store: S,
                     ) -> wasmtime::Result<Result<(i32, u32), MyErrno>>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1860,7 +1860,7 @@ pub mod exports {
                         mut store: S,
                     ) -> wasmtime::Result<Option<i32>>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1877,7 +1877,7 @@ pub mod exports {
                         mut store: S,
                     ) -> wasmtime::Result<Option<MyErrno>>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1894,7 +1894,7 @@ pub mod exports {
                         mut store: S,
                     ) -> wasmtime::Result<Result<u32, i32>>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1912,7 +1912,7 @@ pub mod exports {
                         arg0: &IsClone,
                     ) -> wasmtime::Result<()>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -1929,7 +1929,7 @@ pub mod exports {
                         mut store: S,
                     ) -> wasmtime::Result<IsClone>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<

@@ -6,11 +6,11 @@
 /// has been created through a [`Linker`](wasmtime::component::Linker).
 ///
 /// For more information see [`Nope`] as well.
-pub struct NopePre<T> {
+pub struct NopePre<T: 'static> {
     instance_pre: wasmtime::component::InstancePre<T>,
     indices: NopeIndices,
 }
-impl<T> Clone for NopePre<T> {
+impl<T: 'static> Clone for NopePre<T> {
     fn clone(&self) -> Self {
         Self {
             instance_pre: self.instance_pre.clone(),
@@ -18,7 +18,7 @@ impl<T> Clone for NopePre<T> {
         }
     }
 }
-impl<_T> NopePre<_T> {
+impl<_T: 'static> NopePre<_T> {
     /// Creates a new copy of `NopePre` bindings which can then
     /// be used to instantiate into a particular store.
     ///
@@ -121,7 +121,7 @@ const _: () = {
     impl Nope {
         /// Convenience wrapper around [`NopePre::new`] and
         /// [`NopePre::instantiate`].
-        pub fn instantiate<_T>(
+        pub fn instantiate<_T: 'static>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,

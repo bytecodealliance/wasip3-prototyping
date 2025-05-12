@@ -6,11 +6,11 @@
 /// has been created through a [`Linker`](wasmtime::component::Linker).
 ///
 /// For more information see [`Host_`] as well.
-pub struct Host_Pre<T> {
+pub struct Host_Pre<T: 'static> {
     instance_pre: wasmtime::component::InstancePre<T>,
     indices: Host_Indices,
 }
-impl<T> Clone for Host_Pre<T> {
+impl<T: 'static> Clone for Host_Pre<T> {
     fn clone(&self) -> Self {
         Self {
             instance_pre: self.instance_pre.clone(),
@@ -18,7 +18,7 @@ impl<T> Clone for Host_Pre<T> {
         }
     }
 }
-impl<_T> Host_Pre<_T> {
+impl<_T: 'static> Host_Pre<_T> {
     /// Creates a new copy of `Host_Pre` bindings which can then
     /// be used to instantiate into a particular store.
     ///
@@ -136,7 +136,7 @@ const _: () = {
     impl Host_ {
         /// Convenience wrapper around [`Host_Pre::new`] and
         /// [`Host_Pre::instantiate_async`].
-        pub async fn instantiate_async<_T>(
+        pub async fn instantiate_async<_T: 'static>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,
