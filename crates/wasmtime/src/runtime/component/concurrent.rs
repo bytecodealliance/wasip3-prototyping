@@ -2616,6 +2616,9 @@ impl ComponentInstance {
             }
             _ => bail!("invalid task handle: {task_id}"),
         };
+        // Since waitables can neither be passed between instances nor forged,
+        // this should never fail unless there's a bug in Wasmtime, but we check
+        // here to be sure:
         assert_eq!(expected_caller_instance, caller_instance);
         log::trace!("subtask_drop {waitable:?} (handle {task_id})");
         Ok(())
@@ -2644,6 +2647,9 @@ impl ComponentInstance {
             }
             _ => bail!("invalid task handle: {task_id}"),
         };
+        // Since waitables can neither be passed between instances nor forged,
+        // this should never fail unless there's a bug in Wasmtime, but we check
+        // here to be sure:
         assert_eq!(expected_caller_instance, caller_instance);
 
         log::trace!("subtask_cancel {waitable:?} (handle {task_id})");
