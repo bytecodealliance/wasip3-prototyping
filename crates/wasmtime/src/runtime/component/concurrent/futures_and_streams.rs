@@ -147,8 +147,7 @@ fn waitable_state(ty: TableIndex, state: StreamFutureState) -> WaitableState {
 ///
 /// SAFETY: The `ComponentInstance` passed to the returned closure must, when
 /// paired with a `Reader::Guest { .. }`, match the one the stream or future
-/// belongs to, and must itself belong to a store with a data type parameter of
-/// `U`.  Finally, the caller must confer exclusive access to that store.
+/// belongs to.
 unsafe fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>(
     store: StoreContextMut<U>,
     mut buffer: B,
@@ -167,13 +166,6 @@ unsafe fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: '
                 address,
                 count,
             } => {
-                // SAFETY: This `ComponentInstance` belongs to the store in
-                // which it resides, so if it is valid then so is its store, and
-                // per this function's contract, the caller has conferred
-                // exclusive access to that store.
-                //
-                // Finally, per the contract documented above for
-                // `accept_reader`, the data type of the store must be `U`.
                 let mut store = token.as_context_mut(store);
                 let ptr = instance as *mut _;
                 let types = instance.component_types().clone();
@@ -183,9 +175,8 @@ unsafe fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: '
                     .min(usize::try_from(count).unwrap());
 
                 store.with_attached_instance(instance, |mut store, _| {
-                    // SAFETY: The instance pointer is valid and belongs to the
-                    // store given that both were derived from the `&mut
-                    // ComponentInstance` we received.
+                    // SAFETY: `ptr` is derived from `interface` and thus known
+                    // to be valid.
                     let lower = unsafe {
                         &mut LowerContext::new(store.as_context_mut(), options, &types, ptr)
                     };
@@ -543,6 +534,9 @@ pub struct HostFuture<T> {
 }
 
 impl<T> HostFuture<T> {
+    /// Create a new `HostFuture`.
+    ///
+    /// SAFETY: `id` must match the store to which `instance` belongs.
     unsafe fn new(rep: u32, id: StoreId, instance: &mut ComponentInstance) -> Self {
         Self {
             instance: SendSyncPtr::new(NonNull::new(instance).unwrap()),
@@ -943,6 +937,9 @@ pub struct HostStream<T> {
 }
 
 impl<T> HostStream<T> {
+    /// Create a new `HostStream`.
+    ///
+    /// SAFETY: `id` must match the store to which `instance` belongs.
     unsafe fn new(rep: u32, id: StoreId, instance: &mut ComponentInstance) -> Self {
         Self {
             instance: SendSyncPtr::new(NonNull::new(instance).unwrap()),
@@ -1645,6 +1642,10 @@ impl ComponentInstance {
                     let rep = my_rep.unwrap();
                     match event {
                         ReadEvent::Read { buffer, tx } => {
+                            // SAFETY: See the `Reader::Host` case of the
+                            // closure returned by `accept_reader` for where we
+                            // satisfy the requirements documented for
+                            // `host_read`.
                             super::with_local_instance(|store, instance| unsafe {
                                 instance.host_read::<_, _, U>(
                                     token.as_context_mut(store),
@@ -1902,10 +1903,7 @@ impl ComponentInstance {
                 let write_handle = transmit.write_handle;
                 let instance = self as *mut _;
                 let types = self.component_types();
-                // SAFETY: This `ComponentInstance` belongs to the store in
-                // which it resides, so if it is valid then so is its store, and
-                // per this function's contract, the caller has conferred
-                // exclusive access to that store.
+                // SAFETY: `instance` is derived from `self` and thus known to be valid.
                 let lift = unsafe {
                     &mut LiftContext::new(store.0.store_opaque_mut(), &options, types, instance)
                 };
@@ -2205,10 +2203,8 @@ impl ComponentInstance {
                             bail!("write pointer not aligned");
                         }
 
-                        // SAFETY: This `ComponentInstance` belongs to the store
-                        // in which it resides, so if it is valid then so is its
-                        // store, and per this function's contract, the caller
-                        // has conferred exclusive access to that store.
+                        // SAFETY: `instance` is derived from `self` and thus
+                        // known to be valid.
                         let lift = unsafe {
                             &mut LiftContext::new(
                                 store.0.store_opaque_mut(),
@@ -2231,8 +2227,8 @@ impl ComponentInstance {
 
                 if let Some(val) = val {
                     store.with_attached_instance(self, |mut store, _| {
-                        // SAFETY: The instance pointer is valid and belongs to the
-                        // store given that both were derived from `self`.
+                        // SAFETY: `instance` is derived from `self` and thus
+                        // known to be valid.
                         let lower = unsafe {
                             &mut LowerContext::new(
                                 store.as_context_mut(),
@@ -2255,6 +2251,8 @@ impl ComponentInstance {
                 let instance = self as *mut _;
                 let types = self.component_types();
                 let store_opaque = store.0.store_opaque_mut();
+                // SAFETY: `instance` is derived from `self` and thus known to
+                // be valid.
                 let lift =
                     unsafe { &mut LiftContext::new(store_opaque, write_options, types, instance) };
                 if let Some(flat_abi) = flat_abi {
@@ -2312,8 +2310,8 @@ impl ComponentInstance {
 
                     let types = types.clone();
                     store.with_attached_instance(self, |mut store, _| {
-                        // SAFETY: See the corresponding comment for the
-                        // `TableIndex::Future` case above.
+                        // SAFETY: `instance` is derived from `self` and thus
+                        // known to be valid.
                         let lower = unsafe {
                             &mut LowerContext::new(
                                 store.as_context_mut(),
@@ -2352,11 +2350,8 @@ impl ComponentInstance {
 
     /// Write to the specified stream or future from the guest.
     ///
-    /// SAFETY: The caller must confer exclusive access to the store to which
-    /// `self` belongs, and the data type parameter for that store must be `T`.
-    ///
-    /// Also, `memory` and `realloc` must be valid pointers to their respective
-    /// guest entities.
+    /// SAFETY: `memory` and `realloc` must be valid pointers to their
+    /// respective guest entities.
     pub(super) unsafe fn guest_write<T: 'static>(
         &mut self,
         store: StoreContextMut<T>,
@@ -2376,13 +2371,8 @@ impl ComponentInstance {
 
         let address = usize::try_from(address).unwrap();
         let count = usize::try_from(count).unwrap();
-        // SAFETY: This `ComponentInstance` belongs to the store in which it
-        // resides, so if it is valid then so is its store, and per this
-        // function's contract, the caller has conferred exclusive access to
-        // that store.
-        //
-        // Also see the function's contract concerning the validity of `memory`
-        // and `realloc`.
+        // SAFETY: Per this function's contract, `memory` and `realloc` are
+        // valid.
         let options = unsafe {
             Options::new(
                 store.0.store_opaque().id(),
@@ -2499,10 +2489,8 @@ impl ComponentInstance {
             ReadState::HostReady { accept } => {
                 let instance = self as *mut _;
                 let types = self.component_types();
-                // SAFETY: This `ComponentInstance` belongs to the store in
-                // which it resides, so if it is valid then so is its store, and
-                // per this function's contract, the caller has conferred
-                // exclusive access to that store.
+                // SAFETY: `instance` is derived from `self` and thus known to
+                // be valid.
                 let lift = unsafe {
                     &mut LiftContext::new(store.0.store_opaque_mut(), &options, types, instance)
                 };
@@ -2531,11 +2519,8 @@ impl ComponentInstance {
 
     /// Read from the specified stream or future from the guest.
     ///
-    /// SAFETY: The caller must confer exclusive access to the store to which
-    /// `self` belongs, and the data type parameter for that store must be `T`.
-    ///
-    /// Also, `memory` and `realloc` must be valid pointers to their respective
-    /// guest entities.
+    /// SAFETY: `memory` and `realloc` must be valid pointers to their
+    /// respective guest entities.
     pub(super) unsafe fn guest_read<T: 'static>(
         &mut self,
         store: StoreContextMut<T>,
@@ -2554,13 +2539,8 @@ impl ComponentInstance {
         }
 
         let address = usize::try_from(address).unwrap();
-        // SAFETY: This `ComponentInstance` belongs to the store in which it
-        // resides, so if it is valid then so is its store, and per this
-        // function's contract, the caller has conferred exclusive access to
-        // that store.
-        //
-        // Also see the function's contract concerning the validity of `memory`
-        // and `realloc`.
+        // SAFETY: Per this function's contract, `memory` and `realloc` must be
+        // valid.
         let options = unsafe {
             Options::new(
                 store.0.store_opaque().id(),
@@ -2819,11 +2799,8 @@ impl ComponentInstance {
 
     /// Create a new error context for the given component.
     ///
-    /// SAFETY: The caller must confer exclusive access to the store to which
-    /// `self` belongs, and the data type parameter for that store must be `T`.
-    ///
-    /// Also, `memory` and `realloc` must be valid pointers to their respective
-    /// guest entities.
+    /// SAFETY: `memory` and `realloc` must be valid pointers to their
+    /// respective guest entities.
     pub(crate) unsafe fn error_context_new(
         &mut self,
         store: &mut dyn VMStore,
@@ -2834,13 +2811,8 @@ impl ComponentInstance {
         debug_msg_address: u32,
         debug_msg_len: u32,
     ) -> Result<u32> {
-        // SAFETY: This `ComponentInstance` belongs to the store in which it
-        // resides, so if it is valid then so is its store, and per this
-        // function's contract, the caller has conferred exclusive access to
-        // that store.
-        //
-        // Also see the function's contract concerning the validity of `memory`
-        // and `realloc`.
+        // SAFETY: Per this function's contract, `memory` and `realloc` must be
+        // valid.
         let options = unsafe {
             Options::new(
                 store.store_opaque().id(),
@@ -2854,10 +2826,7 @@ impl ComponentInstance {
             )
         };
         let interface = self as *mut _;
-        // SAFETY: This `ComponentInstance` belongs to the store in which it
-        // resides, so if it is valid then so is its store, and per this
-        // function's contract, the caller has conferred exclusive access to
-        // that store.
+        // SAFETY: `instance` is derived from `self` and thus known to be valid.
         let lift_ctx = unsafe {
             &mut LiftContext::new(
                 store.store_opaque_mut(),
@@ -2888,10 +2857,6 @@ impl ComponentInstance {
 
         // Create a new ErrorContext that is tracked along with other concurrent state
         let err_ctx = ErrorContextState {
-            // SAFETY: This `ComponentInstance` belongs to the store in which it
-            // resides, so if it is valid then so is its store, and per this
-            // function's contract, the caller has conferred exclusive access to
-            // that store.
             debug_msg: s
                 .to_str_from_memory(options.memory(store.store_opaque()))?
                 .to_string(),
@@ -2926,11 +2891,8 @@ impl ComponentInstance {
 
     /// Retrieve the debug message from the specified error context.
     ///
-    /// SAFETY: The caller must confer exclusive access to the store to which
-    /// `self` belongs, and the data type parameter for that store must be `T`.
-    ///
-    /// Also, `memory` and `realloc` must be valid pointers to their respective
-    /// guest entities.
+    /// SAFETY: `memory` and `realloc` must be valid pointers to their
+    /// respective guest entities.
     pub(super) unsafe fn error_context_debug_message<T: 'static>(
         &mut self,
         mut store: StoreContextMut<T>,
@@ -2953,13 +2915,8 @@ impl ComponentInstance {
             self.get_mut(TableId::<ErrorContextState>::new(state_table_id_rep))?;
         let debug_msg = debug_msg.clone();
 
-        // SAFETY: This `ComponentInstance` belongs to the store in which it
-        // resides, so if it is valid then so is its store, and per this
-        // function's contract, the caller has conferred exclusive access to
-        // that store.
-        //
-        // Also see the function's contract concerning the validity of `memory`
-        // and `realloc`.
+        // SAFETY: Per this function's contract, `memory` and `realloc` are
+        // valid.
         let options = unsafe {
             Options::new(
                 store.0.store_opaque().id(),
@@ -2975,8 +2932,7 @@ impl ComponentInstance {
         let interface = self as *mut _;
         let types = self.component_types().clone();
         store.with_attached_instance(self, |store, _| {
-            // SAFETY: The instance pointer is valid and belongs to the store given
-            // that both were derived from `self`.
+            // SAFETY: `instance` is derived from `self` and thus known to be valid.
             let lower_cx = unsafe { &mut LowerContext::new(store, &options, &types, interface) };
             let debug_msg_address = usize::try_from(debug_msg_address)?;
             // Lower the string into the component's memory

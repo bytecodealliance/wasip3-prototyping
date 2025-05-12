@@ -464,9 +464,7 @@ where
     /// Equivalent to `lower_stack_args`, but with a monomorphic signature
     /// suitable for use with `concurrent::prepare_call`.
     ///
-    /// SAFETY: `store` must be a valid pointer to a store with data type
-    /// parameter `T`, and the caller must confer exclusive access to that
-    /// store.  Also, `params_in` must be a valid pointer to a `Self::Params`.
+    /// SAFETY: `params_in` must be a valid pointer to a `Self::Params`.
     #[cfg(feature = "component-model-async")]
     unsafe fn lower_stack_args_fn<T>(
         func: Func,
@@ -527,9 +525,7 @@ where
     /// Equivalent to `lower_heap_args`, but with a monomorphic signature
     /// suitable for use with `concurrent::prepare_call`.
     ///
-    /// SAFETY: `store` must be a valid pointer to a store with data type
-    /// parameter `T`, and the caller must confer exclusive access to that
-    /// store.  Also, `params_in` must be a valid pointer to a `Self::Params`.
+    /// SAFETY: `params_in` must be a valid pointer to a `Self::Params`.
     #[cfg(feature = "component-model-async")]
     unsafe fn lower_heap_args_fn<T>(
         func: Func,
@@ -590,10 +586,6 @@ where
 
     /// Equivalent to `lift_stack_result`, but with a monomorphic signature
     /// suitable for use with `concurrent::prepare_call`.
-    ///
-    /// SAFETY: `store` must be a valid pointer to a store with data type
-    /// parameter `T`, and the caller must confer exclusive access to that
-    /// store.
     #[cfg(feature = "component-model-async")]
     fn lift_stack_result_fn<T>(
         func: Func,
@@ -642,10 +634,6 @@ where
 
     /// Equivalent to `lift_heap_result`, but with a monomorphic signature
     /// suitable for use with `concurrent::prepare_call`.
-    ///
-    /// SAFETY: `store` must be a valid pointer to a store with data type
-    /// parameter `T`, and the caller must confer exclusive access to that
-    /// store.
     #[cfg(feature = "component-model-async")]
     fn lift_heap_result_fn<T>(
         func: Func,

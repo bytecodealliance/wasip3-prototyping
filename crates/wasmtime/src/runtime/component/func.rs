@@ -782,10 +782,8 @@ impl Func {
     /// Equivalent to `lower_args`, but with a monomorphic signature
     /// suitable for use with `concurrent::prepare_call`.
     ///
-    /// SAFETY: `store` must be a valid pointer to a store with data type
-    /// parameter `T`, and the caller must confer exclusive access to that
-    /// store.  Also, `params_in` must be a valid pointer to a
-    /// `MaybeUninit<[ValRaw; MAX_FLAT_PARAMS]>`.
+    /// SAFETY: `params_in` must be a valid pointer to a `MaybeUninit<[ValRaw;
+    /// MAX_FLAT_PARAMS]>`.
     #[cfg(feature = "component-model-async")]
     unsafe fn lower_args_fn<T>(
         func: Func,
@@ -800,7 +798,7 @@ impl Func {
             params_out,
             func,
             // SAFETY: Per this function's precondition, `params_in` is a valid
-            // pointer to a `Self::Params`.
+            // pointer to a `MaybeUninit<[ValRaw; MAX_FLAT_PARAMS]>`.
             unsafe { &*params_in.cast() },
             Self::lower_args::<T>,
         )
@@ -835,10 +833,6 @@ impl Func {
 
     /// Equivalent to `lift_results_sync`, but with a monomorphic signature
     /// suitable for use with `concurrent::prepare_call`.
-    ///
-    /// SAFETY: `store` must be a valid pointer to a store with data type
-    /// parameter `T`, and the caller must confer exclusive access to that
-    /// store.
     #[cfg(feature = "component-model-async")]
     fn lift_results_sync_fn<T>(
         func: Func,
@@ -860,10 +854,6 @@ impl Func {
 
     /// Equivalent to `lift_results_async`, but with a monomorphic signature
     /// suitable for use with `concurrent::prepare_call`.
-    ///
-    /// SAFETY: `store` must be a valid pointer to a store with data type
-    /// parameter `T`, and the caller must confer exclusive access to that
-    /// store.
     #[cfg(feature = "component-model-async")]
     fn lift_results_async_fn<T>(
         func: Func,
@@ -932,11 +922,8 @@ impl Func {
 }
 
 /// Lower parameters of the specified type using the specified function.
-///
-/// SAFETY: `store` must be a valid pointer to a store with data type parameter
-/// `T`, and the caller must confer exclusive access to that store.
 #[cfg(feature = "component-model-async")]
-unsafe fn lower_params<
+fn lower_params<
     Params,
     LowerParams,
     T,
@@ -969,9 +956,8 @@ unsafe fn lower_params<
     let instance_ptr = instance as *mut _;
     let mut flags = instance.instance_flags(component_instance);
 
-    // SAFETY: We have exclusive access to the store, which we means we have
-    // exclusive access to any `ComponentInstance` which resides in the
-    // store, including the one we pass to `LowerContext::new` below.
+    // SAFETY: `instance_ptr` is derived from `instance` and thus known to be
+    // valid.
     store.with_attached_instance(instance, |mut store, _| unsafe {
         if !flags.may_enter() {
             bail!(crate::Trap::CannotEnterComponent);
@@ -998,9 +984,6 @@ unsafe fn lower_params<
 }
 
 /// Lift results of the specified type using the specified function.
-///
-/// SAFETY: `store` must be a valid pointer to a store with data type parameter
-/// `T`, and the caller must confer exclusive access to that store.
 #[cfg(feature = "component-model-async")]
 fn lift_results<
     Return: Send + Sync + 'static,
@@ -1018,9 +1001,8 @@ fn lift_results<
     let types = instance.component_types().clone();
     let instance_ptr = instance as *mut _;
 
-    // SAFETY: We have exclusive access to the store, which we means we have
-    // exclusive access to any `ComponentInstance` which resides in the store,
-    // including the one we pass to `LiftContext::new` below.
+    // SAFETY: `instance_ptr` is derived from `instance` and thus known to be
+    // valid.
     unsafe {
         Ok(Box::new(lift(
             &mut LiftContext::new(store.0, &options, &types, instance_ptr),
