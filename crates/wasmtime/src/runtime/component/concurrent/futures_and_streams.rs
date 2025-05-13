@@ -46,6 +46,7 @@ pub use buffers::{ReadBuffer, TakeBuffer, VecBuffer, WriteBuffer};
 
 mod buffers;
 
+/// Represents `{stream,future}.{read,write}` results.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ReturnCode {
     Blocked,
@@ -55,6 +56,10 @@ pub enum ReturnCode {
 }
 
 impl ReturnCode {
+    /// Pack `self` into a single 32-bit integer that may be returned to the
+    /// guest.
+    ///
+    /// This corresponds to `pack_copy_result` in the Component Model spec.
     pub fn encode(&self) -> u32 {
         const BLOCKED: u32 = 0xffff_ffff;
         const COMPLETED: u32 = 0x0;
@@ -78,6 +83,10 @@ impl ReturnCode {
     }
 }
 
+/// Represents a stream or future type index.
+///
+/// This is useful as a parameter type for functions which operate on either a
+/// future or a stream.
 #[derive(Copy, Clone, Debug)]
 pub(super) enum TableIndex {
     Stream(TypeStreamTableIndex),
@@ -92,11 +101,16 @@ enum PostWrite {
     Close,
 }
 
+/// Represents the result of a host-initiated stream or future read or write.
 struct HostResult<B> {
+    /// The buffer provided when reading or writing.
     buffer: B,
+    /// Whether the other end of the stream or future has been closed.
     closed: bool,
 }
 
+/// Retrieve the payload type of the specified stream or future, or `None` if it
+/// has no payload type.
 fn payload(ty: TableIndex, types: &Arc<ComponentTypes>) -> Option<InterfaceType> {
     match ty {
         TableIndex::Future(ty) => types[types[ty].ty].payload,
@@ -104,6 +118,8 @@ fn payload(ty: TableIndex, types: &Arc<ComponentTypes>) -> Option<InterfaceType>
     }
 }
 
+/// Retrieve the host rep and state for the specified guest-visible waitable
+/// handle.
 fn get_mut_by_index_from(
     state_table: &mut StateTable<WaitableState>,
     ty: TableIndex,
@@ -135,6 +151,7 @@ fn get_mut_by_index_from(
     })
 }
 
+/// Construct a `WaitableState` using the specified type and state.
 fn waitable_state(ty: TableIndex, state: StreamFutureState) -> WaitableState {
     match ty {
         TableIndex::Stream(ty) => WaitableState::Stream(ty, state),
@@ -144,6 +161,11 @@ fn waitable_state(ty: TableIndex, state: StreamFutureState) -> WaitableState {
 
 /// Return a closure which matches a host write operation to a read (or close)
 /// operation.
+///
+/// This may be used when the host initiates a write but there is no read
+/// pending at the other end, in which case we construct a
+/// `WriteState::HostReady` using the closure created here and leave it in
+/// `TransmitState::write` for the reader to find and call when it's ready.
 fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>(
     store: StoreContextMut<U>,
     mut buffer: B,
@@ -155,9 +177,9 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>
        + use<T, B, U> {
     let token = StoreToken::new(store);
     move |store, instance, reader| {
-        let count = match reader {
+        let code = match reader {
             Reader::Guest {
-                lower: RawLowerContext { options },
+                options,
                 ty,
                 address,
                 count,
@@ -216,12 +238,17 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>
             }
         };
 
-        Ok(count)
+        Ok(code)
     }
 }
 
 /// Return a closure which matches a host read operation to a write (or close)
 /// operation.
+///
+/// This may be used when the host initiates a read but there is no write
+/// pending at the other end, in which case we construct a
+/// `ReadState::HostReady` using the closure created here and leave it in
+/// `TransmitState::read` for the writer to find and call when it's ready.
 fn accept_writer<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
     mut buffer: B,
     tx: oneshot::Sender<HostResult<B>>,
@@ -287,7 +314,8 @@ fn accept_writer<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
     }
 }
 
-/// Represents the state of a stream or future handle.
+/// Represents the state of a stream or future handle from the perspective of a
+/// given component instance.
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum StreamFutureState {
     /// Only the write end is owned by this component instance.
@@ -305,32 +333,46 @@ pub(super) struct ErrorContextState {
     pub(crate) debug_msg: String,
 }
 
+/// Represents the size and alignment for a "flat" Component Model type,
+/// i.e. one containing no pointers or handles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FlatAbi {
     pub(super) size: u32,
     pub(super) align: u32,
 }
 
+/// Represents a pending event on a host-owned write end of a stream or future.
+///
+/// See `ComponentInstance::start_write_event_loop` for details.
 enum WriteEvent<B> {
+    /// Write the items in the specified buffer to the stream or future, and
+    /// return the result via the specified `Sender`.
     Write {
         buffer: B,
         tx: oneshot::Sender<HostResult<B>>,
     },
+    /// Close the write end of the stream or future.
     Close,
-    Watch {
-        tx: oneshot::Sender<()>,
-    },
+    /// Watch the read (i.e. opposite) end of this stream or future, dropping
+    /// the specified sender when it is closed.
+    Watch { tx: oneshot::Sender<()> },
 }
 
+/// Represents a pending event on a host-owned read end of a stream or future.
+///
+/// See `ComponentInstance::start_read_event_loop` for details.
 enum ReadEvent<B> {
+    /// Read as many items as the specified buffer will hold from the stream or
+    /// future, and return the result via the specified `Sender`.
     Read {
         buffer: B,
         tx: oneshot::Sender<HostResult<B>>,
     },
+    /// Close the read end of the stream or future.
     Close,
-    Watch {
-        tx: oneshot::Sender<()>,
-    },
+    /// Watch the write (i.e. opposite) end of this stream or future, dropping
+    /// the specified sender when it is closed.
+    Watch { tx: oneshot::Sender<()> },
 }
 
 /// Send the specified value to the specified `Sender`.
@@ -347,10 +389,9 @@ fn send<T>(tx: &mut mpsc::Sender<T>, value: T) {
     }
 }
 
-pub trait Ready {
-    fn ready(&mut self) -> impl Future<Output = ()> + Send;
-}
-
+/// State shared between a `Watch` and the wrapped future it is associated with.
+///
+/// See `Watch` for details.
 struct WatchInner<T> {
     inner: T,
     rx: oneshot::Receiver<()>,
@@ -365,7 +406,7 @@ struct WatchInner<T> {
 /// first.
 pub struct Watch<T>(Arc<Mutex<Option<WatchInner<T>>>>);
 
-impl<T: Ready> Watch<T> {
+impl<T> Watch<T> {
     /// Convert this object into its inner value.
     ///
     /// Calling this function will cause the associated `Future` to resolve
@@ -379,6 +420,9 @@ impl<T: Ready> Watch<T> {
     }
 }
 
+/// Wrap the specified `oneshot::Receiver` in a future which resolves when
+/// either that `Receiver` resolves or `Watch::into_inner` has been called on
+/// the returned `Watch`.
 fn watch<T: Send + 'static>(
     instance: SendSyncPtr<ComponentInstance>,
     rx: oneshot::Receiver<()>,
@@ -426,7 +470,7 @@ impl<T> FutureWriter<T> {
         instance: &mut ComponentInstance,
     ) -> Self {
         Self {
-            instance: SendSyncPtr::new(NonNull::new(instance).unwrap()),
+            instance: SendSyncPtr::new(instance.into()),
             tx,
         }
     }
@@ -487,12 +531,6 @@ impl<T> FutureWriter<T> {
     }
 }
 
-impl<T: Send> Ready for FutureWriter<T> {
-    async fn ready(&mut self) {
-        _ = future::poll_fn(|cx| self.tx.as_mut().unwrap().poll_ready(cx)).await;
-    }
-}
-
 impl<T> Drop for FutureWriter<T> {
     fn drop(&mut self) {
         if let Some(mut tx) = self.tx.take() {
@@ -522,7 +560,7 @@ impl<T> HostFuture<T> {
     /// SAFETY: `id` must match the store to which `instance` belongs.
     unsafe fn new(rep: u32, id: StoreId, instance: &mut ComponentInstance) -> Self {
         Self {
-            instance: SendSyncPtr::new(NonNull::new(instance).unwrap()),
+            instance: SendSyncPtr::new(instance.into()),
             id,
             rep,
             _phantom: PhantomData,
@@ -573,6 +611,7 @@ impl<T> HostFuture<T> {
         Ok(unsafe { Self::new(*rep, store.0.id(), instance) })
     }
 
+    /// Transfer ownership of the read end of a future from a guest to the host.
     fn lift_from_index(cx: &mut LiftContext<'_>, ty: InterfaceType, index: u32) -> Result<Self> {
         match ty {
             InterfaceType::Future(src) => {
@@ -599,6 +638,7 @@ impl<T> HostFuture<T> {
     }
 }
 
+/// Transfer ownership of the read end of a future from the host to a guest.
 pub(crate) fn lower_future_to_index<U>(
     rep: u32,
     cx: &mut LowerContext<'_, U>,
@@ -703,7 +743,7 @@ impl<T> FutureReader<T> {
         store: StoreContextMut<U>,
     ) -> Self {
         Self {
-            instance: SendSyncPtr::new(NonNull::new(instance).unwrap()),
+            instance: SendSyncPtr::new(instance.into()),
             id: store.0.id(),
             rep,
             tx,
@@ -769,12 +809,6 @@ impl<T> FutureReader<T> {
     }
 }
 
-impl<T: Send> Ready for FutureReader<T> {
-    async fn ready(&mut self) {
-        _ = future::poll_fn(|cx| self.tx.as_mut().unwrap().poll_ready(cx)).await;
-    }
-}
-
 impl<T> Drop for FutureReader<T> {
     fn drop(&mut self) {
         if let Some(mut tx) = self.tx.take() {
@@ -792,7 +826,7 @@ pub struct StreamWriter<B> {
 impl<B> StreamWriter<B> {
     fn new(tx: Option<mpsc::Sender<WriteEvent<B>>>, instance: &mut ComponentInstance) -> Self {
         Self {
-            instance: SendSyncPtr::new(NonNull::new(instance).unwrap()),
+            instance: SendSyncPtr::new(instance.into()),
             tx,
         }
     }
@@ -890,12 +924,6 @@ impl<B> StreamWriter<B> {
     }
 }
 
-impl<T: Send> Ready for StreamWriter<T> {
-    async fn ready(&mut self) {
-        _ = future::poll_fn(|cx| self.tx.as_mut().unwrap().poll_ready(cx)).await;
-    }
-}
-
 impl<T> Drop for StreamWriter<T> {
     fn drop(&mut self) {
         if let Some(mut tx) = self.tx.take() {
@@ -925,7 +953,7 @@ impl<T> HostStream<T> {
     /// SAFETY: `id` must match the store to which `instance` belongs.
     unsafe fn new(rep: u32, id: StoreId, instance: &mut ComponentInstance) -> Self {
         Self {
-            instance: SendSyncPtr::new(NonNull::new(instance).unwrap()),
+            instance: SendSyncPtr::new(instance.into()),
             id,
             rep,
             _phantom: PhantomData,
@@ -980,6 +1008,7 @@ impl<T> HostStream<T> {
         Ok(unsafe { Self::new(*rep, store.0.id(), instance) })
     }
 
+    /// Transfer ownership of the read end of a stream from a guest to the host.
     fn lift_from_index(cx: &mut LiftContext<'_>, ty: InterfaceType, index: u32) -> Result<Self> {
         match ty {
             InterfaceType::Stream(src) => {
@@ -1006,6 +1035,7 @@ impl<T> HostStream<T> {
     }
 }
 
+/// Transfer ownership of the read end of a stream from the host to a guest.
 pub(crate) fn lower_stream_to_index<U>(
     rep: u32,
     cx: &mut LowerContext<'_, U>,
@@ -1110,7 +1140,7 @@ impl<B> StreamReader<B> {
         store: StoreContextMut<U>,
     ) -> Self {
         Self {
-            instance: SendSyncPtr::new(NonNull::new(instance).unwrap()),
+            instance: SendSyncPtr::new(instance.into()),
             id: store.0.id(),
             rep,
             tx,
@@ -1168,12 +1198,6 @@ impl<B> StreamReader<B> {
         send(&mut self.tx.as_mut().unwrap(), ReadEvent::Watch { tx });
         let instance = self.instance;
         watch(instance, rx, self)
-    }
-}
-
-impl<B: Send> Ready for StreamReader<B> {
-    async fn ready(&mut self) {
-        _ = future::poll_fn(|cx| self.tx.as_mut().unwrap().poll_ready(cx)).await;
     }
 }
 
@@ -1305,8 +1329,10 @@ unsafe impl func::Lift for ErrorContext {
     }
 }
 
+/// Represents the read or write end of a stream or future.
 pub(super) struct TransmitHandle {
     pub(super) common: WaitableCommon,
+    /// See `TransmitState`
     state: TableId<TransmitState>,
 }
 
@@ -1325,12 +1351,23 @@ impl TableDebug for TransmitHandle {
     }
 }
 
+/// Represents the state of a stream or future.
 struct TransmitState {
+    /// The write end of the stream or future.
     write_handle: TableId<TransmitHandle>,
+    /// The read end of the stream or future.
     read_handle: TableId<TransmitHandle>,
+    /// See `WriteState`
     write: WriteState,
+    /// See `ReadState`
     read: ReadState,
+    /// The `Sender`, if any, to be dropped when the write end of the stream or
+    /// future is closed.
+    ///
+    /// This will signal to the host-owned read end that the write end has been
+    /// closed.
     writer_watcher: Option<oneshot::Sender<()>>,
+    /// Like `writer_watcher`, but for the reverse direction.
     reader_watcher: Option<oneshot::Sender<()>>,
 }
 
@@ -1353,8 +1390,11 @@ impl TableDebug for TransmitState {
     }
 }
 
+/// Represents the state of the write end of a stream or future.
 enum WriteState {
+    /// The write end is open, but no write is pending.
     Open,
+    /// The write end is owned by a guest task and a write is pending.
     GuestReady {
         ty: TableIndex,
         flat_abi: Option<FlatAbi>,
@@ -1364,6 +1404,7 @@ enum WriteState {
         handle: u32,
         post_write: PostWrite,
     },
+    /// The write end is owned by a host task and a write is pending.
     HostReady {
         accept: Box<
             dyn FnOnce(&mut dyn VMStore, &mut ComponentInstance, Reader) -> Result<ReturnCode>
@@ -1372,17 +1413,15 @@ enum WriteState {
         >,
         post_write: PostWrite,
     },
+    /// The write end has been closed.
     Closed,
 }
 
-/// Read state of a transmit channel
-///
-/// Channels generally start as open, and once they are read for data by either
-/// a guest or host, we transition into `GuestReady` or `HostReady` respectively.
-///
-/// Once a transmit channel is closed, it should *stay* closed.
+/// Represents the state of the read end of a stream or future.
 enum ReadState {
+    /// The read end is open, but no read is pending.
     Open,
+    /// The read end is owned by a guest task and a read is pending.
     GuestReady {
         ty: TableIndex,
         flat_abi: Option<FlatAbi>,
@@ -1391,41 +1430,50 @@ enum ReadState {
         count: usize,
         handle: u32,
     },
+    /// The read end is owned by a host task and a read is pending.
     HostReady {
         accept: Box<dyn FnOnce(Writer) -> Result<ReturnCode> + Send + Sync>,
     },
+    /// The read end has been closed.
     Closed,
 }
 
+/// Parameter type to pass to a `ReadState::HostReady` closure.
+///
+/// See also `accept_writer`.
 enum Writer<'a> {
-    /// Writes that are queued from guests
+    /// The write end is owned by a guest task.
     Guest {
         lift: &'a mut LiftContext<'a>,
         ty: Option<InterfaceType>,
         address: usize,
         count: usize,
     },
+    /// The write end is owned by the host.
     Host {
         buffer: &'a mut dyn TakeBuffer,
         count: usize,
     },
+    /// The write end has been closed.
     End,
 }
 
-struct RawLowerContext<'a> {
-    options: &'a Options,
-}
-
+/// Parameter type to pass to a `WriteState::HostReady` closure.
+///
+/// See also `accept_reader`.
 enum Reader<'a> {
+    /// The read end is owned by a guest task.
     Guest {
-        lower: RawLowerContext<'a>,
+        options: &'a Options,
         ty: TableIndex,
         address: usize,
         count: usize,
     },
+    /// The read end is owned by the host.
     Host {
         accept: Box<dyn FnOnce(&mut dyn TakeBuffer, usize) -> usize>,
     },
+    /// The read end has been closed.
     End,
 }
 
@@ -1521,6 +1569,7 @@ fn get_state_rep(rep: u32) -> Result<u32> {
     })
 }
 
+/// Helper struct for running a closure on drop, e.g. for logging purposes.
 struct RunOnDrop<F: FnOnce()>(Option<F>);
 
 impl<F: FnOnce()> RunOnDrop<F> {
@@ -1542,6 +1591,15 @@ impl<F: FnOnce()> Drop for RunOnDrop<F> {
 }
 
 impl ComponentInstance {
+    /// Spawn a background task to be polled in this instance's event loop.
+    ///
+    /// The spawned task will accept host events from the `Receiver` corresponding to
+    /// the returned `Sender`, handling each event it receives and then exiting
+    /// when the channel is closed.
+    ///
+    /// We handle `StreamWriter` and `FutureWriter` operations this way so that
+    /// they can be initiated without access to the store and possibly outside
+    /// the instance's event loop, improving the ergonmics for host embedders.
     fn start_write_event_loop<
         T: func::Lower + func::Lift + Send + 'static,
         B: WriteBuffer<T>,
@@ -1601,6 +1659,8 @@ impl ComponentInstance {
         tx
     }
 
+    /// Same as `Self::start_write_event_loop`, but for the read end of a stream
+    /// or future.
     fn start_read_event_loop<
         T: func::Lower + func::Lift + Send + 'static,
         B: ReadBuffer<T>,
@@ -1671,6 +1731,8 @@ impl ComponentInstance {
         get_mut_by_index_from(self.state_table(ty), ty, index)
     }
 
+    /// Allocate a new future or stream, including the `TransmitState` and the
+    /// `TransmitHandle`s corresponding to the read and write ends.
     fn new_transmit(&mut self) -> Result<(TableId<TransmitHandle>, TableId<TransmitHandle>)> {
         let state_id = self.push(TransmitState::default())?;
 
@@ -1686,6 +1748,7 @@ impl ComponentInstance {
         Ok((write, read))
     }
 
+    /// Delete the specified future or stream, including the read and write ends.
     fn delete_transmit(&mut self, state_id: TableId<TransmitState>) -> Result<()> {
         let state = self.delete(state_id)?;
         self.delete(state.write_handle)?;
@@ -1708,6 +1771,9 @@ impl ComponentInstance {
         &mut self.waitable_tables()[runtime_instance]
     }
 
+    /// Allocate a new future or stream and grant ownership of both the read and
+    /// write ends to the (sub-)component instance to which the specified
+    /// `TableIndex` belongs.
     fn guest_new(&mut self, ty: TableIndex) -> Result<ResourcePair> {
         let (write, read) = self.new_transmit()?;
         let write = self
@@ -1719,13 +1785,13 @@ impl ComponentInstance {
         Ok(ResourcePair { write, read })
     }
 
-    /// Write to a waitable from the host.
+    /// Write to the specified stream or future from the host.
     ///
     /// # Arguments
     ///
-    /// * `store` - The engine store
-    /// * `transmit_rep` - Global representation of the transmit object that will be modified
-    /// * `values` - List of values that should be written
+    /// * `store` - The store to which this instance belongs
+    /// * `transmit_rep` - The `TransmitState` rep for the stream or future
+    /// * `buffer` - Buffer of values that should be written
     /// * `post_write` - Whether the transmit should be closed after write, possibly with an error context
     /// * `tx` - Oneshot channel to notify when operation completes (or drop on error)
     fn host_write<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>(
@@ -1773,7 +1839,7 @@ impl ComponentInstance {
                     store.0.traitobj_mut(),
                     self,
                     Reader::Guest {
-                        lower: RawLowerContext { options: &options },
+                        options: &options,
                         ty,
                         address,
                         count,
@@ -1820,7 +1886,14 @@ impl ComponentInstance {
         Ok(())
     }
 
-    /// Attempt to read items from the specified stream or future.
+    /// Read from the specified stream or future from the host.
+    ///
+    /// # Arguments
+    ///
+    /// * `store` - The store to which this instance belongs
+    /// * `rep` - The `TransmitState` rep for the stream or future
+    /// * `buffer` - Buffer to receive values
+    /// * `tx` - Oneshot channel to notify when operation completes (or drop on error)
     fn host_read<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U: 'static>(
         &mut self,
         store: StoreContextMut<U>,
@@ -1925,6 +1998,9 @@ impl ComponentInstance {
         Ok(())
     }
 
+    /// Cancel a pending stream or future write from the host.
+    ///
+    /// `rep` is the `TransmitState` rep for the stream or future.
     fn host_cancel_write(&mut self, rep: u32) -> Result<ReturnCode> {
         let transmit_id = TableId::<TransmitState>::new(rep);
         let transmit = self.get_mut(transmit_id)?;
@@ -1946,11 +2022,16 @@ impl ComponentInstance {
             WriteState::Open | WriteState::Closed => {}
         }
 
-        log::trace!("canceled write {transmit_id:?}");
+        log::trace!("cancelled write {transmit_id:?}");
 
         Ok(ReturnCode::Cancelled(0))
     }
 
+    /// Cancel a pending stream or future read from the host.
+    ///
+    /// # Arguments
+    ///
+    /// * `rep` - The `TransmitState` rep for the stream or future.
     fn host_cancel_read(&mut self, rep: u32) -> Result<ReturnCode> {
         let transmit_id = TableId::<TransmitState>::new(rep);
         let transmit = self.get_mut(transmit_id)?;
@@ -1972,16 +2053,16 @@ impl ComponentInstance {
             ReadState::Open | ReadState::Closed => {}
         }
 
-        log::trace!("canceled read {transmit_id:?}");
+        log::trace!("cancelled read {transmit_id:?}");
 
         Ok(ReturnCode::Cancelled(0))
     }
 
-    /// Close the writer end of a Future or Stream
+    /// Close the write end of a stream or future read from the host.
     ///
     /// # Arguments
     ///
-    /// * `transmit_rep` - A component-global representation of the transmit state for the writer that should be closed
+    /// * `transmit_rep` - The `TransmitState` rep for the stream or future.
     fn host_close_writer(&mut self, transmit_rep: u32) -> Result<()> {
         let transmit_id = TableId::<TransmitState>::new(transmit_rep);
         let transmit = self
@@ -2054,12 +2135,12 @@ impl ComponentInstance {
         Ok(())
     }
 
-    /// Close the reader end of a Future or Stream
+    /// Close the read end of a stream or future read from the host.
     ///
     /// # Arguments
     ///
-    /// * `transmit_rep` - A global-component-level representation of the transmit state for the reader that should be closed
-    ///
+    /// * `store` - The store to which this instance belongs
+    /// * `transmit_rep` - The `TransmitState` rep for the stream or future.
     fn host_close_reader(&mut self, store: &mut dyn VMStore, transmit_rep: u32) -> Result<()> {
         let transmit_id = TableId::<TransmitState>::new(transmit_rep);
         let transmit = self
@@ -2078,8 +2159,8 @@ impl ComponentInstance {
         };
 
         match mem::replace(&mut transmit.write, new_state) {
-            // If a guest is waiting to write, ensure that the next write
-            // reflects the closed state of the stream
+            // If a guest is waiting to write, notify it that the read end has
+            // been closed.
             WriteState::GuestReady {
                 ty,
                 handle,
@@ -2380,6 +2461,27 @@ impl ComponentInstance {
             } => {
                 assert_eq!(flat_abi, read_flat_abi);
 
+                // Note that zero-length reads and writes are handling specially
+                // by the spec to allow each end to signal readiness to the
+                // other.  Quoting the spec:
+                //
+                // ```
+                // The meaning of a read or write when the length is 0 is that
+                // the caller is querying the "readiness" of the other
+                // side. When a 0-length read/write rendezvous with a
+                // non-0-length read/write, only the 0-length read/write
+                // completes; the non-0-length read/write is kept pending (and
+                // ready for a subsequent rendezvous).
+                //
+                // In the corner case where a 0-length read and write
+                // rendezvous, only the writer is notified of readiness. To
+                // avoid livelock, the Canonical ABI requires that a writer must
+                // (eventually) follow a completed 0-length write with a
+                // non-0-length write that is allowed to block (allowing the
+                // reader end to run and rendezvous with its own non-0-length
+                // read).
+                // ```
+
                 let write_complete = count == 0 || read_count > 0;
                 let read_complete = count > 0;
 
@@ -2550,6 +2652,10 @@ impl ComponentInstance {
 
                 let write_handle_rep = transmit.write_handle.rep();
 
+                // See the comment in `guest_write` for the
+                // `ReadState::GuestReady` case concerning zero-length reads and
+                // writes.
+
                 let write_complete = write_count == 0 || count > 0;
                 let read_complete = write_count > 0;
 
@@ -2617,7 +2723,7 @@ impl ComponentInstance {
                     store.0.traitobj_mut(),
                     self,
                     Reader::Guest {
-                        lower: RawLowerContext { options: &options },
+                        options: &options,
                         ty,
                         address: usize::try_from(address).unwrap(),
                         count: count.try_into().unwrap(),
@@ -2646,6 +2752,7 @@ impl ComponentInstance {
         Ok(result)
     }
 
+    /// Cancel a pending write for the specified stream or future from the guest.
     fn guest_cancel_write(
         &mut self,
         ty: TableIndex,
@@ -2661,7 +2768,7 @@ impl ComponentInstance {
         log::trace!("guest cancel write {id:?} (handle {writer})");
         match state {
             StreamFutureState::Write => {
-                bail!("stream or future write canceled when no write is pending")
+                bail!("stream or future write cancelled when no write is pending")
             }
             StreamFutureState::Read => {
                 bail!("passed read end to `{{stream|future}}.cancel-write`")
@@ -2674,6 +2781,7 @@ impl ComponentInstance {
         self.host_cancel_write(rep)
     }
 
+    /// Cancel a pending read for the specified stream or future from the guest.
     fn guest_cancel_read(
         &mut self,
         ty: TableIndex,
@@ -2689,7 +2797,7 @@ impl ComponentInstance {
         log::trace!("guest cancel read {id:?} (handle {reader})");
         match state {
             StreamFutureState::Read => {
-                bail!("stream or future read canceled when no read is pending")
+                bail!("stream or future read cancelled when no read is pending")
             }
             StreamFutureState::Write => {
                 bail!("passed write end to `{{stream|future}}.cancel-read`")
@@ -2702,6 +2810,7 @@ impl ComponentInstance {
         self.host_cancel_read(rep)
     }
 
+    /// Close the writable end of the specified stream or future from the guest.
     fn guest_close_writable(&mut self, ty: TableIndex, writer: u32) -> Result<()> {
         let (transmit_rep, WaitableState::Stream(_, state) | WaitableState::Future(_, state)) =
             self.state_table(ty)
@@ -2725,6 +2834,7 @@ impl ComponentInstance {
         self.host_close_writer(transmit_rep)
     }
 
+    /// Close the readable end of the specified stream or future from the guest.
     fn guest_close_readable(
         &mut self,
         store: &mut dyn VMStore,
@@ -2902,6 +3012,7 @@ impl ComponentInstance {
         Ok(())
     }
 
+    /// Drop the specified error context.
     pub(crate) fn error_context_drop(
         &mut self,
         ty: TypeComponentLocalErrorContextTableIndex,
@@ -2951,6 +3062,8 @@ impl ComponentInstance {
         Ok(())
     }
 
+    /// Transfer ownership of the specified stream or future read end from one
+    /// guest to another.
     fn guest_transfer<U: PartialEq + Eq + std::fmt::Debug>(
         &mut self,
         src_idx: u32,
@@ -2984,10 +3097,12 @@ impl ComponentInstance {
         }
     }
 
+    /// Implements the `future.new` intrinsic.
     pub(crate) fn future_new(&mut self, ty: TypeFutureTableIndex) -> Result<ResourcePair> {
         self.guest_new(TableIndex::Future(ty))
     }
 
+    /// Implements the `future.cancel-write` intrinsic.
     pub(crate) fn future_cancel_write(
         &mut self,
         ty: TypeFutureTableIndex,
@@ -2998,6 +3113,7 @@ impl ComponentInstance {
             .map(|result| result.encode())
     }
 
+    /// Implements the `future.cancel-read` intrinsic.
     pub(crate) fn future_cancel_read(
         &mut self,
         ty: TypeFutureTableIndex,
@@ -3008,6 +3124,7 @@ impl ComponentInstance {
             .map(|result| result.encode())
     }
 
+    /// Implements the `future.close-writable` intrinsic.
     pub(crate) fn future_close_writable(
         &mut self,
         ty: TypeFutureTableIndex,
@@ -3016,6 +3133,7 @@ impl ComponentInstance {
         self.guest_close_writable(TableIndex::Future(ty), writer)
     }
 
+    /// Implements the `future.close-readable` intrinsic.
     pub(crate) fn future_close_readable(
         &mut self,
         store: &mut dyn VMStore,
@@ -3025,10 +3143,12 @@ impl ComponentInstance {
         self.guest_close_readable(store, TableIndex::Future(ty), reader)
     }
 
+    /// Implements the `stream.new` intrinsic.
     pub(crate) fn stream_new(&mut self, ty: TypeStreamTableIndex) -> Result<ResourcePair> {
         self.guest_new(TableIndex::Stream(ty))
     }
 
+    /// Implements the `stream.cancel-write` intrinsic.
     pub(crate) fn stream_cancel_write(
         &mut self,
         ty: TypeStreamTableIndex,
@@ -3039,6 +3159,7 @@ impl ComponentInstance {
             .map(|result| result.encode())
     }
 
+    /// Implements the `stream.cancel-read` intrinsic.
     pub(crate) fn stream_cancel_read(
         &mut self,
         ty: TypeStreamTableIndex,
@@ -3049,6 +3170,7 @@ impl ComponentInstance {
             .map(|result| result.encode())
     }
 
+    /// Implements the `stream.close-writable` intrinsic.
     pub(crate) fn stream_close_writable(
         &mut self,
         ty: TypeStreamTableIndex,
@@ -3057,6 +3179,7 @@ impl ComponentInstance {
         self.guest_close_writable(TableIndex::Stream(ty), writer)
     }
 
+    /// Implements the `stream.close-readable` intrinsic.
     pub(crate) fn stream_close_readable(
         &mut self,
         store: &mut dyn VMStore,
@@ -3066,6 +3189,8 @@ impl ComponentInstance {
         self.guest_close_readable(store, TableIndex::Stream(ty), reader)
     }
 
+    /// Transfer ownership of the specified future read end from one guest to
+    /// another.
     pub(crate) fn future_transfer(
         &mut self,
         src_idx: u32,
@@ -3089,6 +3214,8 @@ impl ComponentInstance {
         )
     }
 
+    /// Transfer ownership of the specified stream read end from one guest to
+    /// another.
     pub(crate) fn stream_transfer(
         &mut self,
         src_idx: u32,
@@ -3112,7 +3239,7 @@ impl ComponentInstance {
         )
     }
 
-    /// Transfer the state of a given error context from one component to another
+    /// Copy the specified error context from one component to another
     pub(crate) fn error_context_transfer(
         &mut self,
         src_idx: u32,
