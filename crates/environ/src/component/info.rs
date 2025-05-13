@@ -956,39 +956,39 @@ pub enum Trampoline {
     /// Same as `ResourceEnterCall` except for when exiting a call.
     ResourceExitCall,
 
-    /// An intrinsic used by FACT-generated modules to begin a call involving a
-    /// sync-lowered import and async-lifted export.
-    SyncEnterCall {
+    /// An intrinsic used by FACT-generated modules to prepare a call involving
+    /// a sync-lowered import and async-lifted export.
+    SyncPrepareCall {
         /// The memory used to verify that the memory specified for the
         /// `task.return` that is called at runtime matches the one specified in
         /// the lifted export.
         memory: Option<RuntimeMemoryIndex>,
     },
 
-    /// An intrinsic used by FACT-generated modules to complete a call involving
-    /// a sync-lowered import and async-lifted export.
-    SyncExitCall {
+    /// An intrinsic used by FACT-generated modules to start a call involving a
+    /// sync-lowered import and async-lifted export.
+    SyncStartCall {
         /// The callee's callback function, if any.
         callback: Option<RuntimeCallbackIndex>,
     },
 
-    /// An intrinsic used by FACT-generated modules to begin a call involving an
-    /// async-lowered import function.
-    AsyncEnterCall {
+    /// An intrinsic used by FACT-generated modules to prepare a call involving
+    /// an async-lowered import function.
+    AsyncPrepareCall {
         /// The memory used to verify that the memory specified for the
         /// `task.return` that is called at runtime (if any) matches the one
         /// specified in the lifted export.
         memory: Option<RuntimeMemoryIndex>,
     },
 
-    /// An intrinsic used by FACT-generated modules to complete a call involving
+    /// An intrinsic used by FACT-generated modules to start a call involving
     /// an async-lowered import function.
     ///
-    /// Note that `AsyncEnterCall` and `AsyncExitCall` could theoretically be
+    /// Note that `AsyncPrepareCall` and `AsyncStartCall` could theoretically be
     /// combined into a single `AsyncCall` intrinsic, but we separate them to
     /// allow the FACT-generated module to optionally call the callee directly
     /// without an intermediate host stack frame.
-    AsyncExitCall {
+    AsyncStartCall {
         /// The callee's callback, if any.
         callback: Option<RuntimeCallbackIndex>,
 
@@ -1086,10 +1086,10 @@ impl Trampoline {
             ResourceTransferBorrow => format!("component-resource-transfer-borrow"),
             ResourceEnterCall => format!("component-resource-enter-call"),
             ResourceExitCall => format!("component-resource-exit-call"),
-            SyncEnterCall { .. } => format!("component-sync-enter-call"),
-            SyncExitCall { .. } => format!("component-sync-exit-call"),
-            AsyncEnterCall { .. } => format!("component-async-enter-call"),
-            AsyncExitCall { .. } => format!("component-async-exit-call"),
+            SyncPrepareCall { .. } => format!("component-sync-prepare-call"),
+            SyncStartCall { .. } => format!("component-sync-start-call"),
+            AsyncPrepareCall { .. } => format!("component-async-prepare-call"),
+            AsyncStartCall { .. } => format!("component-async-start-call"),
             FutureTransfer => format!("future-transfer"),
             StreamTransfer => format!("stream-transfer"),
             ErrorContextTransfer => format!("error-context-transfer"),

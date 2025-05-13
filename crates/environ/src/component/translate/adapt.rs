@@ -305,25 +305,25 @@ fn fact_import_to_core_def(
         }
         fact::Import::ResourceEnterCall => simple_intrinsic(dfg::Trampoline::ResourceEnterCall),
         fact::Import::ResourceExitCall => simple_intrinsic(dfg::Trampoline::ResourceExitCall),
-        fact::Import::SyncEnterCall { memory } => {
-            simple_intrinsic(dfg::Trampoline::SyncEnterCall {
+        fact::Import::SyncPrepareCall { memory } => {
+            simple_intrinsic(dfg::Trampoline::SyncPrepareCall {
                 memory: memory.as_ref().map(|v| dfg.memories.push(unwrap_memory(v))),
             })
         }
-        fact::Import::SyncExitCall { callback } => {
-            simple_intrinsic(dfg::Trampoline::SyncExitCall {
+        fact::Import::SyncStartCall { callback } => {
+            simple_intrinsic(dfg::Trampoline::SyncStartCall {
                 callback: callback.clone().map(|v| dfg.callbacks.push(v)),
             })
         }
-        fact::Import::AsyncEnterCall { memory } => {
-            simple_intrinsic(dfg::Trampoline::AsyncEnterCall {
+        fact::Import::AsyncPrepareCall { memory } => {
+            simple_intrinsic(dfg::Trampoline::AsyncPrepareCall {
                 memory: memory.as_ref().map(|v| dfg.memories.push(unwrap_memory(v))),
             })
         }
-        fact::Import::AsyncExitCall {
+        fact::Import::AsyncStartCall {
             callback,
             post_return,
-        } => simple_intrinsic(dfg::Trampoline::AsyncExitCall {
+        } => simple_intrinsic(dfg::Trampoline::AsyncStartCall {
             callback: callback.clone().map(|v| dfg.callbacks.push(v)),
             post_return: post_return.clone().map(|v| dfg.post_returns.push(v)),
         }),

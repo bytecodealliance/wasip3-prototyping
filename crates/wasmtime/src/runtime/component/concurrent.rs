@@ -150,7 +150,7 @@ mod callback_code {
     pub const POLL: u32 = 3;
 }
 
-const EXIT_FLAG_ASYNC_CALLEE: u32 = fact::EXIT_FLAG_ASYNC_CALLEE as u32;
+const START_FLAG_ASYNC_CALLEE: u32 = fact::START_FLAG_ASYNC_CALLEE as u32;
 
 /// Provides access to either store data (via the `get` method) or the store
 /// itself (via [`AsContext`]/[`AsContextMut`]).
@@ -1566,7 +1566,7 @@ impl ComponentInstance {
             } else {
                 Some(self.instance_flags(callee_instance))
             },
-            (flags & EXIT_FLAG_ASYNC_CALLEE) != 0,
+            (flags & START_FLAG_ASYNC_CALLEE) != 0,
             NonNull::new(callback).map(SendSyncPtr::new),
             NonNull::new(post_return).map(SendSyncPtr::new),
         )?;
@@ -3011,7 +3011,7 @@ impl Instance {
 pub trait VMComponentAsyncStore {
     /// A helper function for fused adapter modules involving calls where the
     /// caller is sync-lowered but the callee is async-lifted.
-    unsafe fn sync_enter(
+    unsafe fn sync_prepare(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -3028,7 +3028,7 @@ pub trait VMComponentAsyncStore {
 
     /// A helper function for fused adapter modules involving calls where the
     /// caller is sync-lowered but the callee is async-lifted.
-    unsafe fn sync_exit(
+    unsafe fn sync_start(
         &mut self,
         instance: &mut ComponentInstance,
         callback: *mut VMFuncRef,
@@ -3040,7 +3040,7 @@ pub trait VMComponentAsyncStore {
 
     /// A helper function for fused adapter modules involving calls where the
     /// caller is async-lowered.
-    unsafe fn async_enter(
+    unsafe fn async_prepare(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -3056,7 +3056,7 @@ pub trait VMComponentAsyncStore {
 
     /// A helper function for fused adapter modules involving calls where the
     /// caller is async-lowered.
-    unsafe fn async_exit(
+    unsafe fn async_start(
         &mut self,
         instance: &mut ComponentInstance,
         callback: *mut VMFuncRef,
@@ -3168,7 +3168,7 @@ pub trait VMComponentAsyncStore {
 
 /// SAFETY: See trait docs.
 impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
-    unsafe fn sync_enter(
+    unsafe fn sync_prepare(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -3201,7 +3201,7 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
         )
     }
 
-    unsafe fn sync_exit(
+    unsafe fn sync_start(
         &mut self,
         instance: &mut ComponentInstance,
         callback: *mut VMFuncRef,
@@ -3218,7 +3218,7 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
                 callee,
                 param_count,
                 1,
-                EXIT_FLAG_ASYNC_CALLEE,
+                START_FLAG_ASYNC_CALLEE,
                 // SAFETY: The `wasmtime_cranelift`-generated code that calls
                 // this method will have ensured that `storage` is a valid
                 // pointer containing at least `storage_len` items.
@@ -3227,7 +3227,7 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
             .map(drop)
     }
 
-    unsafe fn async_enter(
+    unsafe fn async_prepare(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -3253,7 +3253,7 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
         )
     }
 
-    unsafe fn async_exit(
+    unsafe fn async_start(
         &mut self,
         instance: &mut ComponentInstance,
         callback: *mut VMFuncRef,

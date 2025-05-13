@@ -383,16 +383,16 @@ pub enum Trampoline {
     ResourceTransferBorrow,
     ResourceEnterCall,
     ResourceExitCall,
-    SyncEnterCall {
+    SyncPrepareCall {
         memory: Option<MemoryId>,
     },
-    SyncExitCall {
+    SyncStartCall {
         callback: Option<CallbackId>,
     },
-    AsyncEnterCall {
+    AsyncPrepareCall {
         memory: Option<MemoryId>,
     },
-    AsyncExitCall {
+    AsyncStartCall {
         callback: Option<CallbackId>,
         post_return: Option<PostReturnId>,
     },
@@ -895,19 +895,19 @@ impl LinearizeDfg<'_> {
             Trampoline::ResourceTransferBorrow => info::Trampoline::ResourceTransferBorrow,
             Trampoline::ResourceEnterCall => info::Trampoline::ResourceEnterCall,
             Trampoline::ResourceExitCall => info::Trampoline::ResourceExitCall,
-            Trampoline::SyncEnterCall { memory } => info::Trampoline::SyncEnterCall {
+            Trampoline::SyncPrepareCall { memory } => info::Trampoline::SyncPrepareCall {
                 memory: memory.map(|v| self.runtime_memory(v)),
             },
-            Trampoline::SyncExitCall { callback } => info::Trampoline::SyncExitCall {
+            Trampoline::SyncStartCall { callback } => info::Trampoline::SyncStartCall {
                 callback: callback.map(|v| self.runtime_callback(v)),
             },
-            Trampoline::AsyncEnterCall { memory } => info::Trampoline::AsyncEnterCall {
+            Trampoline::AsyncPrepareCall { memory } => info::Trampoline::AsyncPrepareCall {
                 memory: memory.map(|v| self.runtime_memory(v)),
             },
-            Trampoline::AsyncExitCall {
+            Trampoline::AsyncStartCall {
                 callback,
                 post_return,
-            } => info::Trampoline::AsyncExitCall {
+            } => info::Trampoline::AsyncStartCall {
                 callback: callback.map(|v| self.runtime_callback(v)),
                 post_return: post_return.map(|v| self.runtime_post_return(v)),
             },

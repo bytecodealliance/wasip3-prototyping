@@ -6,7 +6,7 @@ use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlags, Value};
 use cranelift_codegen::isa::{CallConv, TargetIsa};
 use cranelift_frontend::FunctionBuilder;
-use wasmtime_environ::fact::SYNC_ENTER_FIXED_PARAMS;
+use wasmtime_environ::fact::SYNC_PREPARE_FIXED_PARAMS;
 use wasmtime_environ::{component::*, CompiledFunctionBody};
 use wasmtime_environ::{
     HostCall, ModuleInternedTypeIndex, PtrSize, TrapSentinel, Tunables, WasmFuncType, WasmValType,
@@ -255,13 +255,13 @@ impl<'a> TrampolineCompiler<'a> {
                     me.raise_if_host_trapped(rets.pop().unwrap());
                 })
             }
-            Trampoline::SyncEnterCall { memory } => self.translate_sync_enter(*memory),
-            Trampoline::SyncExitCall { callback } => self.translate_sync_exit(*callback),
-            Trampoline::AsyncEnterCall { memory } => self.translate_async_enter(*memory),
-            Trampoline::AsyncExitCall {
+            Trampoline::SyncPrepareCall { memory } => self.translate_sync_prepare(*memory),
+            Trampoline::SyncStartCall { callback } => self.translate_sync_start(*callback),
+            Trampoline::AsyncPrepareCall { memory } => self.translate_async_prepare(*memory),
+            Trampoline::AsyncStartCall {
                 callback,
                 post_return,
-            } => self.translate_async_exit(*callback, *post_return),
+            } => self.translate_async_start(*callback, *post_return),
             Trampoline::FutureTransfer => {
                 self.translate_host_libcall(host::future_transfer, |me, rets| {
                     rets[0] = me.raise_if_negative_one_and_truncate(rets[0]);
@@ -349,9 +349,10 @@ impl<'a> TrampolineCompiler<'a> {
             Abi::Array => {
                 // TODO: A guest could hypothetically export the same intrinsic
                 // it imported, allowing the host to call it directly.  We need
-                // to support that here (except for `sync-enter`, `sync-exit`,
-                // `async-enter`, and `async-exit`, which are only ever called
-                // from FACT-generated Wasm code and never exported).
+                // to support that here (except for `sync-prepare`,
+                // `sync-start`, `async-prepare`, and `async-start`, which are
+                // only ever called from FACT-generated Wasm code and never
+                // exported).
                 //
                 // https://github.com/bytecodealliance/wasmtime/issues/10143
                 self.builder.ins().trap(TRAP_INTERNAL_ASSERT);
@@ -470,7 +471,7 @@ impl<'a> TrampolineCompiler<'a> {
         );
     }
 
-    fn translate_sync_enter(&mut self, memory: Option<RuntimeMemoryIndex>) {
+    fn translate_sync_prepare(&mut self, memory: Option<RuntimeMemoryIndex>) {
         match self.abi {
             Abi::Wasm => {}
 
@@ -488,7 +489,7 @@ impl<'a> TrampolineCompiler<'a> {
         let pointer_type = self.isa.pointer_type();
         let wasm_func_ty = &self.types[self.signature].unwrap_func();
 
-        let param_offset = SYNC_ENTER_FIXED_PARAMS.len();
+        let param_offset = SYNC_PREPARE_FIXED_PARAMS.len();
         let spill_offset = param_offset + 2;
 
         let (values_vec_ptr, len) = self.compiler.allocate_stack_array_and_spill_args(
@@ -516,13 +517,13 @@ impl<'a> TrampolineCompiler<'a> {
 
         self.translate_intrinsic_libcall(
             vmctx,
-            host::sync_enter,
+            host::sync_prepare,
             &callee_args,
             TrapSentinel::Falsy,
         );
     }
 
-    fn translate_sync_exit(&mut self, callback: Option<RuntimeCallbackIndex>) {
+    fn translate_sync_start(&mut self, callback: Option<RuntimeCallbackIndex>) {
         match self.abi {
             Abi::Wasm => {}
 
@@ -556,7 +557,7 @@ impl<'a> TrampolineCompiler<'a> {
         callee_args.push(values_vec_ptr);
         callee_args.push(values_vec_len);
 
-        let call = self.call_libcall(vmctx, host::sync_exit, &callee_args);
+        let call = self.call_libcall(vmctx, host::sync_start, &callee_args);
 
         let succeeded = self.builder.func.dfg.inst_results(call)[0];
         self.raise_if_host_trapped(succeeded);
@@ -571,7 +572,7 @@ impl<'a> TrampolineCompiler<'a> {
         self.builder.ins().return_(&results);
     }
 
-    fn translate_async_enter(&mut self, memory: Option<RuntimeMemoryIndex>) {
+    fn translate_async_prepare(&mut self, memory: Option<RuntimeMemoryIndex>) {
         match self.abi {
             Abi::Wasm => {}
 
@@ -593,13 +594,13 @@ impl<'a> TrampolineCompiler<'a> {
 
         self.translate_intrinsic_libcall(
             vmctx,
-            host::async_enter,
+            host::async_prepare,
             &callee_args,
             TrapSentinel::Falsy,
         );
     }
 
-    fn translate_async_exit(
+    fn translate_async_start(
         &mut self,
         callback: Option<RuntimeCallbackIndex>,
         post_return: Option<RuntimePostReturnIndex>,
@@ -629,7 +630,7 @@ impl<'a> TrampolineCompiler<'a> {
 
         self.translate_intrinsic_libcall(
             vmctx,
-            host::async_exit,
+            host::async_start,
             &callee_args,
             TrapSentinel::NegativeOne,
         );
