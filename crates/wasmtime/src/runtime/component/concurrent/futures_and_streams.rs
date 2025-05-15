@@ -46,6 +46,14 @@ pub use buffers::{ReadBuffer, TakeBuffer, VecBuffer, WriteBuffer};
 
 mod buffers;
 
+/// Enum for distinguishing between a stream or future in functions that handle
+/// both.
+#[derive(Copy, Clone, Debug)]
+enum TransmitKind {
+    Stream,
+    Future,
+}
+
 /// Represents `{stream,future}.{read,write}` results.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ReturnCode {
@@ -81,6 +89,19 @@ impl ReturnCode {
             }
         }
     }
+
+    /// Returns `Self::Closed` if `matches!(kind, TransmitKind::Future) && count
+    /// == 1`; otherwise returns `Self::Completed`.
+    ///
+    /// Futures, unlike streams, are automatically closed once the payload is
+    /// delivered.
+    fn completed_or_closed(kind: TransmitKind, count: u32) -> Self {
+        if matches!(kind, TransmitKind::Future) && count == 1 {
+            Self::Closed(count)
+        } else {
+            Self::Completed(count)
+        }
+    }
 }
 
 /// Represents a stream or future type index.
@@ -91,6 +112,15 @@ impl ReturnCode {
 pub(super) enum TableIndex {
     Stream(TypeStreamTableIndex),
     Future(TypeFutureTableIndex),
+}
+
+impl TableIndex {
+    fn kind(&self) -> TransmitKind {
+        match self {
+            TableIndex::Stream(_) => TransmitKind::Stream,
+            TableIndex::Future(_) => TransmitKind::Future,
+        }
+    }
 }
 
 /// Action to take after writing
@@ -170,6 +200,7 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>
     store: StoreContextMut<U>,
     mut buffer: B,
     tx: oneshot::Sender<HostResult<B>>,
+    kind: TransmitKind,
 ) -> impl FnOnce(&mut dyn VMStore, &mut ComponentInstance, Reader) -> Result<ReturnCode>
        + Send
        + Sync
@@ -218,7 +249,7 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>
                     buffer,
                     closed: false,
                 });
-                ReturnCode::Completed(count.try_into().unwrap())
+                ReturnCode::completed_or_closed(kind, count.try_into().unwrap())
             }
             Reader::Host { accept } => {
                 let count = buffer.remaining().len();
@@ -227,7 +258,7 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>
                     buffer,
                     closed: false,
                 });
-                ReturnCode::Completed(count.try_into().unwrap())
+                ReturnCode::completed_or_closed(kind, count.try_into().unwrap())
             }
             Reader::End => {
                 _ = tx.send(HostResult {
@@ -252,6 +283,7 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>
 fn accept_writer<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
     mut buffer: B,
     tx: oneshot::Sender<HostResult<B>>,
+    kind: TransmitKind,
 ) -> impl FnOnce(Writer) -> Result<ReturnCode> + Send + Sync + 'static {
     move |writer| {
         let count = match writer {
@@ -287,7 +319,7 @@ fn accept_writer<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
                     buffer,
                     closed: false,
                 });
-                ReturnCode::Completed(count.try_into().unwrap())
+                ReturnCode::completed_or_closed(kind, count.try_into().unwrap())
             }
             Writer::Host {
                 buffer: input,
@@ -299,7 +331,7 @@ fn accept_writer<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
                     buffer,
                     closed: false,
                 });
-                ReturnCode::Completed(count.try_into().unwrap())
+                ReturnCode::completed_or_closed(kind, count.try_into().unwrap())
             }
             Writer::End => {
                 _ = tx.send(HostResult {
@@ -583,7 +615,11 @@ impl<T> HostFuture<T> {
             instance: self.instance,
             id: self.id,
             rep: self.rep,
-            tx: Some(instance.start_read_event_loop::<_, _, U>(store, self.rep)),
+            tx: Some(instance.start_read_event_loop::<_, _, U>(
+                store,
+                self.rep,
+                TransmitKind::Future,
+            )),
         }
     }
 
@@ -980,7 +1016,11 @@ impl<T> HostStream<T> {
             instance: self.instance,
             id: self.id,
             rep: self.rep,
-            tx: Some(instance.start_read_event_loop::<_, _, U>(store, self.rep)),
+            tx: Some(instance.start_read_event_loop::<_, _, U>(
+                store,
+                self.rep,
+                TransmitKind::Stream,
+            )),
         }
     }
 
@@ -1498,17 +1538,17 @@ impl Instance {
                         Some(instance.start_write_event_loop::<_, _, U>(
                             store.as_context_mut(),
                             write.rep(),
+                            TransmitKind::Future,
                         )),
                         instance,
                     ),
                     FutureReader::new(
                         read.rep(),
-                        Some(
-                            instance.start_read_event_loop::<_, _, U>(
-                                store.as_context_mut(),
-                                read.rep(),
-                            ),
-                        ),
+                        Some(instance.start_read_event_loop::<_, _, U>(
+                            store.as_context_mut(),
+                            read.rep(),
+                            TransmitKind::Future,
+                        )),
                         instance,
                         store,
                     ),
@@ -1538,17 +1578,17 @@ impl Instance {
                         Some(instance.start_write_event_loop::<_, _, U>(
                             store.as_context_mut(),
                             write.rep(),
+                            TransmitKind::Stream,
                         )),
                         instance,
                     ),
                     StreamReader::new(
                         read.rep(),
-                        Some(
-                            instance.start_read_event_loop::<_, _, U>(
-                                store.as_context_mut(),
-                                read.rep(),
-                            ),
-                        ),
+                        Some(instance.start_read_event_loop::<_, _, U>(
+                            store.as_context_mut(),
+                            read.rep(),
+                            TransmitKind::Stream,
+                        )),
                         instance,
                         store,
                     ),
@@ -1608,6 +1648,7 @@ impl ComponentInstance {
         &mut self,
         store: StoreContextMut<U>,
         rep: u32,
+        kind: TransmitKind,
     ) -> mpsc::Sender<WriteEvent<B>> {
         let (tx, mut rx) = mpsc::channel(1);
         let id = TableId::<TransmitHandle>::new(rep);
@@ -1632,6 +1673,7 @@ impl ComponentInstance {
                                     buffer,
                                     PostWrite::Continue,
                                     tx,
+                                    kind,
                                 )
                             })?
                         }
@@ -1669,6 +1711,7 @@ impl ComponentInstance {
         &mut self,
         store: StoreContextMut<U>,
         rep: u32,
+        kind: TransmitKind,
     ) -> mpsc::Sender<ReadEvent<B>> {
         let (tx, mut rx) = mpsc::channel(1);
         let id = TableId::<TransmitHandle>::new(rep);
@@ -1691,6 +1734,7 @@ impl ComponentInstance {
                                     rep,
                                     buffer,
                                     tx,
+                                    kind,
                                 )
                             })?
                         }
@@ -1776,12 +1820,12 @@ impl ComponentInstance {
     /// `TableIndex` belongs.
     fn guest_new(&mut self, ty: TableIndex) -> Result<ResourcePair> {
         let (write, read) = self.new_transmit()?;
-        let write = self
-            .state_table(ty)
-            .insert(write.rep(), waitable_state(ty, StreamFutureState::Write))?;
         let read = self
             .state_table(ty)
             .insert(read.rep(), waitable_state(ty, StreamFutureState::Read))?;
+        let write = self
+            .state_table(ty)
+            .insert(write.rep(), waitable_state(ty, StreamFutureState::Write))?;
         Ok(ResourcePair { write, read })
     }
 
@@ -1794,6 +1838,7 @@ impl ComponentInstance {
     /// * `buffer` - Buffer of values that should be written
     /// * `post_write` - Whether the transmit should be closed after write, possibly with an error context
     /// * `tx` - Oneshot channel to notify when operation completes (or drop on error)
+    /// * `kind` - whether this is a stream or a future
     fn host_write<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>(
         &mut self,
         mut store: StoreContextMut<U>,
@@ -1801,6 +1846,7 @@ impl ComponentInstance {
         mut buffer: B,
         mut post_write: PostWrite,
         tx: oneshot::Sender<HostResult<B>>,
+        kind: TransmitKind,
     ) -> Result<()> {
         let transmit_id = TableId::<TransmitState>::new(transmit_rep);
 
@@ -1819,7 +1865,7 @@ impl ComponentInstance {
                 assert!(matches!(&transmit.write, WriteState::Open));
 
                 transmit.write = WriteState::HostReady {
-                    accept: Box::new(accept_reader::<T, B, U>(store, buffer, tx)),
+                    accept: Box::new(accept_reader::<T, B, U>(store, buffer, tx, kind)),
                     post_write,
                 };
                 post_write = PostWrite::Continue;
@@ -1835,7 +1881,7 @@ impl ComponentInstance {
                 ..
             } => {
                 let read_handle = transmit.read_handle;
-                let code = accept_reader::<T, B, U>(store.as_context_mut(), buffer, tx)(
+                let code = accept_reader::<T, B, U>(store.as_context_mut(), buffer, tx, kind)(
                     store.0.traitobj_mut(),
                     self,
                     Reader::Guest {
@@ -1861,7 +1907,7 @@ impl ComponentInstance {
                     buffer: &mut buffer,
                     count,
                 })?;
-                let ReturnCode::Completed(_) = code else {
+                let (ReturnCode::Completed(_) | ReturnCode::Closed(_)) = code else {
                     unreachable!()
                 };
 
@@ -1894,12 +1940,14 @@ impl ComponentInstance {
     /// * `rep` - The `TransmitState` rep for the stream or future
     /// * `buffer` - Buffer to receive values
     /// * `tx` - Oneshot channel to notify when operation completes (or drop on error)
+    /// * `kind` - whether this is a stream or a future
     fn host_read<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U: 'static>(
         &mut self,
         store: StoreContextMut<U>,
         rep: u32,
         mut buffer: B,
         tx: oneshot::Sender<HostResult<B>>,
+        kind: TransmitKind,
     ) -> Result<()> {
         let transmit_id = TableId::<TransmitState>::new(rep);
         let transmit = self.get_mut(transmit_id).with_context(|| rep.to_string())?;
@@ -1915,7 +1963,7 @@ impl ComponentInstance {
                 assert!(matches!(&transmit.read, ReadState::Open));
 
                 transmit.read = ReadState::HostReady {
-                    accept: Box::new(accept_writer::<T, B, U>(buffer, tx)),
+                    accept: Box::new(accept_writer::<T, B, U>(buffer, tx, kind)),
                 };
             }
 
@@ -1936,7 +1984,7 @@ impl ComponentInstance {
                 let lift = unsafe {
                     &mut LiftContext::new(store.0.store_opaque_mut(), &options, types, instance)
                 };
-                let code = accept_writer::<T, B, U>(buffer, tx)(Writer::Guest {
+                let code = accept_writer::<T, B, U>(buffer, tx, kind)(Writer::Guest {
                     lift,
                     ty: payload(ty, types),
                     address,
@@ -2502,7 +2550,7 @@ impl ComponentInstance {
                     rep,
                 )?;
 
-                let code = ReturnCode::Completed(count.try_into().unwrap());
+                let code = ReturnCode::completed_or_closed(ty.kind(), count.try_into().unwrap());
 
                 if read_complete {
                     self.set_event(
@@ -2681,7 +2729,7 @@ impl ComponentInstance {
                     true
                 };
 
-                let code = ReturnCode::Completed(count.try_into().unwrap());
+                let code = ReturnCode::completed_or_closed(ty.kind(), count.try_into().unwrap());
 
                 if write_complete {
                     self.set_event(
@@ -3239,7 +3287,7 @@ impl ComponentInstance {
         )
     }
 
-    /// Copy the specified error context from one component to another
+    /// Copy the specified error context from one component to another.
     pub(crate) fn error_context_transfer(
         &mut self,
         src_idx: u32,

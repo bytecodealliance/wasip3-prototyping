@@ -21,7 +21,7 @@
         local.get 0
         i32.const 0
         call $read
-        i32.const 0x10
+        i32.const 0x11
         i32.ne
         if unreachable end
 
@@ -93,4 +93,4 @@
   (func (export "f") (result u32) (canon lift (core func $i "f")))
 )
 
-(assert_return (invoke "f") (u32.const 0x10))
+(assert_return (invoke "f") (u32.const 0x11))
