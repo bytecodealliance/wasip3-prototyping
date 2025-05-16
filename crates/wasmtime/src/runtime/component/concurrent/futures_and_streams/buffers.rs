@@ -1,6 +1,7 @@
 use {
     bytes::{Bytes, BytesMut},
     std::{
+        any::TypeId,
         io::Cursor,
         mem::{self, MaybeUninit},
         ptr, slice,
@@ -8,15 +9,27 @@ use {
     },
 };
 
+/// Trait representing a buffer from which items may be moved (i.e. ownership
+/// transferred).
+///
+/// SAFETY: `Self::take` must verify the requested number of items are
+/// available, must pass a `TypeId` corresponding to the type of items being
+/// taken, and must `mem::forget` those items after the call to `fun` returns.
+pub unsafe trait TakeBuffer {
+    /// Take ownership of the specified number of items.
+    ///
+    /// The items are passed to `fun` as a raw pointer which may be cast to the
+    /// type indicated by the specified `TypeId`.
+    fn take(&mut self, count: usize, fun: &mut dyn FnMut(TypeId, *const u8));
+}
+
 /// Trait representing a buffer which may be written to a `StreamWriter`.
 #[doc(hidden)]
-pub trait WriteBuffer<T>: Send + Sync + 'static {
+pub trait WriteBuffer<T>: TakeBuffer + Send + Sync + 'static {
     /// Slice of items remaining to be read.
     fn remaining(&self) -> &[T];
     /// Skip and drop the specified number of items.
     fn skip(&mut self, count: usize);
-    /// Skip and forget (i.e. do _not_ drop) the specified number of items.
-    fn forget(&mut self, count: usize);
 }
 
 /// Trait representing a buffer which may be used to read from a `StreamReader`.
@@ -28,10 +41,8 @@ pub trait ReadBuffer<T>: Send + Sync + 'static {
     fn remaining_capacity(&self) -> usize;
     /// Move (i.e. take ownership of) the specified items into this buffer.
     ///
-    /// SAFETY: `input` must be a valid `*const T` array of `count` items on
-    /// entry.  Those items will be invalidated on exit and must be forgotten
-    /// using e.g. `mem::forget` to avoid unsoundness.
-    unsafe fn copy_from(&mut self, input: *const T, count: usize);
+    /// This will panic if the specified `input` item type does not match `T`.
+    fn move_from(&mut self, input: &mut dyn TakeBuffer, count: usize);
 }
 
 pub(super) struct Extender<'a, B>(pub(super) &'a mut B);
@@ -39,6 +50,20 @@ pub(super) struct Extender<'a, B>(pub(super) &'a mut B);
 impl<T, B: ReadBuffer<T>> Extend<T> for Extender<'_, B> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         self.0.extend(iter)
+    }
+}
+
+unsafe impl<T: Send + Sync + 'static> TakeBuffer for Option<T> {
+    fn take(&mut self, count: usize, fun: &mut dyn FnMut(TypeId, *const u8)) {
+        match count {
+            0 => fun(TypeId::of::<T>(), ptr::null_mut()),
+            1 => {
+                assert!(self.is_some());
+                fun(TypeId::of::<T>(), self.remaining().as_ptr().cast());
+                mem::forget(self.take());
+            }
+            _ => panic!("cannot forget more than {} item(s)", self.remaining().len()),
+        }
     }
 }
 
@@ -63,17 +88,6 @@ impl<T: Send + Sync + 'static> WriteBuffer<T> for Option<T> {
             _ => panic!("cannot skip more than {} item(s)", self.remaining().len()),
         }
     }
-
-    fn forget(&mut self, count: usize) {
-        match count {
-            0 => {}
-            1 => {
-                assert!(self.is_some());
-                mem::forget(self.take());
-            }
-            _ => panic!("cannot forget more than {} item(s)", self.remaining().len()),
-        }
-    }
 }
 
 impl<T: Send + Sync + 'static> ReadBuffer<T> for Option<T> {
@@ -93,13 +107,18 @@ impl<T: Send + Sync + 'static> ReadBuffer<T> for Option<T> {
         }
     }
 
-    /// SAFETY: See trait docs.
-    unsafe fn copy_from(&mut self, input: *const T, count: usize) {
+    fn move_from(&mut self, input: &mut dyn TakeBuffer, count: usize) {
         match count {
             0 => {}
             1 => {
                 assert!(self.is_none());
-                *self = Some(input.read());
+                input.take(1, &mut |id, ptr| {
+                    assert_eq!(TypeId::of::<T>(), id);
+                    // SAFETY: Per the `TakeBuffer` implementation contract and
+                    // the above assertion, the types match and we have been
+                    // given ownership of the item.
+                    unsafe { *self = Some(ptr.cast::<T>().read()) };
+                });
             }
             _ => panic!(
                 "cannot take more than {} item(s)",
@@ -149,6 +168,14 @@ impl<T> VecBuffer<T> {
     }
 }
 
+unsafe impl<T: Send + Sync + 'static> TakeBuffer for VecBuffer<T> {
+    fn take(&mut self, count: usize, fun: &mut dyn FnMut(TypeId, *const u8)) {
+        assert!(count <= self.remaining().len());
+        fun(TypeId::of::<T>(), self.remaining().as_ptr().cast());
+        self.offset = self.offset.checked_add(count).unwrap();
+    }
+}
+
 impl<T: Send + Sync + 'static> WriteBuffer<T> for VecBuffer<T> {
     fn remaining(&self) -> &[T] {
         self.remaining_()
@@ -156,11 +183,6 @@ impl<T: Send + Sync + 'static> WriteBuffer<T> for VecBuffer<T> {
 
     fn skip(&mut self, count: usize) {
         self.skip_(count)
-    }
-
-    fn forget(&mut self, count: usize) {
-        assert!(count <= self.remaining().len());
-        self.offset = self.offset.checked_add(count).unwrap();
     }
 }
 
@@ -190,11 +212,26 @@ impl<T: Send + Sync + 'static> ReadBuffer<T> for Vec<T> {
         self.capacity().checked_sub(self.len()).unwrap()
     }
 
-    /// SAFETY: See trait docs.
-    unsafe fn copy_from(&mut self, input: *const T, count: usize) {
+    fn move_from(&mut self, input: &mut dyn TakeBuffer, count: usize) {
         assert!(count <= self.remaining_capacity());
-        ptr::copy(input, self.as_mut_ptr().add(self.len()), count);
-        self.set_len(self.len() + count);
+        input.take(count, &mut |id, ptr| {
+            assert_eq!(TypeId::of::<T>(), id);
+            // SAFETY: Per the `TakeBuffer` implementation contract and the
+            // above assertion, the types match and we have been given ownership
+            // of the items.
+            unsafe {
+                ptr::copy(ptr.cast::<T>(), self.as_mut_ptr().add(self.len()), count);
+                self.set_len(self.len() + count);
+            }
+        });
+    }
+}
+
+unsafe impl TakeBuffer for Cursor<Bytes> {
+    fn take(&mut self, count: usize, fun: &mut dyn FnMut(TypeId, *const u8)) {
+        assert!(count <= self.remaining().len());
+        fun(TypeId::of::<u8>(), self.remaining().as_ptr().cast());
+        self.skip(count);
     }
 }
 
@@ -204,16 +241,24 @@ impl WriteBuffer<u8> for Cursor<Bytes> {
     }
 
     fn skip(&mut self, count: usize) {
-        assert!(count <= self.remaining().len());
+        assert!(
+            count <= self.remaining().len(),
+            "tried to skip {count} with {} remaining",
+            self.remaining().len()
+        );
         self.set_position(
             self.position()
                 .checked_add(u64::try_from(count).unwrap())
                 .unwrap(),
         );
     }
+}
 
-    fn forget(&mut self, count: usize) {
-        self.skip(count)
+unsafe impl TakeBuffer for Cursor<BytesMut> {
+    fn take(&mut self, count: usize, fun: &mut dyn FnMut(TypeId, *const u8)) {
+        assert!(count <= self.remaining().len());
+        fun(TypeId::of::<u8>(), self.remaining().as_ptr().cast());
+        self.skip(count);
     }
 }
 
@@ -230,10 +275,6 @@ impl WriteBuffer<u8> for Cursor<BytesMut> {
                 .unwrap(),
         );
     }
-
-    fn forget(&mut self, count: usize) {
-        self.skip(count)
-    }
 }
 
 impl ReadBuffer<u8> for BytesMut {
@@ -245,10 +286,16 @@ impl ReadBuffer<u8> for BytesMut {
         self.capacity().checked_sub(self.len()).unwrap()
     }
 
-    /// SAFETY: See trait docs.
-    unsafe fn copy_from(&mut self, input: *const u8, count: usize) {
+    fn move_from(&mut self, input: &mut dyn TakeBuffer, count: usize) {
         assert!(count <= self.remaining_capacity());
-        ptr::copy(input, self.as_mut_ptr().add(self.len()), count);
-        self.set_len(self.len() + count);
+        input.take(count, &mut |id, ptr| {
+            assert_eq!(TypeId::of::<u8>(), id);
+            // SAFETY: Per the `TakeBuffer` implementation contract and the
+            // above assertion, the types match.
+            unsafe {
+                ptr::copy(ptr, self.as_mut_ptr().add(self.len()), count);
+                self.set_len(self.len() + count);
+            }
+        });
     }
 }

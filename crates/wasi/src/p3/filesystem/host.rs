@@ -142,7 +142,7 @@ where
         })
     }
 
-    async fn write_via_stream<U>(
+    async fn write_via_stream<U: 'static>(
         store: &mut Accessor<U, Self>,
         fd: Resource<Descriptor>,
         data: HostStream<u8>,
@@ -191,7 +191,7 @@ where
         }
     }
 
-    async fn append_via_stream<U>(
+    async fn append_via_stream<U: 'static>(
         store: &mut Accessor<U, Self>,
         fd: Resource<Descriptor>,
         data: HostStream<u8>,

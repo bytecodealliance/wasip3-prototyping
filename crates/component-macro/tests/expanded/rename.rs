@@ -6,11 +6,11 @@
 /// has been created through a [`Linker`](wasmtime::component::Linker).
 ///
 /// For more information see [`Neptune`] as well.
-pub struct NeptunePre<T> {
+pub struct NeptunePre<T: 'static> {
     instance_pre: wasmtime::component::InstancePre<T>,
     indices: NeptuneIndices,
 }
-impl<T> Clone for NeptunePre<T> {
+impl<T: 'static> Clone for NeptunePre<T> {
     fn clone(&self) -> Self {
         Self {
             instance_pre: self.instance_pre.clone(),
@@ -18,7 +18,7 @@ impl<T> Clone for NeptunePre<T> {
         }
     }
 }
-impl<_T> NeptunePre<_T> {
+impl<_T: 'static> NeptunePre<_T> {
     /// Creates a new copy of `NeptunePre` bindings which can then
     /// be used to instantiate into a particular store.
     ///
@@ -121,7 +121,7 @@ const _: () = {
     impl Neptune {
         /// Convenience wrapper around [`NeptunePre::new`] and
         /// [`NeptunePre::instantiate`].
-        pub fn instantiate<_T>(
+        pub fn instantiate<_T: 'static>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,

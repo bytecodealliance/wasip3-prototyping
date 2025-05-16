@@ -95,12 +95,14 @@ const FULL_MATRIX = [
     "name": "Test Windows MSVC x86_64",
     "filter": "windows-x64",
   },
-  {
-    "os": windows,
-    "target": "x86_64-pc-windows-gnu",
-    "name": "Test Windows MinGW x86_64",
-    "filter": "mingw-x64"
-  },
+  // FIXME: As of this writing, some of the GitHub images have a broken MinGW,
+  // leading CI to fail nondeterministically.
+  // {
+  //   "os": windows,
+  //   "target": "x86_64-pc-windows-gnu",
+  //   "name": "Test Windows MinGW x86_64",
+  //   "filter": "mingw-x64"
+  // },
   {
     "os": ubuntu + '-arm',
     "target": "aarch64-unknown-linux-gnu",

@@ -6,11 +6,11 @@
 /// has been created through a [`Linker`](wasmtime::component::Linker).
 ///
 /// For more information see [`Wasi`] as well.
-pub struct WasiPre<T> {
+pub struct WasiPre<T: 'static> {
     instance_pre: wasmtime::component::InstancePre<T>,
     indices: WasiIndices,
 }
-impl<T> Clone for WasiPre<T> {
+impl<T: 'static> Clone for WasiPre<T> {
     fn clone(&self) -> Self {
         Self {
             instance_pre: self.instance_pre.clone(),
@@ -18,7 +18,7 @@ impl<T> Clone for WasiPre<T> {
         }
     }
 }
-impl<_T> WasiPre<_T> {
+impl<_T: 'static> WasiPre<_T> {
     /// Creates a new copy of `WasiPre` bindings which can then
     /// be used to instantiate into a particular store.
     ///
@@ -124,7 +124,7 @@ const _: () = {
     impl Wasi {
         /// Convenience wrapper around [`WasiPre::new`] and
         /// [`WasiPre::instantiate_async`].
-        pub async fn instantiate_async<_T>(
+        pub async fn instantiate_async<_T: 'static>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,

@@ -6,11 +6,11 @@
 /// has been created through a [`Linker`](wasmtime::component::Linker).
 ///
 /// For more information see [`HttpInterface`] as well.
-pub struct HttpInterfacePre<T> {
+pub struct HttpInterfacePre<T: 'static> {
     instance_pre: wasmtime::component::InstancePre<T>,
     indices: HttpInterfaceIndices,
 }
-impl<T> Clone for HttpInterfacePre<T> {
+impl<T: 'static> Clone for HttpInterfacePre<T> {
     fn clone(&self) -> Self {
         Self {
             instance_pre: self.instance_pre.clone(),
@@ -18,7 +18,7 @@ impl<T> Clone for HttpInterfacePre<T> {
         }
     }
 }
-impl<_T> HttpInterfacePre<_T> {
+impl<_T: 'static> HttpInterfacePre<_T> {
     /// Creates a new copy of `HttpInterfacePre` bindings which can then
     /// be used to instantiate into a particular store.
     ///
@@ -127,7 +127,7 @@ const _: () = {
     impl HttpInterface {
         /// Convenience wrapper around [`HttpInterfacePre::new`] and
         /// [`HttpInterfacePre::instantiate`].
-        pub fn instantiate<_T>(
+        pub fn instantiate<_T: 'static>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,
@@ -345,7 +345,7 @@ pub mod exports {
                 arg0: &Request,
             ) -> wasmtime::Result<Response>
             where
-                <S as wasmtime::AsContext>::Data: Send,
+                <S as wasmtime::AsContext>::Data: Send + 'static,
             {
                 let callee = unsafe {
                     wasmtime::component::TypedFunc::<

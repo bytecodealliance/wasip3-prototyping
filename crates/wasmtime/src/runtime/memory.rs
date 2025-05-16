@@ -590,7 +590,11 @@ impl Memory {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn grow(&self, mut store: impl AsContextMut, delta: u64) -> Result<u64> {
+    pub fn grow<T: 'static>(
+        &self,
+        mut store: impl AsContextMut<Data = T>,
+        delta: u64,
+    ) -> Result<u64> {
         let store = store.as_context_mut().0;
         let mem = self.wasmtime_memory(store);
         unsafe {
@@ -620,7 +624,7 @@ impl Memory {
         delta: u64,
     ) -> Result<u64>
     where
-        T: Send,
+        T: Send + 'static,
     {
         let store = store.as_context_mut();
         assert!(

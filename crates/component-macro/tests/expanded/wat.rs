@@ -6,11 +6,11 @@
 /// has been created through a [`Linker`](wasmtime::component::Linker).
 ///
 /// For more information see [`Example`] as well.
-pub struct ExamplePre<T> {
+pub struct ExamplePre<T: 'static> {
     instance_pre: wasmtime::component::InstancePre<T>,
     indices: ExampleIndices,
 }
-impl<T> Clone for ExamplePre<T> {
+impl<T: 'static> Clone for ExamplePre<T> {
     fn clone(&self) -> Self {
         Self {
             instance_pre: self.instance_pre.clone(),
@@ -18,7 +18,7 @@ impl<T> Clone for ExamplePre<T> {
         }
     }
 }
-impl<_T> ExamplePre<_T> {
+impl<_T: 'static> ExamplePre<_T> {
     /// Creates a new copy of `ExamplePre` bindings which can then
     /// be used to instantiate into a particular store.
     ///
@@ -129,7 +129,7 @@ const _: () = {
     impl Example {
         /// Convenience wrapper around [`ExamplePre::new`] and
         /// [`ExamplePre::instantiate`].
-        pub fn instantiate<_T>(
+        pub fn instantiate<_T: 'static>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,

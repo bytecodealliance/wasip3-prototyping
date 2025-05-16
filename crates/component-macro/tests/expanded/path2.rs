@@ -6,11 +6,11 @@
 /// has been created through a [`Linker`](wasmtime::component::Linker).
 ///
 /// For more information see [`Path2`] as well.
-pub struct Path2Pre<T> {
+pub struct Path2Pre<T: 'static> {
     instance_pre: wasmtime::component::InstancePre<T>,
     indices: Path2Indices,
 }
-impl<T> Clone for Path2Pre<T> {
+impl<T: 'static> Clone for Path2Pre<T> {
     fn clone(&self) -> Self {
         Self {
             instance_pre: self.instance_pre.clone(),
@@ -18,7 +18,7 @@ impl<T> Clone for Path2Pre<T> {
         }
     }
 }
-impl<_T> Path2Pre<_T> {
+impl<_T: 'static> Path2Pre<_T> {
     /// Creates a new copy of `Path2Pre` bindings which can then
     /// be used to instantiate into a particular store.
     ///
@@ -121,7 +121,7 @@ const _: () = {
     impl Path2 {
         /// Convenience wrapper around [`Path2Pre::new`] and
         /// [`Path2Pre::instantiate`].
-        pub fn instantiate<_T>(
+        pub fn instantiate<_T: 'static>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,

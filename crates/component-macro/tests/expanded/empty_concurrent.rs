@@ -6,11 +6,11 @@
 /// has been created through a [`Linker`](wasmtime::component::Linker).
 ///
 /// For more information see [`Empty`] as well.
-pub struct EmptyPre<T> {
+pub struct EmptyPre<T: 'static> {
     instance_pre: wasmtime::component::InstancePre<T>,
     indices: EmptyIndices,
 }
-impl<T> Clone for EmptyPre<T> {
+impl<T: 'static> Clone for EmptyPre<T> {
     fn clone(&self) -> Self {
         Self {
             instance_pre: self.instance_pre.clone(),
@@ -18,7 +18,7 @@ impl<T> Clone for EmptyPre<T> {
         }
     }
 }
-impl<_T> EmptyPre<_T> {
+impl<_T: 'static> EmptyPre<_T> {
     /// Creates a new copy of `EmptyPre` bindings which can then
     /// be used to instantiate into a particular store.
     ///
@@ -124,7 +124,7 @@ const _: () = {
     impl Empty {
         /// Convenience wrapper around [`EmptyPre::new`] and
         /// [`EmptyPre::instantiate_async`].
-        pub async fn instantiate_async<_T>(
+        pub async fn instantiate_async<_T: 'static>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,

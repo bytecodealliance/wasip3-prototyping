@@ -6,7 +6,7 @@
 //! Eventually it's intended that module-to-module calls, which would be
 //! cranelift-compiled adapters, will use this `VMComponentContext` as well.
 
-use crate::component::ResourceType;
+use crate::component::{Instance, ResourceType};
 use crate::prelude::*;
 use crate::runtime::vm::{
     SendSyncPtr, VMArrayCallFunction, VMContext, VMFuncRef, VMGlobalDefinition, VMMemoryDefinition,
@@ -40,8 +40,6 @@ pub use self::resources::{
 pub use self::resources::CallContext;
 #[cfg(feature = "component-model-async")]
 use crate::component::concurrent;
-#[cfg(feature = "component-model-async")]
-use crate::component::Instance;
 
 /// Runtime representation of a component instance and all state necessary for
 /// the instance itself.
@@ -76,9 +74,8 @@ pub struct ComponentInstance {
     resource_types: Arc<PrimaryMap<ResourceIndex, ResourceType>>,
 
     /// Self-pointer back to `Store<T>` and its functions.
-    store: VMStoreRawPtr,
+    store: Option<VMStoreRawPtr>,
 
-    #[cfg(feature = "component-model-async")]
     pub(crate) instance: Option<Instance>,
 
     /// A zero-sized field which represents the end of the struct for the actual
@@ -182,12 +179,23 @@ impl ComponentInstance {
     /// mutable reference at this time to the instance from `vmctx`.
     pub unsafe fn from_vmctx<R>(
         vmctx: NonNull<VMComponentContext>,
-        f: impl FnOnce(&mut ComponentInstance) -> R,
+        f: impl FnOnce(&mut dyn VMStore, &mut ComponentInstance) -> R,
     ) -> R {
         let mut ptr = vmctx
             .byte_sub(mem::size_of::<ComponentInstance>())
             .cast::<ComponentInstance>();
-        f(ptr.as_mut())
+        let reference = ptr.as_mut();
+        let store = &mut *reference.store();
+        if let Some(instance) = reference.instance {
+            store.hide_instance(instance);
+        }
+        reference.set_store(None);
+        let result = f(store, reference);
+        reference.set_store(Some(VMStoreRawPtr(store.traitobj())));
+        if let Some(instance) = reference.instance {
+            store.unhide_instance(instance);
+        }
+        result
     }
 
     /// Returns the layout corresponding to what would be an allocation of a
@@ -248,11 +256,10 @@ impl ComponentInstance {
                 instance_resource_tables,
                 runtime_info,
                 resource_types,
-                store: VMStoreRawPtr(store),
+                store: Some(VMStoreRawPtr(store)),
                 vmctx: VMComponentContext {
                     _marker: marker::PhantomPinned,
                 },
-                #[cfg(feature = "component-model-async")]
                 instance: None,
                 #[cfg(feature = "component-model-async")]
                 concurrent_state,
@@ -295,8 +302,14 @@ impl ComponentInstance {
     }
 
     /// Returns the store that this component was created with.
+    ///
+    /// This will panic if this instance has been removed from its store.
     pub fn store(&self) -> *mut dyn VMStore {
-        self.store.0.as_ptr()
+        self.store.unwrap().0.as_ptr()
+    }
+
+    pub(crate) fn set_store(&mut self, store: Option<VMStoreRawPtr>) {
+        self.store = store;
     }
 
     /// Returns the runtime memory definition corresponding to the index of the
@@ -546,7 +559,7 @@ impl ComponentInstance {
         *self.vmctx_plus_offset_mut(self.offsets.builtins()) =
             VmPtr::from(NonNull::from(&libcalls::VMComponentBuiltins::INIT));
         *self.vmctx_plus_offset_mut(self.offsets.vm_store_context()) =
-            VmPtr::from(self.store.0.as_ref().vm_store_context_ptr());
+            VmPtr::from(self.store.unwrap().0.as_ref().vm_store_context_ptr());
 
         for i in 0..self.offsets.num_runtime_component_instances {
             let i = RuntimeComponentInstanceIndex::from_u32(i);
@@ -642,21 +655,36 @@ impl ComponentInstance {
 
     /// Implementation of the `resource.new` intrinsic for `i32`
     /// representations.
-    pub fn resource_new32(&mut self, ty: TypeResourceTableIndex, rep: u32) -> Result<u32> {
-        self.resource_tables()
+    pub fn resource_new32(
+        &mut self,
+        store: &mut dyn VMStore,
+        ty: TypeResourceTableIndex,
+        rep: u32,
+    ) -> Result<u32> {
+        self.resource_tables(store)
             .resource_new(TypedResource::Component { ty, rep })
     }
 
     /// Implementation of the `resource.rep` intrinsic for `i32`
     /// representations.
-    pub fn resource_rep32(&mut self, ty: TypeResourceTableIndex, index: u32) -> Result<u32> {
-        self.resource_tables()
+    pub fn resource_rep32(
+        &mut self,
+        store: &mut dyn VMStore,
+        ty: TypeResourceTableIndex,
+        index: u32,
+    ) -> Result<u32> {
+        self.resource_tables(store)
             .resource_rep(TypedResourceIndex::Component { ty, index })
     }
 
     /// Implementation of the `resource.drop` intrinsic.
-    pub fn resource_drop(&mut self, ty: TypeResourceTableIndex, index: u32) -> Result<Option<u32>> {
-        self.resource_tables()
+    pub fn resource_drop(
+        &mut self,
+        store: &mut dyn VMStore,
+        ty: TypeResourceTableIndex,
+        index: u32,
+    ) -> Result<Option<u32>> {
+        self.resource_tables(store)
             .resource_drop(TypedResourceIndex::Component { ty, index })
     }
 
@@ -667,10 +695,10 @@ impl ComponentInstance {
     ///
     /// If necessary though it's possible to enhance the `Store` trait to thread
     /// through the relevant information and get `host_table` to be `Some` here.
-    fn resource_tables(&mut self) -> ResourceTables<'_> {
+    fn resource_tables<'a>(&'a mut self, store: &'a mut dyn VMStore) -> ResourceTables<'a> {
         ResourceTables {
             host_table: None,
-            calls: unsafe { (&mut *self.store()).component_calls() },
+            calls: store.component_calls(),
             guest: Some((
                 &mut self.instance_resource_tables,
                 self.runtime_info.component_types(),
@@ -713,23 +741,25 @@ impl ComponentInstance {
 
     pub(crate) fn resource_transfer_own(
         &mut self,
+        store: &mut dyn VMStore,
         index: u32,
         src: TypeResourceTableIndex,
         dst: TypeResourceTableIndex,
     ) -> Result<u32> {
-        let mut tables = self.resource_tables();
+        let mut tables = self.resource_tables(store);
         let rep = tables.resource_lift_own(TypedResourceIndex::Component { ty: src, index })?;
         tables.resource_lower_own(TypedResource::Component { ty: dst, rep })
     }
 
     pub(crate) fn resource_transfer_borrow(
         &mut self,
+        store: &mut dyn VMStore,
         index: u32,
         src: TypeResourceTableIndex,
         dst: TypeResourceTableIndex,
     ) -> Result<u32> {
         let dst_owns_resource = self.resource_owned_by_own_instance(dst);
-        let mut tables = self.resource_tables();
+        let mut tables = self.resource_tables(store);
         let rep = tables.resource_lift_borrow(TypedResourceIndex::Component { ty: src, index })?;
         // Implement `lower_borrow`'s special case here where if a borrow's
         // resource type is owned by `dst` then the destination receives the
@@ -745,12 +775,12 @@ impl ComponentInstance {
         tables.resource_lower_borrow(TypedResource::Component { ty: dst, rep })
     }
 
-    pub(crate) fn resource_enter_call(&mut self) {
-        self.resource_tables().enter_call()
+    pub(crate) fn resource_enter_call(&mut self, store: &mut dyn VMStore) {
+        self.resource_tables(store).enter_call()
     }
 
-    pub(crate) fn resource_exit_call(&mut self) -> Result<()> {
-        self.resource_tables().exit_call()
+    pub(crate) fn resource_exit_call(&mut self, store: &mut dyn VMStore) -> Result<()> {
+        self.resource_tables(store).exit_call()
     }
 }
 

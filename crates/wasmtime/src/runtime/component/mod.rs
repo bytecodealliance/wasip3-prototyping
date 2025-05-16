@@ -132,6 +132,7 @@ pub use self::resources::{Resource, ResourceAny};
 pub use self::types::{ResourceType, Type};
 pub use self::values::Val;
 
+pub(crate) use self::instance::InstanceData;
 pub(crate) use self::resources::HostResourceData;
 
 // Re-export wasm_wave crate so the compatible version of this dep doesn't have to be
@@ -704,9 +705,10 @@ pub(crate) mod concurrent {
         crate::{
             component::{
                 func::{ComponentType, LiftContext, LowerContext},
-                Val,
+                Instance, Val,
             },
             vm::component::ComponentInstance,
+            AsContextMut, StoreContextMut, VMStore,
         },
         alloc::{sync::Arc, task::Wake},
         anyhow::Result,
@@ -718,6 +720,16 @@ pub(crate) mod concurrent {
         },
         wasmtime_environ::component::{InterfaceType, RuntimeComponentInstanceIndex},
     };
+
+    impl<T> StoreContextMut<'_, T> {
+        pub(crate) fn with_attached_instance<R>(
+            &mut self,
+            instance: &mut ComponentInstance,
+            fun: impl FnOnce(StoreContextMut<'_, T>, Option<Instance>) -> R,
+        ) -> R {
+            fun(self.as_context_mut(), instance.instance)
+        }
+    }
 
     fn dummy_waker() -> Waker {
         struct DummyWaker;
@@ -732,6 +744,7 @@ pub(crate) mod concurrent {
     impl ComponentInstance {
         pub(crate) fn poll_and_block<R: Send + Sync + 'static>(
             &mut self,
+            _store: &mut dyn VMStore,
             future: impl Future<Output = Result<R>> + Send + 'static,
             _caller_instance: RuntimeComponentInstanceIndex,
         ) -> Result<R> {

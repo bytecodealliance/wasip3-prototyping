@@ -372,7 +372,7 @@ where
         }
     }
 
-    async fn send<U>(
+    async fn send<U: 'static>(
         store: &mut Accessor<U, Self>,
         socket: Resource<TcpSocket>,
         data: HostStream<u8>,

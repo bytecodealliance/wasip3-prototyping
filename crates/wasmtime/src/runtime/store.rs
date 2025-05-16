@@ -109,6 +109,10 @@ mod data;
 pub use self::data::*;
 mod func_refs;
 use func_refs::FuncRefs;
+#[cfg(feature = "component-model-async")]
+mod token;
+#[cfg(feature = "component-model-async")]
+pub(crate) use token::StoreToken;
 #[cfg(feature = "async")]
 mod async_;
 #[cfg(all(feature = "async", feature = "call-hook"))]
@@ -406,6 +410,9 @@ pub struct StoreOpaque {
     #[cfg(feature = "component-model-async")]
     concurrent_async_state: concurrent::AsyncState,
 
+    #[cfg(feature = "component-model")]
+    hidden_instances: Vec<Option<Box<crate::component::InstanceData>>>,
+
     /// State related to the executor of wasm code.
     ///
     /// For example if Pulley is enabled and configured then this will store a
@@ -527,7 +534,7 @@ enum StoreInstanceKind {
     Dummy,
 }
 
-impl<T> Store<T> {
+impl<T: 'static> Store<T> {
     /// Creates a new [`Store`] to be associated with the given [`Engine`] and
     /// `data` provided.
     ///
@@ -583,6 +590,8 @@ impl<T> Store<T> {
             component_calls: Default::default(),
             #[cfg(feature = "component-model")]
             host_resource_data: Default::default(),
+            #[cfg(feature = "component-model")]
+            hidden_instances: Default::default(),
             #[cfg(feature = "component-model-async")]
             concurrent_async_state: Default::default(),
             #[cfg(has_host_compiler_backend)]
@@ -606,16 +615,7 @@ impl<T> Store<T> {
             data: ManuallyDrop::new(data),
         });
 
-        // Note the erasure of the lifetime here into `'static`, so in general
-        // usage of this trait object must be strictly bounded to the `Store`
-        // itself, and this is an invariant that we have to maintain throughout
-        // Wasmtime.
-        inner.traitobj = StorePtr::new(unsafe {
-            mem::transmute::<
-                NonNull<dyn crate::runtime::vm::VMStore + '_>,
-                NonNull<dyn crate::runtime::vm::VMStore + 'static>,
-            >(NonNull::from(&mut *inner))
-        });
+        inner.traitobj = StorePtr::new(NonNull::from(&mut *inner));
 
         // Wasmtime uses the callee argument to host functions to learn about
         // the original pointer to the `Store` itself, allowing it to
@@ -1186,6 +1186,29 @@ fn set_fuel(
 impl StoreOpaque {
     pub fn id(&self) -> StoreId {
         self.store_data.id()
+    }
+
+    #[cfg(feature = "component-model")]
+    pub(crate) fn hide_instance(
+        &mut self,
+        handle: crate::component::Instance,
+    ) -> *mut crate::vm::component::ComponentInstance {
+        if self.hidden_instances.len() <= handle.0.index() {
+            self.hidden_instances
+                .resize_with(handle.0.index() + 1, || None);
+        }
+        let data = self[handle.0].take().unwrap();
+        let ptr = data.instance_ptr();
+        self.hidden_instances[handle.0.index()] = Some(data);
+        ptr
+    }
+
+    #[cfg(feature = "component-model")]
+    pub(crate) fn unhide_instance(&mut self, handle: crate::component::Instance) {
+        if let Some(data) = self.hidden_instances[handle.0.index()].take() {
+            assert!(self[handle.0].is_none());
+            self[handle.0] = Some(data);
+        }
     }
 
     pub fn bump_resource_counts(&mut self, module: &Module) -> Result<()> {
@@ -1996,7 +2019,7 @@ at https://bytecodealliance.org/security.
     }
 }
 
-unsafe impl<T> crate::runtime::vm::VMStore for StoreInner<T> {
+unsafe impl<T: 'static> crate::runtime::vm::VMStore for StoreInner<T> {
     #[cfg(feature = "component-model-async")]
     fn component_async_store(
         &mut self,
@@ -2221,7 +2244,7 @@ impl<T> StoreInner<T> {
     }
 }
 
-impl<T: Default> Default for Store<T> {
+impl<T: Default + 'static> Default for Store<T> {
     fn default() -> Store<T> {
         Store::new(&Engine::default(), T::default())
     }
