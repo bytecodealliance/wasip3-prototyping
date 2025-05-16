@@ -2986,14 +2986,23 @@ impl ComponentInstance {
         self.waitable_join(caller_instance, task_id, 0)?;
 
         let (rep, state) = self.waitable_tables()[caller_instance].remove_by_index(task_id)?;
+
         let (waitable, expected_caller_instance) = match state {
             WaitableState::HostTask => {
                 let id = TableId::<HostTask>::new(rep);
-                (Waitable::Host(id), self.get(id)?.caller_instance)
+                let task = self.get(id)?;
+                if task.abort_handle.is_some() {
+                    bail!("cannot drop a subtask which has not yet resolved");
+                }
+                (Waitable::Host(id), task.caller_instance)
             }
             WaitableState::GuestTask => {
                 let id = TableId::<GuestTask>::new(rep);
-                if let Caller::Guest { instance, .. } = &self.get(id)?.caller {
+                let task = self.get(id)?;
+                if task.lift_result.is_some() {
+                    bail!("cannot drop a subtask which has not yet resolved");
+                }
+                if let Caller::Guest { instance, .. } = &task.caller {
                     (Waitable::Guest(id), *instance)
                 } else {
                     unreachable!()
@@ -3001,6 +3010,11 @@ impl ComponentInstance {
             }
             _ => bail!("invalid task handle: {task_id}"),
         };
+
+        if waitable.take_event(self)?.is_some() {
+            bail!("cannot drop a subtask with an undelivered event");
+        }
+
         // Since waitables can neither be passed between instances nor forged,
         // this should never fail unless there's a bug in Wasmtime, but we check
         // here to be sure:
@@ -3050,6 +3064,9 @@ impl ComponentInstance {
             let guest_task = TableId::<GuestTask>::new(rep);
             let task = self.get_mut(guest_task)?;
             if task.lower_params.is_some() {
+                task.lower_params = None;
+                task.lift_result = None;
+
                 // Not yet started; cancel and remove from pending
                 let callee_instance = task.instance;
 
