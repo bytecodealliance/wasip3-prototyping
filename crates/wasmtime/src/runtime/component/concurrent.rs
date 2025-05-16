@@ -2944,7 +2944,11 @@ impl ComponentInstance {
 
         log::trace!("drop waitable set {rep} (handle {set})");
 
-        self.delete(TableId::<WaitableSet>::new(rep))?;
+        let set = self.delete(TableId::<WaitableSet>::new(rep))?;
+
+        if !set.waiting.is_empty() {
+            bail!("cannot drop waitable set with waiters");
+        }
 
         Ok(())
     }
