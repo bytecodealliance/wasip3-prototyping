@@ -1,4 +1,6 @@
 ;;! component_model_async = true
+;;! reference_types = true
+;;! gc_types = true
 
 ;; This test contains two components $C and $D
 ;; $D.run drives the test and first calls $C.wait-on-set, which waits on

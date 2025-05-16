@@ -1,4 +1,6 @@
 ;;! component_model_async = true
+;;! reference_types = true
+;;! gc_types = true
 
 ;; This test contains two components: $Looper and $Caller.
 ;; $Caller starts an async subtask for $Looper.loop and then drops these

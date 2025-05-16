@@ -1,5 +1,6 @@
 ;;! component_model_async = true
 ;;! reference_types = true
+;;! gc_types = true
 
 ;; This test has two components $C and $D, where $D imports and calls $C
 ;; $C exports two functions: 'blocker' and 'unblocker'
