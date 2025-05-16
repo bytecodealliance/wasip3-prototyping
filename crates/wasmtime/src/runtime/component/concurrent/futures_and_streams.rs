@@ -2056,12 +2056,20 @@ impl ComponentInstance {
         let transmit_id = TableId::<TransmitState>::new(rep);
         let transmit = self.get_mut(transmit_id)?;
 
-        if let Some(event) = Waitable::Transmit(transmit.write_handle).take_event(self)? {
+        let code = if let Some(event) =
+            Waitable::Transmit(transmit.write_handle).take_event(self)?
+        {
             let (Event::FutureWrite { code, .. } | Event::StreamWrite { code, .. }) = event else {
                 unreachable!();
             };
-            return Ok(code);
-        }
+            match code {
+                ReturnCode::Completed(count) => ReturnCode::Cancelled(count),
+                ReturnCode::Closed(_) => code,
+                _ => unreachable!(),
+            }
+        } else {
+            ReturnCode::Cancelled(0)
+        };
 
         let transmit = self.get_mut(transmit_id)?;
 
@@ -2075,7 +2083,7 @@ impl ComponentInstance {
 
         log::trace!("cancelled write {transmit_id:?}");
 
-        Ok(ReturnCode::Cancelled(0))
+        Ok(code)
     }
 
     /// Cancel a pending stream or future read from the host.
@@ -2087,12 +2095,18 @@ impl ComponentInstance {
         let transmit_id = TableId::<TransmitState>::new(rep);
         let transmit = self.get_mut(transmit_id)?;
 
-        if let Some(event) = Waitable::Transmit(transmit.read_handle).take_event(self)? {
+        let code = if let Some(event) = Waitable::Transmit(transmit.read_handle).take_event(self)? {
             let (Event::FutureRead { code, .. } | Event::StreamRead { code, .. }) = event else {
                 unreachable!();
             };
-            return Ok(code);
-        }
+            match code {
+                ReturnCode::Completed(count) => ReturnCode::Cancelled(count),
+                ReturnCode::Closed(_) => code,
+                _ => unreachable!(),
+            }
+        } else {
+            ReturnCode::Cancelled(0)
+        };
 
         let transmit = self.get_mut(transmit_id)?;
 
@@ -2106,7 +2120,7 @@ impl ComponentInstance {
 
         log::trace!("cancelled read {transmit_id:?}");
 
-        Ok(ReturnCode::Cancelled(0))
+        Ok(code)
     }
 
     /// Close the write end of a stream or future read from the host.
