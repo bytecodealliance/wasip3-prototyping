@@ -1762,9 +1762,12 @@ impl ComponentInstance {
         tx
     }
 
+    fn take_event(&mut self, waitable: u32) -> Result<Option<Event>> {
+        Waitable::Transmit(TableId::<TransmitHandle>::new(waitable)).take_event(self)
+    }
+
     fn set_event(&mut self, waitable: u32, event: Event) -> Result<()> {
-        let waitable = Waitable::Transmit(TableId::<TransmitHandle>::new(waitable));
-        waitable.set_event(self, Some(event))
+        Waitable::Transmit(TableId::<TransmitHandle>::new(waitable)).set_event(self, Some(event))
     }
 
     fn get_mut_by_index(
@@ -2152,7 +2155,17 @@ impl ComponentInstance {
             ReadState::GuestReady { ty, handle, .. } => {
                 let read_handle = transmit.read_handle;
 
-                let code = ReturnCode::Closed(0);
+                let code = ReturnCode::Closed(
+                    if let Some(Event::StreamRead {
+                        code: ReturnCode::Completed(count),
+                        ..
+                    }) = self.take_event(read_handle.rep())?
+                    {
+                        count
+                    } else {
+                        0
+                    },
+                );
 
                 // Ensure the final read of the guest is queued, with appropriate closure indicator
                 self.set_event(
@@ -2224,7 +2237,18 @@ impl ComponentInstance {
                     true
                 };
 
-                let code = ReturnCode::Closed(0);
+                let code = ReturnCode::Closed(
+                    if let Some(Event::StreamWrite {
+                        code: ReturnCode::Completed(count),
+                        ..
+                    }) = self.take_event(write_handle.rep())?
+                    {
+                        count
+                    } else {
+                        0
+                    },
+                );
+
                 self.set_event(
                     write_handle.rep(),
                     match ty {
@@ -2532,6 +2556,7 @@ impl ComponentInstance {
 
                 let write_complete = count == 0 || read_count > 0;
                 let read_complete = count > 0;
+                let read_buffer_remaining = count < read_count;
 
                 let read_handle_rep = transmit.read_handle.rep();
 
@@ -2550,9 +2575,20 @@ impl ComponentInstance {
                     rep,
                 )?;
 
-                let code = ReturnCode::completed_or_closed(ty.kind(), count.try_into().unwrap());
-
                 if read_complete {
+                    let count = u32::try_from(count).unwrap();
+                    let total = if let Some(Event::StreamRead {
+                        code: ReturnCode::Completed(old_total),
+                        ..
+                    }) = self.take_event(read_handle_rep)?
+                    {
+                        count + old_total
+                    } else {
+                        count
+                    };
+
+                    let code = ReturnCode::completed_or_closed(ty.kind(), total);
+
                     self.set_event(
                         read_handle_rep,
                         match read_ty {
@@ -2568,20 +2604,26 @@ impl ComponentInstance {
                             },
                         },
                     )?;
-                } else {
+                }
+
+                if read_buffer_remaining {
+                    let types = self.component_types();
+                    let item_size = payload(ty, types)
+                        .map(|ty| usize::try_from(types.canonical_abi(&ty).size32).unwrap())
+                        .unwrap_or(0);
                     let transmit = self.get_mut(transmit_id)?;
                     transmit.read = ReadState::GuestReady {
                         ty: read_ty,
                         flat_abi: read_flat_abi,
                         options: read_options,
-                        address: read_address,
-                        count: read_count,
+                        address: read_address + (count * item_size),
+                        count: read_count - count,
                         handle: read_handle,
                     };
                 }
 
                 if write_complete {
-                    code
+                    ReturnCode::completed_or_closed(ty.kind(), count.try_into().unwrap())
                 } else {
                     set_guest_ready(self)?;
                     ReturnCode::Blocked
@@ -2704,10 +2746,13 @@ impl ComponentInstance {
                 // `ReadState::GuestReady` case concerning zero-length reads and
                 // writes.
 
+                let count = usize::try_from(count).unwrap();
+
                 let write_complete = write_count == 0 || count > 0;
                 let read_complete = write_count > 0;
+                let write_buffer_remaining = count < write_count;
 
-                let count = usize::try_from(count).unwrap().min(write_count);
+                let count = count.min(write_count);
 
                 self.copy(
                     store,
@@ -2729,9 +2774,20 @@ impl ComponentInstance {
                     true
                 };
 
-                let code = ReturnCode::completed_or_closed(ty.kind(), count.try_into().unwrap());
-
                 if write_complete {
+                    let count = u32::try_from(count).unwrap();
+                    let total = if let Some(Event::StreamWrite {
+                        code: ReturnCode::Completed(old_total),
+                        ..
+                    }) = self.take_event(write_handle_rep)?
+                    {
+                        count + old_total
+                    } else {
+                        count
+                    };
+
+                    let code = ReturnCode::completed_or_closed(ty.kind(), total);
+
                     self.set_event(
                         write_handle_rep,
                         match write_ty {
@@ -2745,21 +2801,27 @@ impl ComponentInstance {
                             },
                         },
                     )?;
-                } else {
+                }
+
+                if write_buffer_remaining {
+                    let types = self.component_types();
+                    let item_size = payload(ty, types)
+                        .map(|ty| usize::try_from(types.canonical_abi(&ty).size32).unwrap())
+                        .unwrap_or(0);
                     let transmit = self.get_mut(transmit_id)?;
                     transmit.write = WriteState::GuestReady {
                         ty: write_ty,
                         flat_abi: write_flat_abi,
                         options: write_options,
-                        address: write_address,
-                        count: write_count,
+                        address: write_address + (count * item_size),
+                        count: write_count - count,
                         handle: write_handle,
                         post_write,
                     };
                 }
 
                 if read_complete {
-                    code
+                    ReturnCode::completed_or_closed(ty.kind(), count.try_into().unwrap())
                 } else {
                     set_guest_ready(self)?;
                     ReturnCode::Blocked
