@@ -715,21 +715,14 @@ impl<T> StoreContextMut<'_, T> {
             }
             _ => unreachable!(),
         }));
-        let data = self.0[instance.0].take().unwrap();
-        let (result, data) = {
-            // SAFETY: We've taken the instance out of the store, so now we own
-            // it and can take an exclusive reference to it.
-            let instance = unsafe { &mut *data.instance_ptr() };
-            assert!(instance.data.is_none());
-            instance.data = Some(data);
-            instance.set_store(None);
-            let result = fun(self.as_context_mut(), instance);
-            instance.set_store(Some(VMStoreRawPtr(self.traitobj())));
-            (result, instance.data.take())
-        };
-        if self.0[instance.0].is_none() {
-            self.0[instance.0] = data;
-        }
+        let ptr = self.0.hide_instance(*instance);
+        // SAFETY: We've taken the instance out of the store, so now we own
+        // it and can take an exclusive reference to it.
+        let reference = unsafe { &mut *ptr };
+        reference.set_store(None);
+        let result = fun(self.as_context_mut(), reference);
+        reference.set_store(Some(VMStoreRawPtr(self.traitobj())));
+        self.0.unhide_instance(*instance);
         result
     }
 
@@ -746,21 +739,14 @@ impl<T> StoreContextMut<'_, T> {
             }
             _ => unreachable!(),
         }));
-        let data = self.0[instance.0].take().unwrap();
-        let (result, data) = {
-            // SAFETY: We've taken the instance out of the store, so now we own
-            // it and can take an exclusive reference to it.
-            let instance = unsafe { &mut *data.instance_ptr() };
-            assert!(instance.data.is_none());
-            instance.data = Some(data);
-            instance.set_store(None);
-            let result = fun(self.as_context_mut(), instance).await;
-            instance.set_store(Some(VMStoreRawPtr(self.traitobj())));
-            (result, instance.data.take())
-        };
-        if self.0[instance.0].is_none() {
-            self.0[instance.0] = data;
-        }
+        let ptr = self.0.hide_instance(*instance);
+        // SAFETY: We've taken the instance out of the store, so now we own
+        // it and can take an exclusive reference to it.
+        let reference = unsafe { &mut *ptr };
+        reference.set_store(None);
+        let result = fun(self.as_context_mut(), reference).await;
+        reference.set_store(Some(VMStoreRawPtr(self.traitobj())));
+        self.0.unhide_instance(*instance);
         result
     }
 
@@ -783,13 +769,13 @@ impl<T> StoreContextMut<'_, T> {
             _ => unreachable!(),
         }));
         if let Some(handle) = instance.instance {
-            self.0[handle.0] = Some(instance.data.take().unwrap());
+            self.0.unhide_instance(handle);
         }
         instance.set_store(Some(VMStoreRawPtr(self.traitobj())));
         let result = fun(self.as_context_mut(), instance.instance);
         instance.set_store(None);
         if let Some(handle) = instance.instance {
-            instance.data = Some(self.0[handle.0].take().unwrap());
+            self.0.hide_instance(handle);
         }
         result
     }

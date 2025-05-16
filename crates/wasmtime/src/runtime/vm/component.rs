@@ -6,7 +6,7 @@
 //! Eventually it's intended that module-to-module calls, which would be
 //! cranelift-compiled adapters, will use this `VMComponentContext` as well.
 
-use crate::component::{Instance, InstanceData, ResourceType};
+use crate::component::{Instance, ResourceType};
 use crate::prelude::*;
 use crate::runtime::vm::{
     SendSyncPtr, VMArrayCallFunction, VMContext, VMFuncRef, VMGlobalDefinition, VMMemoryDefinition,
@@ -77,8 +77,6 @@ pub struct ComponentInstance {
     store: Option<VMStoreRawPtr>,
 
     pub(crate) instance: Option<Instance>,
-
-    pub(crate) data: Option<Box<InstanceData>>,
 
     /// A zero-sized field which represents the end of the struct for the actual
     /// `VMComponentContext` to be allocated behind.
@@ -189,16 +187,13 @@ impl ComponentInstance {
         let reference = ptr.as_mut();
         let store = &mut *reference.store();
         if let Some(instance) = reference.instance {
-            assert!(reference.data.is_none());
-            reference.data = Some(store[instance.0].take().unwrap());
+            store.hide_instance(instance);
         }
         reference.set_store(None);
         let result = f(store, reference);
         reference.set_store(Some(VMStoreRawPtr(store.traitobj())));
         if let Some(instance) = reference.instance {
-            if store[instance.0].is_none() {
-                store[instance.0] = reference.data.take();
-            }
+            store.unhide_instance(instance);
         }
         result
     }
@@ -265,7 +260,6 @@ impl ComponentInstance {
                 vmctx: VMComponentContext {
                     _marker: marker::PhantomPinned,
                 },
-                data: None,
                 instance: None,
                 #[cfg(feature = "component-model-async")]
                 concurrent_state,
