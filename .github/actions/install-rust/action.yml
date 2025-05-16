@@ -9,7 +9,7 @@ inputs:
   msrv_range:
     description: 'Versions later-than-latest-Rust the MSRV supports'
     required: false
-    default: '2'
+    default: '1'
 
 runs:
   using: composite
