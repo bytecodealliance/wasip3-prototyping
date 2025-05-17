@@ -702,7 +702,15 @@ pub fn wast_test(u: &mut arbitrary::Unstructured<'_>) -> arbitrary::Result<()> {
 
     let mut fuzz_config: generators::Config = u.arbitrary()?;
     let test: generators::WastTest = u.arbitrary()?;
-    if u.arbitrary()? {
+    // FIXME: Find a more elegant way to identify tests which require async.
+    if test
+        .test
+        .path
+        .to_str()
+        .map(|s| s.contains("component-model-async"))
+        .unwrap_or(false)
+        || u.arbitrary()?
+    {
         fuzz_config.enable_async(u)?;
     }
 
