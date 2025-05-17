@@ -406,9 +406,9 @@ impl<'a, 'b> Compiler<'a, 'b> {
     /// Compile an adapter function supporting an async-lowered import to an
     /// async-lifted export.
     ///
-    /// This uses a pair of `async-enter` and `async-exit` built-in functions to
-    /// set up and start a subtask, respectively.  `async-enter` accepts `start`
-    /// and `return_` functions which copy the parameters and results,
+    /// This uses a pair of `async-prepare` and `async-start` built-in functions
+    /// to set up and start a subtask, respectively.  `async-prepare` accepts
+    /// `start` and `return_` functions which copy the parameters and results,
     /// respectively; the host will call the former when the callee has cleared
     /// its backpressure flag and the latter when the callee has called
     /// `task.return`.
@@ -419,12 +419,12 @@ impl<'a, 'b> Compiler<'a, 'b> {
         return_: FunctionId,
         param_count: i32,
     ) {
-        let enter = self
+        let prepare = self
             .module
-            .import_async_enter_call(&adapter.name, adapter.lift.options.memory);
-        let exit =
+            .import_async_prepare_call(&adapter.name, adapter.lift.options.memory);
+        let start_call =
             self.module
-                .import_async_exit_call(&adapter.name, adapter.lift.options.callback, None);
+                .import_async_start_call(&adapter.name, adapter.lift.options.callback, None);
 
         self.flush_code();
         self.module.funcs[self.result]
@@ -451,12 +451,12 @@ impl<'a, 'b> Compiler<'a, 'b> {
         // the subtask for later use.
         self.instruction(LocalGet(0));
         self.instruction(LocalGet(1));
-        self.instruction(Call(enter.as_u32()));
+        self.instruction(Call(prepare.as_u32()));
 
         // TODO: As an optimization, consider checking the backpressure flag on
         // the callee instance and, if it's unset _and_ the callee uses a
         // callback, translate the params and call the callee function directly
-        // here (and make sure `exit` knows _not_ to call it in that case).
+        // here (and make sure `start_call` knows _not_ to call it in that case).
 
         // We export this function so we can pass a funcref to the host.
         //
@@ -472,8 +472,8 @@ impl<'a, 'b> Compiler<'a, 'b> {
         // callback) or zero (if there's no callback).  We conservatively use
         // one here to ensure the host provides room for the result, if any.
         self.instruction(I32Const(1));
-        self.instruction(I32Const(super::EXIT_FLAG_ASYNC_CALLEE));
-        self.instruction(Call(exit.as_u32()));
+        self.instruction(I32Const(super::START_FLAG_ASYNC_CALLEE));
+        self.instruction(Call(start_call.as_u32()));
 
         self.finish()
     }
@@ -481,9 +481,9 @@ impl<'a, 'b> Compiler<'a, 'b> {
     /// Compile an adapter function supporting a sync-lowered import to an
     /// async-lifted export.
     ///
-    /// This uses a pair of `sync-enter` and `sync-exit` built-in functions to
-    /// set up and start a subtask, respectively.  `sync-enter` accepts `start`
-    /// and `return_` functions which copy the parameters and results,
+    /// This uses a pair of `sync-prepare` and `sync-start` built-in functions
+    /// to set up and start a subtask, respectively.  `sync-prepare` accepts
+    /// `start` and `return_` functions which copy the parameters and results,
     /// respectively; the host will call the former when the callee has cleared
     /// its backpressure flag and the latter when the callee has called
     /// `task.return`.
@@ -495,12 +495,12 @@ impl<'a, 'b> Compiler<'a, 'b> {
         lift_param_count: i32,
         lower_sig: &Signature,
     ) {
-        let enter = self.module.import_sync_enter_call(
+        let prepare = self.module.import_sync_prepare_call(
             &adapter.name,
             &lower_sig.params,
             adapter.lift.options.memory,
         );
-        let exit = self.module.import_sync_exit_call(
+        let start_call = self.module.import_sync_start_call(
             &adapter.name,
             adapter.lift.options.callback,
             &lower_sig.results,
@@ -546,12 +546,12 @@ impl<'a, 'b> Compiler<'a, 'b> {
             self.instruction(LocalGet(u32::try_from(index).unwrap()));
         }
 
-        self.instruction(Call(enter.as_u32()));
+        self.instruction(Call(prepare.as_u32()));
 
         // TODO: As an optimization, consider checking the backpressure flag on
         // the callee instance and, if it's unset _and_ the callee uses a
         // callback, translate the params and call the callee function directly
-        // here (and make sure `exit` knows _not_ to call it in that case).
+        // here (and make sure `start_call` knows _not_ to call it in that case).
 
         // We export this function so we can pass a funcref to the host.
         //
@@ -563,7 +563,7 @@ impl<'a, 'b> Compiler<'a, 'b> {
 
         self.instruction(RefFunc(adapter.callee.as_u32()));
         self.instruction(I32Const(lift_param_count));
-        self.instruction(Call(exit.as_u32()));
+        self.instruction(Call(start_call.as_u32()));
 
         self.finish()
     }
@@ -571,9 +571,9 @@ impl<'a, 'b> Compiler<'a, 'b> {
     /// Compile an adapter function supporting an async-lowered import to a
     /// sync-lifted export.
     ///
-    /// This uses a pair of `async-enter` and `async-exit` built-in functions to
-    /// set up and start a subtask, respectively.  `async-enter` accepts `start`
-    /// and `return_` functions which copy the parameters and results,
+    /// This uses a pair of `async-prepare` and `async-start` built-in functions
+    /// to set up and start a subtask, respectively.  `async-prepare` accepts
+    /// `start` and `return_` functions which copy the parameters and results,
     /// respectively; the host will call the former when the callee has cleared
     /// its backpressure flag and the latter when the callee has returned its
     /// result(s).
@@ -585,12 +585,12 @@ impl<'a, 'b> Compiler<'a, 'b> {
         param_count: i32,
         result_count: i32,
     ) {
-        let enter = self
+        let prepare = self
             .module
-            .import_async_enter_call(&adapter.name, adapter.lift.options.memory);
-        let exit =
+            .import_async_prepare_call(&adapter.name, adapter.lift.options.memory);
+        let start_call =
             self.module
-                .import_async_exit_call(&adapter.name, None, adapter.lift.post_return);
+                .import_async_start_call(&adapter.name, None, adapter.lift.post_return);
 
         self.flush_code();
         self.module.funcs[self.result]
@@ -613,7 +613,7 @@ impl<'a, 'b> Compiler<'a, 'b> {
         )));
         self.instruction(LocalGet(0));
         self.instruction(LocalGet(1));
-        self.instruction(Call(enter.as_u32()));
+        self.instruction(Call(prepare.as_u32()));
 
         // We export this function so we can pass a funcref to the host.
         //
@@ -627,7 +627,7 @@ impl<'a, 'b> Compiler<'a, 'b> {
         self.instruction(I32Const(param_count));
         self.instruction(I32Const(result_count));
         self.instruction(I32Const(0));
-        self.instruction(Call(exit.as_u32()));
+        self.instruction(Call(start_call.as_u32()));
 
         self.finish()
     }

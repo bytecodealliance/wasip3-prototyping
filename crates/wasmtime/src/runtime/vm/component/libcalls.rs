@@ -753,7 +753,7 @@ unsafe fn subtask_cancel(
 }
 
 #[cfg(feature = "component-model-async")]
-unsafe fn sync_enter(
+unsafe fn sync_prepare(
     vmctx: NonNull<VMComponentContext>,
     memory: *mut u8,
     start: *mut u8,
@@ -767,7 +767,7 @@ unsafe fn sync_enter(
     storage_len: usize,
 ) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        store.component_async_store().sync_enter(
+        store.component_async_store().sync_prepare(
             instance,
             memory.cast::<crate::vm::VMMemoryDefinition>(),
             start.cast::<crate::vm::VMFuncRef>(),
@@ -784,7 +784,7 @@ unsafe fn sync_enter(
 }
 
 #[cfg(feature = "component-model-async")]
-unsafe fn sync_exit(
+unsafe fn sync_start(
     vmctx: NonNull<VMComponentContext>,
     callback: *mut u8,
     callee: *mut u8,
@@ -793,7 +793,7 @@ unsafe fn sync_exit(
     storage_len: usize,
 ) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        store.component_async_store().sync_exit(
+        store.component_async_store().sync_start(
             instance,
             callback.cast::<crate::vm::VMFuncRef>(),
             callee.cast::<crate::vm::VMFuncRef>(),
@@ -805,7 +805,7 @@ unsafe fn sync_exit(
 }
 
 #[cfg(feature = "component-model-async")]
-unsafe fn async_enter(
+unsafe fn async_prepare(
     vmctx: NonNull<VMComponentContext>,
     memory: *mut u8,
     start: *mut u8,
@@ -818,7 +818,7 @@ unsafe fn async_enter(
     results: u32,
 ) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        store.component_async_store().async_enter(
+        store.component_async_store().async_prepare(
             instance,
             memory.cast::<crate::vm::VMMemoryDefinition>(),
             start.cast::<crate::vm::VMFuncRef>(),
@@ -834,7 +834,7 @@ unsafe fn async_enter(
 }
 
 #[cfg(feature = "component-model-async")]
-unsafe fn async_exit(
+unsafe fn async_start(
     vmctx: NonNull<VMComponentContext>,
     callback: *mut u8,
     post_return: *mut u8,
@@ -844,7 +844,7 @@ unsafe fn async_exit(
     flags: u32,
 ) -> Result<u32> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        store.component_async_store().async_exit(
+        store.component_async_store().async_start(
             instance,
             callback.cast::<crate::vm::VMFuncRef>(),
             post_return.cast::<crate::vm::VMFuncRef>(),

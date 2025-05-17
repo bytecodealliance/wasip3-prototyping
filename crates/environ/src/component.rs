@@ -106,13 +106,13 @@ macro_rules! foreach_builtin_component_function {
             #[cfg(feature = "component-model-async")]
             subtask_cancel(vmctx: vmctx, caller_instance: u32, async_: u8, task_id: u32) -> u64;
             #[cfg(feature = "component-model-async")]
-            sync_enter(vmctx: vmctx, memory: ptr_u8, start: ptr_u8, return_: ptr_u8, caller_instance: u32, callee_instance: u32, task_return_type: u32, string_encoding: u32, result_count: u32, storage: ptr_u8, storage_len: size) -> bool;
+            sync_prepare(vmctx: vmctx, memory: ptr_u8, start: ptr_u8, return_: ptr_u8, caller_instance: u32, callee_instance: u32, task_return_type: u32, string_encoding: u32, result_count: u32, storage: ptr_u8, storage_len: size) -> bool;
             #[cfg(feature = "component-model-async")]
-            sync_exit(vmctx: vmctx, callback: ptr_u8, callee: ptr_u8, param_count: u32, storage: ptr_u8, storage_len: size) -> bool;
+            sync_start(vmctx: vmctx, callback: ptr_u8, callee: ptr_u8, param_count: u32, storage: ptr_u8, storage_len: size) -> bool;
             #[cfg(feature = "component-model-async")]
-            async_enter(vmctx: vmctx, memory: ptr_u8, start: ptr_u8, return_: ptr_u8, caller_instance: u32, callee_instance: u32, task_return_type: u32, string_encoding: u32, params: u32, results: u32) -> bool;
+            async_prepare(vmctx: vmctx, memory: ptr_u8, start: ptr_u8, return_: ptr_u8, caller_instance: u32, callee_instance: u32, task_return_type: u32, string_encoding: u32, params: u32, results: u32) -> bool;
             #[cfg(feature = "component-model-async")]
-            async_exit(vmctx: vmctx, callback: ptr_u8, post_return: ptr_u8, callee: ptr_u8, param_count: u32, result_count: u32, flags: u32) -> u64;
+            async_start(vmctx: vmctx, callback: ptr_u8, post_return: ptr_u8, callee: ptr_u8, param_count: u32, result_count: u32, flags: u32) -> u64;
             #[cfg(feature = "component-model-async")]
             future_new(vmctx: vmctx, ty: u32) -> u64;
             #[cfg(feature = "component-model-async")]

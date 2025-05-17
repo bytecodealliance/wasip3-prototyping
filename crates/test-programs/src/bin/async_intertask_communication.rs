@@ -9,7 +9,7 @@ use {
     std::sync::atomic::{AtomicU32, Ordering::Relaxed},
     test_programs::async_::{
         context_get, context_set, waitable_join, waitable_set_drop, waitable_set_new, BLOCKED,
-        CALLBACK_CODE_EXIT, CALLBACK_CODE_WAIT, EVENT_FUTURE_WRITE, EVENT_NONE,
+        CALLBACK_CODE_EXIT, CALLBACK_CODE_WAIT, CLOSED, EVENT_FUTURE_WRITE, EVENT_NONE,
     },
 };
 
@@ -165,7 +165,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
                         waitable_join(tx, set);
 
                         let status = future_read(rx);
-                        assert_eq!(status, 1 << 4); // i.e. one element was read
+                        assert_eq!(status, 1 << 4 | CLOSED); // i.e. one element was read
 
                         future_close_readable(rx);
 
@@ -180,7 +180,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
 
             State::S1 { set } => {
                 assert_eq!(event0, EVENT_FUTURE_WRITE);
-                assert_eq!(event2, 1 << 4); // i.e. one element was written
+                assert_eq!(event2, 1 << 4 | CLOSED); // i.e. one element was written
 
                 waitable_join(event1, 0);
                 waitable_set_drop(*set);

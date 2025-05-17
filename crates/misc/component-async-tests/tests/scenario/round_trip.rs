@@ -490,7 +490,7 @@ pub async fn panic_on_wrong_instance() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "Recursive `Instance::run{_with}` calls not supported")]
+#[should_panic(expected = "Recursive `Instance::run[_with]` calls not supported")]
 pub async fn panic_on_recursive_run() {
     _ = test_panic(
         &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT)
