@@ -2,9 +2,8 @@ use super::{delete_request, get_fields_inner, push_response};
 use crate::p3::bindings::http::handler;
 use crate::p3::bindings::http::types::ErrorCode;
 use crate::p3::{
-    empty_body, Body, BodyFrame, Client as _, ContentLength, OutgoingRequestBody,
-    OutgoingRequestTrailers, OutgoingTrailerFuture, Request, Response, WasiHttp, WasiHttpImpl,
-    WasiHttpView,
+    Body, BodyFrame, Client as _, ContentLength, OutgoingRequestBody, OutgoingRequestTrailers,
+    OutgoingTrailerFuture, Request, Response, WasiHttp, WasiHttpImpl, WasiHttpView, empty_body,
 };
 use anyhow::bail;
 use bytes::Bytes;

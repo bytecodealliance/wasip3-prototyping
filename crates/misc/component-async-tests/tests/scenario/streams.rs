@@ -1,6 +1,6 @@
 use {
     anyhow::Result,
-    component_async_tests::{closed_streams, util::config, Ctx},
+    component_async_tests::{Ctx, closed_streams, util::config},
     futures::{
         future::{self, FutureExt},
         stream::{FuturesUnordered, StreamExt, TryStreamExt},
@@ -11,8 +11,8 @@ use {
     },
     tokio::fs,
     wasmtime::{
-        component::{Component, Linker, ResourceTable, StreamReader, StreamWriter, VecBuffer},
         Engine, Store,
+        component::{Component, Linker, ResourceTable, StreamReader, StreamWriter, VecBuffer},
     },
     wasmtime_wasi::p2::WasiCtxBuilder,
 };
@@ -123,11 +123,13 @@ pub async fn async_watch_streams() -> Result<()> {
     instance
         .run(&mut store, future::poll_fn(|cx| future.as_mut().poll(cx)))
         .await?;
-    assert!(instance
-        .run(&mut store, watch.into_inner().write_all(Some(42)))
-        .await?
-        .0
-        .is_none());
+    assert!(
+        instance
+            .run(&mut store, watch.into_inner().write_all(Some(42)))
+            .await?
+            .0
+            .is_none()
+    );
 
     Ok(())
 }

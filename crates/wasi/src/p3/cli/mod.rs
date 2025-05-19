@@ -1,10 +1,10 @@
 mod host;
 
-use crate::p3::bindings::cli;
 use crate::p3::ResourceView;
+use crate::p3::bindings::cli;
 use core::fmt;
 use tokio::io::{
-    empty, stderr, stdin, stdout, AsyncRead, AsyncWrite, Empty, Stderr, Stdin, Stdout,
+    AsyncRead, AsyncWrite, Empty, Stderr, Stdin, Stdout, empty, stderr, stdin, stdout,
 };
 use wasmtime::component::{HasData, Linker, ResourceTable};
 

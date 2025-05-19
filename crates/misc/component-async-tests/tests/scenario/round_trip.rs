@@ -4,11 +4,11 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Wake, Waker};
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures::{
+    FutureExt,
     channel::oneshot,
     stream::{FuturesUnordered, TryStreamExt},
-    FutureExt,
 };
 use once_cell::sync::Lazy;
 use tokio::fs;

@@ -2,7 +2,7 @@ mod host;
 
 use crate::p3::bindings::clocks;
 use cap_std::time::{Duration, Instant, SystemClock};
-use cap_std::{ambient_authority, AmbientAuthority};
+use cap_std::{AmbientAuthority, ambient_authority};
 use cap_time_ext::{MonotonicClockExt as _, SystemClockExt as _};
 use wasmtime::component::{HasData, Linker};
 

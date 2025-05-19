@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use wasi_http_draft::wasi::http::types::{ErrorCode, Request, Response};
 use wasi_http_draft::{WasiHttp, WasiHttpView, WasiHttpViewConcurrent};
 use wasmtime::component::{Accessor, Resource, ResourceTable};

@@ -1,17 +1,17 @@
+use crate::Module;
+use crate::component::ResourceType;
 use crate::component::func::HostFunc;
 use crate::component::linker::{Definition, Strings};
 use crate::component::types::{FutureType, StreamType};
-use crate::component::ResourceType;
 use crate::runtime::vm::component::ComponentInstance;
 use crate::types::matching;
-use crate::Module;
-use crate::{prelude::*, Engine};
+use crate::{Engine, prelude::*};
 use alloc::sync::Arc;
+use wasmtime_environ::PrimaryMap;
 use wasmtime_environ::component::{
     ComponentTypes, NameMap, ResourceIndex, TypeComponentInstance, TypeDef, TypeFuncIndex,
     TypeFutureTableIndex, TypeModule, TypeResourceTableIndex, TypeStreamTableIndex,
 };
-use wasmtime_environ::PrimaryMap;
 
 pub struct TypeChecker<'a> {
     pub engine: &'a Engine,

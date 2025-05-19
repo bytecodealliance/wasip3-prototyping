@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context as _};
+use anyhow::{Context as _, anyhow};
 use system_interface::fs::FileIoExt as _;
 use tokio::sync::mpsc;
 use wasmtime::component::{

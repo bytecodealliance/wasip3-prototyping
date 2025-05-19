@@ -1,18 +1,18 @@
 use core::future::Future;
 use core::mem;
 use core::pin::Pin;
-use core::task::{ready, Context, Poll};
+use core::task::{Context, Poll, ready};
 
 use bytes::{Bytes, BytesMut};
 use http::HeaderMap;
-use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::BodyExt as _;
+use http_body_util::combinators::UnsyncBoxBody;
 use tokio::sync::{mpsc, oneshot};
 use wasmtime::component::{AbortOnDropHandle, FutureWriter, Resource, StreamReader};
 use wasmtime_wasi::p3::WithChildren;
 
-use crate::p3::bindings::http::types::ErrorCode;
 use crate::p3::DEFAULT_BUFFER_CAPACITY;
+use crate::p3::bindings::http::types::ErrorCode;
 
 pub(crate) type OutgoingContentsStreamFuture =
     Pin<Box<dyn Future<Output = (Option<StreamReader<BytesMut>>, BytesMut)> + Send + 'static>>;

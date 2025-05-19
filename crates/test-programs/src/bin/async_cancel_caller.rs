@@ -8,10 +8,10 @@ mod bindings {
 use {
     std::ptr,
     test_programs::async_::{
-        context_get, context_set, subtask_cancel, subtask_cancel_async, subtask_drop,
-        waitable_join, waitable_set_drop, waitable_set_new, BLOCKED, CALLBACK_CODE_EXIT,
-        CALLBACK_CODE_WAIT, EVENT_NONE, EVENT_SUBTASK, STATUS_RETURNED, STATUS_RETURN_CANCELLED,
-        STATUS_STARTED, STATUS_STARTING, STATUS_START_CANCELLED,
+        BLOCKED, CALLBACK_CODE_EXIT, CALLBACK_CODE_WAIT, EVENT_NONE, EVENT_SUBTASK,
+        STATUS_RETURN_CANCELLED, STATUS_RETURNED, STATUS_START_CANCELLED, STATUS_STARTED,
+        STATUS_STARTING, context_get, context_set, subtask_cancel, subtask_cancel_async,
+        subtask_drop, waitable_join, waitable_set_drop, waitable_set_new,
     },
 };
 

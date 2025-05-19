@@ -1,21 +1,21 @@
 use {
     super::{
-        table::{TableDebug, TableId},
         Event, GlobalErrorContextRefCount, HostTaskOutput, LocalErrorContextRefCount, StateTable,
         Waitable, WaitableCommon, WaitableState,
+        table::{TableDebug, TableId},
     },
     crate::{
+        AsContextMut, StoreContextMut, VMStore, ValRaw,
         component::{
+            Instance, Lower, Val, WasmList, WasmStr,
             func::{self, Lift, LiftContext, LowerContext, Options},
             matching::InstanceType,
             values::{ErrorContextAny, FutureAny, StreamAny},
-            Instance, Lower, Val, WasmList, WasmStr,
         },
         store::{StoreId, StoreToken},
-        vm::{component::ComponentInstance, SendSyncPtr, VMFuncRef, VMMemoryDefinition},
-        AsContextMut, StoreContextMut, VMStore, ValRaw,
+        vm::{SendSyncPtr, VMFuncRef, VMMemoryDefinition, component::ComponentInstance},
     },
-    anyhow::{anyhow, bail, Context, Result},
+    anyhow::{Context, Result, anyhow, bail},
     buffers::Extender,
     futures::{
         channel::{mpsc, oneshot},
@@ -202,10 +202,10 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>
     tx: oneshot::Sender<HostResult<B>>,
     kind: TransmitKind,
 ) -> impl FnOnce(&mut dyn VMStore, &mut ComponentInstance, Reader) -> Result<ReturnCode>
-       + Send
-       + Sync
-       + 'static
-       + use<T, B, U> {
++ Send
++ Sync
++ 'static
++ use<T, B, U> {
     let token = StoreToken::new(store);
     move |store, instance, reader| {
         let code = match reader {

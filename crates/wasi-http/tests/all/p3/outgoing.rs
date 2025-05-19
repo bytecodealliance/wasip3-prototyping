@@ -1,7 +1,7 @@
 use super::*;
 use crate::http_server::Server;
 use crate::*;
-use anyhow::{anyhow, Context as _};
+use anyhow::{Context as _, anyhow};
 use test_programs_artifacts::*;
 use wasmtime_wasi::p3::bindings::Command;
 

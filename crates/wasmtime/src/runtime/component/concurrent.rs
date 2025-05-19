@@ -49,20 +49,20 @@
 
 use {
     crate::{
+        AsContext, AsContextMut, Engine, StoreContext, StoreContextMut, ValRaw,
         component::{
-            func::{self, Func, Options},
             HasData, HasSelf, Instance,
+            func::{self, Func, Options},
         },
         store::{StoreInner, StoreOpaque, StoreToken},
         vm::{
-            component::{CallContext, ComponentInstance, InstanceFlags, ResourceTables},
-            mpk::{self, ProtectionMask},
             AsyncWasmCallState, PreviousAsyncWasmCallState, SendSyncPtr, VMFuncRef,
             VMMemoryDefinition, VMStore, VMStoreRawPtr,
+            component::{CallContext, ComponentInstance, InstanceFlags, ResourceTables},
+            mpk::{self, ProtectionMask},
         },
-        AsContext, AsContextMut, Engine, StoreContext, StoreContextMut, ValRaw,
     },
-    anyhow::{anyhow, bail, Context as _, Result},
+    anyhow::{Context as _, Result, anyhow, bail},
     error_contexts::{GlobalErrorContextRefCount, LocalErrorContextRefCount},
     futures::{
         channel::oneshot,
@@ -83,34 +83,34 @@ use {
         marker::PhantomData,
         mem::{self, MaybeUninit},
         ops::{DerefMut, Range},
-        pin::{pin, Pin},
+        pin::{Pin, pin},
         ptr::{self, NonNull},
         sync::{
-            atomic::{AtomicPtr, Ordering::Relaxed},
             Arc, Mutex,
+            atomic::{AtomicPtr, Ordering::Relaxed},
         },
         task::{Context, Poll, Wake, Waker},
         vec::Vec,
     },
     table::{Table, TableDebug, TableError, TableId},
     wasmtime_environ::{
+        PrimaryMap,
         component::{
-            RuntimeComponentInstanceIndex, StringEncoding,
+            MAX_FLAT_PARAMS, MAX_FLAT_RESULTS, RuntimeComponentInstanceIndex, StringEncoding,
             TypeComponentGlobalErrorContextTableIndex, TypeComponentLocalErrorContextTableIndex,
-            TypeFutureTableIndex, TypeStreamTableIndex, TypeTupleIndex, MAX_FLAT_PARAMS,
-            MAX_FLAT_RESULTS,
+            TypeFutureTableIndex, TypeStreamTableIndex, TypeTupleIndex,
         },
-        fact, PrimaryMap,
+        fact,
     },
     wasmtime_fiber::{Fiber, Suspend},
 };
 
-pub(crate) use futures_and_streams::{
-    lower_error_context_to_index, lower_future_to_index, lower_stream_to_index, ResourcePair,
-};
 pub use futures_and_streams::{
     ErrorContext, FutureReader, FutureWriter, HostFuture, HostStream, ReadBuffer, StreamReader,
     StreamWriter, VecBuffer, Watch, WriteBuffer,
+};
+pub(crate) use futures_and_streams::{
+    ResourcePair, lower_error_context_to_index, lower_future_to_index, lower_stream_to_index,
 };
 
 mod error_contexts;
@@ -1315,10 +1315,10 @@ impl ComponentInstance {
             &mut dyn VMStore,
             &mut ComponentInstance,
         ) -> Result<[MaybeUninit<ValRaw>; MAX_FLAT_PARAMS]>
-               + Send
-               + Sync
-               + 'static
-               + use<T> {
+        + Send
+        + Sync
+        + 'static
+        + use<T> {
             let token = StoreToken::new(store);
             move |store: &mut dyn VMStore, instance: &mut ComponentInstance| {
                 let mut storage = [MaybeUninit::uninit(); MAX_FLAT_PARAMS];

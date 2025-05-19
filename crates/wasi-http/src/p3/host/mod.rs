@@ -2,8 +2,8 @@ use core::ops::{Deref, DerefMut};
 
 use anyhow::Context as _;
 use wasmtime::component::Resource;
-use wasmtime_wasi::p3::WithChildren;
 use wasmtime_wasi::ResourceTable;
+use wasmtime_wasi::p3::WithChildren;
 
 use crate::p3::{Request, Response};
 

@@ -2,18 +2,18 @@ use std::iter;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures::{
-    stream::{FuturesUnordered, TryStreamExt},
     FutureExt,
+    stream::{FuturesUnordered, TryStreamExt},
 };
 use tokio::fs;
 use wasmtime::component::{Component, Linker, ResourceTable, Val};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
-use component_async_tests::util::{compose, config};
 use component_async_tests::Ctx;
+use component_async_tests::util::{compose, config};
 
 #[tokio::test]
 pub async fn async_round_trip_many_stackless() -> Result<()> {

@@ -23,8 +23,8 @@ mod bindings {
 use {
     std::alloc::{self, Layout},
     test_programs::async_::{
-        subtask_drop, waitable_join, waitable_set_drop, waitable_set_new, waitable_set_wait,
-        EVENT_SUBTASK, STATUS_RETURNED,
+        EVENT_SUBTASK, STATUS_RETURNED, subtask_drop, waitable_join, waitable_set_drop,
+        waitable_set_new, waitable_set_wait,
     },
 };
 

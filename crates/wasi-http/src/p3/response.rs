@@ -4,7 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::{bail, Context as _};
+use anyhow::{Context as _, bail};
 use bytes::Bytes;
 use futures::{FutureExt as _, StreamExt as _};
 use http::{HeaderMap, StatusCode};
@@ -17,8 +17,8 @@ use wasmtime_wasi::p3::{ResourceView, WithChildren};
 
 use crate::p3::bindings::http::types::ErrorCode;
 use crate::p3::{
-    empty_body, Body, BodyFrame, ContentLength, OutgoingResponseBody, OutgoingTrailerFuture,
-    DEFAULT_BUFFER_CAPACITY,
+    Body, BodyFrame, ContentLength, DEFAULT_BUFFER_CAPACITY, OutgoingResponseBody,
+    OutgoingTrailerFuture, empty_body,
 };
 
 /// The concrete type behind a `wasi:http/types/response` resource.

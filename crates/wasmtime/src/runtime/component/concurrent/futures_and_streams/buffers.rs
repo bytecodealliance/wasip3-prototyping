@@ -100,11 +100,7 @@ impl<T: Send + Sync + 'static> ReadBuffer<T> for Option<T> {
     }
 
     fn remaining_capacity(&self) -> usize {
-        if self.is_some() {
-            0
-        } else {
-            1
-        }
+        if self.is_some() { 0 } else { 1 }
     }
 
     fn move_from(&mut self, input: &mut dyn TakeBuffer, count: usize) {

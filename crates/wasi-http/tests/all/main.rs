@@ -13,9 +13,9 @@ macro_rules! assert_test_exists {
 }
 
 mod body {
-    use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
-    use hyper::body::Bytes;
+    use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
     use hyper::Error;
+    use hyper::body::Bytes;
 
     pub fn full(bytes: Bytes) -> BoxBody<Bytes, Error> {
         BoxBody::new(Full::new(bytes).map_err(|_| unreachable!()))

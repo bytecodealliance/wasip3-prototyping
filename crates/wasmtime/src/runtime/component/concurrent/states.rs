@@ -1,6 +1,6 @@
 use {
     alloc::vec::Vec,
-    anyhow::{bail, Result},
+    anyhow::{Result, bail},
     core::mem,
 };
 

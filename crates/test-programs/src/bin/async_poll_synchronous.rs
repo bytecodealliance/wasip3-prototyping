@@ -12,8 +12,8 @@ mod bindings {
 use {
     bindings::{exports::local::local::run::Guest, local::local::ready},
     test_programs::async_::{
-        subtask_drop, waitable_join, waitable_set_drop, waitable_set_new, waitable_set_poll,
-        EVENT_NONE, EVENT_SUBTASK, STATUS_RETURNED,
+        EVENT_NONE, EVENT_SUBTASK, STATUS_RETURNED, subtask_drop, waitable_join, waitable_set_drop,
+        waitable_set_new, waitable_set_poll,
     },
 };
 

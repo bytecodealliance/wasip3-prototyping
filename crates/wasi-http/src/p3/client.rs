@@ -55,15 +55,13 @@ pub trait Client: Clone + Send + Sync {
             Result<
                 (
                     impl Future<
-                            Output = Result<
-                                http::Response<
-                                    impl http_body::Body<Data = Bytes, Error = Self::Error>
-                                        + Send
-                                        + 'static,
-                                >,
-                                ErrorCode,
+                        Output = Result<
+                            http::Response<
+                                impl http_body::Body<Data = Bytes, Error = Self::Error> + Send + 'static,
                             >,
-                        > + Send,
+                            ErrorCode,
+                        >,
+                    > + Send,
                     impl Future<Output = Result<(), Self::Error>> + Send + 'static,
                 ),
                 ErrorCode,
@@ -177,14 +175,14 @@ pub async fn default_send_request(
     let stream = match tokio::time::timeout(connect_timeout, TcpStream::connect(&authority)).await {
         Ok(Ok(stream)) => stream,
         Ok(Err(err)) if err.kind() == std::io::ErrorKind::AddrNotAvailable => {
-            return Err(dns_error("address not available".to_string(), 0))
+            return Err(dns_error("address not available".to_string(), 0));
         }
         Ok(Err(err))
             if err
                 .to_string()
                 .starts_with("failed to lookup address information") =>
         {
-            return Err(dns_error("address not available".to_string(), 0))
+            return Err(dns_error("address not available".to_string(), 0));
         }
         Ok(Err(..)) => return Err(ErrorCode::ConnectionRefused),
         Err(..) => return Err(ErrorCode::ConnectionTimeout),

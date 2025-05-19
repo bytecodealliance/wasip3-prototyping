@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures::{
     future::{self, FutureExt},
     stream::{FuturesUnordered, TryStreamExt},
@@ -17,7 +17,7 @@ use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::transmit::bindings::exports::local::local::transmit::Control;
 use component_async_tests::util::{compose, config, test_run, test_run_with_count};
-use component_async_tests::{sleep, transmit, Ctx};
+use component_async_tests::{Ctx, sleep, transmit};
 
 use cancel::exports::local::local::cancel::Mode;
 

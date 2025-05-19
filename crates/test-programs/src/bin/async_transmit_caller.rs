@@ -14,10 +14,10 @@ use {
         local::local::transmit::{self, Control},
         wit_future, wit_stream,
     },
-    futures::{future, stream::FuturesUnordered, FutureExt, StreamExt},
+    futures::{FutureExt, StreamExt, future, stream::FuturesUnordered},
     std::{
         future::{Future, IntoFuture},
-        pin::{pin, Pin},
+        pin::{Pin, pin},
         task::Poll,
     },
     wit_bindgen_rt::async_support::{FutureWriteCancel, StreamResult},
@@ -41,10 +41,12 @@ impl Guest for Component {
         .await;
 
         // Tell peer to read from its end of the stream and assert that the result matches an expected value.
-        assert!(control_tx
-            .write_one(Control::ReadStream("a".into()))
-            .await
-            .is_none());
+        assert!(
+            control_tx
+                .write_one(Control::ReadStream("a".into()))
+                .await
+                .is_none()
+        );
         assert!(caller_stream_tx.write_one("a".into()).await.is_none());
 
         // Start writing another value, but cancel the write before telling the peer to read.
@@ -55,19 +57,23 @@ impl Guest for Component {
 
         // Tell the peer to read an expected value again, which should _not_ match the value provided in the
         // canceled write above.
-        assert!(control_tx
-            .write_one(Control::ReadStream("c".into()))
-            .await
-            .is_none());
+        assert!(
+            control_tx
+                .write_one(Control::ReadStream("c".into()))
+                .await
+                .is_none()
+        );
         assert!(caller_stream_tx.write_one("c".into()).await.is_none());
 
         // Tell the peer to do a zero-length read, do a zero-length write; assert the latter completes, then do a
         // non-zero-length write, assert that it does _not_ complete, then tell the peer to do a non-zero-length
         // read and assert that the write completes.
-        assert!(control_tx
-            .write_one(Control::ReadStreamZero)
-            .await
-            .is_none());
+        assert!(
+            control_tx
+                .write_one(Control::ReadStreamZero)
+                .await
+                .is_none()
+        );
         {
             assert_eq!(
                 caller_stream_tx.write(Vec::new()).await.0,
@@ -110,18 +116,22 @@ impl Guest for Component {
 
         // Tell the peer to read an expected value again, which should _not_ match the value provided in the
         // canceled write above.
-        assert!(control_tx
-            .write_one(Control::ReadFuture("y".into()))
-            .await
-            .is_none());
+        assert!(
+            control_tx
+                .write_one(Control::ReadFuture("y".into()))
+                .await
+                .is_none()
+        );
         caller_future_tx1.write("y".into()).await.unwrap();
 
         // Tell the peer to write a value to its end of the stream, then read from our end and assert the value
         // matches.
-        assert!(control_tx
-            .write_one(Control::WriteStream("a".into()))
-            .await
-            .is_none());
+        assert!(
+            control_tx
+                .write_one(Control::WriteStream("a".into()))
+                .await
+                .is_none()
+        );
         assert_eq!(callee_stream_rx.next().await, Some("a".into()));
 
         // Start reading a value from the stream, but cancel the read before telling the peer to write.
@@ -132,18 +142,22 @@ impl Guest for Component {
 
         // Once again, tell the peer to write a value to its end of the stream, then read from our end and assert
         // the value matches.
-        assert!(control_tx
-            .write_one(Control::WriteStream("b".into()))
-            .await
-            .is_none());
+        assert!(
+            control_tx
+                .write_one(Control::WriteStream("b".into()))
+                .await
+                .is_none()
+        );
         assert_eq!(callee_stream_rx.next().await, Some("b".into()));
 
         // Tell the peer to do a zero-length write, assert that the read does _not_ complete, then tell the peer to
         // do a non-zero-length write and assert that the read completes.
-        assert!(control_tx
-            .write_one(Control::WriteStreamZero)
-            .await
-            .is_none());
+        assert!(
+            control_tx
+                .write_one(Control::WriteStreamZero)
+                .await
+                .is_none()
+        );
         {
             let next = Box::pin(callee_stream_rx.next());
             let Err(next) = poll(next).await else {
@@ -175,10 +189,12 @@ impl Guest for Component {
 
         // Tell the peer to write a value to its end of the future, then read from our end and assert the value
         // matches.
-        assert!(control_tx
-            .write_one(Control::WriteFuture("b".into()))
-            .await
-            .is_none());
+        assert!(
+            control_tx
+                .write_one(Control::WriteFuture("b".into()))
+                .await
+                .is_none()
+        );
         assert_eq!(callee_future_rx1.into_future().await, Some("b".into()));
 
         // Start writing a value to the stream, but drop the stream without telling the peer to read.

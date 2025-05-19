@@ -5,18 +5,18 @@ use core::net::SocketAddr;
 use std::sync::Arc;
 
 use cap_net_ext::AddressFamily;
-use io_lifetimes::views::SocketlikeView;
 use io_lifetimes::AsSocketlike as _;
+use io_lifetimes::views::SocketlikeView;
 use rustix::io::Errno;
 use rustix::net::sockopt;
 use wasmtime::component::AbortOnDropHandle;
 
 use crate::p3::bindings::sockets::types::{Duration, ErrorCode, IpAddressFamily, IpSocketAddress};
+use crate::p3::sockets::SocketAddressFamily;
 use crate::p3::sockets::util::{
     get_unicast_hop_limit, is_valid_address_family, is_valid_unicast_address, receive_buffer_size,
     send_buffer_size, set_receive_buffer_size, set_send_buffer_size, set_unicast_hop_limit,
 };
-use crate::p3::sockets::SocketAddressFamily;
 use crate::runtime::with_ambient_tokio_runtime;
 
 /// Value taken from rust std library.

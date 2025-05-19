@@ -167,13 +167,13 @@ pub mod __internal {
     #[cfg(feature = "component-model-async")]
     pub use core::ops::DerefMut;
     #[cfg(feature = "component-model-async")]
-    pub use core::pin::{pin, Pin};
+    pub use core::pin::{Pin, pin};
     #[cfg(feature = "component-model-async")]
     pub use core::ptr::NonNull;
     #[cfg(feature = "component-model-async")]
     pub use core::task::{Context, Poll};
     #[cfg(feature = "component-model-async")]
-    pub use futures::future::{poll_fn, FutureExt};
+    pub use futures::future::{FutureExt, poll_fn};
     #[cfg(feature = "component-model-async")]
     pub use std::sync::{Arc, Mutex};
     #[cfg(feature = "async")]
@@ -703,12 +703,12 @@ pub mod bindgen_examples {}
 pub(crate) mod concurrent {
     use {
         crate::{
+            AsContextMut, StoreContextMut, VMStore,
             component::{
-                func::{ComponentType, LiftContext, LowerContext},
                 Instance, Val,
+                func::{ComponentType, LiftContext, LowerContext},
             },
             vm::component::ComponentInstance,
-            AsContextMut, StoreContextMut, VMStore,
         },
         alloc::{sync::Arc, task::Wake},
         anyhow::Result,

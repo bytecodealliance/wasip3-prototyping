@@ -5,8 +5,8 @@ use http_body_util::{BodyExt as _, Collected, Empty};
 use wasmtime::component::{Component, Linker};
 use wasmtime::{AsContextMut as _, Store};
 use wasmtime_wasi::p3::cli::WasiCliCtx;
-use wasmtime_wasi_http::p3::bindings::http::types::ErrorCode;
 use wasmtime_wasi_http::p3::bindings::Proxy;
+use wasmtime_wasi_http::p3::bindings::http::types::ErrorCode;
 use wasmtime_wasi_http::p3::{Response, WasiHttpCtx};
 
 use super::{Ctx, TestClient};

@@ -4,10 +4,10 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use bytes::{Bytes, BytesMut};
-use component_async_tests::{sleep, Ctx};
+use component_async_tests::{Ctx, sleep};
 use futures::{
-    stream::{FuturesUnordered, TryStreamExt},
     FutureExt,
+    stream::{FuturesUnordered, TryStreamExt},
 };
 use tokio::fs;
 use wasi_http_draft::wasi::http::types::{ErrorCode, Method, Scheme};
@@ -95,8 +95,8 @@ pub async fn async_http_middleware_with_chain() -> Result<()> {
 async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
     use {
         flate2::{
-            write::{DeflateDecoder, DeflateEncoder},
             Compression,
+            write::{DeflateDecoder, DeflateEncoder},
         },
         std::io::Write,
     };
@@ -220,22 +220,26 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
 
                 assert!(response.status_code == 200);
 
-                assert!(headers.iter().all(|(k0, v0)| response
-                    .headers
-                    .0
-                    .iter()
-                    .any(|(k1, v1)| k0 == k1 && v0 == v1)));
+                assert!(headers.iter().all(|(k0, v0)| {
+                    response
+                        .headers
+                        .0
+                        .iter()
+                        .any(|(k1, v1)| k0 == k1 && v0 == v1)
+                }));
 
                 if use_compression {
                     assert!(response.headers.0.iter().any(|(k, v)| matches!(
                         (k.as_str(), v.as_slice()),
                         ("content-encoding", b"deflate")
                     )));
-                    assert!(response
-                        .headers
-                        .0
-                        .iter()
-                        .all(|(k, _)| k.as_str() != "content-length"));
+                    assert!(
+                        response
+                            .headers
+                            .0
+                            .iter()
+                            .all(|(k, _)| k.as_str() != "content-length")
+                    );
                 }
 
                 response_trailers = response.body.trailers.take();
@@ -285,10 +289,12 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
                 let response_trailers =
                     IoView::table(store.data_mut()).delete(response_trailers)?;
 
-                assert!(trailers.iter().all(|(k0, v0)| response_trailers
-                    .0
-                    .iter()
-                    .any(|(k1, v1)| k0 == k1 && v0 == v1)));
+                assert!(trailers.iter().all(|(k0, v0)| {
+                    response_trailers
+                        .0
+                        .iter()
+                        .any(|(k1, v1)| k0 == k1 && v0 == v1)
+                }));
 
                 received_trailers = true;
             }
