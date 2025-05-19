@@ -4077,7 +4077,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ee99da9c5ba11bd675621338ef6fa52296b76b83305e9b6e5c77d4c286d6d49"
 
 [[package]]
-<<<<<<< HEAD
 name = "wasm-compose"
 version = "0.230.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4099,20 +4098,6 @@ dependencies = [
 ]
 
 [[package]]
-||||||| 40315bd2c
-name = "wasm-encoder"
-version = "0.227.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80bb72f02e7fbf07183443b27b0f3d4144abf8c114189f2e088ed95b696a7822"
-dependencies = [
- "leb128fmt",
- "wasmparser 0.227.1",
-]
-
-[[package]]
-name = "wasm-encoder"
-=======
->>>>>>> upstream/main
 name = "wasm-encoder"
 version = "0.230.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
