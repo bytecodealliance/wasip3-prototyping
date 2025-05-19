@@ -49,7 +49,7 @@ async fn receive_trailers(
     }
 }
 
-async fn handle_guest_trailers<T: ResourceView>(
+async fn handle_guest_trailers<T: ResourceView + 'static>(
     rx: OutgoingTrailerFuture,
     tx: oneshot::Sender<Option<Result<WithChildren<HeaderMap>, ErrorCode>>>,
 ) -> ResponsePromiseClosure<T> {

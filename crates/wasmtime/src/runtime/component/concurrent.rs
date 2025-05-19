@@ -218,11 +218,12 @@ const START_FLAG_ASYNC_CALLEE: u32 = fact::START_FLAG_ASYNC_CALLEE as u32;
 /// instance to which the current host task belongs.
 ///
 /// See [`Accessor::with`] for details.
-pub struct Access<'a, T, D: HasData = HasSelf<T>>(&'a mut Accessor<T, D>);
+pub struct Access<'a, T: 'static, D: HasData = HasSelf<T>>(&'a mut Accessor<T, D>);
 
 impl<'a, T, D> Access<'a, T, D>
 where
     D: HasData,
+    T: 'static,
 {
     /// Get mutable access to the store data.
     pub fn data_mut(&mut self) -> &mut T {
@@ -254,6 +255,7 @@ where
 impl<'a, T, D> AsContext for Access<'a, T, D>
 where
     D: HasData,
+    T: 'static,
 {
     type Data = T;
 
@@ -266,6 +268,7 @@ where
 impl<'a, T, D> AsContextMut for Access<'a, T, D>
 where
     D: HasData,
+    T: 'static,
 {
     fn as_context_mut(&mut self) -> StoreContextMut<T> {
         // SAFETY: Per the contract documented for `Accessor::new`, this will
@@ -286,7 +289,7 @@ where
 ///
 /// This allows multiple host task futures to execute concurrently and access
 /// the store between (but not across) `await` points.
-pub struct Accessor<T, D = HasSelf<T>>
+pub struct Accessor<T: 'static, D = HasSelf<T>>
 where
     D: HasData,
 {
@@ -3237,11 +3240,15 @@ impl Instance {
     /// the future presumably does not depend on any guest task making further
     /// progress (since no futher progress can be made) and thus is not an
     /// appropriate future to poll using this function.
-    pub async fn run<U: Send, V: Send + Sync + 'static>(
+    pub async fn run<F>(
         &self,
-        mut store: impl AsContextMut<Data = U>,
-        fut: impl Future<Output = V> + Send,
-    ) -> Result<V> {
+        mut store: impl AsContextMut<Data: Send>,
+        fut: F,
+    ) -> Result<F::Output>
+    where
+        F: Future + Send,
+        F::Output: Send + Sync + 'static,
+    {
         check_recursive_run();
         store
             .as_context_mut()

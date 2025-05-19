@@ -630,8 +630,8 @@ impl<T> HostFuture<T> {
     }
 
     /// Attempt to convert the specified [`Val`] to a `FutureReader`.
-    pub fn from_val<U, S: AsContextMut<Data = U>>(
-        mut store: S,
+    pub fn from_val(
+        mut store: impl AsContextMut<Data: Send>,
         instance: Instance,
         value: &Val,
     ) -> Result<Self> {
@@ -1031,8 +1031,8 @@ impl<T> HostStream<T> {
     }
 
     /// Attempt to convert the specified [`Val`] to a `HostStream`.
-    pub fn from_val<U, S: AsContextMut<Data = U>>(
-        mut store: S,
+    pub fn from_val(
+        mut store: impl AsContextMut<Data: Send>,
         instance: Instance,
         value: &Val,
     ) -> Result<Self> {

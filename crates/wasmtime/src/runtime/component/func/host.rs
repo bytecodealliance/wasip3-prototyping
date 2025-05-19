@@ -38,7 +38,6 @@ impl core::fmt::Debug for HostFunc {
 impl HostFunc {
     fn from_canonical<T: 'static, F, P, R>(func: F) -> Arc<HostFunc>
     where
-<<<<<<< HEAD
         F: for<'a> Fn(
                 StoreContextMut<'a, T>,
                 &mut ComponentInstance,
@@ -49,16 +48,7 @@ impl HostFunc {
             + 'static,
         P: ComponentNamedList + Lift + Send + Sync + 'static,
         R: ComponentNamedList + Lower + Send + Sync + 'static,
-||||||| 40315bd2c
-        F: Fn(StoreContextMut<T>, P) -> Result<R> + Send + Sync + 'static,
-        P: ComponentNamedList + Lift + 'static,
-        R: ComponentNamedList + Lower + 'static,
-=======
-        F: Fn(StoreContextMut<T>, P) -> Result<R> + Send + Sync + 'static,
-        P: ComponentNamedList + Lift + 'static,
-        R: ComponentNamedList + Lower + 'static,
         T: 'static,
->>>>>>> upstream/main
     {
         let entrypoint = Self::entrypoint::<T, F, P, R>;
         Arc::new(HostFunc {
@@ -114,7 +104,6 @@ impl HostFunc {
         storage_len: usize,
     ) -> bool
     where
-<<<<<<< HEAD
         F: for<'a> Fn(
                 StoreContextMut<'a, T>,
                 &mut ComponentInstance,
@@ -125,16 +114,7 @@ impl HostFunc {
             + 'static,
         P: ComponentNamedList + Lift + Send + Sync + 'static,
         R: ComponentNamedList + Lower + Send + Sync + 'static,
-||||||| 40315bd2c
-        F: Fn(StoreContextMut<T>, P) -> Result<R>,
-        P: ComponentNamedList + Lift + 'static,
-        R: ComponentNamedList + Lower + 'static,
-=======
-        F: Fn(StoreContextMut<T>, P) -> Result<R>,
-        P: ComponentNamedList + Lift + 'static,
-        R: ComponentNamedList + Lower + 'static,
         T: 'static,
->>>>>>> upstream/main
     {
         let data = SendSyncPtr::new(NonNull::new(data.as_ptr() as *mut F).unwrap());
         unsafe {
@@ -159,7 +139,6 @@ impl HostFunc {
 
     fn new_dynamic_canonical<T: 'static, F>(func: F) -> Arc<HostFunc>
     where
-<<<<<<< HEAD
         F: for<'a> Fn(
                 StoreContextMut<'a, T>,
                 &mut ComponentInstance,
@@ -170,12 +149,7 @@ impl HostFunc {
             + Send
             + Sync
             + 'static,
-||||||| 40315bd2c
-        F: Fn(StoreContextMut<'_, T>, &[Val], &mut [Val]) -> Result<()> + Send + Sync + 'static,
-=======
-        F: Fn(StoreContextMut<'_, T>, &[Val], &mut [Val]) -> Result<()> + Send + Sync + 'static,
         T: 'static,
->>>>>>> upstream/main
     {
         Arc::new(HostFunc {
             entrypoint: dynamic_entrypoint::<T, F>,
@@ -496,9 +470,11 @@ pub(crate) fn validate_inbounds<T: ComponentType>(memory: &[u8], ptr: &ValRaw) -
 
 unsafe fn call_host_and_handle_result<T>(
     cx: NonNull<VMOpaqueContext>,
-<<<<<<< HEAD
     func: impl FnOnce(StoreContextMut<T>, &mut ComponentInstance, &Arc<ComponentTypes>) -> Result<()>,
-) -> bool {
+) -> bool
+where
+    T: 'static,
+{
     ComponentInstance::from_vmctx(VMComponentContext::from_opaque(cx), |store, instance| {
         crate::runtime::vm::catch_unwind_and_record_trap(|| {
             let mut store = StoreContextMut::<T>(&mut *(store as *mut dyn VMStore).cast());
@@ -508,50 +484,10 @@ unsafe fn call_host_and_handle_result<T>(
             store.0.call_hook(CallHook::ReturningFromHost)?;
             res
         })
-||||||| 40315bd2c
-    func: impl FnOnce(
-        *mut ComponentInstance,
-        &Arc<ComponentTypes>,
-        StoreContextMut<'_, T>,
-    ) -> Result<()>,
-) -> bool {
-    let cx = VMComponentContext::from_opaque(cx);
-    let instance = cx.as_ref().instance();
-    let types = (*instance).component_types();
-    let raw_store = (*instance).store();
-    let mut store = StoreContextMut(&mut *raw_store.cast());
-
-    crate::runtime::vm::catch_unwind_and_record_trap(|| {
-        store.0.call_hook(CallHook::CallingHost)?;
-        let res = func(instance, types, store.as_context_mut());
-        store.0.call_hook(CallHook::ReturningFromHost)?;
-        res
-=======
-    func: impl FnOnce(
-        *mut ComponentInstance,
-        &Arc<ComponentTypes>,
-        StoreContextMut<'_, T>,
-    ) -> Result<()>,
-) -> bool
-where
-    T: 'static,
-{
-    let cx = VMComponentContext::from_opaque(cx);
-    let instance = cx.as_ref().instance();
-    let types = (*instance).component_types();
-    let raw_store = (*instance).store();
-    let mut store = StoreContextMut(&mut *raw_store.cast());
-
-    crate::runtime::vm::catch_unwind_and_record_trap(|| {
-        store.0.call_hook(CallHook::CallingHost)?;
-        let res = func(instance, types, store.as_context_mut());
-        store.0.call_hook(CallHook::ReturningFromHost)?;
-        res
->>>>>>> upstream/main
     })
 }
 
-unsafe fn call_host_dynamic<T: 'static, F>(
+unsafe fn call_host_dynamic<T, F>(
     mut store: StoreContextMut<T>,
     instance: &mut ComponentInstance,
     types: &Arc<ComponentTypes>,
@@ -566,7 +502,6 @@ unsafe fn call_host_dynamic<T: 'static, F>(
     closure: F,
 ) -> Result<()>
 where
-<<<<<<< HEAD
     F: for<'a> Fn(
             StoreContextMut<'a, T>,
             &mut ComponentInstance,
@@ -576,12 +511,7 @@ where
         + Send
         + Sync
         + 'static,
-||||||| 40315bd2c
-    F: FnOnce(StoreContextMut<'_, T>, &[Val], &mut [Val]) -> Result<()>,
-=======
-    F: FnOnce(StoreContextMut<'_, T>, &[Val], &mut [Val]) -> Result<()>,
     T: 'static,
->>>>>>> upstream/main
 {
     let options = Options::new(
         store.0.store_opaque().id(),
@@ -794,7 +724,6 @@ extern "C" fn dynamic_entrypoint<T: 'static, F>(
     storage_len: usize,
 ) -> bool
 where
-<<<<<<< HEAD
     F: for<'a> Fn(
             StoreContextMut<'a, T>,
             &mut ComponentInstance,
@@ -804,12 +733,7 @@ where
         + Send
         + Sync
         + 'static,
-||||||| 40315bd2c
-    F: Fn(StoreContextMut<'_, T>, &[Val], &mut [Val]) -> Result<()> + Send + Sync + 'static,
-=======
-    F: Fn(StoreContextMut<'_, T>, &[Val], &mut [Val]) -> Result<()> + Send + Sync + 'static,
     T: 'static,
->>>>>>> upstream/main
 {
     let data = SendSyncPtr::new(NonNull::new(data.as_ptr() as *mut F).unwrap());
     unsafe {

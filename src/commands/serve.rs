@@ -14,6 +14,7 @@ use tokio::sync::Notify;
 use wasmtime::component::{Component, Linker};
 use wasmtime::{AsContextMut, Engine, Store, StoreLimits, UpdateDeadline};
 use wasmtime_wasi::p2::{IoView, StreamError, StreamResult, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi_http::bindings::http::types::{ErrorCode, Scheme};
 use wasmtime_wasi_http::bindings::ProxyPre;
 use wasmtime_wasi_http::body::HyperOutgoingBody;
 use wasmtime_wasi_http::io::TokioIo;

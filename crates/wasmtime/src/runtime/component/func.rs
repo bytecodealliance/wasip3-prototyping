@@ -294,9 +294,9 @@ impl Func {
     /// Panics if this is called on a function in an asynchronous store. This
     /// only works with functions defined within a synchronous store. Also
     /// panics if `store` does not own this function.
-    pub fn call<U: Send>(
+    pub fn call(
         &self,
-        mut store: impl AsContextMut<Data = U>,
+        mut store: impl AsContextMut<Data: Send>,
         params: &[Val],
         results: &mut [Val],
     ) -> Result<()> {
@@ -432,9 +432,9 @@ impl Func {
         concurrent::prepare_call(store, lower, drop_params, lift, self, MAX_FLAT_PARAMS)
     }
 
-    fn call_impl<U: Send>(
+    fn call_impl(
         &self,
-        mut store: impl AsContextMut<Data = U>,
+        mut store: impl AsContextMut<Data: Send>,
         params: &[Val],
         results: &mut [Val],
     ) -> Result<()> {

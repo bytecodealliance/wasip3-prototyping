@@ -2,7 +2,6 @@ use anyhow::Context;
 use std::{fs, path::Path};
 
 use wasmtime::{
-    component::{bindgen, Component, HasData, Linker},
     component::{bindgen, Component, HasSelf, Linker},
     Config, Engine, Result, Store,
 };
