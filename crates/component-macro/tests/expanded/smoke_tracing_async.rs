@@ -146,14 +146,33 @@ const _: () = {
         }
         pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
+<<<<<<< HEAD
             host_getter: fn(&mut T) -> D::Data<'_>,
+||||||| 40315bd2c
+            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+=======
+            get: fn(&mut T) -> D::Data<'_>,
+>>>>>>> upstream/main
         ) -> wasmtime::Result<()>
         where
             D: wasmtime::component::HasData,
             for<'a> D::Data<'a>: imports::Host + Send,
+<<<<<<< HEAD
             T: 'static + Send,
+||||||| 40315bd2c
+            T: Send,
+            U: imports::Host + Send,
+=======
+            T: Send + 'static,
+>>>>>>> upstream/main
         {
+<<<<<<< HEAD
             imports::add_to_linker::<T, D>(linker, host_getter)?;
+||||||| 40315bd2c
+            imports::add_to_linker(linker, get)?;
+=======
+            imports::add_to_linker::<T, D>(linker, get)?;
+>>>>>>> upstream/main
             Ok(())
         }
     }
@@ -166,19 +185,47 @@ pub mod imports {
     pub trait Host: Send {
         async fn y(&mut self) -> ();
     }
+<<<<<<< HEAD
     impl<_T: Host + Send> Host for &mut _T {
         async fn y(&mut self) -> () {
             Host::y(*self).await
         }
     }
+||||||| 40315bd2c
+    pub trait GetHost<
+        T,
+        D,
+    >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
+        type Host: Host + Send;
+    }
+    impl<F, T, D, O> GetHost<T, D> for F
+    where
+        F: Fn(T) -> O + Send + Sync + Copy + 'static,
+        O: Host + Send,
+    {
+        type Host = O;
+    }
+    pub fn add_to_linker_get_host<
+        T,
+        G: for<'a> GetHost<&'a mut T, T, Host: Host + Send>,
+    >(
+=======
+>>>>>>> upstream/main
     pub fn add_to_linker<T, D>(
         linker: &mut wasmtime::component::Linker<T>,
         host_getter: fn(&mut T) -> D::Data<'_>,
     ) -> wasmtime::Result<()>
     where
         D: wasmtime::component::HasData,
+<<<<<<< HEAD
         for<'a> D::Data<'a>: Host,
         T: 'static + Send,
+||||||| 40315bd2c
+        T: Send,
+=======
+        for<'a> D::Data<'a>: Host + Send,
+        T: Send + 'static,
+>>>>>>> upstream/main
     {
         let mut inst = linker.instance("imports")?;
         inst.func_wrap_async(
@@ -206,4 +253,28 @@ pub mod imports {
         )?;
         Ok(())
     }
+<<<<<<< HEAD
+||||||| 40315bd2c
+    pub fn add_to_linker<T, U>(
+        linker: &mut wasmtime::component::Linker<T>,
+        get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+    ) -> wasmtime::Result<()>
+    where
+        U: Host + Send,
+        T: Send,
+    {
+        add_to_linker_get_host(linker, get)
+    }
+    impl<_T: Host + ?Sized + Send> Host for &mut _T {
+        async fn y(&mut self) -> () {
+            Host::y(*self).await
+        }
+    }
+=======
+    impl<_T: Host + ?Sized + Send> Host for &mut _T {
+        async fn y(&mut self) -> () {
+            Host::y(*self).await
+        }
+    }
+>>>>>>> upstream/main
 }

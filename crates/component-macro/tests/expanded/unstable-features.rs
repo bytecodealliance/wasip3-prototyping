@@ -183,7 +183,26 @@ pub struct TheWorld {}
 pub trait TheWorldImports: HostBaz {
     fn foo(&mut self) -> ();
 }
+<<<<<<< HEAD
 impl<_T: TheWorldImports> TheWorldImports for &mut _T {
+||||||| 40315bd2c
+pub trait TheWorldImportsGetHost<
+    T,
+    D,
+>: Fn(T) -> <Self as TheWorldImportsGetHost<T, D>>::Host + Send + Sync + Copy + 'static {
+    type Host: TheWorldImports;
+}
+impl<F, T, D, O> TheWorldImportsGetHost<T, D> for F
+where
+    F: Fn(T) -> O + Send + Sync + Copy + 'static,
+    O: TheWorldImports,
+{
+    type Host = O;
+}
+impl<_T: TheWorldImports + ?Sized> TheWorldImports for &mut _T {
+=======
+impl<_T: TheWorldImports + ?Sized> TheWorldImports for &mut _T {
+>>>>>>> upstream/main
     fn foo(&mut self) -> () {
         TheWorldImports::foo(*self)
     }
@@ -295,7 +314,13 @@ const _: () = {
         pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
             options: &LinkOptions,
+<<<<<<< HEAD
             host_getter: fn(&mut T) -> D::Data<'_>,
+||||||| 40315bd2c
+            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+=======
+            get: fn(&mut T) -> D::Data<'_>,
+>>>>>>> upstream/main
         ) -> wasmtime::Result<()>
         where
             D: wasmtime::component::HasData,
@@ -303,12 +328,28 @@ const _: () = {
             T: 'static,
         {
             if options.experimental_world {
+<<<<<<< HEAD
                 Self::add_to_linker_imports::<T, D>(linker, options, host_getter)?;
+||||||| 40315bd2c
+                Self::add_to_linker_imports_get_host(linker, options, get)?;
+=======
+                Self::add_to_linker_imports::<T, D>(linker, options, get)?;
+>>>>>>> upstream/main
                 if options.experimental_world_interface_import {
                     foo::foo::the_interface::add_to_linker::<
                         T,
                         D,
+<<<<<<< HEAD
                     >(linker, &options.into(), host_getter)?;
+||||||| 40315bd2c
+                    foo::foo::the_interface::add_to_linker(
+                        linker,
+                        &options.into(),
+                        get,
+                    )?;
+=======
+                    >(linker, &options.into(), get)?;
+>>>>>>> upstream/main
                 }
             }
             Ok(())
@@ -382,11 +423,32 @@ pub mod foo {
             pub trait Host: HostBar {
                 fn foo(&mut self) -> ();
             }
+<<<<<<< HEAD
             impl<_T: Host> Host for &mut _T {
                 fn foo(&mut self) -> () {
                     Host::foo(*self)
                 }
             }
+||||||| 40315bd2c
+            pub trait GetHost<
+                T,
+                D,
+            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
+                type Host: Host;
+            }
+            impl<F, T, D, O> GetHost<T, D> for F
+            where
+                F: Fn(T) -> O + Send + Sync + Copy + 'static,
+                O: Host,
+            {
+                type Host = O;
+            }
+            pub fn add_to_linker_get_host<
+                T,
+                G: for<'a> GetHost<&'a mut T, T, Host: Host>,
+            >(
+=======
+>>>>>>> upstream/main
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 options: &LinkOptions,
@@ -437,6 +499,30 @@ pub mod foo {
                 }
                 Ok(())
             }
+<<<<<<< HEAD
+||||||| 40315bd2c
+            pub fn add_to_linker<T, U>(
+                linker: &mut wasmtime::component::Linker<T>,
+                options: &LinkOptions,
+                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            ) -> wasmtime::Result<()>
+            where
+                U: Host,
+            {
+                add_to_linker_get_host(linker, options, get)
+            }
+            impl<_T: Host + ?Sized> Host for &mut _T {
+                fn foo(&mut self) -> () {
+                    Host::foo(*self)
+                }
+            }
+=======
+            impl<_T: Host + ?Sized> Host for &mut _T {
+                fn foo(&mut self) -> () {
+                    Host::foo(*self)
+                }
+            }
+>>>>>>> upstream/main
         }
     }
 }

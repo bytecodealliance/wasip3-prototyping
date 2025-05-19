@@ -17,7 +17,10 @@
 ///
 /// These model what the reference manual calls "instruction operand encodings,"
 /// usually defined in a table after an instruction's opcodes.
-pub fn fmt(name: impl Into<String>, operands: impl IntoIterator<Item = impl Into<Operand>>) -> Format {
+pub fn fmt(
+    name: impl Into<String>,
+    operands: impl IntoIterator<Item = impl Into<Operand>>,
+) -> Format {
     Format {
         name: name.into(),
         operands: operands.into_iter().map(Into::into).collect(),
@@ -47,6 +50,17 @@ pub fn r(op: impl Into<Operand>) -> Operand {
     let op = op.into();
     assert!(op.mutability.is_read());
     op
+}
+
+/// An abbreviated constructor for a "write" operand.
+#[must_use]
+pub fn w(location: Location) -> Operand {
+    Operand {
+        location,
+        mutability: Mutability::Write,
+        extension: Extension::None,
+        align: false,
+    }
 }
 
 /// An abbreviated constructor for a memory operand that requires alignment.
@@ -117,7 +131,7 @@ pub struct Format {
     /// identifies an instruction. The reference manual uses this name in the
     /// "Instruction Operand Encoding" table.
     pub name: String,
-    /// These operands should match the "Instruction" column ing the reference
+    /// These operands should match the "Instruction" column in the reference
     /// manual.
     pub operands: Vec<Operand>,
 }
@@ -131,7 +145,13 @@ impl Format {
     /// Return the location of the operand that uses memory, if any; return
     /// `None` otherwise.
     pub fn uses_memory(&self) -> Option<Location> {
-        debug_assert!(self.locations().copied().filter(Location::uses_memory).count() <= 1);
+        debug_assert!(
+            self.locations()
+                .copied()
+                .filter(Location::uses_memory)
+                .count()
+                <= 1
+        );
         self.locations().copied().find(Location::uses_memory)
     }
 
@@ -188,7 +208,12 @@ pub struct Operand {
 
 impl core::fmt::Display for Operand {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        let Self { location, mutability, extension, align } = self;
+        let Self {
+            location,
+            mutability,
+            extension,
+            align,
+        } = self;
         write!(f, "{location}")?;
         let mut flags = vec![];
         if !matches!(mutability, Mutability::Read) {
@@ -212,7 +237,12 @@ impl From<Location> for Operand {
         let mutability = Mutability::default();
         let extension = Extension::default();
         let align = false;
-        Self { location, mutability, extension, align }
+        Self {
+            location,
+            mutability,
+            extension,
+            align,
+        }
     }
 }
 
@@ -307,8 +337,8 @@ impl Location {
         use Location::*;
         match self {
             imm8 | imm16 | imm32 => false,
-            al | ax | eax | rax | cl | r8 | r16 | r32 | r64 | rm8 | rm16 | rm32 | rm64 | xmm | xmm_m32 | xmm_m64
-            | xmm_m128 | m8 | m16 | m32 | m64 => true,
+            al | ax | eax | rax | cl | r8 | r16 | r32 | r64 | rm8 | rm16 | rm32 | rm64 | xmm
+            | xmm_m32 | xmm_m64 | xmm_m128 | m8 | m16 | m32 | m64 => true,
         }
     }
 
@@ -334,7 +364,9 @@ impl Location {
         use Location::*;
         match self {
             imm8 | imm16 | imm32 | m8 | m16 | m32 | m64 => None,
-            al | ax | eax | rax | cl | r8 | r16 | r32 | r64 | rm8 | rm16 | rm32 | rm64 => Some(RegClass::Gpr),
+            al | ax | eax | rax | cl | r8 | r16 | r32 | r64 | rm8 | rm16 | rm32 | rm64 => {
+                Some(RegClass::Gpr)
+            }
             xmm | xmm_m32 | xmm_m64 | xmm_m128 => Some(RegClass::Xmm),
         }
     }
@@ -402,6 +434,7 @@ pub enum OperandKind {
 pub enum Mutability {
     Read,
     ReadWrite,
+    Write,
 }
 
 impl Mutability {
@@ -411,6 +444,7 @@ impl Mutability {
     pub fn is_read(&self) -> bool {
         match self {
             Mutability::Read | Mutability::ReadWrite => true,
+            Mutability::Write => false,
         }
     }
 
@@ -420,7 +454,7 @@ impl Mutability {
     pub fn is_write(&self) -> bool {
         match self {
             Mutability::Read => false,
-            Mutability::ReadWrite => true,
+            Mutability::ReadWrite | Mutability::Write => true,
         }
     }
 }
@@ -436,6 +470,7 @@ impl core::fmt::Display for Mutability {
         match self {
             Self::Read => write!(f, "r"),
             Self::ReadWrite => write!(f, "rw"),
+            Self::Write => write!(f, "w"),
         }
     }
 }
@@ -458,7 +493,10 @@ impl Extension {
     /// Check if the extension is sign-extended.
     #[must_use]
     pub fn is_sign_extended(&self) -> bool {
-        matches!(self, Self::SignExtendQuad | Self::SignExtendLong | Self::SignExtendWord)
+        matches!(
+            self,
+            Self::SignExtendQuad | Self::SignExtendLong | Self::SignExtendWord
+        )
     }
 }
 

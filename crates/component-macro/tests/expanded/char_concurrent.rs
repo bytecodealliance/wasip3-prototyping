@@ -155,9 +155,18 @@ const _: () = {
             host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
+<<<<<<< HEAD
             D: foo::foo::chars::HostConcurrent + Send,
             for<'a> D::Data<'a>: foo::foo::chars::Host + Send,
             T: 'static + Send,
+||||||| 40315bd2c
+            T: Send + foo::foo::chars::Host<Data = T> + 'static,
+            U: Send + foo::foo::chars::Host<Data = T>,
+=======
+            T: 'static,
+            T: Send + foo::foo::chars::Host<Data = T>,
+            U: Send + foo::foo::chars::Host<Data = T>,
+>>>>>>> upstream/main
         {
             foo::foo::chars::add_to_linker::<T, D>(linker, host_getter)?;
             Ok(())
@@ -189,17 +198,50 @@ pub mod foo {
                 where
                     Self: Sized;
             }
+<<<<<<< HEAD
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send {}
             impl<_T: Host + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
+||||||| 40315bd2c
+            pub trait GetHost<
+                T,
+                D,
+            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
+                type Host: Host<Data = D> + Send;
+            }
+            impl<F, T, D, O> GetHost<T, D> for F
+            where
+                F: Fn(T) -> O + Send + Sync + Copy + 'static,
+                O: Host<Data = D> + Send,
+            {
+                type Host = O;
+            }
+            pub fn add_to_linker_get_host<
+                T,
+                G: for<'a> GetHost<&'a mut T, T, Host: Host<Data = T> + Send>,
+            >(
+=======
+            pub fn add_to_linker_get_host<T, G>(
+>>>>>>> upstream/main
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
+<<<<<<< HEAD
                 D: HostConcurrent,
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
+||||||| 40315bd2c
+                T: Send + 'static,
+=======
+                T: 'static,
+                G: for<'a> wasmtime::component::GetHost<
+                    &'a mut T,
+                    Host: Host<Data = T> + Send,
+                >,
+                T: Send + 'static,
+>>>>>>> upstream/main
             {
                 let mut inst = linker.instance("foo:foo/chars")?;
                 inst.func_wrap_concurrent(
@@ -228,6 +270,91 @@ pub mod foo {
                 )?;
                 Ok(())
             }
+<<<<<<< HEAD
+||||||| 40315bd2c
+            pub fn add_to_linker<T, U>(
+                linker: &mut wasmtime::component::Linker<T>,
+                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            ) -> wasmtime::Result<()>
+            where
+                U: Host<Data = T> + Send,
+                T: Send + 'static,
+            {
+                add_to_linker_get_host(linker, get)
+            }
+            impl<_T: Host> Host for &mut _T {
+                type Data = _T::Data;
+                /// A function that accepts a character
+                fn take_char(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    x: char,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::take_char(store, x)
+                }
+                /// A function that returns a character
+                fn return_char(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> char + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::return_char(store)
+                }
+            }
+=======
+            pub fn add_to_linker<T, U>(
+                linker: &mut wasmtime::component::Linker<T>,
+                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            ) -> wasmtime::Result<()>
+            where
+                T: 'static,
+                U: Host<Data = T> + Send,
+                T: Send + 'static,
+            {
+                add_to_linker_get_host(linker, get)
+            }
+            impl<_T: Host> Host for &mut _T {
+                type Data = _T::Data;
+                /// A function that accepts a character
+                fn take_char(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    x: char,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::take_char(store, x)
+                }
+                /// A function that returns a character
+                fn return_char(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> char + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::return_char(store)
+                }
+            }
+>>>>>>> upstream/main
         }
     }
 }

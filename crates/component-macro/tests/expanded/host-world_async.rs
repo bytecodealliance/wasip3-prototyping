@@ -95,7 +95,26 @@ pub struct Host_ {}
 pub trait Host_Imports: Send {
     async fn foo(&mut self) -> ();
 }
+<<<<<<< HEAD
 impl<_T: Host_Imports + Send> Host_Imports for &mut _T {
+||||||| 40315bd2c
+pub trait Host_ImportsGetHost<
+    T,
+    D,
+>: Fn(T) -> <Self as Host_ImportsGetHost<T, D>>::Host + Send + Sync + Copy + 'static {
+    type Host: Host_Imports;
+}
+impl<F, T, D, O> Host_ImportsGetHost<T, D> for F
+where
+    F: Fn(T) -> O + Send + Sync + Copy + 'static,
+    O: Host_Imports,
+{
+    type Host = O;
+}
+impl<_T: Host_Imports + ?Sized + Send> Host_Imports for &mut _T {
+=======
+impl<_T: Host_Imports + ?Sized + Send> Host_Imports for &mut _T {
+>>>>>>> upstream/main
     async fn foo(&mut self) -> () {
         Host_Imports::foo(*self).await
     }
@@ -161,7 +180,13 @@ const _: () = {
         where
             D: wasmtime::component::HasData,
             for<'a> D::Data<'a>: Host_Imports,
+<<<<<<< HEAD
             T: 'static + Send,
+||||||| 40315bd2c
+            T: Send,
+=======
+            T: Send + 'static,
+>>>>>>> upstream/main
         {
             let mut linker = linker.root();
             linker
@@ -179,14 +204,33 @@ const _: () = {
         }
         pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
+<<<<<<< HEAD
             host_getter: fn(&mut T) -> D::Data<'_>,
+||||||| 40315bd2c
+            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+=======
+            get: fn(&mut T) -> D::Data<'_>,
+>>>>>>> upstream/main
         ) -> wasmtime::Result<()>
         where
             D: wasmtime::component::HasData,
             for<'a> D::Data<'a>: Host_Imports + Send,
+<<<<<<< HEAD
             T: 'static + Send,
+||||||| 40315bd2c
+            T: Send,
+            U: Host_Imports + Send,
+=======
+            T: Send + 'static,
+>>>>>>> upstream/main
         {
+<<<<<<< HEAD
             Self::add_to_linker_imports::<T, D>(linker, host_getter)?;
+||||||| 40315bd2c
+            Self::add_to_linker_imports_get_host(linker, get)?;
+=======
+            Self::add_to_linker_imports::<T, D>(linker, get)?;
+>>>>>>> upstream/main
             Ok(())
         }
     }

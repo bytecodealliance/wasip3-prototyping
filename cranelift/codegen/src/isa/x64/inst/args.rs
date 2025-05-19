@@ -1,13 +1,13 @@
 //! Instruction operand sub-components (aka "parts"): definitions and printing.
 
 use super::regs::{self};
+use crate::ir::MemFlags;
 use crate::ir::condcodes::{FloatCC, IntCC};
 use crate::ir::types::*;
-use crate::ir::MemFlags;
-use crate::isa::x64::inst::regs::pretty_print_reg;
 use crate::isa::x64::inst::Inst;
+use crate::isa::x64::inst::regs::pretty_print_reg;
 use crate::machinst::*;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use std::fmt;
 use std::string::String;
 
@@ -949,20 +949,6 @@ pub enum SseOpcode {
     Cmppd,
     Cmpss,
     Cmpsd,
-    Cvtdq2ps,
-    Cvtdq2pd,
-    Cvtpd2ps,
-    Cvtps2pd,
-    Cvtsd2ss,
-    Cvtsd2si,
-    Cvtsi2ss,
-    Cvtsi2sd,
-    Cvtss2si,
-    Cvtss2sd,
-    Cvttpd2dq,
-    Cvttps2dq,
-    Cvttss2si,
-    Cvttsd2si,
     Divps,
     Divpd,
     Divss,
@@ -1001,8 +987,6 @@ pub enum SseOpcode {
     Packusdw,
     Packuswb,
     Palignr,
-    Pand,
-    Pandn,
     Pavgb,
     Pavgw,
     Pblendvb,
@@ -1055,31 +1039,13 @@ pub enum SseOpcode {
     Pmulld,
     Pmullw,
     Pmuludq,
-    Por,
     Pshufb,
     Pshufd,
-    Psllw,
-    Pslld,
-    Psllq,
-    Psraw,
-    Psrad,
-    Psrlw,
-    Psrld,
-    Psrlq,
-    Psubb,
-    Psubd,
-    Psubq,
-    Psubw,
-    Psubsb,
-    Psubsw,
-    Psubusb,
-    Psubusw,
     Ptest,
     Punpckhbw,
     Punpckhwd,
     Punpcklbw,
     Punpcklwd,
-    Pxor,
     Rcpss,
     Roundps,
     Roundpd,
@@ -1096,8 +1062,6 @@ pub enum SseOpcode {
     Unpcklps,
     Unpcklpd,
     Unpckhps,
-    Phaddw,
-    Phaddd,
     Punpckhdq,
     Punpckldq,
     Punpckhqdq,
@@ -1116,9 +1080,6 @@ impl SseOpcode {
             SseOpcode::Comiss
             | SseOpcode::Cmpps
             | SseOpcode::Cmpss
-            | SseOpcode::Cvtsi2ss
-            | SseOpcode::Cvtss2si
-            | SseOpcode::Cvttss2si
             | SseOpcode::Divps
             | SseOpcode::Divss
             | SseOpcode::Maxps
@@ -1144,17 +1105,6 @@ impl SseOpcode {
             SseOpcode::Cmppd
             | SseOpcode::Cmpsd
             | SseOpcode::Comisd
-            | SseOpcode::Cvtdq2ps
-            | SseOpcode::Cvtdq2pd
-            | SseOpcode::Cvtpd2ps
-            | SseOpcode::Cvtps2pd
-            | SseOpcode::Cvtsd2ss
-            | SseOpcode::Cvtsd2si
-            | SseOpcode::Cvtsi2sd
-            | SseOpcode::Cvtss2sd
-            | SseOpcode::Cvttpd2dq
-            | SseOpcode::Cvttps2dq
-            | SseOpcode::Cvttsd2si
             | SseOpcode::Divpd
             | SseOpcode::Divsd
             | SseOpcode::Maxpd
@@ -1174,8 +1124,6 @@ impl SseOpcode {
             | SseOpcode::Packssdw
             | SseOpcode::Packsswb
             | SseOpcode::Packuswb
-            | SseOpcode::Pand
-            | SseOpcode::Pandn
             | SseOpcode::Pavgb
             | SseOpcode::Pavgw
             | SseOpcode::Pcmpeqb
@@ -1196,29 +1144,11 @@ impl SseOpcode {
             | SseOpcode::Pmulhuw
             | SseOpcode::Pmullw
             | SseOpcode::Pmuludq
-            | SseOpcode::Por
             | SseOpcode::Pshufd
-            | SseOpcode::Psllw
-            | SseOpcode::Pslld
-            | SseOpcode::Psllq
-            | SseOpcode::Psraw
-            | SseOpcode::Psrad
-            | SseOpcode::Psrlw
-            | SseOpcode::Psrld
-            | SseOpcode::Psrlq
-            | SseOpcode::Psubb
-            | SseOpcode::Psubd
-            | SseOpcode::Psubq
-            | SseOpcode::Psubw
-            | SseOpcode::Psubsb
-            | SseOpcode::Psubsw
-            | SseOpcode::Psubusb
-            | SseOpcode::Psubusw
             | SseOpcode::Punpckhbw
             | SseOpcode::Punpckhwd
             | SseOpcode::Punpcklbw
             | SseOpcode::Punpcklwd
-            | SseOpcode::Pxor
             | SseOpcode::Sqrtpd
             | SseOpcode::Sqrtsd
             | SseOpcode::Ucomisd
@@ -1236,8 +1166,6 @@ impl SseOpcode {
             | SseOpcode::Palignr
             | SseOpcode::Pmulhrsw
             | SseOpcode::Pshufb
-            | SseOpcode::Phaddw
-            | SseOpcode::Phaddd
             | SseOpcode::Pmaddubsw
             | SseOpcode::Movddup => SSSE3,
 
@@ -1325,20 +1253,6 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Cmpsd => "cmpsd",
             SseOpcode::Comiss => "comiss",
             SseOpcode::Comisd => "comisd",
-            SseOpcode::Cvtdq2ps => "cvtdq2ps",
-            SseOpcode::Cvtdq2pd => "cvtdq2pd",
-            SseOpcode::Cvtpd2ps => "cvtpd2ps",
-            SseOpcode::Cvtps2pd => "cvtps2pd",
-            SseOpcode::Cvtsd2ss => "cvtsd2ss",
-            SseOpcode::Cvtsd2si => "cvtsd2si",
-            SseOpcode::Cvtsi2ss => "cvtsi2ss",
-            SseOpcode::Cvtsi2sd => "cvtsi2sd",
-            SseOpcode::Cvtss2si => "cvtss2si",
-            SseOpcode::Cvtss2sd => "cvtss2sd",
-            SseOpcode::Cvttpd2dq => "cvttpd2dq",
-            SseOpcode::Cvttps2dq => "cvttps2dq",
-            SseOpcode::Cvttss2si => "cvttss2si",
-            SseOpcode::Cvttsd2si => "cvttsd2si",
             SseOpcode::Divps => "divps",
             SseOpcode::Divpd => "divpd",
             SseOpcode::Divss => "divss",
@@ -1377,8 +1291,6 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Packusdw => "packusdw",
             SseOpcode::Packuswb => "packuswb",
             SseOpcode::Palignr => "palignr",
-            SseOpcode::Pand => "pand",
-            SseOpcode::Pandn => "pandn",
             SseOpcode::Pavgb => "pavgb",
             SseOpcode::Pavgw => "pavgw",
             SseOpcode::Pblendvb => "pblendvb",
@@ -1431,31 +1343,13 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Pmulld => "pmulld",
             SseOpcode::Pmullw => "pmullw",
             SseOpcode::Pmuludq => "pmuludq",
-            SseOpcode::Por => "por",
             SseOpcode::Pshufb => "pshufb",
             SseOpcode::Pshufd => "pshufd",
-            SseOpcode::Psllw => "psllw",
-            SseOpcode::Pslld => "pslld",
-            SseOpcode::Psllq => "psllq",
-            SseOpcode::Psraw => "psraw",
-            SseOpcode::Psrad => "psrad",
-            SseOpcode::Psrlw => "psrlw",
-            SseOpcode::Psrld => "psrld",
-            SseOpcode::Psrlq => "psrlq",
-            SseOpcode::Psubb => "psubb",
-            SseOpcode::Psubd => "psubd",
-            SseOpcode::Psubq => "psubq",
-            SseOpcode::Psubw => "psubw",
-            SseOpcode::Psubsb => "psubsb",
-            SseOpcode::Psubsw => "psubsw",
-            SseOpcode::Psubusb => "psubusb",
-            SseOpcode::Psubusw => "psubusw",
             SseOpcode::Ptest => "ptest",
             SseOpcode::Punpckhbw => "punpckhbw",
             SseOpcode::Punpckhwd => "punpckhwd",
             SseOpcode::Punpcklbw => "punpcklbw",
             SseOpcode::Punpcklwd => "punpcklwd",
-            SseOpcode::Pxor => "pxor",
             SseOpcode::Rcpss => "rcpss",
             SseOpcode::Roundps => "roundps",
             SseOpcode::Roundpd => "roundpd",
@@ -1471,8 +1365,6 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Ucomisd => "ucomisd",
             SseOpcode::Unpcklps => "unpcklps",
             SseOpcode::Unpckhps => "unpckhps",
-            SseOpcode::Phaddw => "phaddw",
-            SseOpcode::Phaddd => "phaddd",
             SseOpcode::Punpckldq => "punpckldq",
             SseOpcode::Punpckhdq => "punpckhdq",
             SseOpcode::Punpcklqdq => "punpcklqdq",

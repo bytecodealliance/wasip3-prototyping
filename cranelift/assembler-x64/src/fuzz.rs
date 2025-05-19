@@ -8,7 +8,7 @@ use crate::{
     AmodeOffset, AmodeOffsetPlusKnownOffset, AsReg, Fixed, Gpr, Inst, NonRspGpr, Registers, Xmm,
 };
 use arbitrary::{Arbitrary, Result, Unstructured};
-use capstone::{arch::x86, arch::BuildsCapstone, arch::BuildsCapstoneSyntax, Capstone};
+use capstone::{Capstone, arch::BuildsCapstone, arch::BuildsCapstoneSyntax, arch::x86};
 
 /// Take a random assembly instruction and check its encoding and
 /// pretty-printing against a known-good disassembler.
@@ -175,8 +175,10 @@ pub struct FuzzRegs;
 impl Registers for FuzzRegs {
     type ReadGpr = FuzzReg;
     type ReadWriteGpr = FuzzReg;
+    type WriteGpr = FuzzReg;
     type ReadXmm = FuzzReg;
     type ReadWriteXmm = FuzzReg;
+    type WriteXmm = FuzzReg;
 }
 
 /// A simple `u8` register type for fuzzing only.
@@ -238,11 +240,13 @@ impl<'a, R: AsReg> Arbitrary<'a> for Xmm<R> {
 /// `for<'a> Arbitrary<'a>` bound on all of the associated types.
 pub trait RegistersArbitrary:
     Registers<
-    ReadGpr: for<'a> Arbitrary<'a>,
-    ReadWriteGpr: for<'a> Arbitrary<'a>,
-    ReadXmm: for<'a> Arbitrary<'a>,
-    ReadWriteXmm: for<'a> Arbitrary<'a>,
->
+        ReadGpr: for<'a> Arbitrary<'a>,
+        ReadWriteGpr: for<'a> Arbitrary<'a>,
+        WriteGpr: for<'a> Arbitrary<'a>,
+        ReadXmm: for<'a> Arbitrary<'a>,
+        ReadWriteXmm: for<'a> Arbitrary<'a>,
+        WriteXmm: for<'a> Arbitrary<'a>,
+    >
 {
 }
 
@@ -251,8 +255,10 @@ where
     R: Registers,
     R::ReadGpr: for<'a> Arbitrary<'a>,
     R::ReadWriteGpr: for<'a> Arbitrary<'a>,
+    R::WriteGpr: for<'a> Arbitrary<'a>,
     R::ReadXmm: for<'a> Arbitrary<'a>,
     R::ReadWriteXmm: for<'a> Arbitrary<'a>,
+    R::WriteXmm: for<'a> Arbitrary<'a>,
 {
 }
 

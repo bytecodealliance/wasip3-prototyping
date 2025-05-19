@@ -195,7 +195,26 @@ pub struct TheWorld {}
 pub trait TheWorldImports: Send + HostBaz {
     async fn foo(&mut self) -> ();
 }
+<<<<<<< HEAD
 impl<_T: TheWorldImports + Send> TheWorldImports for &mut _T {
+||||||| 40315bd2c
+pub trait TheWorldImportsGetHost<
+    T,
+    D,
+>: Fn(T) -> <Self as TheWorldImportsGetHost<T, D>>::Host + Send + Sync + Copy + 'static {
+    type Host: TheWorldImports;
+}
+impl<F, T, D, O> TheWorldImportsGetHost<T, D> for F
+where
+    F: Fn(T) -> O + Send + Sync + Copy + 'static,
+    O: TheWorldImports,
+{
+    type Host = O;
+}
+impl<_T: TheWorldImports + ?Sized + Send> TheWorldImports for &mut _T {
+=======
+impl<_T: TheWorldImports + ?Sized + Send> TheWorldImports for &mut _T {
+>>>>>>> upstream/main
     async fn foo(&mut self) -> () {
         TheWorldImports::foo(*self).await
     }
@@ -262,7 +281,13 @@ const _: () = {
         where
             D: wasmtime::component::HasData,
             for<'a> D::Data<'a>: TheWorldImports,
+<<<<<<< HEAD
             T: 'static + Send,
+||||||| 40315bd2c
+            T: Send,
+=======
+            T: Send + 'static,
+>>>>>>> upstream/main
         {
             let mut linker = linker.root();
             if options.experimental_world {
@@ -317,20 +342,49 @@ const _: () = {
         pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
             options: &LinkOptions,
+<<<<<<< HEAD
             host_getter: fn(&mut T) -> D::Data<'_>,
+||||||| 40315bd2c
+            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+=======
+            get: fn(&mut T) -> D::Data<'_>,
+>>>>>>> upstream/main
         ) -> wasmtime::Result<()>
         where
             D: wasmtime::component::HasData,
             for<'a> D::Data<'a>: foo::foo::the_interface::Host + TheWorldImports + Send,
+<<<<<<< HEAD
             T: 'static + Send,
+||||||| 40315bd2c
+            T: Send,
+            U: foo::foo::the_interface::Host + TheWorldImports + Send,
+=======
+            T: Send + 'static,
+>>>>>>> upstream/main
         {
             if options.experimental_world {
+<<<<<<< HEAD
                 Self::add_to_linker_imports::<T, D>(linker, options, host_getter)?;
+||||||| 40315bd2c
+                Self::add_to_linker_imports_get_host(linker, options, get)?;
+=======
+                Self::add_to_linker_imports::<T, D>(linker, options, get)?;
+>>>>>>> upstream/main
                 if options.experimental_world_interface_import {
                     foo::foo::the_interface::add_to_linker::<
                         T,
                         D,
+<<<<<<< HEAD
                     >(linker, &options.into(), host_getter)?;
+||||||| 40315bd2c
+                    foo::foo::the_interface::add_to_linker(
+                        linker,
+                        &options.into(),
+                        get,
+                    )?;
+=======
+                    >(linker, &options.into(), get)?;
+>>>>>>> upstream/main
                 }
             }
             Ok(())
@@ -409,11 +463,32 @@ pub mod foo {
             pub trait Host: Send + HostBar {
                 async fn foo(&mut self) -> ();
             }
+<<<<<<< HEAD
             impl<_T: Host + Send> Host for &mut _T {
                 async fn foo(&mut self) -> () {
                     Host::foo(*self).await
                 }
             }
+||||||| 40315bd2c
+            pub trait GetHost<
+                T,
+                D,
+            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
+                type Host: Host + Send;
+            }
+            impl<F, T, D, O> GetHost<T, D> for F
+            where
+                F: Fn(T) -> O + Send + Sync + Copy + 'static,
+                O: Host + Send,
+            {
+                type Host = O;
+            }
+            pub fn add_to_linker_get_host<
+                T,
+                G: for<'a> GetHost<&'a mut T, T, Host: Host + Send>,
+            >(
+=======
+>>>>>>> upstream/main
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 options: &LinkOptions,
@@ -421,8 +496,15 @@ pub mod foo {
             ) -> wasmtime::Result<()>
             where
                 D: wasmtime::component::HasData,
+<<<<<<< HEAD
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
+||||||| 40315bd2c
+                T: Send,
+=======
+                for<'a> D::Data<'a>: Host + Send,
+                T: Send + 'static,
+>>>>>>> upstream/main
             {
                 if options.experimental_interface {
                     let mut inst = linker.instance("foo:foo/the-interface")?;
@@ -471,6 +553,31 @@ pub mod foo {
                 }
                 Ok(())
             }
+<<<<<<< HEAD
+||||||| 40315bd2c
+            pub fn add_to_linker<T, U>(
+                linker: &mut wasmtime::component::Linker<T>,
+                options: &LinkOptions,
+                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            ) -> wasmtime::Result<()>
+            where
+                U: Host + Send,
+                T: Send,
+            {
+                add_to_linker_get_host(linker, options, get)
+            }
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
+                async fn foo(&mut self) -> () {
+                    Host::foo(*self).await
+                }
+            }
+=======
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
+                async fn foo(&mut self) -> () {
+                    Host::foo(*self).await
+                }
+            }
+>>>>>>> upstream/main
         }
     }
 }

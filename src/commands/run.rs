@@ -556,11 +556,13 @@ impl RunCommand {
 
         let name = untyped_call.name();
         let matches = Self::search_component(store.engine(), component.component_type(), name);
-        match matches.len()  {
-                        0 => bail!("No export named `{name}` in component."),
-                        1 => {}
-                        _ => bail!("Multiple exports named `{name}`: {matches:?}. FIXME: support some way to disambiguate names"),
-                    };
+        match matches.len() {
+            0 => bail!("No export named `{name}` in component."),
+            1 => {}
+            _ => bail!(
+                "Multiple exports named `{name}`: {matches:?}. FIXME: support some way to disambiguate names"
+            ),
+        };
         let (params, result_len, export) = match &matches[0] {
             (names, ComponentItem::ComponentFunc(func)) => {
                 let param_types = WasmFunc::params(func).collect::<Vec<_>>();
@@ -891,7 +893,9 @@ impl RunCommand {
         if self.run.common.wasi.keyvalue == Some(true) {
             #[cfg(not(feature = "wasi-keyvalue"))]
             {
-                bail!("Cannot enable wasi-keyvalue when the binary is not compiled with this feature.");
+                bail!(
+                    "Cannot enable wasi-keyvalue when the binary is not compiled with this feature."
+                );
             }
             #[cfg(all(feature = "wasi-keyvalue", feature = "component-model"))]
             {

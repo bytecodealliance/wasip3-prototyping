@@ -128,13 +128,12 @@ where
     ///
     /// [`Trap`]: crate::Trap
     #[cfg(feature = "async")]
-    pub async fn call_async<T>(
+    pub async fn call_async(
         &self,
-        mut store: impl AsContextMut<Data = T>,
+        mut store: impl AsContextMut<Data: Send>,
         params: Params,
     ) -> Result<Results>
     where
-        T: Send,
         Results: Send + Sync + 'static,
     {
         let mut store = store.as_context_mut();
@@ -618,7 +617,9 @@ unsafe impl WasmTy for Option<Func> {
         } else if nullable {
             Ok(())
         } else {
-            bail!("argument type mismatch: expected non-nullable (ref {expected}), found null reference")
+            bail!(
+                "argument type mismatch: expected non-nullable (ref {expected}), found null reference"
+            )
         }
     }
 

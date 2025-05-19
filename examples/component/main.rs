@@ -3,27 +3,22 @@ use std::{fs, path::Path};
 
 use wasmtime::{
     component::{bindgen, Component, HasData, Linker},
+    component::{bindgen, Component, HasSelf, Linker},
     Config, Engine, Result, Store,
 };
 
 // Generate bindings of the guest and host components.
 bindgen!("convert" in "./examples/component/convert.wit");
 
-struct HostComponent;
+struct MyState {
+    // ..
+}
 
 // Implementation of the host interface defined in the wit file.
-impl host::Host for HostComponent {
+impl host::Host for MyState {
     fn multiply(&mut self, a: f32, b: f32) -> f32 {
         a * b
     }
-}
-
-struct MyState {
-    host: HostComponent,
-}
-
-impl HasData for MyState {
-    type Data<'a> = &'a mut HostComponent;
 }
 
 /// This function is only needed until rust can natively output a component.
@@ -51,14 +46,9 @@ fn main() -> Result<()> {
 
     // Create our component and call our generated host function.
     let component = Component::from_binary(&engine, &component)?;
-    let mut store = Store::new(
-        &engine,
-        MyState {
-            host: HostComponent {},
-        },
-    );
+    let mut store = Store::new(&engine, MyState {});
     let mut linker = Linker::new(&engine);
-    host::add_to_linker::<MyState, MyState>(&mut linker, |state| &mut state.host)?;
+    host::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
     let convert = Convert::instantiate(&mut store, &component, &linker)?;
     let result = convert.call_convert_celsius_to_fahrenheit(&mut store, 23.4)?;
     println!("Converted to: {result:?}");

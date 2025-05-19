@@ -1,4 +1,4 @@
-use crate::rust::{to_rust_ident, to_rust_upper_camel_case, RustGenerator, TypeMode};
+use crate::rust::{RustGenerator, TypeMode, to_rust_ident, to_rust_upper_camel_case};
 use crate::types::{TypeInfo, Types};
 use anyhow::bail;
 use heck::*;
@@ -1072,7 +1072,9 @@ impl<_T: 'static> {camel}Pre<_T> {{
         unused_keys.sort();
 
         if !unused_keys.is_empty() {
-            anyhow::bail!("interfaces were specified in the `with` config option but are not referenced in the target world: {unused_keys:?}");
+            anyhow::bail!(
+                "interfaces were specified in the `with` config option but are not referenced in the target world: {unused_keys:?}"
+            );
         }
 
         if !self.opts.only_interfaces {
@@ -1087,7 +1089,9 @@ impl<_T: 'static> {camel}Pre<_T> {{
 
             if !unused_imports.is_empty() {
                 unused_imports.sort();
-                anyhow::bail!("names specified in the `trappable_imports` config option but are not referenced in the target world: {unused_imports:?}");
+                anyhow::bail!(
+                    "names specified in the `trappable_imports` config option but are not referenced in the target world: {unused_imports:?}"
+                );
             }
         }
 
@@ -1368,7 +1372,144 @@ impl Wasmtime {
         if let CallStyle::Async | CallStyle::Concurrent = self.opts.call_style() {
             uwriteln!(
                 self.src,
+<<<<<<< HEAD
                 "#[{wt}::component::__internal::trait_variant_make(::core::marker::Send)]",
+||||||| 40315bd2c
+                "#[{wt}::component::__internal::trait_variant_make(::core::marker::Send)]"
+            )
+        }
+        uwrite!(self.src, "pub trait {world_camel}Imports");
+        let mut supertraits = vec![];
+        if let CallStyle::Async = self.opts.call_style() {
+            supertraits.push("Send".to_string());
+        }
+        for (_, name) in get_world_resources(resolve, world) {
+            supertraits.push(format!("Host{}", name.to_upper_camel_case()));
+        }
+        if !supertraits.is_empty() {
+            uwrite!(self.src, ": {}", supertraits.join(" + "));
+        }
+        uwriteln!(self.src, " {{");
+
+        let has_concurrent_function = self.import_functions.iter().any(|func| {
+            matches!(func.func.kind, FunctionKind::Freestanding)
+                && matches!(
+                    self.opts.import_call_style(None, &func.func.name),
+                    CallStyle::Concurrent
+                )
+        });
+
+        if has_concurrent_function {
+            self.src.push_str("type Data;\n");
+        }
+
+        for f in self.import_functions.iter() {
+            if let Some(sig) = &f.sig {
+                self.src.push_str(sig);
+                self.src.push_str(";\n");
+            }
+        }
+        uwriteln!(self.src, "}}");
+
+        let get_host_bounds = if let CallStyle::Concurrent = self.opts.call_style() {
+            let constraints = world_imports_concurrent_constraints(resolve, world, &self.opts);
+
+            format!("{world_camel}Imports{}", constraints("D"))
+        } else {
+            format!("{world_camel}Imports")
+        };
+
+        uwriteln!(
+            self.src,
+            "
+                pub trait {world_camel}ImportsGetHost<T, D>:
+                    Fn(T) -> <Self as {world_camel}ImportsGetHost<T, D>>::Host
+                        + Send
+                        + Sync
+                        + Copy
+                        + 'static
+                {{
+                    type Host: {get_host_bounds};
+                }}
+
+                impl<F, T, D, O> {world_camel}ImportsGetHost<T, D> for F
+                where
+                    F: Fn(T) -> O + Send + Sync + Copy + 'static,
+                    O: {get_host_bounds},
+                {{
+                    type Host = O;
+                }}
+            "
+        );
+
+        // Generate impl WorldImports for &mut WorldImports
+        let maybe_send = if let CallStyle::Async = self.opts.call_style() {
+            "+ Send"
+        } else {
+            ""
+        };
+        if !self.opts.skip_mut_forwarding_impls {
+            let maybe_maybe_sized = if let CallStyle::Concurrent = self.opts.call_style() {
+                ""
+            } else {
+                "+ ?Sized"
+            };
+            uwriteln!(
+                self.src,
+                    "impl<_T: {world_camel}Imports {maybe_maybe_sized} {maybe_send}> {world_camel}Imports for &mut _T {{"
+=======
+                "#[{wt}::component::__internal::trait_variant_make(::core::marker::Send)]"
+            )
+        }
+        uwrite!(self.src, "pub trait {world_camel}Imports");
+        let mut supertraits = vec![];
+        if let CallStyle::Async = self.opts.call_style() {
+            supertraits.push("Send".to_string());
+        }
+        for (_, name) in get_world_resources(resolve, world) {
+            supertraits.push(format!("Host{}", name.to_upper_camel_case()));
+        }
+        if !supertraits.is_empty() {
+            uwrite!(self.src, ": {}", supertraits.join(" + "));
+        }
+        uwriteln!(self.src, " {{");
+
+        let has_concurrent_function = self.import_functions.iter().any(|func| {
+            matches!(func.func.kind, FunctionKind::Freestanding)
+                && matches!(
+                    self.opts.import_call_style(None, &func.func.name),
+                    CallStyle::Concurrent
+                )
+        });
+
+        if has_concurrent_function {
+            self.src.push_str("type Data;\n");
+        }
+
+        for f in self.import_functions.iter() {
+            if let Some(sig) = &f.sig {
+                self.src.push_str(sig);
+                self.src.push_str(";\n");
+            }
+        }
+        uwriteln!(self.src, "}}");
+
+        // Generate impl WorldImports for &mut WorldImports
+        let maybe_send = if let CallStyle::Async = self.opts.call_style() {
+            "+ Send"
+        } else {
+            ""
+        };
+        if !self.opts.skip_mut_forwarding_impls {
+            let maybe_maybe_sized = if let CallStyle::Concurrent = self.opts.call_style() {
+                ""
+            } else {
+                "+ ?Sized"
+            };
+            uwriteln!(
+                self.src,
+                "impl<_T: {world_camel}Imports {maybe_maybe_sized} {maybe_send}> {world_camel}Imports for &mut _T {{"
+>>>>>>> upstream/main
             );
         }
 
@@ -1465,10 +1606,26 @@ impl Wasmtime {
             ("", "")
         };
 
+<<<<<<< HEAD
         let opt_t_send_bound = if self.opts.is_store_data_send() {
             "+ Send"
+||||||| 40315bd2c
+        let camel = to_rust_upper_camel_case(&resolve.worlds[world].name);
+
+        let data_bounds = if self.opts.is_store_data_send() {
+            if let CallStyle::Concurrent = self.opts.call_style() {
+                "T: Send + 'static,"
+            } else {
+                "T: Send,"
+            }
+=======
+        let camel = to_rust_upper_camel_case(&resolve.worlds[world].name);
+
+        let data_bounds = if self.opts.is_store_data_send() {
+            "Send + 'static"
+>>>>>>> upstream/main
         } else {
-            ""
+            "'static"
         };
 
         let wt = self.wasmtime_path();
@@ -1486,9 +1643,17 @@ impl Wasmtime {
                         host_getter: fn(&mut T) -> D::Data<'_>,
                     ) -> {wt}::Result<()>
                         where
+<<<<<<< HEAD
                             D: {d_bound},
                             for<'a> D::Data<'a>: {name},
                             T: 'static {opt_t_send_bound}
+||||||| 40315bd2c
+                        where {data_bounds}
+=======
+                            D: {wt}::component::HasData,
+                            for<'a> D::Data<'a>: {host_bounds},
+                            T: {data_bounds}
+>>>>>>> upstream/main
                     {{
                         let mut linker = linker.root();
                 ",
@@ -1517,13 +1682,106 @@ impl Wasmtime {
             uwriteln!(self.src, "Ok(())\n}}");
         }
 
+<<<<<<< HEAD
         let (sync_bounds, concurrent_bounds) = self.world_host_traits(resolve, world_trait);
         let sync_bounds = sync_bounds.join(" + ");
         let concurrent_bounds = concurrent_bounds.join(" + ");
         let d_bounds = if !concurrent_bounds.is_empty() {
             concurrent_bounds
+||||||| 40315bd2c
+        let (host_bounds, data_bounds) = if let CallStyle::Concurrent = self.opts.call_style() {
+            let bounds = self
+                .import_interfaces
+                .iter()
+                .map(|(key, id, _, name)| {
+                    (
+                        key,
+                        id,
+                        match name {
+                            InterfaceName::Path(path) => path.join("::"),
+                            InterfaceName::Remapped { name_at_root, .. } => name_at_root.clone(),
+                        },
+                    )
+                })
+                .map(|(key, id, path)| {
+                    format!(
+                        " + {path}::Host{}",
+                        concurrent_constraints(
+                            resolve,
+                            &self.opts,
+                            Some(&resolve.name_world_key(key)),
+                            *id
+                        )("T")
+                    )
+                })
+                .chain(if self.has_world_imports_trait(resolve, world) {
+                    let world_camel = to_rust_upper_camel_case(&resolve.worlds[world].name);
+                    let constraints =
+                        world_imports_concurrent_constraints(resolve, world, &self.opts);
+                    Some(format!(" + {world_camel}Imports{}", constraints("T")))
+                } else {
+                    None
+                })
+                .collect::<Vec<_>>()
+                .concat();
+
+            (
+                format!("U: Send{bounds}"),
+                format!("T: Send{bounds} + 'static,"),
+            )
+=======
+        let (host_bounds, data_bounds) = if let CallStyle::Concurrent = self.opts.call_style() {
+            let bounds = self
+                .import_interfaces
+                .iter()
+                .map(|(key, id, _, name)| {
+                    (
+                        key,
+                        id,
+                        match name {
+                            InterfaceName::Path(path) => path.join("::"),
+                            InterfaceName::Remapped { name_at_root, .. } => name_at_root.clone(),
+                        },
+                    )
+                })
+                .map(|(key, id, path)| {
+                    format!(
+                        " + {path}::Host{}",
+                        concurrent_constraints(
+                            resolve,
+                            &self.opts,
+                            Some(&resolve.name_world_key(key)),
+                            *id
+                        )("T")
+                    )
+                })
+                .chain(if self.has_world_imports_trait(resolve, world) {
+                    let world_camel = to_rust_upper_camel_case(&resolve.worlds[world].name);
+                    let constraints =
+                        world_imports_concurrent_constraints(resolve, world, &self.opts);
+                    Some(format!(" + {world_camel}Imports{}", constraints("T")))
+                } else {
+                    None
+                })
+                .collect::<Vec<_>>()
+                .concat();
+
+            (format!("Send{bounds}"), format!("Send{bounds} + 'static,"))
+>>>>>>> upstream/main
         } else {
+<<<<<<< HEAD
             format!("{wt}::component::HasData")
+||||||| 40315bd2c
+            (
+                format!("U: {}", self.world_host_traits(resolve, world).join(" + ")),
+                data_bounds.to_string(),
+            )
+=======
+            (
+                format!("{}", self.world_host_traits(resolve, world).join(" + ")),
+                data_bounds.to_string(),
+            )
+>>>>>>> upstream/main
         };
 
         uwriteln!(
@@ -1532,12 +1790,23 @@ impl Wasmtime {
                 pub fn add_to_linker<T, D>(
                     linker: &mut {wt}::component::Linker<T>,
                     {options_param}
+<<<<<<< HEAD
                     host_getter: fn(&mut T) -> D::Data<'_>,
                 ) -> {wt}::Result<()>
                     where
                         D: {d_bounds},
                         for<'a> D::Data<'a>: {sync_bounds},
                         T: 'static {opt_t_send_bound}
+||||||| 40315bd2c
+        if !self.opts.skip_mut_forwarding_impls {
+=======
+                    get: fn(&mut T) -> D::Data<'_>,
+                ) -> {wt}::Result<()>
+                    where
+                        D: {wt}::component::HasData,
+                        for<'a> D::Data<'a>: {host_bounds},
+                        T: {data_bounds}
+>>>>>>> upstream/main
                 {{
             "
         );
@@ -1545,7 +1814,23 @@ impl Wasmtime {
         if has_world_imports_trait {
             uwriteln!(
                 self.src,
+<<<<<<< HEAD
                 "Self::add_to_linker_imports::<T, D>(linker {options_arg}, host_getter)?;"
+||||||| 40315bd2c
+                "
+                    pub fn add_to_linker<T, U>(
+                        linker: &mut {wt}::component::Linker<T>,
+                        {options_param}
+                        get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+                    ) -> {wt}::Result<()>
+                        where
+                            {data_bounds}
+                            {host_bounds}
+                    {{
+                "
+=======
+                "Self::add_to_linker_imports::<T, D>(linker {options_arg}, get)?;"
+>>>>>>> upstream/main
             );
         }
         for (interface_id, path) in self.import_interface_paths() {
@@ -1570,7 +1855,12 @@ impl Wasmtime {
             let gate = FeatureGate::open(&mut self.src, &import_stability);
             uwriteln!(
                 self.src,
+<<<<<<< HEAD
                 "{path}::add_to_linker::<T, D>(linker {options_arg}, host_getter)?;"
+||||||| 40315bd2c
+=======
+                "{path}::add_to_linker::<T, D>(linker {options_arg}, get)?;"
+>>>>>>> upstream/main
             );
             gate.close(&mut self.src);
         }
@@ -2336,7 +2626,83 @@ impl<'a> InterfaceGenerator<'a> {
                     }
                 }
             }
+<<<<<<< HEAD
             functions
+||||||| 40315bd2c
+        }
+        uwriteln!(self.src, "}}");
+
+        let (data_bounds, mut host_bounds, mut get_host_bounds) =
+            match self.generator.opts.call_style() {
+                CallStyle::Async => (
+                    "T: Send,".to_string(),
+                    "Host + Send".to_string(),
+                    "Host + Send".to_string(),
+                ),
+                CallStyle::Concurrent => {
+                    let constraints = concurrent_constraints(
+                        self.resolve,
+                        &self.generator.opts,
+                        self.qualifier().as_deref(),
+                        id,
+                    );
+
+                    (
+                        "T: Send + 'static,".to_string(),
+                        format!("Host{} + Send", constraints("T")),
+                        format!("Host{} + Send", constraints("D")),
+                    )
+                }
+                CallStyle::Sync => (String::new(), "Host".to_string(), "Host".to_string()),
+            };
+
+        for ty in required_conversion_traits {
+            uwrite!(host_bounds, " + {ty}");
+            uwrite!(get_host_bounds, " + {ty}");
+        }
+
+        let (options_param, options_arg) = if self.generator.interface_link_options[&id].has_any() {
+            ("options: &LinkOptions,", ", options")
+        } else {
+            ("", "")
+=======
+        }
+        uwriteln!(self.src, "}}");
+
+        let (data_bounds, mut host_bounds, mut get_host_bounds) =
+            match self.generator.opts.call_style() {
+                CallStyle::Async => (
+                    "Send + 'static,",
+                    "Host + Send".to_string(),
+                    "Host + Send".to_string(),
+                ),
+                CallStyle::Concurrent => {
+                    let constraints = concurrent_constraints(
+                        self.resolve,
+                        &self.generator.opts,
+                        self.qualifier().as_deref(),
+                        id,
+                    );
+
+                    (
+                        "Send + 'static,",
+                        format!("Host{} + Send", constraints("T")),
+                        format!("Host{} + Send", constraints("D")),
+                    )
+                }
+                CallStyle::Sync => ("'static", "Host".to_string(), "Host".to_string()),
+            };
+
+        for ty in required_conversion_traits {
+            uwrite!(host_bounds, " + {ty}");
+            uwrite!(get_host_bounds, " + {ty}");
+        }
+
+        let options_param = if self.generator.interface_link_options[&id].has_any() {
+            "options: &LinkOptions,"
+        } else {
+            ""
+>>>>>>> upstream/main
         };
 
         // Generate the `pub trait` which represents the host functionality for
@@ -2390,9 +2756,17 @@ impl<'a> InterfaceGenerator<'a> {
                     host_getter: fn(&mut T) -> D::Data<'_>,
                 ) -> {wt}::Result<()>
                     where
+<<<<<<< HEAD
                         D: {d_bound},
                         for<'a> D::Data<'a>: {sync_bounds},
                         T: 'static {opt_t_send_bound},
+||||||| 40315bd2c
+                    where {data_bounds}
+=======
+                        D: {wt}::component::HasData,
+                        for<'a> D::Data<'a>: {host_bounds},
+                        T: {data_bounds}
+>>>>>>> upstream/main
                 {{
             "
         );
@@ -2418,6 +2792,151 @@ impl<'a> InterfaceGenerator<'a> {
         gate.close(&mut self.src);
         uwriteln!(self.src, "Ok(())");
         uwriteln!(self.src, "}}");
+<<<<<<< HEAD
+||||||| 40315bd2c
+
+        if !self.generator.opts.skip_mut_forwarding_impls {
+            // Generate add_to_linker (with closure)
+            uwriteln!(
+                self.src,
+                "
+                pub fn add_to_linker<T, U>(
+                    linker: &mut {wt}::component::Linker<T>,
+                    {options_param}
+                    get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+                ) -> {wt}::Result<()>
+                    where
+                        U: {host_bounds}, {data_bounds}
+                {{
+                    add_to_linker_get_host(linker {options_arg}, get)
+                }}
+                "
+            );
+
+            // Generate impl Host for &mut Host
+            let maybe_send = if is_maybe_async { "+ Send" } else { "" };
+
+            let maybe_maybe_sized = if has_concurrent_function {
+                ""
+            } else {
+                "+ ?Sized"
+            };
+
+            uwriteln!(
+                self.src,
+                "impl<_T: Host {maybe_maybe_sized} {maybe_send}> Host for &mut _T {{"
+            );
+
+            if has_concurrent_function {
+                self.push_str("type Data = _T::Data;\n");
+            }
+
+            // Forward each method call to &mut T
+            for (_, func) in iface.functions.iter() {
+                match func.kind {
+                    FunctionKind::Freestanding => {}
+                    _ => continue,
+                }
+                let call_style = self
+                    .generator
+                    .opts
+                    .import_call_style(self.qualifier().as_deref(), &func.name);
+                self.generate_function_trait_sig(func, "Data");
+                if let CallStyle::Concurrent = call_style {
+                    uwrite!(
+                        self.src,
+                        "{{ <_T as Host>::{}(store,",
+                        rust_function_name(func)
+                    );
+                } else {
+                    uwrite!(self.src, "{{ Host::{}(*self,", rust_function_name(func));
+                }
+                for (name, _) in func.params.iter() {
+                    uwrite!(self.src, "{},", to_rust_ident(name));
+                }
+                uwrite!(self.src, ")");
+                if let CallStyle::Async = call_style {
+                    uwrite!(self.src, ".await");
+                }
+                uwriteln!(self.src, "}}");
+            }
+            for (err_name, err_id) in errors_converted {
+                uwriteln!(
+                    self.src,
+                    "fn convert_{err_snake}(&mut self, err: {root}{custom_name}) -> {wt}::Result<{err_camel}> {{
+                        Host::convert_{err_snake}(*self, err)
+                    }}",
+                    custom_name = self.generator.trappable_errors[&err_id],
+                    err_snake = err_name.to_snake_case(),
+                    err_camel = err_name.to_upper_camel_case(),
+                );
+            }
+            uwriteln!(self.src, "}}");
+        }
+=======
+
+        if !self.generator.opts.skip_mut_forwarding_impls {
+            // Generate impl Host for &mut Host
+            let maybe_send = if is_maybe_async { "+ Send" } else { "" };
+
+            let maybe_maybe_sized = if has_concurrent_function {
+                ""
+            } else {
+                "+ ?Sized"
+            };
+
+            uwriteln!(
+                self.src,
+                "impl<_T: Host {maybe_maybe_sized} {maybe_send}> Host for &mut _T {{"
+            );
+
+            if has_concurrent_function {
+                self.push_str("type Data = _T::Data;\n");
+            }
+
+            // Forward each method call to &mut T
+            for (_, func) in iface.functions.iter() {
+                match func.kind {
+                    FunctionKind::Freestanding => {}
+                    _ => continue,
+                }
+                let call_style = self
+                    .generator
+                    .opts
+                    .import_call_style(self.qualifier().as_deref(), &func.name);
+                self.generate_function_trait_sig(func, "Data");
+                if let CallStyle::Concurrent = call_style {
+                    uwrite!(
+                        self.src,
+                        "{{ <_T as Host>::{}(store,",
+                        rust_function_name(func)
+                    );
+                } else {
+                    uwrite!(self.src, "{{ Host::{}(*self,", rust_function_name(func));
+                }
+                for (name, _) in func.params.iter() {
+                    uwrite!(self.src, "{},", to_rust_ident(name));
+                }
+                uwrite!(self.src, ")");
+                if let CallStyle::Async = call_style {
+                    uwrite!(self.src, ".await");
+                }
+                uwriteln!(self.src, "}}");
+            }
+            for (err_name, err_id) in errors_converted {
+                uwriteln!(
+                    self.src,
+                    "fn convert_{err_snake}(&mut self, err: {root}{custom_name}) -> {wt}::Result<{err_camel}> {{
+                        Host::convert_{err_snake}(*self, err)
+                    }}",
+                    custom_name = self.generator.trappable_errors[&err_id],
+                    err_snake = err_name.to_snake_case(),
+                    err_camel = err_name.to_upper_camel_case(),
+                );
+            }
+            uwriteln!(self.src, "}}");
+        }
+>>>>>>> upstream/main
     }
 
     fn qualifier(&self) -> Option<String> {
@@ -2569,7 +3088,13 @@ impl<'a> InterfaceGenerator<'a> {
         if let CallStyle::Concurrent = &style {
             uwrite!(
                 self.src,
+<<<<<<< HEAD
                 "let r = <D as {host_trait}Concurrent>::{func_name}(accessor, "
+||||||| 40315bd2c
+                "let r = <G::Host as {host_trait}>::{func_name}(host, "
+=======
+                "let r = <D::Data<'_> as {host_trait}>::{func_name}(host, "
+>>>>>>> upstream/main
             );
         } else {
             uwrite!(self.src, "let r = {host_trait}::{func_name}(host, ");
@@ -2677,7 +3202,26 @@ impl<'a> InterfaceGenerator<'a> {
             self.print_ty(param, TypeMode::Owned);
             self.push_str(",");
         }
+<<<<<<< HEAD
     }
+||||||| 40315bd2c
+        self.push_str(")");
+        self.push_str(" -> ");
+
+        if let CallStyle::Concurrent = &style {
+            uwrite!(self.src, "impl ::core::future::Future<Output = impl FnOnce(wasmtime::StoreContextMut<'_, Self::{data}>) -> ");
+        }
+=======
+        self.push_str(")");
+        self.push_str(" -> ");
+
+        if let CallStyle::Concurrent = &style {
+            uwrite!(
+                self.src,
+                "impl ::core::future::Future<Output = impl FnOnce(wasmtime::StoreContextMut<'_, Self::{data}>) -> "
+            );
+        }
+>>>>>>> upstream/main
 
     fn generate_function_result(&mut self, func: &Function) {
         if !self.generator.opts.trappable_imports.can_trap(func) {

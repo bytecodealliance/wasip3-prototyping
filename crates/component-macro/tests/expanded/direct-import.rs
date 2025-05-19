@@ -90,7 +90,26 @@ pub struct Foo {}
 pub trait FooImports {
     fn foo(&mut self) -> ();
 }
+<<<<<<< HEAD
 impl<_T: FooImports> FooImports for &mut _T {
+||||||| 40315bd2c
+pub trait FooImportsGetHost<
+    T,
+    D,
+>: Fn(T) -> <Self as FooImportsGetHost<T, D>>::Host + Send + Sync + Copy + 'static {
+    type Host: FooImports;
+}
+impl<F, T, D, O> FooImportsGetHost<T, D> for F
+where
+    F: Fn(T) -> O + Send + Sync + Copy + 'static,
+    O: FooImports,
+{
+    type Host = O;
+}
+impl<_T: FooImports + ?Sized> FooImports for &mut _T {
+=======
+impl<_T: FooImports + ?Sized> FooImports for &mut _T {
+>>>>>>> upstream/main
     fn foo(&mut self) -> () {
         FooImports::foo(*self)
     }
@@ -169,14 +188,26 @@ const _: () = {
         }
         pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
+<<<<<<< HEAD
             host_getter: fn(&mut T) -> D::Data<'_>,
+||||||| 40315bd2c
+            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+=======
+            get: fn(&mut T) -> D::Data<'_>,
+>>>>>>> upstream/main
         ) -> wasmtime::Result<()>
         where
             D: wasmtime::component::HasData,
             for<'a> D::Data<'a>: FooImports,
             T: 'static,
         {
+<<<<<<< HEAD
             Self::add_to_linker_imports::<T, D>(linker, host_getter)?;
+||||||| 40315bd2c
+            Self::add_to_linker_imports_get_host(linker, get)?;
+=======
+            Self::add_to_linker_imports::<T, D>(linker, get)?;
+>>>>>>> upstream/main
             Ok(())
         }
     }

@@ -2050,14 +2050,9 @@ impl Config {
                     | WasmFeatures::LEGACY_EXCEPTIONS;
                 match self.compiler_target().architecture {
                     target_lexicon::Architecture::Aarch64(_) => {
-                        // no support for simd on aarch64
                         unsupported |= WasmFeatures::SIMD;
-
-                        // things like multi-table are technically supported on
-                        // winch on aarch64 but this helps gate most spec tests
-                        // by default which otherwise currently cause panics.
-                        unsupported |= WasmFeatures::REFERENCE_TYPES;
-                        unsupported |= WasmFeatures::THREADS
+                        unsupported |= WasmFeatures::THREADS;
+                        unsupported |= WasmFeatures::WIDE_ARITHMETIC;
                     }
 
                     // Winch doesn't support other non-x64 architectures at this
@@ -2379,7 +2374,9 @@ impl Config {
                 .compiler_config
                 .ensure_setting_unset_or_given("unwind_info", &unwind_requested.to_string())
             {
-                bail!("incompatible settings requested for Cranelift and Wasmtime `unwind-info` settings");
+                bail!(
+                    "incompatible settings requested for Cranelift and Wasmtime `unwind-info` settings"
+                );
             }
         }
 
@@ -2428,7 +2425,9 @@ impl Config {
                 .compiler_config
                 .ensure_setting_unset_or_given("enable_safepoints", "true")
             {
-                bail!("compiler option 'enable_safepoints' must be enabled when 'reference types' is enabled");
+                bail!(
+                    "compiler option 'enable_safepoints' must be enabled when 'reference types' is enabled"
+                );
             }
         }
 

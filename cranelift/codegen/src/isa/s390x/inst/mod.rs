@@ -1,15 +1,13 @@
 //! This module defines s390x-specific machine instruction types.
 
 use crate::binemit::{Addend, CodeOffset, Reloc};
-use crate::ir::immediates::Ieee16;
-use crate::ir::{types, ExternalName, Type};
+use crate::ir::{ExternalName, Type, types};
 use crate::isa::s390x::abi::S390xMachineDeps;
 use crate::isa::{CallConv, FunctionAlignment};
 use crate::machinst::*;
-use crate::{settings, CodegenError, CodegenResult};
+use crate::{CodegenError, CodegenResult, settings};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use regalloc2::{PReg, PRegSet};
 use smallvec::SmallVec;
 use std::fmt::Write;
 use std::string::{String, ToString};
@@ -30,10 +28,19 @@ mod emit_tests;
 // Instructions (top level): definition
 
 pub use crate::isa::s390x::lower::isle::generated_code::{
-    ALUOp, CallInstDest, CmpOp, FPUOp1, FPUOp2, FPUOp3, FpuRoundMode, FpuRoundOp, LaneOrder,
-    MInst as Inst, RxSBGOp, ShiftOp, SymbolReloc, UnaryOp, VecBinaryOp, VecFloatCmpOp, VecIntCmpOp,
-    VecShiftOp, VecUnaryOp,
+    ALUOp, CmpOp, FPUOp1, FPUOp2, FPUOp3, FpuRoundMode, FpuRoundOp, LaneOrder, MInst as Inst,
+    RxSBGOp, ShiftOp, SymbolReloc, UnaryOp, VecBinaryOp, VecFloatCmpOp, VecIntCmpOp, VecShiftOp,
+    VecUnaryOp,
 };
+
+/// The destination of a call instruction.
+#[derive(Clone, Debug)]
+pub enum CallInstDest {
+    /// Direct call.
+    Direct { name: ExternalName },
+    /// Indirect call.
+    Indirect { reg: Reg },
+}
 
 /// Additional information for (direct) ReturnCall instructions, left out of line to lower the size of
 /// the Inst enum.
@@ -178,9 +185,6 @@ impl Inst {
             | Inst::FpuRRRR { .. }
             | Inst::FpuCmp32 { .. }
             | Inst::FpuCmp64 { .. }
-            | Inst::LoadFpuConst16 { .. }
-            | Inst::LoadFpuConst32 { .. }
-            | Inst::LoadFpuConst64 { .. }
             | Inst::VecRRR { .. }
             | Inst::VecRR { .. }
             | Inst::VecShiftRR { .. }
@@ -199,8 +203,6 @@ impl Inst {
             | Inst::VecMov { .. }
             | Inst::VecCMov { .. }
             | Inst::MovToVec128 { .. }
-            | Inst::VecLoadConst { .. }
-            | Inst::VecLoadConstReplicate { .. }
             | Inst::VecImmByteMask { .. }
             | Inst::VecImmBitMask { .. }
             | Inst::VecImmReplicate { .. }
@@ -211,7 +213,9 @@ impl Inst {
             | Inst::VecInsertLaneUndef { .. }
             | Inst::VecExtractLane { .. }
             | Inst::VecInsertLaneImm { .. }
+            | Inst::VecInsertLaneImmUndef { .. }
             | Inst::VecReplicateLane { .. }
+            | Inst::VecEltRev { .. }
             | Inst::AllocateArgs { .. }
             | Inst::Call { .. }
             | Inst::ReturnCall { .. }
@@ -389,12 +393,13 @@ fn memarg_operands(memarg: &mut MemArg, collector: &mut impl OperandVisitor) {
             collector.reg_use(base);
             collector.reg_use(index);
         }
-        MemArg::Label { .. } | MemArg::Symbol { .. } => {}
+        MemArg::Label { .. } | MemArg::Constant { .. } | MemArg::Symbol { .. } => {}
         MemArg::RegOffset { reg, .. } => {
             collector.reg_use(reg);
         }
         MemArg::InitialSPOffset { .. }
-        | MemArg::NominalSPOffset { .. }
+        | MemArg::IncomingArgOffset { .. }
+        | MemArg::OutgoingArgOffset { .. }
         | MemArg::SlotOffset { .. }
         | MemArg::SpillOffset { .. } => {}
     }
@@ -658,12 +663,6 @@ fn s390x_get_operands(inst: &mut Inst, collector: &mut DenyReuseVisitor<impl Ope
             collector.reg_use(rn);
             collector.reg_use(rm);
         }
-        Inst::LoadFpuConst16 { rd, .. }
-        | Inst::LoadFpuConst32 { rd, .. }
-        | Inst::LoadFpuConst64 { rd, .. } => {
-            collector.reg_def(rd);
-            collector.reg_fixed_nonallocatable(gpr_preg(1));
-        }
         Inst::FpuRound { rd, rn, .. } => {
             collector.reg_def(rd);
             collector.reg_use(rn);
@@ -802,10 +801,6 @@ fn s390x_get_operands(inst: &mut Inst, collector: &mut DenyReuseVisitor<impl Ope
             collector.reg_use(rn);
             collector.reg_use(rm);
         }
-        Inst::VecLoadConst { rd, .. } | Inst::VecLoadConstReplicate { rd, .. } => {
-            collector.reg_def(rd);
-            collector.reg_fixed_nonallocatable(gpr_preg(1));
-        }
         Inst::VecImmByteMask { rd, .. } => {
             collector.reg_def(rd);
         }
@@ -871,7 +866,14 @@ fn s390x_get_operands(inst: &mut Inst, collector: &mut DenyReuseVisitor<impl Ope
             collector.reg_reuse_def(rd, 1);
             collector.reg_use(ri);
         }
+        Inst::VecInsertLaneImmUndef { rd, .. } => {
+            collector.reg_def(rd);
+        }
         Inst::VecReplicateLane { rd, rn, .. } => {
+            collector.reg_def(rd);
+            collector.reg_use(rn);
+        }
+        Inst::VecEltRev { rd, rn, .. } => {
             collector.reg_def(rd);
             collector.reg_use(rn);
         }
@@ -895,17 +897,14 @@ fn s390x_get_operands(inst: &mut Inst, collector: &mut DenyReuseVisitor<impl Ope
             for CallArgPair { vreg, preg } in uses {
                 collector.reg_fixed_use(vreg, *preg);
             }
-            let mut clobbers = *clobbers;
-            clobbers.add(link.to_reg().to_real_reg().unwrap().into());
             for CallRetPair { vreg, location } in defs {
                 match location {
-                    RetLocation::Reg(preg, ..) => {
-                        clobbers.remove(PReg::from(preg.to_real_reg().unwrap()));
-                        collector.reg_fixed_def(vreg, *preg);
-                    }
+                    RetLocation::Reg(preg, ..) => collector.reg_fixed_def(vreg, *preg),
                     RetLocation::Stack(..) => collector.any_def(vreg),
                 }
             }
+            let mut clobbers = *clobbers;
+            clobbers.add(link.to_reg().to_real_reg().unwrap().into());
             collector.reg_clobbers(clobbers);
         }
         Inst::ReturnCall { info } => {
@@ -1016,7 +1015,7 @@ impl<T: OperandVisitor> OperandVisitor for DenyReuseVisitor<'_, T> {
         self.inner.debug_assert_is_allocatable_preg(reg, expected);
     }
 
-    fn reg_clobbers(&mut self, regs: PRegSet) {
+    fn reg_clobbers(&mut self, regs: regalloc2::PRegSet) {
         self.inner.reg_clobbers(regs);
     }
 }
@@ -1638,7 +1637,9 @@ impl Inst {
                 let op = match &mem {
                     &MemArg::BXD12 { .. } => opcode_rx,
                     &MemArg::BXD20 { .. } => opcode_rxy,
-                    &MemArg::Label { .. } | &MemArg::Symbol { .. } => opcode_ril,
+                    &MemArg::Label { .. } | &MemArg::Constant { .. } | &MemArg::Symbol { .. } => {
+                        opcode_ril
+                    }
                     _ => unreachable!(),
                 };
                 let mem = mem.pretty_print_default();
@@ -1840,7 +1841,9 @@ impl Inst {
                 let op = match &mem {
                     &MemArg::BXD12 { .. } => opcode_rx,
                     &MemArg::BXD20 { .. } => opcode_rxy,
-                    &MemArg::Label { .. } | &MemArg::Symbol { .. } => opcode_ril,
+                    &MemArg::Label { .. } | &MemArg::Constant { .. } | &MemArg::Symbol { .. } => {
+                        opcode_ril
+                    }
                     _ => unreachable!(),
                 };
                 let mem = mem.pretty_print_default();
@@ -1880,7 +1883,9 @@ impl Inst {
                 let op = match &mem {
                     &MemArg::BXD12 { .. } => opcode_rx,
                     &MemArg::BXD20 { .. } => opcode_rxy,
-                    &MemArg::Label { .. } | &MemArg::Symbol { .. } => opcode_ril,
+                    &MemArg::Label { .. } | &MemArg::Constant { .. } | &MemArg::Symbol { .. } => {
+                        opcode_ril
+                    }
                     _ => unreachable!(),
                 };
                 let mem = mem.pretty_print_default();
@@ -2281,60 +2286,6 @@ impl Inst {
                     format!("cdbr {}, {}", rn_fpr.unwrap(), rm_fpr.unwrap())
                 } else {
                     format!("wfcdb {}, {}", rn_fpr.unwrap_or(rn), rm_fpr.unwrap_or(rm))
-                }
-            }
-            &Inst::LoadFpuConst16 { rd, const_data } => {
-                let (rd, _rd_fpr) = pretty_print_fpr(rd.to_reg());
-                let tmp = pretty_print_reg(writable_spilltmp_reg().to_reg());
-                // FIXME(#8312): Use `f16::from_bits` once it is stabilised.
-                format!(
-                    "bras {}, 8 ; data.f16 {} ; vleh {}, 0({}), 0",
-                    tmp,
-                    Ieee16::with_bits(const_data),
-                    rd,
-                    tmp
-                )
-            }
-            &Inst::LoadFpuConst32 { rd, const_data } => {
-                let (rd, rd_fpr) = pretty_print_fpr(rd.to_reg());
-                let tmp = pretty_print_reg(writable_spilltmp_reg().to_reg());
-                if rd_fpr.is_some() {
-                    format!(
-                        "bras {}, 8 ; data.f32 {} ; le {}, 0({})",
-                        tmp,
-                        f32::from_bits(const_data),
-                        rd_fpr.unwrap(),
-                        tmp
-                    )
-                } else {
-                    format!(
-                        "bras {}, 8 ; data.f32 {} ; vlef {}, 0({}), 0",
-                        tmp,
-                        f32::from_bits(const_data),
-                        rd,
-                        tmp
-                    )
-                }
-            }
-            &Inst::LoadFpuConst64 { rd, const_data } => {
-                let (rd, rd_fpr) = pretty_print_fpr(rd.to_reg());
-                let tmp = pretty_print_reg(writable_spilltmp_reg().to_reg());
-                if rd_fpr.is_some() {
-                    format!(
-                        "bras {}, 12 ; data.f64 {} ; ld {}, 0({})",
-                        tmp,
-                        f64::from_bits(const_data),
-                        rd_fpr.unwrap(),
-                        tmp
-                    )
-                } else {
-                    format!(
-                        "bras {}, 12 ; data.f64 {} ; vleg {}, 0({}), 0",
-                        tmp,
-                        f64::from_bits(const_data),
-                        rd,
-                        tmp
-                    )
                 }
             }
             &Inst::FpuRound { op, mode, rd, rn } => {
@@ -2767,34 +2718,6 @@ impl Inst {
                 let rm = pretty_print_reg(rm);
                 format!("vlvgp {rd}, {rn}, {rm}")
             }
-            &Inst::VecLoadConst { rd, const_data } => {
-                let rd = pretty_print_reg(rd.to_reg());
-                let tmp = pretty_print_reg(writable_spilltmp_reg().to_reg());
-                format!("bras {tmp}, 20 ; data.u128 0x{const_data:032x} ; vl {rd}, 0({tmp})")
-            }
-            &Inst::VecLoadConstReplicate {
-                size,
-                rd,
-                const_data,
-            } => {
-                let rd = pretty_print_reg(rd.to_reg());
-                let tmp = pretty_print_reg(writable_spilltmp_reg().to_reg());
-                let (opcode, data) = match size {
-                    32 => ("vlrepf", format!("0x{:08x}", const_data as u32)),
-                    64 => ("vlrepg", format!("0x{const_data:016x}")),
-                    _ => unreachable!(),
-                };
-                format!(
-                    "bras {}, {} ; data.u{} {} ; {} {}, 0({})",
-                    tmp,
-                    4 + size / 8,
-                    size,
-                    data,
-                    opcode,
-                    rd,
-                    tmp
-                )
-            }
             &Inst::VecImmByteMask { rd, mask } => {
                 let rd = pretty_print_reg(rd.to_reg());
                 format!("vgbm {rd}, {mask}")
@@ -3084,6 +3007,22 @@ impl Inst {
                 let rd = pretty_print_reg_mod(rd, ri);
                 format!("{op} {rd}, {imm}, {lane_imm}")
             }
+            &Inst::VecInsertLaneImmUndef {
+                size,
+                rd,
+                imm,
+                lane_imm,
+            } => {
+                let op = match size {
+                    8 => "vleib",
+                    16 => "vleih",
+                    32 => "vleif",
+                    64 => "vleig",
+                    _ => unreachable!(),
+                };
+                let rd = pretty_print_reg(rd.to_reg());
+                format!("{op} {rd}, {imm}, {lane_imm}")
+            }
             &Inst::VecReplicateLane {
                 size,
                 rd,
@@ -3100,6 +3039,22 @@ impl Inst {
                 let rd = pretty_print_reg(rd.to_reg());
                 let rn = pretty_print_reg(rn);
                 format!("{op} {rd}, {rn}, {lane_imm}")
+            }
+            &Inst::VecEltRev { lane_count, rd, rn } => {
+                assert!(lane_count >= 2 && lane_count <= 16);
+                let rd = pretty_print_reg(rd.to_reg());
+                let rn = pretty_print_reg(rn);
+                let mut print = format!("vpdi {rd}, {rn}, {rn}, 4");
+                if lane_count >= 4 {
+                    print = format!("{print} ; verllg {rn}, {rn}, 32");
+                }
+                if lane_count >= 8 {
+                    print = format!("{print} ; verllf {rn}, {rn}, 16");
+                }
+                if lane_count >= 16 {
+                    print = format!("{print} ; verllh {rn}, {rn}, 8");
+                }
+                print
             }
             &Inst::Extend {
                 rd,
@@ -3128,6 +3083,7 @@ impl Inst {
                 format!("{op} {rd}, {rn}")
             }
             &Inst::AllocateArgs { size } => {
+                state.nominal_sp_offset = size;
                 if let Ok(size) = i16::try_from(size) {
                     format!("aghi {}, {}", show_reg(stack_reg()), -size)
                 } else {
@@ -3135,11 +3091,13 @@ impl Inst {
                 }
             }
             &Inst::Call { link, ref info } => {
+                state.nominal_sp_offset = 0;
                 let link = link.to_reg();
                 let (opcode, dest) = match &info.dest {
                     CallInstDest::Direct { name } => ("brasl", name.display(None).to_string()),
                     CallInstDest::Indirect { reg } => ("basr", pretty_print_reg(*reg)),
                 };
+                state.outgoing_sp_offset = info.callee_pop_size;
                 let mut retval_loads = S390xMachineDeps::gen_retval_loads(info)
                     .into_iter()
                     .map(|inst| inst.print_with_state(state))
@@ -3148,6 +3106,7 @@ impl Inst {
                 if !retval_loads.is_empty() {
                     retval_loads = " ; ".to_string() + &retval_loads;
                 }
+                state.outgoing_sp_offset = 0;
                 let try_call = if let Some(try_call_info) = &info.try_call_info {
                     let dests = try_call_info
                         .exception_dests
@@ -3319,7 +3278,9 @@ impl Inst {
                 let op = match &mem {
                     &MemArg::BXD12 { .. } => "la",
                     &MemArg::BXD20 { .. } => "lay",
-                    &MemArg::Label { .. } | &MemArg::Symbol { .. } => "larl",
+                    &MemArg::Label { .. } | &MemArg::Constant { .. } | &MemArg::Symbol { .. } => {
+                        "larl"
+                    }
                     _ => unreachable!(),
                 };
                 let mem = mem.pretty_print_default();
@@ -3332,7 +3293,9 @@ impl Inst {
             } => {
                 let probe_count = pretty_print_reg(probe_count.to_reg());
                 let stack_reg = pretty_print_reg(stack_reg());
-                format!("0: aghi {stack_reg}, -{guard_size} ; mvi 0({stack_reg}), 0 ; brct {probe_count}, 0b")
+                format!(
+                    "0: aghi {stack_reg}, -{guard_size} ; mvi 0({stack_reg}), 0 ; brct {probe_count}, 0b"
+                )
             }
             &Inst::Loop { ref body, cond } => {
                 let body = body

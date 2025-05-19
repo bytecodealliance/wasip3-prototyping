@@ -152,14 +152,33 @@ const _: () = {
         }
         pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
+<<<<<<< HEAD
             host_getter: fn(&mut T) -> D::Data<'_>,
+||||||| 40315bd2c
+            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+=======
+            get: fn(&mut T) -> D::Data<'_>,
+>>>>>>> upstream/main
         ) -> wasmtime::Result<()>
         where
             D: wasmtime::component::HasData,
             for<'a> D::Data<'a>: foo::foo::flegs::Host + Send,
+<<<<<<< HEAD
             T: 'static + Send,
+||||||| 40315bd2c
+            T: Send,
+            U: foo::foo::flegs::Host + Send,
+=======
+            T: Send + 'static,
+>>>>>>> upstream/main
         {
+<<<<<<< HEAD
             foo::foo::flegs::add_to_linker::<T, D>(linker, host_getter)?;
+||||||| 40315bd2c
+            foo::foo::flegs::add_to_linker(linker, get)?;
+=======
+            foo::foo::flegs::add_to_linker::<T, D>(linker, get)?;
+>>>>>>> upstream/main
             Ok(())
         }
         pub fn foo_foo_flegs(&self) -> &exports::foo::foo::flegs::Guest {
@@ -297,6 +316,7 @@ pub mod foo {
                 async fn roundtrip_flag32(&mut self, x: Flag32) -> Flag32;
                 async fn roundtrip_flag64(&mut self, x: Flag64) -> Flag64;
             }
+<<<<<<< HEAD
             impl<_T: Host + Send> Host for &mut _T {
                 async fn roundtrip_flag1(&mut self, x: Flag1) -> Flag1 {
                     Host::roundtrip_flag1(*self, x).await
@@ -320,14 +340,41 @@ pub mod foo {
                     Host::roundtrip_flag64(*self, x).await
                 }
             }
+||||||| 40315bd2c
+            pub trait GetHost<
+                T,
+                D,
+            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
+                type Host: Host + Send;
+            }
+            impl<F, T, D, O> GetHost<T, D> for F
+            where
+                F: Fn(T) -> O + Send + Sync + Copy + 'static,
+                O: Host + Send,
+            {
+                type Host = O;
+            }
+            pub fn add_to_linker_get_host<
+                T,
+                G: for<'a> GetHost<&'a mut T, T, Host: Host + Send>,
+            >(
+=======
+>>>>>>> upstream/main
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
                 D: wasmtime::component::HasData,
+<<<<<<< HEAD
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
+||||||| 40315bd2c
+                T: Send,
+=======
+                for<'a> D::Data<'a>: Host + Send,
+                T: Send + 'static,
+>>>>>>> upstream/main
             {
                 let mut inst = linker.instance("foo:foo/flegs")?;
                 inst.func_wrap_async(
@@ -535,6 +582,66 @@ pub mod foo {
                 )?;
                 Ok(())
             }
+<<<<<<< HEAD
+||||||| 40315bd2c
+            pub fn add_to_linker<T, U>(
+                linker: &mut wasmtime::component::Linker<T>,
+                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            ) -> wasmtime::Result<()>
+            where
+                U: Host + Send,
+                T: Send,
+            {
+                add_to_linker_get_host(linker, get)
+            }
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
+                async fn roundtrip_flag1(&mut self, x: Flag1) -> Flag1 {
+                    Host::roundtrip_flag1(*self, x).await
+                }
+                async fn roundtrip_flag2(&mut self, x: Flag2) -> Flag2 {
+                    Host::roundtrip_flag2(*self, x).await
+                }
+                async fn roundtrip_flag4(&mut self, x: Flag4) -> Flag4 {
+                    Host::roundtrip_flag4(*self, x).await
+                }
+                async fn roundtrip_flag8(&mut self, x: Flag8) -> Flag8 {
+                    Host::roundtrip_flag8(*self, x).await
+                }
+                async fn roundtrip_flag16(&mut self, x: Flag16) -> Flag16 {
+                    Host::roundtrip_flag16(*self, x).await
+                }
+                async fn roundtrip_flag32(&mut self, x: Flag32) -> Flag32 {
+                    Host::roundtrip_flag32(*self, x).await
+                }
+                async fn roundtrip_flag64(&mut self, x: Flag64) -> Flag64 {
+                    Host::roundtrip_flag64(*self, x).await
+                }
+            }
+=======
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
+                async fn roundtrip_flag1(&mut self, x: Flag1) -> Flag1 {
+                    Host::roundtrip_flag1(*self, x).await
+                }
+                async fn roundtrip_flag2(&mut self, x: Flag2) -> Flag2 {
+                    Host::roundtrip_flag2(*self, x).await
+                }
+                async fn roundtrip_flag4(&mut self, x: Flag4) -> Flag4 {
+                    Host::roundtrip_flag4(*self, x).await
+                }
+                async fn roundtrip_flag8(&mut self, x: Flag8) -> Flag8 {
+                    Host::roundtrip_flag8(*self, x).await
+                }
+                async fn roundtrip_flag16(&mut self, x: Flag16) -> Flag16 {
+                    Host::roundtrip_flag16(*self, x).await
+                }
+                async fn roundtrip_flag32(&mut self, x: Flag32) -> Flag32 {
+                    Host::roundtrip_flag32(*self, x).await
+                }
+                async fn roundtrip_flag64(&mut self, x: Flag64) -> Flag64 {
+                    Host::roundtrip_flag64(*self, x).await
+                }
+            }
+>>>>>>> upstream/main
         }
     }
 }

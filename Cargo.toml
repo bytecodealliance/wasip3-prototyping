@@ -173,7 +173,7 @@ exclude = [
 [workspace.package]
 version = "34.0.0"
 authors = ["The Wasmtime Project Developers"]
-edition = "2021"
+edition = "2024"
 # Wasmtime's current policy is that this number can be no larger than the
 # current stable release of Rust minus 2.
 rust-version = "1.85.0"
@@ -186,19 +186,6 @@ unstable_features = 'warn'
 unused_import_braces = 'warn'
 unused-lifetimes = 'warn'
 unused-macro-rules = 'warn'
-
-# Lints that are part of the `rust-2024-compatibility` group. This group is a
-# bit too noisy to enable wholesale but some selective items are ones we want to
-# opt-in to.
-keyword_idents_2024 = 'warn'
-unsafe-attr-outside-unsafe = 'warn'
-deprecated-safe-2024 = 'warn'
-rust-2024-guarded-string-incompatible-syntax = 'warn'
-rust-2024-prelude-collisions = 'warn'
-rust-2024-incompatible-pat = 'warn'
-missing-unsafe-on-extern = 'warn'
-impl-trait-overcaptures = 'warn'
-unsafe-op-in-unsafe-fn = 'warn'
 
 # Don't warn about unknown cfgs for pulley
 [workspace.lints.rust.unexpected_cfgs]
@@ -292,7 +279,7 @@ byte-array-literals = { path = "crates/wasi-preview1-component-adapter/byte-arra
 
 # Bytecode Alliance maintained dependencies:
 # ---------------------------
-regalloc2 = "0.12.1"
+regalloc2 = "0.12.2"
 
 # cap-std family:
 target-lexicon = "0.13.0"
@@ -309,8 +296,8 @@ io-extras = "0.18.1"
 rustix = "1.0.3"
 # wit-bindgen:
 wit-bindgen = { version = "0.42.1", default-features = false }
-wit-bindgen-rust-macro = { version = "0.42.1", default-features = false }
 wit-bindgen-rt = { version = "0.42.1", default-features = false }
+wit-bindgen-rust-macro = { version = "0.42.1", default-features = false }
 
 # wasm-tools family:
 wasmparser = { version = "0.230.0", default-features = false, features = ['simd'] }

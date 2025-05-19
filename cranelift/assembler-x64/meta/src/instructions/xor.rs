@@ -1,6 +1,7 @@
-use crate::dsl::{align, fmt, inst, r, rex, rw, sxl, sxq};
 use crate::dsl::{Feature::*, Inst, Location::*};
+use crate::dsl::{align, fmt, inst, r, rex, rw, sxl, sxq};
 
+#[rustfmt::skip] // Keeps instructions on a single line.
 pub fn list() -> Vec<Inst> {
     vec![
         inst("xorb", fmt("I", [rw(al), r(imm8)]), rex(0x34).ib(), _64b | compat),
@@ -35,5 +36,6 @@ pub fn list() -> Vec<Inst> {
         // Vector instructions.
         inst("xorps", fmt("A", [rw(xmm), r(align(xmm_m128))]), rex([0x0F, 0x57]).r(), _64b | compat | sse),
         inst("xorpd", fmt("A", [rw(xmm), r(align(xmm_m128))]), rex([0x66, 0x0F, 0x57]).r(), _64b | compat | sse2),
+        inst("pxor", fmt("A", [rw(xmm), r(align(xmm_m128))]), rex([0x66, 0x0F, 0xEF]).r(), _64b | compat | sse2),
     ]
 }

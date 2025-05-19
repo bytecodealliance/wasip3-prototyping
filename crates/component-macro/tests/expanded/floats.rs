@@ -148,14 +148,26 @@ const _: () = {
         }
         pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
+<<<<<<< HEAD
             host_getter: fn(&mut T) -> D::Data<'_>,
+||||||| 40315bd2c
+            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+=======
+            get: fn(&mut T) -> D::Data<'_>,
+>>>>>>> upstream/main
         ) -> wasmtime::Result<()>
         where
             D: wasmtime::component::HasData,
             for<'a> D::Data<'a>: foo::foo::floats::Host,
             T: 'static,
         {
+<<<<<<< HEAD
             foo::foo::floats::add_to_linker::<T, D>(linker, host_getter)?;
+||||||| 40315bd2c
+            foo::foo::floats::add_to_linker(linker, get)?;
+=======
+            foo::foo::floats::add_to_linker::<T, D>(linker, get)?;
+>>>>>>> upstream/main
             Ok(())
         }
         pub fn foo_foo_floats(&self) -> &exports::foo::foo::floats::Guest {
@@ -175,6 +187,7 @@ pub mod foo {
                 fn f32_result(&mut self) -> f32;
                 fn f64_result(&mut self) -> f64;
             }
+<<<<<<< HEAD
             impl<_T: Host> Host for &mut _T {
                 fn f32_param(&mut self, x: f32) -> () {
                     Host::f32_param(*self, x)
@@ -189,6 +202,26 @@ pub mod foo {
                     Host::f64_result(*self)
                 }
             }
+||||||| 40315bd2c
+            pub trait GetHost<
+                T,
+                D,
+            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
+                type Host: Host;
+            }
+            impl<F, T, D, O> GetHost<T, D> for F
+            where
+                F: Fn(T) -> O + Send + Sync + Copy + 'static,
+                O: Host,
+            {
+                type Host = O;
+            }
+            pub fn add_to_linker_get_host<
+                T,
+                G: for<'a> GetHost<&'a mut T, T, Host: Host>,
+            >(
+=======
+>>>>>>> upstream/main
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
@@ -233,6 +266,47 @@ pub mod foo {
                 )?;
                 Ok(())
             }
+<<<<<<< HEAD
+||||||| 40315bd2c
+            pub fn add_to_linker<T, U>(
+                linker: &mut wasmtime::component::Linker<T>,
+                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            ) -> wasmtime::Result<()>
+            where
+                U: Host,
+            {
+                add_to_linker_get_host(linker, get)
+            }
+            impl<_T: Host + ?Sized> Host for &mut _T {
+                fn f32_param(&mut self, x: f32) -> () {
+                    Host::f32_param(*self, x)
+                }
+                fn f64_param(&mut self, x: f64) -> () {
+                    Host::f64_param(*self, x)
+                }
+                fn f32_result(&mut self) -> f32 {
+                    Host::f32_result(*self)
+                }
+                fn f64_result(&mut self) -> f64 {
+                    Host::f64_result(*self)
+                }
+            }
+=======
+            impl<_T: Host + ?Sized> Host for &mut _T {
+                fn f32_param(&mut self, x: f32) -> () {
+                    Host::f32_param(*self, x)
+                }
+                fn f64_param(&mut self, x: f64) -> () {
+                    Host::f64_param(*self, x)
+                }
+                fn f32_result(&mut self) -> f32 {
+                    Host::f32_result(*self)
+                }
+                fn f64_result(&mut self) -> f64 {
+                    Host::f64_result(*self)
+                }
+            }
+>>>>>>> upstream/main
         }
     }
 }

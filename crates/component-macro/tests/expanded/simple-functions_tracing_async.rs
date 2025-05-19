@@ -154,14 +154,33 @@ const _: () = {
         }
         pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
+<<<<<<< HEAD
             host_getter: fn(&mut T) -> D::Data<'_>,
+||||||| 40315bd2c
+            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+=======
+            get: fn(&mut T) -> D::Data<'_>,
+>>>>>>> upstream/main
         ) -> wasmtime::Result<()>
         where
             D: wasmtime::component::HasData,
             for<'a> D::Data<'a>: foo::foo::simple::Host + Send,
+<<<<<<< HEAD
             T: 'static + Send,
+||||||| 40315bd2c
+            T: Send,
+            U: foo::foo::simple::Host + Send,
+=======
+            T: Send + 'static,
+>>>>>>> upstream/main
         {
+<<<<<<< HEAD
             foo::foo::simple::add_to_linker::<T, D>(linker, host_getter)?;
+||||||| 40315bd2c
+            foo::foo::simple::add_to_linker(linker, get)?;
+=======
+            foo::foo::simple::add_to_linker::<T, D>(linker, get)?;
+>>>>>>> upstream/main
             Ok(())
         }
         pub fn foo_foo_simple(&self) -> &exports::foo::foo::simple::Guest {
@@ -184,6 +203,7 @@ pub mod foo {
                 async fn f5(&mut self) -> (u32, u32);
                 async fn f6(&mut self, a: u32, b: u32, c: u32) -> (u32, u32, u32);
             }
+<<<<<<< HEAD
             impl<_T: Host + Send> Host for &mut _T {
                 async fn f1(&mut self) -> () {
                     Host::f1(*self).await
@@ -204,14 +224,41 @@ pub mod foo {
                     Host::f6(*self, a, b, c).await
                 }
             }
+||||||| 40315bd2c
+            pub trait GetHost<
+                T,
+                D,
+            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
+                type Host: Host + Send;
+            }
+            impl<F, T, D, O> GetHost<T, D> for F
+            where
+                F: Fn(T) -> O + Send + Sync + Copy + 'static,
+                O: Host + Send,
+            {
+                type Host = O;
+            }
+            pub fn add_to_linker_get_host<
+                T,
+                G: for<'a> GetHost<&'a mut T, T, Host: Host + Send>,
+            >(
+=======
+>>>>>>> upstream/main
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
                 D: wasmtime::component::HasData,
+<<<<<<< HEAD
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
+||||||| 40315bd2c
+                T: Send,
+=======
+                for<'a> D::Data<'a>: Host + Send,
+                T: Send + 'static,
+>>>>>>> upstream/main
             {
                 let mut inst = linker.instance("foo:foo/simple")?;
                 inst.func_wrap_async(
@@ -370,6 +417,60 @@ pub mod foo {
                 )?;
                 Ok(())
             }
+<<<<<<< HEAD
+||||||| 40315bd2c
+            pub fn add_to_linker<T, U>(
+                linker: &mut wasmtime::component::Linker<T>,
+                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            ) -> wasmtime::Result<()>
+            where
+                U: Host + Send,
+                T: Send,
+            {
+                add_to_linker_get_host(linker, get)
+            }
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
+                async fn f1(&mut self) -> () {
+                    Host::f1(*self).await
+                }
+                async fn f2(&mut self, a: u32) -> () {
+                    Host::f2(*self, a).await
+                }
+                async fn f3(&mut self, a: u32, b: u32) -> () {
+                    Host::f3(*self, a, b).await
+                }
+                async fn f4(&mut self) -> u32 {
+                    Host::f4(*self).await
+                }
+                async fn f5(&mut self) -> (u32, u32) {
+                    Host::f5(*self).await
+                }
+                async fn f6(&mut self, a: u32, b: u32, c: u32) -> (u32, u32, u32) {
+                    Host::f6(*self, a, b, c).await
+                }
+            }
+=======
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
+                async fn f1(&mut self) -> () {
+                    Host::f1(*self).await
+                }
+                async fn f2(&mut self, a: u32) -> () {
+                    Host::f2(*self, a).await
+                }
+                async fn f3(&mut self, a: u32, b: u32) -> () {
+                    Host::f3(*self, a, b).await
+                }
+                async fn f4(&mut self) -> u32 {
+                    Host::f4(*self).await
+                }
+                async fn f5(&mut self) -> (u32, u32) {
+                    Host::f5(*self).await
+                }
+                async fn f6(&mut self, a: u32, b: u32, c: u32) -> (u32, u32, u32) {
+                    Host::f6(*self, a, b, c).await
+                }
+            }
+>>>>>>> upstream/main
         }
     }
 }

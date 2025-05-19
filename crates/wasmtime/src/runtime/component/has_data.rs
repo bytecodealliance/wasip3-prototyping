@@ -57,11 +57,10 @@
 /// in your project to use this, but Wasmtime also provides a convenience
 /// [`HasSelf`] type to avoid the need for this in some common use cases.
 ///
-/// For example, let's say you wanted to invoke the above `add_to_linker`
-/// function where the `T` in [`Store<T>`] directly implements the `Host` trait
-/// itself:
-///
 /// # Example: `Host for T` using `Store<T>`
+///
+/// Let's say you wanted to invoke the above `add_to_linker` function where the
+/// `T` in [`Store<T>`] directly implements the `Host` trait itself:
 ///
 /// ```
 /// use wasmtime::component::{Linker, HasSelf};
