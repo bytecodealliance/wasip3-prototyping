@@ -9,13 +9,13 @@ use crate::p3::host::{
     push_request, push_response,
 };
 use crate::p3::{
-    Body, BodyContext, BodyFrame, ContentLength, Request, RequestOptions, Response, WasiHttp,
-    WasiHttpImpl, WasiHttpView, DEFAULT_BUFFER_CAPACITY,
+    Body, BodyContext, BodyFrame, ContentLength, DEFAULT_BUFFER_CAPACITY, Request, RequestOptions,
+    Response, WasiHttp, WasiHttpImpl, WasiHttpView,
 };
-use anyhow::{bail, Context as _};
+use anyhow::{Context as _, bail};
 use bytes::{Bytes, BytesMut};
-use core::future::poll_fn;
 use core::future::Future;
+use core::future::poll_fn;
 use core::mem;
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
@@ -29,9 +29,9 @@ use std::sync::Arc;
 use wasmtime::component::{
     Accessor, AccessorTask, FutureWriter, HostFuture, HostStream, Resource, StreamWriter,
 };
+use wasmtime_wasi::ResourceTable;
 use wasmtime_wasi::p3::bindings::clocks::monotonic_clock::Duration;
 use wasmtime_wasi::p3::{ResourceView as _, WithChildren};
-use wasmtime_wasi::ResourceTable;
 
 fn get_request_options<'a>(
     table: &'a ResourceTable,

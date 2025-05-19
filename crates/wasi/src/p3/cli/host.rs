@@ -1,10 +1,10 @@
+use crate::p3::ResourceView as _;
 use crate::p3::bindings::cli::{
     environment, exit, stderr, stdin, stdout, terminal_input, terminal_output, terminal_stderr,
     terminal_stdin, terminal_stdout,
 };
 use crate::p3::cli::{I32Exit, TerminalInput, TerminalOutput, WasiCli, WasiCliImpl, WasiCliView};
-use crate::p3::ResourceView as _;
-use anyhow::{anyhow, Context as _};
+use anyhow::{Context as _, anyhow};
 use bytes::BytesMut;
 use std::io::Cursor;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};

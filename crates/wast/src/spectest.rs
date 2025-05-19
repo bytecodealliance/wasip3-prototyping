@@ -88,9 +88,9 @@ pub fn link_spectest<T>(
 }
 
 #[cfg(feature = "component-model")]
-pub fn link_component_spectest<T: 'static>(linker: &mut component::Linker<T>) -> Result<()> {
-    use std::sync::atomic::{AtomicU32, Ordering::SeqCst};
+pub fn link_component_spectest<T>(linker: &mut component::Linker<T>) -> Result<()> {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering::SeqCst};
     use wasmtime::component::{Resource, ResourceType};
 
     let engine = linker.engine().clone();

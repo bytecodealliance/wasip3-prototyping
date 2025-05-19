@@ -49,20 +49,20 @@
 
 use {
     crate::{
+        AsContext, AsContextMut, Engine, StoreContext, StoreContextMut, ValRaw,
         component::{
-            func::{self, Func, Options},
             HasData, HasSelf, Instance,
+            func::{self, Func, Options},
         },
         store::{StoreInner, StoreOpaque, StoreToken},
         vm::{
-            component::{CallContext, ComponentInstance, InstanceFlags, ResourceTables},
-            mpk::{self, ProtectionMask},
             AsyncWasmCallState, PreviousAsyncWasmCallState, SendSyncPtr, VMFuncRef,
             VMMemoryDefinition, VMStore, VMStoreRawPtr,
+            component::{CallContext, ComponentInstance, InstanceFlags, ResourceTables},
+            mpk::{self, ProtectionMask},
         },
-        AsContext, AsContextMut, Engine, StoreContext, StoreContextMut, ValRaw,
     },
-    anyhow::{anyhow, bail, Context as _, Result},
+    anyhow::{Context as _, Result, anyhow, bail},
     error_contexts::{GlobalErrorContextRefCount, LocalErrorContextRefCount},
     futures::{
         channel::oneshot,
@@ -83,34 +83,34 @@ use {
         marker::PhantomData,
         mem::{self, MaybeUninit},
         ops::{DerefMut, Range},
-        pin::{pin, Pin},
+        pin::{Pin, pin},
         ptr::{self, NonNull},
         sync::{
-            atomic::{AtomicPtr, Ordering::Relaxed},
             Arc, Mutex,
+            atomic::{AtomicPtr, Ordering::Relaxed},
         },
         task::{Context, Poll, Wake, Waker},
         vec::Vec,
     },
     table::{Table, TableDebug, TableError, TableId},
     wasmtime_environ::{
+        PrimaryMap,
         component::{
-            RuntimeComponentInstanceIndex, StringEncoding,
+            MAX_FLAT_PARAMS, MAX_FLAT_RESULTS, RuntimeComponentInstanceIndex, StringEncoding,
             TypeComponentGlobalErrorContextTableIndex, TypeComponentLocalErrorContextTableIndex,
-            TypeFutureTableIndex, TypeStreamTableIndex, TypeTupleIndex, MAX_FLAT_PARAMS,
-            MAX_FLAT_RESULTS,
+            TypeFutureTableIndex, TypeStreamTableIndex, TypeTupleIndex,
         },
-        fact, PrimaryMap,
+        fact,
     },
     wasmtime_fiber::{Fiber, Suspend},
 };
 
-pub(crate) use futures_and_streams::{
-    lower_error_context_to_index, lower_future_to_index, lower_stream_to_index, ResourcePair,
-};
 pub use futures_and_streams::{
     ErrorContext, FutureReader, FutureWriter, HostFuture, HostStream, ReadBuffer, StreamReader,
     StreamWriter, VecBuffer, Watch, WriteBuffer,
+};
+pub(crate) use futures_and_streams::{
+    ResourcePair, lower_error_context_to_index, lower_future_to_index, lower_stream_to_index,
 };
 
 mod error_contexts;
@@ -218,11 +218,12 @@ const START_FLAG_ASYNC_CALLEE: u32 = fact::START_FLAG_ASYNC_CALLEE as u32;
 /// instance to which the current host task belongs.
 ///
 /// See [`Accessor::with`] for details.
-pub struct Access<'a, T, D: HasData = HasSelf<T>>(&'a mut Accessor<T, D>);
+pub struct Access<'a, T: 'static, D: HasData = HasSelf<T>>(&'a mut Accessor<T, D>);
 
 impl<'a, T, D> Access<'a, T, D>
 where
     D: HasData,
+    T: 'static,
 {
     /// Get mutable access to the store data.
     pub fn data_mut(&mut self) -> &mut T {
@@ -254,6 +255,7 @@ where
 impl<'a, T, D> AsContext for Access<'a, T, D>
 where
     D: HasData,
+    T: 'static,
 {
     type Data = T;
 
@@ -266,6 +268,7 @@ where
 impl<'a, T, D> AsContextMut for Access<'a, T, D>
 where
     D: HasData,
+    T: 'static,
 {
     fn as_context_mut(&mut self) -> StoreContextMut<T> {
         // SAFETY: Per the contract documented for `Accessor::new`, this will
@@ -286,7 +289,7 @@ where
 ///
 /// This allows multiple host task futures to execute concurrently and access
 /// the store between (but not across) `await` points.
-pub struct Accessor<T, D = HasSelf<T>>
+pub struct Accessor<T: 'static, D = HasSelf<T>>
 where
     D: HasData,
 {
@@ -1312,10 +1315,10 @@ impl ComponentInstance {
             &mut dyn VMStore,
             &mut ComponentInstance,
         ) -> Result<[MaybeUninit<ValRaw>; MAX_FLAT_PARAMS]>
-               + Send
-               + Sync
-               + 'static
-               + use<T> {
+        + Send
+        + Sync
+        + 'static
+        + use<T> {
             let token = StoreToken::new(store);
             move |store: &mut dyn VMStore, instance: &mut ComponentInstance| {
                 let mut storage = [MaybeUninit::uninit(); MAX_FLAT_PARAMS];
@@ -3237,11 +3240,15 @@ impl Instance {
     /// the future presumably does not depend on any guest task making further
     /// progress (since no futher progress can be made) and thus is not an
     /// appropriate future to poll using this function.
-    pub async fn run<U: Send, V: Send + Sync + 'static>(
+    pub async fn run<F>(
         &self,
-        mut store: impl AsContextMut<Data = U>,
-        fut: impl Future<Output = V> + Send,
-    ) -> Result<V> {
+        mut store: impl AsContextMut<Data: Send>,
+        fut: F,
+    ) -> Result<F::Output>
+    where
+        F: Future + Send,
+        F::Output: Send + Sync + 'static,
+    {
         check_recursive_run();
         store
             .as_context_mut()

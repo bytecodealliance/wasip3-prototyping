@@ -1,10 +1,10 @@
-use crate::ir::immediates::{Ieee32, Ieee64};
 use crate::ir::KnownSymbol;
+use crate::ir::immediates::{Ieee32, Ieee64};
 use crate::isa::x64::encoding::evex::{EvexInstruction, EvexVectorLength, RegisterOrAmode};
 use crate::isa::x64::encoding::rex::{
-    emit_simm, emit_std_enc_enc, emit_std_enc_mem, emit_std_reg_mem, emit_std_reg_reg, int_reg_enc,
-    low8_will_sign_extend_to_32, low8_will_sign_extend_to_64, reg_enc, LegacyPrefixes, OpcodeMap,
-    RexFlags,
+    LegacyPrefixes, OpcodeMap, RexFlags, emit_simm, emit_std_enc_enc, emit_std_enc_mem,
+    emit_std_reg_mem, emit_std_reg_reg, int_reg_enc, low8_will_sign_extend_to_32,
+    low8_will_sign_extend_to_64, reg_enc,
 };
 use crate::isa::x64::encoding::vex::{VexInstruction, VexVectorLength};
 use crate::isa::x64::inst::args::*;
@@ -17,27 +17,22 @@ fn emit_signed_cvt(
     sink: &mut MachBuffer<Inst>,
     info: &EmitInfo,
     state: &mut EmitState,
-    // Required to be RealRegs.
     src: Reg,
     dst: Writable<Reg>,
     to_f64: bool,
 ) {
-    // Handle an unsigned int, which is the "easy" case: a signed conversion will do the
-    // right thing.
-    let op = if to_f64 {
-        SseOpcode::Cvtsi2sd
-    } else {
-        SseOpcode::Cvtsi2ss
-    };
+    assert!(src.is_real());
+    assert!(dst.to_reg().is_real());
+
+    // Handle an unsigned int, which is the "easy" case: a signed conversion
+    // will do the right thing.
     let dst = WritableXmm::from_writable_reg(dst).unwrap();
-    Inst::CvtIntToFloat {
-        op,
-        dst,
-        src1: dst.to_reg(),
-        src2: GprMem::unwrap_new(RegMem::reg(src)),
-        src2_size: OperandSize::Size64,
-    }
-    .emit(sink, info, state);
+    let inst = if to_f64 {
+        asm::inst::cvtsi2sdq_a::new(dst, src).into()
+    } else {
+        asm::inst::cvtsi2ssq_a::new(dst, src).into()
+    };
+    Inst::External { inst }.emit(sink, info, state);
 }
 
 /// Emits a one way conditional jump if CC is set (true).
@@ -287,40 +282,6 @@ pub(crate) fn emit(
                 .encode(sink);
         }
 
-        Inst::Not { size, src, dst } => {
-            let src = src.to_reg();
-            let dst = dst.to_reg().to_reg();
-            debug_assert_eq!(src, dst);
-            let rex_flags = RexFlags::from((*size, dst));
-            let (opcode, prefix) = match size {
-                OperandSize::Size8 => (0xF6, LegacyPrefixes::None),
-                OperandSize::Size16 => (0xF7, LegacyPrefixes::_66),
-                OperandSize::Size32 => (0xF7, LegacyPrefixes::None),
-                OperandSize::Size64 => (0xF7, LegacyPrefixes::None),
-            };
-
-            let subopcode = 2;
-            let enc_src = int_reg_enc(dst);
-            emit_std_enc_enc(sink, prefix, opcode, 1, subopcode, enc_src, rex_flags)
-        }
-
-        Inst::Neg { size, src, dst } => {
-            let src = src.to_reg();
-            let dst = dst.to_reg().to_reg();
-            debug_assert_eq!(src, dst);
-            let rex_flags = RexFlags::from((*size, dst));
-            let (opcode, prefix) = match size {
-                OperandSize::Size8 => (0xF6, LegacyPrefixes::None),
-                OperandSize::Size16 => (0xF7, LegacyPrefixes::_66),
-                OperandSize::Size32 => (0xF7, LegacyPrefixes::None),
-                OperandSize::Size64 => (0xF7, LegacyPrefixes::None),
-            };
-
-            let subopcode = 3;
-            let enc_src = int_reg_enc(dst);
-            emit_std_enc_enc(sink, prefix, opcode, 1, subopcode, enc_src, rex_flags)
-        }
-
         Inst::Div {
             sign,
             trap,
@@ -525,11 +486,7 @@ pub(crate) fn emit(
             let imm_size = if i8::try_from(*src2).is_ok() {
                 1
             } else {
-                if *size == OperandSize::Size16 {
-                    2
-                } else {
-                    4
-                }
+                if *size == OperandSize::Size16 { 2 } else { 4 }
             };
             let opcode = if imm_size == 1 { 0x6B } else { 0x69 };
             match src1 {
@@ -1110,62 +1067,6 @@ pub(crate) fn emit(
                     sink.put1(num_bits);
                 }
             }
-        }
-
-        Inst::XmmRmiReg {
-            opcode,
-            src1,
-            src2,
-            dst,
-        } => {
-            let src1 = src1.to_reg();
-            let dst = dst.to_reg().to_reg();
-            debug_assert_eq!(src1, dst);
-            let rex = RexFlags::clear_w();
-            let prefix = LegacyPrefixes::_66;
-            let src2 = src2.clone().to_reg_mem_imm();
-            if let RegMemImm::Imm { simm32 } = src2 {
-                let (opcode_bytes, reg_digit) = match opcode {
-                    SseOpcode::Psllw => (0x0F71, 6),
-                    SseOpcode::Pslld => (0x0F72, 6),
-                    SseOpcode::Psllq => (0x0F73, 6),
-                    SseOpcode::Psraw => (0x0F71, 4),
-                    SseOpcode::Psrad => (0x0F72, 4),
-                    SseOpcode::Psrlw => (0x0F71, 2),
-                    SseOpcode::Psrld => (0x0F72, 2),
-                    SseOpcode::Psrlq => (0x0F73, 2),
-                    _ => panic!("invalid opcode: {opcode}"),
-                };
-                let dst_enc = reg_enc(dst);
-                emit_std_enc_enc(sink, prefix, opcode_bytes, 2, reg_digit, dst_enc, rex);
-                let imm = (simm32)
-                    .try_into()
-                    .expect("the immediate must be convertible to a u8");
-                sink.put1(imm);
-            } else {
-                let opcode_bytes = match opcode {
-                    SseOpcode::Psllw => 0x0FF1,
-                    SseOpcode::Pslld => 0x0FF2,
-                    SseOpcode::Psllq => 0x0FF3,
-                    SseOpcode::Psraw => 0x0FE1,
-                    SseOpcode::Psrad => 0x0FE2,
-                    SseOpcode::Psrlw => 0x0FD1,
-                    SseOpcode::Psrld => 0x0FD2,
-                    SseOpcode::Psrlq => 0x0FD3,
-                    _ => panic!("invalid opcode: {opcode}"),
-                };
-
-                match src2 {
-                    RegMemImm::Reg { reg } => {
-                        emit_std_reg_reg(sink, prefix, opcode_bytes, 2, dst, reg, rex);
-                    }
-                    RegMemImm::Mem { addr } => {
-                        let addr = &addr.finalize(state.frame_layout(), sink).clone();
-                        emit_std_reg_mem(sink, prefix, opcode_bytes, 2, dst, addr, rex, 0);
-                    }
-                    RegMemImm::Imm { .. } => unreachable!(),
-                }
-            };
         }
 
         Inst::CmpRmiR {
@@ -2043,12 +1944,6 @@ pub(crate) fn emit(
             let rex = RexFlags::clear_w();
 
             let (prefix, opcode, num_opcodes) = match op {
-                SseOpcode::Cvtdq2pd => (LegacyPrefixes::_F3, 0x0FE6, 2),
-                SseOpcode::Cvtpd2ps => (LegacyPrefixes::_66, 0x0F5A, 2),
-                SseOpcode::Cvtps2pd => (LegacyPrefixes::None, 0x0F5A, 2),
-                SseOpcode::Cvtdq2ps => (LegacyPrefixes::None, 0x0F5B, 2),
-                SseOpcode::Cvttpd2dq => (LegacyPrefixes::_66, 0x0FE6, 2),
-                SseOpcode::Cvttps2dq => (LegacyPrefixes::_F3, 0x0F5B, 2),
                 SseOpcode::Movaps => (LegacyPrefixes::None, 0x0F28, 2),
                 SseOpcode::Movapd => (LegacyPrefixes::_66, 0x0F28, 2),
                 SseOpcode::Movdqa => (LegacyPrefixes::_66, 0x0F6F, 2),
@@ -2228,8 +2123,6 @@ pub(crate) fn emit(
                 SseOpcode::Packusdw => (LegacyPrefixes::_66, 0x0F382B, 3),
                 SseOpcode::Packuswb => (LegacyPrefixes::_66, 0x0F67, 2),
                 SseOpcode::Pmaddubsw => (LegacyPrefixes::_66, 0x0F3804, 3),
-                SseOpcode::Pand => (LegacyPrefixes::_66, 0x0FDB, 2),
-                SseOpcode::Pandn => (LegacyPrefixes::_66, 0x0FDF, 2),
                 SseOpcode::Pavgb => (LegacyPrefixes::_66, 0x0FE0, 2),
                 SseOpcode::Pavgw => (LegacyPrefixes::_66, 0x0FE3, 2),
                 SseOpcode::Pcmpeqb => (LegacyPrefixes::_66, 0x0F74, 2),
@@ -2260,16 +2153,7 @@ pub(crate) fn emit(
                 SseOpcode::Pmulld => (LegacyPrefixes::_66, 0x0F3840, 3),
                 SseOpcode::Pmullw => (LegacyPrefixes::_66, 0x0FD5, 2),
                 SseOpcode::Pmuludq => (LegacyPrefixes::_66, 0x0FF4, 2),
-                SseOpcode::Por => (LegacyPrefixes::_66, 0x0FEB, 2),
                 SseOpcode::Pshufb => (LegacyPrefixes::_66, 0x0F3800, 3),
-                SseOpcode::Psubb => (LegacyPrefixes::_66, 0x0FF8, 2),
-                SseOpcode::Psubd => (LegacyPrefixes::_66, 0x0FFA, 2),
-                SseOpcode::Psubq => (LegacyPrefixes::_66, 0x0FFB, 2),
-                SseOpcode::Psubw => (LegacyPrefixes::_66, 0x0FF9, 2),
-                SseOpcode::Psubsb => (LegacyPrefixes::_66, 0x0FE8, 2),
-                SseOpcode::Psubsw => (LegacyPrefixes::_66, 0x0FE9, 2),
-                SseOpcode::Psubusb => (LegacyPrefixes::_66, 0x0FD8, 2),
-                SseOpcode::Psubusw => (LegacyPrefixes::_66, 0x0FD9, 2),
                 SseOpcode::Punpckhbw => (LegacyPrefixes::_66, 0x0F68, 2),
                 SseOpcode::Punpckhwd => (LegacyPrefixes::_66, 0x0F69, 2),
                 SseOpcode::Punpcklbw => (LegacyPrefixes::_66, 0x0F60, 2),
@@ -2278,14 +2162,9 @@ pub(crate) fn emit(
                 SseOpcode::Punpcklqdq => (LegacyPrefixes::_66, 0x0F6C, 2),
                 SseOpcode::Punpckhdq => (LegacyPrefixes::_66, 0x0F6A, 2),
                 SseOpcode::Punpckhqdq => (LegacyPrefixes::_66, 0x0F6D, 2),
-                SseOpcode::Pxor => (LegacyPrefixes::_66, 0x0FEF, 2),
                 SseOpcode::Unpcklps => (LegacyPrefixes::None, 0x0F14, 2),
                 SseOpcode::Unpckhps => (LegacyPrefixes::None, 0x0F15, 2),
-                SseOpcode::Phaddw => (LegacyPrefixes::_66, 0x0F3801, 3),
-                SseOpcode::Phaddd => (LegacyPrefixes::_66, 0x0F3802, 3),
                 SseOpcode::Movss => (LegacyPrefixes::_F3, 0x0F10, 2),
-                SseOpcode::Cvtss2sd => (LegacyPrefixes::_F3, 0x0F5A, 2),
-                SseOpcode::Cvtsd2ss => (LegacyPrefixes::_F2, 0x0F5A, 2),
                 SseOpcode::Sqrtss => (LegacyPrefixes::_F3, 0x0F51, 2),
                 SseOpcode::Sqrtsd => (LegacyPrefixes::_F2, 0x0F51, 2),
                 SseOpcode::Unpcklpd => (LegacyPrefixes::_66, 0x0F14, 2),
@@ -3255,8 +3134,6 @@ pub(crate) fn emit(
             let dst = dst.to_reg().to_reg();
 
             let (prefix, opcode, dst_first) = match op {
-                SseOpcode::Cvttss2si => (LegacyPrefixes::_F3, 0x0F2C, true),
-                SseOpcode::Cvttsd2si => (LegacyPrefixes::_F2, 0x0F2C, true),
                 // Movd and movq use the same opcode; the presence of the REX prefix (set below)
                 // actually determines which is used.
                 SseOpcode::Movd | SseOpcode::Movq => (LegacyPrefixes::_66, 0x0F7E, false),
@@ -3337,35 +3214,6 @@ pub(crate) fn emit(
                 RegMem::Mem { addr } => {
                     let addr = &addr.finalize(state.frame_layout(), sink);
                     emit_std_reg_mem(sink, prefix, opcode, len, src1, addr, rex, 0);
-                }
-            }
-        }
-
-        Inst::CvtIntToFloat {
-            op,
-            src1,
-            src2,
-            dst,
-            src2_size,
-        } => {
-            let src1 = src1.to_reg();
-            let dst = dst.to_reg().to_reg();
-            assert_eq!(src1, dst);
-            let src2 = src2.clone().to_reg_mem().clone();
-
-            let (prefix, opcode) = match op {
-                SseOpcode::Cvtsi2ss => (LegacyPrefixes::_F3, 0x0F2A),
-                SseOpcode::Cvtsi2sd => (LegacyPrefixes::_F2, 0x0F2A),
-                _ => panic!("unexpected opcode {op:?}"),
-            };
-            let rex = RexFlags::from(*src2_size);
-            match src2 {
-                RegMem::Reg { reg: src2 } => {
-                    emit_std_reg_reg(sink, prefix, opcode, 2, dst, src2, rex);
-                }
-                RegMem::Mem { addr } => {
-                    let addr = &addr.finalize(state.frame_layout(), sink);
-                    emit_std_reg_mem(sink, prefix, opcode, 2, dst, addr, rex, 0);
                 }
             }
         }
@@ -3531,6 +3379,8 @@ pub(crate) fn emit(
             tmp_gpr,
             tmp_xmm,
         } => {
+            use OperandSize::*;
+
             let src = src.to_reg();
             let dst = dst.to_writable_reg();
             let tmp_gpr = tmp_gpr.to_writable_reg();
@@ -3582,17 +3432,26 @@ pub(crate) fn emit(
             //
             // done:
 
-            let (cast_op, cmp_op, trunc_op) = match src_size {
-                OperandSize::Size64 => (SseOpcode::Movq, SseOpcode::Ucomisd, SseOpcode::Cvttsd2si),
-                OperandSize::Size32 => (SseOpcode::Movd, SseOpcode::Ucomiss, SseOpcode::Cvttss2si),
+            let (cast_op, cmp_op) = match src_size {
+                Size64 => (SseOpcode::Movq, SseOpcode::Ucomisd),
+                Size32 => (SseOpcode::Movd, SseOpcode::Ucomiss),
                 _ => unreachable!(),
+            };
+
+            let cvtt_op = |dst, src| Inst::External {
+                inst: match (*src_size, *dst_size) {
+                    (Size32, Size32) => asm::inst::cvttss2si_a::new(dst, src).into(),
+                    (Size32, Size64) => asm::inst::cvttss2si_aq::new(dst, src).into(),
+                    (Size64, Size32) => asm::inst::cvttsd2si_a::new(dst, src).into(),
+                    (Size64, Size64) => asm::inst::cvttsd2si_aq::new(dst, src).into(),
+                    _ => unreachable!(),
+                },
             };
 
             let done = sink.get_label();
 
             // The truncation.
-            let inst = Inst::xmm_to_gpr(trunc_op, src, dst, *dst_size);
-            inst.emit(sink, info, state);
+            cvtt_op(dst, src).emit(sink, info, state);
 
             // Compare against 1, in case of overflow the dst operand was INT_MIN.
             let inst = Inst::cmp_rmi_r(*dst_size, dst.to_reg(), RegMemImm::imm(1));
@@ -3713,6 +3572,8 @@ pub(crate) fn emit(
             tmp_xmm,
             tmp_xmm2,
         } => {
+            use OperandSize::*;
+
             let src = src.to_reg();
             let dst = dst.to_writable_reg();
             let tmp_gpr = tmp_gpr.to_writable_reg();
@@ -3755,20 +3616,36 @@ pub(crate) fn emit(
 
             assert_ne!(tmp_xmm.to_reg(), src, "tmp_xmm clobbers src!");
 
-            let (sub_op, cast_op, cmp_op, trunc_op) = match src_size {
-                OperandSize::Size32 => (
-                    asm::inst::subss_a::new(tmp_xmm2, tmp_xmm.to_reg()).into(),
-                    SseOpcode::Movd,
-                    SseOpcode::Ucomiss,
-                    SseOpcode::Cvttss2si,
-                ),
-                OperandSize::Size64 => (
-                    asm::inst::subsd_a::new(tmp_xmm2, tmp_xmm.to_reg()).into(),
-                    SseOpcode::Movq,
-                    SseOpcode::Ucomisd,
-                    SseOpcode::Cvttsd2si,
-                ),
+            let (cast_op, cmp_op) = match src_size {
+                Size32 => (SseOpcode::Movd, SseOpcode::Ucomiss),
+                Size64 => (SseOpcode::Movq, SseOpcode::Ucomisd),
                 _ => unreachable!(),
+            };
+
+            let xor_op = |dst, src| Inst::External {
+                inst: match *dst_size {
+                    Size32 => asm::inst::xorl_rm::new(dst, src).into(),
+                    Size64 => asm::inst::xorq_rm::new(dst, src).into(),
+                    _ => unreachable!(),
+                },
+            };
+
+            let subs_op = |dst, src| Inst::External {
+                inst: match *src_size {
+                    Size32 => asm::inst::subss_a::new(dst, src).into(),
+                    Size64 => asm::inst::subsd_a::new(dst, src).into(),
+                    _ => unreachable!(),
+                },
+            };
+
+            let cvtt_op = |dst, src| Inst::External {
+                inst: match (*src_size, *dst_size) {
+                    (Size32, Size32) => asm::inst::cvttss2si_a::new(dst, src).into(),
+                    (Size32, Size64) => asm::inst::cvttss2si_aq::new(dst, src).into(),
+                    (Size64, Size32) => asm::inst::cvttsd2si_a::new(dst, src).into(),
+                    (Size64, Size64) => asm::inst::cvttsd2si_aq::new(dst, src).into(),
+                    _ => unreachable!(),
+                },
             };
 
             let done = sink.get_label();
@@ -3796,12 +3673,7 @@ pub(crate) fn emit(
                 let not_nan = sink.get_label();
                 one_way_jmp(sink, CC::NP, not_nan);
 
-                let inst = match *dst_size {
-                    OperandSize::Size32 => asm::inst::xorl_rm::new(dst, dst).into(),
-                    OperandSize::Size64 => asm::inst::xorq_rm::new(dst, dst).into(),
-                    _ => unreachable!(),
-                };
-                Inst::External { inst }.emit(sink, info, state);
+                xor_op(dst, dst).emit(sink, info, state);
 
                 let inst = Inst::jmp_known(done);
                 inst.emit(sink, info, state);
@@ -3815,8 +3687,7 @@ pub(crate) fn emit(
             // Actual truncation for small inputs: if the result is not positive, then we had an
             // overflow.
 
-            let inst = Inst::xmm_to_gpr(trunc_op, src, dst, *dst_size);
-            inst.emit(sink, info, state);
+            cvtt_op(dst, src).emit(sink, info, state);
 
             let inst = Inst::cmp_rmi_r(*dst_size, dst.to_reg(), RegMemImm::imm(0));
             inst.emit(sink, info, state);
@@ -3848,10 +3719,9 @@ pub(crate) fn emit(
             let inst = Inst::gen_move(tmp_xmm2, src, types::F64);
             inst.emit(sink, info, state);
 
-            Inst::External { inst: sub_op }.emit(sink, info, state);
+            subs_op(tmp_xmm2, tmp_xmm.to_reg()).emit(sink, info, state);
 
-            let inst = Inst::xmm_to_gpr(trunc_op, tmp_xmm2.to_reg(), dst, *dst_size);
-            inst.emit(sink, info, state);
+            cvtt_op(dst, tmp_xmm2.to_reg()).emit(sink, info, state);
 
             let inst = Inst::cmp_rmi_r(*dst_size, dst.to_reg(), RegMemImm::imm(0));
             inst.emit(sink, info, state);
@@ -4099,8 +3969,10 @@ pub(crate) fn emit(
                     .emit(sink, info, state);
 
                     // notq %r_temp
-                    let i4 = Inst::not(OperandSize::Size64, temp);
-                    i4.emit(sink, info, state);
+                    Inst::External {
+                        inst: asm::inst::notq_m::new(temp).into(),
+                    }
+                    .emit(sink, info, state);
                 }
                 RmwOp::Umin | RmwOp::Umax | RmwOp::Smin | RmwOp::Smax => {
                     // cmp %r_temp, %r_operand
@@ -4215,8 +4087,14 @@ pub(crate) fn emit(
                     .emit(sink, info, state);
 
                     // temp = !temp
-                    Inst::not(OperandSize::Size64, temp_low).emit(sink, info, state);
-                    Inst::not(OperandSize::Size64, temp_high).emit(sink, info, state);
+                    Inst::External {
+                        inst: asm::inst::notq_m::new(temp_low).into(),
+                    }
+                    .emit(sink, info, state);
+                    Inst::External {
+                        inst: asm::inst::notq_m::new(temp_high).into(),
+                    }
+                    .emit(sink, info, state);
                 }
                 RmwOp::Umin | RmwOp::Umax | RmwOp::Smin | RmwOp::Smax => {
                     // Do a comparison with LHS temp and RHS operand.

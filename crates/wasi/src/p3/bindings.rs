@@ -70,9 +70,9 @@ mod generated {
         }
     });
 }
+pub use self::generated::LinkOptions;
 pub use self::generated::exports;
 pub use self::generated::wasi::*;
-pub use self::generated::LinkOptions;
 
 /// Bindings to execute and run a `wasi:cli/command`.
 ///

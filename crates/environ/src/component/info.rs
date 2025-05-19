@@ -999,7 +999,7 @@ pub enum Trampoline {
     /// An intrinisic used by FACT-generated modules to (partially or entirely) transfer
     /// ownership of a `future`.
     ///
-    /// Transfering a `future` can either mean giving away the readable end
+    /// Transferring a `future` can either mean giving away the readable end
     /// while retaining the writable end or only the former, depending on the
     /// ownership status of the `future`.
     FutureTransfer,
@@ -1007,7 +1007,7 @@ pub enum Trampoline {
     /// An intrinisic used by FACT-generated modules to (partially or entirely) transfer
     /// ownership of a `stream`.
     ///
-    /// Transfering a `stream` can either mean giving away the readable end
+    /// Transferring a `stream` can either mean giving away the readable end
     /// while retaining the writable end or only the former, depending on the
     /// ownership status of the `stream`.
     StreamTransfer,

@@ -4,19 +4,19 @@ use core::net::SocketAddr;
 use std::sync::Arc;
 
 use cap_net_ext::{AddressFamily, Blocking, UdpSocketExt as _};
-use io_lifetimes::raw::{FromRawSocketlike as _, IntoRawSocketlike as _};
 use io_lifetimes::AsSocketlike as _;
+use io_lifetimes::raw::{FromRawSocketlike as _, IntoRawSocketlike as _};
 use rustix::fd::AsFd;
 use rustix::io::Errno;
 use rustix::net::{connect, connect_unspec};
 use tracing::debug;
 
 use crate::p3::bindings::sockets::types::{ErrorCode, IpAddressFamily, IpSocketAddress};
+use crate::p3::sockets::SocketAddressFamily;
 use crate::p3::sockets::util::{
     get_unicast_hop_limit, is_valid_address_family, is_valid_remote_address, receive_buffer_size,
     send_buffer_size, set_receive_buffer_size, set_send_buffer_size, set_unicast_hop_limit,
 };
-use crate::p3::sockets::SocketAddressFamily;
 use crate::runtime::with_ambient_tokio_runtime;
 
 /// Theoretical maximum byte size of a UDP datagram, the real limit is lower,

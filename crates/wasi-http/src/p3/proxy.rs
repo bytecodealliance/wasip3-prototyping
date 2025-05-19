@@ -2,12 +2,12 @@ use anyhow::Context as _;
 use futures::FutureExt;
 use std::future::Future;
 use std::pin::Pin;
-use wasmtime::component::Resource;
 use wasmtime::AsContextMut;
+use wasmtime::component::Resource;
 use wasmtime_wasi::p3::ResourceView;
 
-use crate::p3::bindings::http::types::ErrorCode;
 use crate::p3::bindings::Proxy;
+use crate::p3::bindings::http::types::ErrorCode;
 use crate::p3::{Request, Response};
 
 impl Proxy {

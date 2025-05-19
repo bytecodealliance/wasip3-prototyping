@@ -2,11 +2,12 @@
 
 use std::path::Path;
 
-use anyhow::{anyhow, Context as _};
+use anyhow::{Context as _, anyhow};
 use test_programs_artifacts::*;
-use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::Store;
+use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::p3::ResourceView;
 use wasmtime_wasi::p3::bindings::Command;
 use wasmtime_wasi::p3::cli::{WasiCliCtx, WasiCliView};
 use wasmtime_wasi::p3::clocks::{WasiClocksCtx, WasiClocksView};
@@ -15,7 +16,6 @@ use wasmtime_wasi::p3::random::{WasiRandomCtx, WasiRandomView};
 use wasmtime_wasi::p3::sockets::{
     AllowedNetworkUses, SocketAddrCheck, WasiSocketsCtx, WasiSocketsView,
 };
-use wasmtime_wasi::p3::ResourceView;
 
 macro_rules! assert_test_exists {
     ($name:ident) => {

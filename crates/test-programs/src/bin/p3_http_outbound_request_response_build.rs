@@ -45,17 +45,19 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
             let (_, trailers_rx) = wit_future::new();
             let (req, _) = Request::new(Fields::new(), None, trailers_rx, None);
 
-            assert!(req
-                .set_method(&Method::Other("invalid method".to_string()))
-                .is_err());
+            assert!(
+                req.set_method(&Method::Other("invalid method".to_string()))
+                    .is_err()
+            );
 
             assert!(req.set_authority(Some("bad-port:99999")).is_err());
             assert!(req.set_authority(Some("bad-\nhost")).is_err());
             assert!(req.set_authority(Some("too-many-ports:80:80:80")).is_err());
 
-            assert!(req
-                .set_scheme(Some(&Scheme::Other("bad\nscheme".to_string())))
-                .is_err());
+            assert!(
+                req.set_scheme(Some(&Scheme::Other("bad\nscheme".to_string())))
+                    .is_err()
+            );
 
             assert!(req.set_path_with_query(Some("/bad\npath")).is_err());
         }

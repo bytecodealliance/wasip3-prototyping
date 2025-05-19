@@ -702,19 +702,12 @@ pub fn wast_test(u: &mut arbitrary::Unstructured<'_>) -> arbitrary::Result<()> {
 
     let mut fuzz_config: generators::Config = u.arbitrary()?;
     let test: generators::WastTest = u.arbitrary()?;
-    // FIXME: Find a more elegant way to identify tests which require async.
-    if test
-        .test
-        .path
-        .to_str()
-        .map(|s| s.contains("component-model-async"))
-        .unwrap_or(false)
-        || u.arbitrary()?
-    {
-        fuzz_config.enable_async(u)?;
-    }
 
     let test = &test.test;
+
+    if test.config.component_model_async() {
+        fuzz_config.enable_async(u)?;
+    }
 
     // Discard tests that allocate a lot of memory as we don't want to OOM the
     // fuzzer and we also limit memory growth which would cause the test to
@@ -1051,7 +1044,7 @@ pub fn dynamic_component_api_target(input: &mut arbitrary::Unstructured) -> arbi
     use wasmtime::component::{Component, Linker, Val};
     use wasmtime_test_util::component::FuncExt;
     use wasmtime_test_util::component_fuzz::{
-        TestCase, Type, EXPORT_FUNCTION, IMPORT_FUNCTION, MAX_TYPE_DEPTH,
+        EXPORT_FUNCTION, IMPORT_FUNCTION, MAX_TYPE_DEPTH, TestCase, Type,
     };
 
     crate::init_fuzzing();

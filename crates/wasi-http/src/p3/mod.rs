@@ -226,8 +226,8 @@ pub use request::*;
 pub use response::*;
 
 use wasmtime::component::HasData;
-use wasmtime_wasi::p3::ResourceView;
 use wasmtime_wasi::ResourceTable;
+use wasmtime_wasi::p3::ResourceView;
 
 /// Add all of the `wasi:http/proxy` world's interfaces to a [`wasmtime::component::Linker`].
 ///

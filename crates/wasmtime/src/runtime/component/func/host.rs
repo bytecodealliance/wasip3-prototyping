@@ -5,10 +5,10 @@ use crate::component::matching::InstanceType;
 use crate::component::storage::slice_to_storage_mut;
 use crate::component::{ComponentNamedList, ComponentType, Lift, Lower, Val};
 use crate::prelude::*;
+use crate::runtime::vm::SendSyncPtr;
 use crate::runtime::vm::component::{
     ComponentInstance, InstanceFlags, VMComponentContext, VMLowering, VMLoweringCallee,
 };
-use crate::runtime::vm::SendSyncPtr;
 use crate::runtime::vm::{VMFuncRef, VMGlobalDefinition, VMMemoryDefinition, VMOpaqueContext};
 use crate::{AsContextMut, CallHook, StoreContextMut, VMStore, ValRaw};
 use alloc::sync::Arc;
@@ -19,8 +19,8 @@ use core::mem::{self, MaybeUninit};
 use core::pin::Pin;
 use core::ptr::NonNull;
 use wasmtime_environ::component::{
-    CanonicalAbiInfo, ComponentTypes, InterfaceType, RuntimeComponentInstanceIndex, StringEncoding,
-    TypeFuncIndex, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS,
+    CanonicalAbiInfo, ComponentTypes, InterfaceType, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS,
+    RuntimeComponentInstanceIndex, StringEncoding, TypeFuncIndex,
 };
 
 pub struct HostFunc {
@@ -48,6 +48,7 @@ impl HostFunc {
             + 'static,
         P: ComponentNamedList + Lift + Send + Sync + 'static,
         R: ComponentNamedList + Lower + Send + Sync + 'static,
+        T: 'static,
     {
         let entrypoint = Self::entrypoint::<T, F, P, R>;
         Arc::new(HostFunc {
@@ -113,6 +114,7 @@ impl HostFunc {
             + 'static,
         P: ComponentNamedList + Lift + Send + Sync + 'static,
         R: ComponentNamedList + Lower + Send + Sync + 'static,
+        T: 'static,
     {
         let data = SendSyncPtr::new(NonNull::new(data.as_ptr() as *mut F).unwrap());
         unsafe {
@@ -147,6 +149,7 @@ impl HostFunc {
             + Send
             + Sync
             + 'static,
+        T: 'static,
     {
         Arc::new(HostFunc {
             entrypoint: dynamic_entrypoint::<T, F>,
@@ -468,7 +471,10 @@ pub(crate) fn validate_inbounds<T: ComponentType>(memory: &[u8], ptr: &ValRaw) -
 unsafe fn call_host_and_handle_result<T>(
     cx: NonNull<VMOpaqueContext>,
     func: impl FnOnce(StoreContextMut<T>, &mut ComponentInstance, &Arc<ComponentTypes>) -> Result<()>,
-) -> bool {
+) -> bool
+where
+    T: 'static,
+{
     ComponentInstance::from_vmctx(VMComponentContext::from_opaque(cx), |store, instance| {
         crate::runtime::vm::catch_unwind_and_record_trap(|| {
             let mut store = StoreContextMut::<T>(&mut *(store as *mut dyn VMStore).cast());
@@ -481,7 +487,7 @@ unsafe fn call_host_and_handle_result<T>(
     })
 }
 
-unsafe fn call_host_dynamic<T: 'static, F>(
+unsafe fn call_host_dynamic<T, F>(
     mut store: StoreContextMut<T>,
     instance: &mut ComponentInstance,
     types: &Arc<ComponentTypes>,
@@ -505,6 +511,7 @@ where
         + Send
         + Sync
         + 'static,
+    T: 'static,
 {
     let options = Options::new(
         store.0.store_opaque().id(),
@@ -726,6 +733,7 @@ where
         + Send
         + Sync
         + 'static,
+    T: 'static,
 {
     let data = SendSyncPtr::new(NonNull::new(data.as_ptr() as *mut F).unwrap());
     unsafe {

@@ -64,9 +64,9 @@ impl SocketAddrCheck {
     /// while returning `false` will reject the connection.
     pub fn new(
         f: impl Fn(SocketAddr, SocketAddrUse) -> Pin<Box<dyn Future<Output = bool> + Send + Sync>>
-            + Send
-            + Sync
-            + 'static,
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         Self(Arc::new(f))
     }

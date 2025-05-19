@@ -1,24 +1,24 @@
 use crate::body;
 use crate::http_server::Server;
-use anyhow::{anyhow, Context, Result};
-use futures::{channel::oneshot, future, stream, FutureExt};
+use anyhow::{Context, Result, anyhow};
+use futures::{FutureExt, channel::oneshot, future, stream};
 use http_body::Frame;
-use http_body_util::{combinators::BoxBody, BodyExt, Collected, Empty, StreamBody};
-use hyper::{body::Bytes, server::conn::http1, service::service_fn, Method, StatusCode};
+use http_body_util::{BodyExt, Collected, Empty, StreamBody, combinators::BoxBody};
+use hyper::{Method, StatusCode, body::Bytes, server::conn::http1, service::service_fn};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, iter, net::Ipv4Addr, str, sync::Arc};
 use tokio::task;
 use wasmtime::{
-    component::{Component, Linker, ResourceTable},
     Config, Engine, Store,
+    component::{Component, Linker, ResourceTable},
 };
-use wasmtime_wasi::p2::{pipe::MemoryOutputPipe, IoView, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView, pipe::MemoryOutputPipe};
 use wasmtime_wasi_http::{
+    HttpResult, WasiHttpCtx, WasiHttpView,
     bindings::http::types::{ErrorCode, Scheme},
     body::HyperOutgoingBody,
     io::TokioIo,
     types::{self, HostFutureIncomingResponse, IncomingResponse, OutgoingRequestConfig},
-    HttpResult, WasiHttpCtx, WasiHttpView,
 };
 
 type RequestSender = Arc<

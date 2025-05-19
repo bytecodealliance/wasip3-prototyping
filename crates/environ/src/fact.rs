@@ -609,10 +609,11 @@ impl<'a> Module<'a> {
                     .copied()
             },
             |me, v| {
-                assert!(me
-                    .imported_async_start_calls
-                    .insert((callback, post_return), v)
-                    .is_none())
+                assert!(
+                    me.imported_async_start_calls
+                        .insert((callback, post_return), v)
+                        .is_none()
+                )
             },
         )
     }
@@ -872,11 +873,7 @@ impl Options {
     }
 
     fn ptr_size(&self) -> u8 {
-        if self.memory64 {
-            8
-        } else {
-            4
-        }
+        if self.memory64 { 8 } else { 4 }
     }
 
     fn flat_types<'a>(

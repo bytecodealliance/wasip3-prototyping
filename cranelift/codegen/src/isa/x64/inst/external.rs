@@ -1,10 +1,10 @@
 //! Interface with the external assembler crate.
 
 use super::{
-    args::FromWritableReg, regs, Amode, Gpr, Inst, LabelUse, MachBuffer, MachLabel, OperandVisitor,
-    OperandVisitorImpl, SyntheticAmode, VCodeConstant, WritableGpr, WritableXmm, Xmm,
+    Amode, Gpr, Inst, LabelUse, MachBuffer, MachLabel, OperandVisitor, OperandVisitorImpl,
+    SyntheticAmode, VCodeConstant, WritableGpr, WritableXmm, Xmm, args::FromWritableReg, regs,
 };
-use crate::{ir::TrapCode, Reg, Writable};
+use crate::{Reg, Writable, ir::TrapCode};
 use cranelift_assembler_x64 as asm;
 use regalloc2::{PReg, RegClass};
 use std::string::String;
@@ -15,8 +15,10 @@ pub struct CraneliftRegisters;
 impl asm::Registers for CraneliftRegisters {
     type ReadGpr = Gpr;
     type ReadWriteGpr = PairedGpr;
+    type WriteGpr = WritableGpr;
     type ReadXmm = Xmm;
     type ReadWriteXmm = PairedXmm;
+    type WriteXmm = WritableXmm;
 }
 
 /// A pair of registers, one for reading and one for writing.
@@ -85,6 +87,14 @@ impl From<Writable<Reg>> for asm::Gpr<PairedGpr> {
         assert!(wgpr.to_reg().class() == RegClass::Int);
         let wgpr = WritableGpr::from_writable_reg(wgpr).unwrap();
         Self::new(wgpr.into())
+    }
+}
+
+impl From<Writable<Reg>> for asm::Gpr<WritableGpr> {
+    fn from(wgpr: Writable<Reg>) -> Self {
+        assert!(wgpr.to_reg().class() == RegClass::Int);
+        let wgpr = WritableGpr::from_writable_reg(wgpr).unwrap();
+        Self::new(wgpr)
     }
 }
 
@@ -288,6 +298,10 @@ impl<'a, T: OperandVisitor> asm::RegisterVisitor<CraneliftRegisters> for Regallo
         self.collector.reg_reuse_def(write, 0);
     }
 
+    fn write_gpr(&mut self, reg: &mut WritableGpr) {
+        self.collector.reg_def(reg);
+    }
+
     fn fixed_read_gpr(&mut self, reg: &mut Gpr, enc: u8) {
         self.collector
             .reg_fixed_use(reg, fixed_reg(enc, RegClass::Int));
@@ -301,6 +315,11 @@ impl<'a, T: OperandVisitor> asm::RegisterVisitor<CraneliftRegisters> for Regallo
             .reg_fixed_def(write, fixed_reg(enc, RegClass::Int));
     }
 
+    fn fixed_write_gpr(&mut self, reg: &mut WritableGpr, enc: u8) {
+        self.collector
+            .reg_fixed_def(reg, fixed_reg(enc, RegClass::Int));
+    }
+
     fn read_xmm(&mut self, reg: &mut Xmm) {
         self.collector.reg_use(reg);
     }
@@ -309,6 +328,10 @@ impl<'a, T: OperandVisitor> asm::RegisterVisitor<CraneliftRegisters> for Regallo
         let PairedXmm { read, write } = reg;
         self.collector.reg_use(read);
         self.collector.reg_reuse_def(write, 0);
+    }
+
+    fn write_xmm(&mut self, reg: &mut WritableXmm) {
+        self.collector.reg_def(reg);
     }
 
     fn fixed_read_xmm(&mut self, reg: &mut Xmm, enc: u8) {
@@ -322,6 +345,11 @@ impl<'a, T: OperandVisitor> asm::RegisterVisitor<CraneliftRegisters> for Regallo
             .reg_fixed_use(read, fixed_reg(enc, RegClass::Float));
         self.collector
             .reg_fixed_def(write, fixed_reg(enc, RegClass::Float));
+    }
+
+    fn fixed_write_xmm(&mut self, reg: &mut WritableXmm, enc: u8) {
+        self.collector
+            .reg_fixed_def(reg, fixed_reg(enc, RegClass::Float));
     }
 }
 
@@ -473,8 +501,8 @@ pub(crate) use isle_assembler_methods;
 
 #[cfg(test)]
 mod tests {
-    use super::asm::{AsReg, Size};
     use super::PairedGpr;
+    use super::asm::{AsReg, Size};
     use crate::isa::x64::args::{FromWritableReg, Gpr, WritableGpr, WritableXmm, Xmm};
     use crate::isa::x64::inst::external::PairedXmm;
     use crate::{Reg, Writable};

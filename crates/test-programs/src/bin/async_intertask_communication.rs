@@ -8,8 +8,8 @@ mod bindings {
 use {
     std::sync::atomic::{AtomicU32, Ordering::Relaxed},
     test_programs::async_::{
-        context_get, context_set, waitable_join, waitable_set_drop, waitable_set_new, BLOCKED,
-        CALLBACK_CODE_EXIT, CALLBACK_CODE_WAIT, CLOSED, EVENT_FUTURE_WRITE, EVENT_NONE,
+        BLOCKED, CALLBACK_CODE_EXIT, CALLBACK_CODE_WAIT, CLOSED, EVENT_FUTURE_WRITE, EVENT_NONE,
+        context_get, context_set, waitable_join, waitable_set_drop, waitable_set_new,
     },
 };
 

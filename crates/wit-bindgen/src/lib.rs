@@ -1,4 +1,4 @@
-use crate::rust::{to_rust_ident, to_rust_upper_camel_case, RustGenerator, TypeMode};
+use crate::rust::{RustGenerator, TypeMode, to_rust_ident, to_rust_upper_camel_case};
 use crate::types::{TypeInfo, Types};
 use anyhow::bail;
 use heck::*;
@@ -1072,7 +1072,9 @@ impl<_T: 'static> {camel}Pre<_T> {{
         unused_keys.sort();
 
         if !unused_keys.is_empty() {
-            anyhow::bail!("interfaces were specified in the `with` config option but are not referenced in the target world: {unused_keys:?}");
+            anyhow::bail!(
+                "interfaces were specified in the `with` config option but are not referenced in the target world: {unused_keys:?}"
+            );
         }
 
         if !self.opts.only_interfaces {
@@ -1087,7 +1089,9 @@ impl<_T: 'static> {camel}Pre<_T> {{
 
             if !unused_imports.is_empty() {
                 unused_imports.sort();
-                anyhow::bail!("names specified in the `trappable_imports` config option but are not referenced in the target world: {unused_imports:?}");
+                anyhow::bail!(
+                    "names specified in the `trappable_imports` config option but are not referenced in the target world: {unused_imports:?}"
+                );
             }
         }
 

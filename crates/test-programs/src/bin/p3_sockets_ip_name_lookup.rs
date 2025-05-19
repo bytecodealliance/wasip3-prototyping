@@ -1,5 +1,5 @@
 use futures::try_join;
-use test_programs::p3::wasi::sockets::ip_name_lookup::{resolve_addresses, ErrorCode};
+use test_programs::p3::wasi::sockets::ip_name_lookup::{ErrorCode, resolve_addresses};
 use test_programs::p3::wasi::sockets::types::IpAddress;
 
 struct Component;

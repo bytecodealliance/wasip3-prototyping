@@ -9,7 +9,7 @@ use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
-use super::{sleep, Ctx};
+use super::{Ctx, sleep};
 
 pub fn init_logger() {
     static ONCE: Once = Once::new();

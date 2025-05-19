@@ -56,7 +56,9 @@ impl dsl::Location {
                 Some(size) => format!("self.{self}.to_string({size})"),
                 None => unreachable!(),
             },
-            xmm | xmm_m32 | xmm_m64 | xmm_m128 | m8 | m16 | m32 | m64 => format!("self.{self}.to_string()"),
+            xmm | xmm_m32 | xmm_m64 | xmm_m128 | m8 | m16 | m32 | m64 => {
+                format!("self.{self}.to_string()")
+            }
         }
     }
 
@@ -86,6 +88,7 @@ impl dsl::Mutability {
         match self {
             dsl::Mutability::Read => "Read",
             dsl::Mutability::ReadWrite => "ReadWrite",
+            dsl::Mutability::Write => "Write",
         }
     }
 
@@ -94,6 +97,7 @@ impl dsl::Mutability {
         match self {
             dsl::Mutability::Read => "read",
             dsl::Mutability::ReadWrite => "read_write",
+            dsl::Mutability::Write => "write",
         }
     }
 }

@@ -3,8 +3,8 @@
 use super::engine;
 use anyhow::Result;
 use wasmtime::{
-    component::{Component, Linker},
     Config, Engine, Store,
+    component::{Component, Linker},
 };
 
 mod ownership;
@@ -68,8 +68,8 @@ mod no_imports {
 mod no_imports_concurrent {
     use super::*;
     use futures::{
-        stream::{FuturesUnordered, TryStreamExt},
         FutureExt,
+        stream::{FuturesUnordered, TryStreamExt},
     };
 
     wasmtime::component::bindgen!({
@@ -129,14 +129,18 @@ mod no_imports_concurrent {
         let mut futures = FuturesUnordered::new();
         futures.push(no_imports.call_bar(&mut store).boxed());
         futures.push(no_imports.foo().call_foo(&mut store).boxed());
-        assert!(instance
-            .run(&mut store, futures.try_next())
-            .await??
-            .is_some());
-        assert!(instance
-            .run(&mut store, futures.try_next())
-            .await??
-            .is_some());
+        assert!(
+            instance
+                .run(&mut store, futures.try_next())
+                .await??
+                .is_some()
+        );
+        assert!(
+            instance
+                .run(&mut store, futures.try_next())
+                .await??
+                .is_some()
+        );
         Ok(())
     }
 }
@@ -874,7 +878,10 @@ mod unstable_import {
     }
     fn assert_failure(link_options: &LinkOptions) {
         let err = run_with_options(link_options).unwrap_err().to_string();
-        assert_eq!(err, "component imports instance `foo:foo/my-interface`, but a matching implementation was not found in the linker");
+        assert_eq!(
+            err,
+            "component imports instance `foo:foo/my-interface`, but a matching implementation was not found in the linker"
+        );
     }
 
     fn run_with_options(link_options: &LinkOptions) -> Result<()> {

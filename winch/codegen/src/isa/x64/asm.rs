@@ -1,7 +1,7 @@
 //! Assembler library implementation for x64.
 
 use crate::{
-    isa::{reg::Reg, CallingConvention},
+    isa::{CallingConvention, reg::Reg},
     masm::{
         DivKind, Extend, ExtendKind, ExtendType, IntCmpKind, MulWideKind, OperandSize, RemKind,
         RoundingMode, ShiftKind, Signed, V128ExtendKind, V128LoadExtendKind, Zero,
@@ -10,25 +10,27 @@ use crate::{
     x64::regs::scratch,
 };
 use cranelift_codegen::{
+    CallInfo, Final, MachBuffer, MachBufferFinalized, MachInstEmit, MachInstEmitState, MachLabel,
+    PatchRegion, VCodeConstantData, VCodeConstants, Writable,
     ir::{
-        types, ConstantPool, ExternalName, MemFlags, SourceLoc, TrapCode, Type, UserExternalNameRef,
+        ConstantPool, ExternalName, MemFlags, SourceLoc, TrapCode, Type, UserExternalNameRef, types,
     },
     isa::{
         unwind::UnwindInst,
         x64::{
+            AtomicRmwSeqOp, EmitInfo, EmitState, Inst,
             args::{
-                self, Amode, Avx512Opcode, AvxOpcode, CmpOpcode, DivSignedness, ExtMode, FenceKind,
-                FromWritableReg, Gpr, GprMem, GprMemImm, Imm8Gpr, Imm8Reg, RegMem, RegMemImm,
-                ShiftKind as CraneliftShiftKind, SseOpcode, SyntheticAmode, WritableGpr,
-                WritableXmm, Xmm, XmmMem, XmmMemAligned, XmmMemImm, CC,
+                self, Amode, Avx512Opcode, AvxOpcode, CC, CmpOpcode, DivSignedness, ExtMode,
+                FenceKind, FromWritableReg, Gpr, GprMem, GprMemImm, Imm8Gpr, Imm8Reg, RegMem,
+                RegMemImm, ShiftKind as CraneliftShiftKind, SseOpcode, SyntheticAmode, WritableGpr,
+                WritableXmm, Xmm, XmmMem, XmmMemAligned, XmmMemImm,
             },
-            encoding::rex::{encode_modrm, RexFlags},
+            encoding::rex::{RexFlags, encode_modrm},
             external::{PairedGpr, PairedXmm},
-            settings as x64_settings, AtomicRmwSeqOp, EmitInfo, EmitState, Inst,
+            settings as x64_settings,
         },
     },
-    settings, CallInfo, Final, MachBuffer, MachBufferFinalized, MachInstEmit, MachInstEmitState,
-    MachLabel, PatchRegion, VCodeConstantData, VCodeConstants, Writable,
+    settings,
 };
 
 use crate::reg::WritableReg;
@@ -959,18 +961,16 @@ impl Assembler {
         src_size: OperandSize,
         dst_size: OperandSize,
     ) {
-        let op = match dst_size {
-            OperandSize::S32 => SseOpcode::Cvtsi2ss,
-            OperandSize::S64 => SseOpcode::Cvtsi2sd,
-            OperandSize::S16 | OperandSize::S8 | OperandSize::S128 => unreachable!(),
+        use OperandSize::*;
+        let dst = pair_xmm(dst);
+        let inst = match (src_size, dst_size) {
+            (S32, S32) => asm::inst::cvtsi2ssl_a::new(dst, src).into(),
+            (S32, S64) => asm::inst::cvtsi2sdl_a::new(dst, src).into(),
+            (S64, S32) => asm::inst::cvtsi2ssq_a::new(dst, src).into(),
+            (S64, S64) => asm::inst::cvtsi2sdq_a::new(dst, src).into(),
+            _ => unreachable!(),
         };
-        self.emit(Inst::CvtIntToFloat {
-            op,
-            src1: dst.to_reg().into(),
-            src2: src.into(),
-            dst: dst.map(Into::into),
-            src2_size: src_size.into(),
-        });
+        self.emit(Inst::External { inst });
     }
 
     /// Convert unsigned 64-bit int to float.
@@ -999,18 +999,14 @@ impl Assembler {
         src_size: OperandSize,
         dst_size: OperandSize,
     ) {
-        let op = match (src_size, dst_size) {
-            (OperandSize::S32, OperandSize::S64) => SseOpcode::Cvtss2sd,
-            (OperandSize::S64, OperandSize::S32) => SseOpcode::Cvtsd2ss,
+        use OperandSize::*;
+        let dst = pair_xmm(dst);
+        let inst = match (src_size, dst_size) {
+            (S32, S64) => asm::inst::cvtss2sd_a::new(dst, src).into(),
+            (S64, S32) => asm::inst::cvtsd2ss_a::new(dst, src).into(),
             _ => unimplemented!(),
         };
-
-        self.emit(Inst::XmmRmRUnaligned {
-            op,
-            src2: Xmm::unwrap_new(src.into()).into(),
-            src1: dst.to_reg().into(),
-            dst: dst.map(Into::into),
-        });
+        self.emit(Inst::External { inst });
     }
 
     pub fn or_rr(&mut self, src: Reg, dst: WritableReg, size: OperandSize) {
@@ -1483,13 +1479,20 @@ impl Assembler {
         });
     }
 
-    /// Performs integer negation on src and places result in dst.
-    pub fn neg(&mut self, src: Reg, dst: WritableReg, size: OperandSize) {
-        self.emit(Inst::Neg {
-            size: size.into(),
-            src: src.into(),
-            dst: dst.map(Into::into),
-        });
+    /// Performs integer negation on `src` and places result in `dst`.
+    pub fn neg(&mut self, read: Reg, write: WritableReg, size: OperandSize) {
+        let gpr = PairedGpr {
+            read: read.into(),
+            write: WritableGpr::from_reg(write.to_reg().into()),
+        };
+        let inst = match size {
+            OperandSize::S8 => asm::inst::negb_m::new(gpr).into(),
+            OperandSize::S16 => asm::inst::negw_m::new(gpr).into(),
+            OperandSize::S32 => asm::inst::negl_m::new(gpr).into(),
+            OperandSize::S64 => asm::inst::negq_m::new(gpr).into(),
+            OperandSize::S128 => unreachable!(),
+        };
+        self.emit(Inst::External { inst });
     }
 
     /// Stores position of the least significant bit set in src in dst.

@@ -5,7 +5,7 @@ use crate::p3::bindings::filesystem::types::{
     NewTimestamp, OpenFlags, PathFlags,
 };
 use crate::p3::{ResourceView, TaskTable};
-use crate::runtime::{spawn_blocking, AbortOnDropJoinHandle};
+use crate::runtime::{AbortOnDropJoinHandle, spawn_blocking};
 use bitflags::bitflags;
 use cap_fs_ext::{FileTypeExt as _, MetadataExt as _};
 use cap_std::ambient_authority;

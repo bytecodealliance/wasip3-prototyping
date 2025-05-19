@@ -1,4 +1,4 @@
-use crate::component::func::{bad_type_info, desc, LiftContext, LowerContext};
+use crate::component::func::{LiftContext, LowerContext, bad_type_info, desc};
 use crate::component::matching::InstanceType;
 use crate::component::{ComponentType, Lift, Lower};
 use crate::prelude::*;
@@ -1010,10 +1010,10 @@ impl ResourceAny {
     /// Same as [`ResourceAny::resource_drop`] except for use with async stores
     /// to execute the destructor asynchronously.
     #[cfg(feature = "async")]
-    pub async fn resource_drop_async<T>(self, mut store: impl AsContextMut<Data = T>) -> Result<()>
-    where
-        T: Send,
-    {
+    pub async fn resource_drop_async<T>(
+        self,
+        mut store: impl AsContextMut<Data: Send>,
+    ) -> Result<()> {
         let mut store = store.as_context_mut();
         assert!(
             store.0.async_support(),
@@ -1024,7 +1024,7 @@ impl ResourceAny {
             .await?
     }
 
-    fn resource_drop_impl<T>(self, store: &mut StoreContextMut<'_, T>) -> Result<()> {
+    fn resource_drop_impl<T: 'static>(self, store: &mut StoreContextMut<'_, T>) -> Result<()> {
         // Attempt to remove `self.idx` from the host table in `store`.
         //
         // This could fail if the index is invalid or if this is removing an

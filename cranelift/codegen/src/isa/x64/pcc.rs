@@ -3,10 +3,10 @@
 use crate::ir::pcc::*;
 use crate::ir::types::*;
 use crate::isa::x64::args::AvxOpcode;
-use crate::isa::x64::inst::args::{
-    Amode, Gpr, Imm8Reg, RegMem, RegMemImm, ShiftKind, SseOpcode, SyntheticAmode, ToWritableReg, CC,
-};
 use crate::isa::x64::inst::Inst;
+use crate::isa::x64::inst::args::{
+    Amode, CC, Gpr, Imm8Reg, RegMem, RegMemImm, ShiftKind, SseOpcode, SyntheticAmode, ToWritableReg,
+};
 use crate::machinst::pcc::*;
 use crate::machinst::{InsnIndex, VCode, VCodeConstantData};
 use crate::machinst::{Reg, Writable};
@@ -94,10 +94,6 @@ pub(crate) fn check(
             }
             RegMem::Reg { .. } => undefined_result(ctx, vcode, dst, 64, size.to_bits().into()),
         },
-
-        Inst::Not { size, dst, .. } | Inst::Neg { size, dst, .. } => {
-            undefined_result(ctx, vcode, dst, 64, size.to_bits().into())
-        }
 
         Inst::Div {
             size,
@@ -316,16 +312,6 @@ pub(crate) fn check(
 
         Inst::ShiftR { size, dst, .. } => {
             undefined_result(ctx, vcode, dst, 64, size.to_bits().into())
-        }
-
-        Inst::XmmRmiReg { dst, ref src2, .. } => {
-            match <&RegMemImm>::from(src2) {
-                RegMemImm::Mem { addr } => {
-                    check_load(ctx, None, addr, vcode, I8X16, 128)?;
-                }
-                _ => {}
-            }
-            ensure_no_fact(vcode, dst.to_writable_reg().to_reg())
         }
 
         Inst::CmpRmiR {
@@ -611,8 +597,7 @@ pub(crate) fn check(
             undefined_result(ctx, vcode, dst, 64, 64)
         }
 
-        Inst::CvtIntToFloat { dst, ref src2, .. }
-        | Inst::CvtIntToFloatVex { dst, ref src2, .. } => {
+        Inst::CvtIntToFloatVex { dst, ref src2, .. } => {
             match <&RegMem>::from(src2) {
                 RegMem::Mem { addr } => {
                     check_load(ctx, None, addr, vcode, I64, 64)?;
@@ -929,8 +914,7 @@ fn check_mem<'a>(
             let loaded_fact = clamp_range(ctx, to_bits, from_bits, ctx.load(&addr, ty)?.cloned())?;
             trace!(
                 "loaded_fact = {:?} result_fact = {:?}",
-                loaded_fact,
-                result_fact
+                loaded_fact, result_fact
             );
             if ctx.subsumes_fact_optionals(loaded_fact.as_ref(), result_fact) {
                 Ok(loaded_fact.clone())

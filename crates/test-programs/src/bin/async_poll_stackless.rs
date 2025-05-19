@@ -10,8 +10,8 @@ mod bindings {
 use {
     bindings::local::local::ready,
     test_programs::async_::{
-        context_get, context_set, subtask_drop, waitable_join, waitable_set_drop, waitable_set_new,
         CALLBACK_CODE_EXIT, CALLBACK_CODE_POLL, EVENT_NONE, EVENT_SUBTASK, STATUS_RETURNED,
+        context_get, context_set, subtask_drop, waitable_join, waitable_set_drop, waitable_set_new,
     },
 };
 

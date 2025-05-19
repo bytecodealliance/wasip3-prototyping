@@ -20,15 +20,6 @@ use alloc::vec::Vec;
 use cranelift_entity::EntityRef as _;
 
 impl Inst {
-    fn neg(size: OperandSize, src: Writable<Reg>) -> Inst {
-        debug_assert_eq!(src.to_reg().class(), RegClass::Int);
-        Inst::Neg {
-            size,
-            src: Gpr::unwrap_new(src.to_reg()),
-            dst: WritableGpr::from_writable_reg(src).unwrap(),
-        }
-    }
-
     fn xmm_unary_rm_r_imm(op: SseOpcode, src: RegMem, dst: Writable<Reg>, imm: u8) -> Inst {
         src.assert_regclass_is(RegClass::Float);
         debug_assert!(dst.to_reg().class() == RegClass::Float);
@@ -46,17 +37,6 @@ impl Inst {
         Inst::XmmUnaryRmREvex {
             op,
             src: XmmMem::unwrap_new(src),
-            dst: WritableXmm::from_writable_reg(dst).unwrap(),
-        }
-    }
-
-    fn xmm_rmi_reg(opcode: SseOpcode, src: RegMemImm, dst: Writable<Reg>) -> Inst {
-        src.assert_regclass_is(RegClass::Float);
-        debug_assert!(dst.to_reg().class() == RegClass::Float);
-        Inst::XmmRmiReg {
-            opcode,
-            src1: Xmm::unwrap_new(dst.to_reg()),
-            src2: XmmMemAlignedImm::unwrap_new(src),
             dst: WritableXmm::from_writable_reg(dst).unwrap(),
         }
     }
@@ -207,7 +187,6 @@ fn test_x64_emit() {
     let w_xmm2 = Writable::<Reg>::from_reg(xmm2);
     let w_xmm3 = Writable::<Reg>::from_reg(xmm3);
     let w_xmm4 = Writable::<Reg>::from_reg(xmm4);
-    let w_xmm5 = Writable::<Reg>::from_reg(xmm5);
     let w_xmm6 = Writable::<Reg>::from_reg(xmm6);
     let w_xmm7 = Writable::<Reg>::from_reg(xmm7);
     let w_xmm8 = Writable::<Reg>::from_reg(xmm8);
@@ -1124,72 +1103,6 @@ fn test_x64_emit() {
         ),
         "490FBDC7",
         "bsrq    %r15, %rax",
-    ));
-
-    // ========================================================
-    // Not
-    insns.push((
-        Inst::not(OperandSize::Size32, Writable::from_reg(regs::rsi())),
-        "F7D6",
-        "notl    %esi, %esi",
-    ));
-    insns.push((
-        Inst::not(OperandSize::Size64, Writable::from_reg(regs::r15())),
-        "49F7D7",
-        "notq    %r15, %r15",
-    ));
-    insns.push((
-        Inst::not(OperandSize::Size32, Writable::from_reg(regs::r14())),
-        "41F7D6",
-        "notl    %r14d, %r14d",
-    ));
-    insns.push((
-        Inst::not(OperandSize::Size16, Writable::from_reg(regs::rdi())),
-        "66F7D7",
-        "notw    %di, %di",
-    ));
-    insns.push((
-        Inst::not(OperandSize::Size8, Writable::from_reg(regs::rdi())),
-        "40F6D7",
-        "notb    %dil, %dil",
-    ));
-    insns.push((
-        Inst::not(OperandSize::Size8, Writable::from_reg(regs::rax())),
-        "F6D0",
-        "notb    %al, %al",
-    ));
-
-    // ========================================================
-    // Neg
-    insns.push((
-        Inst::neg(OperandSize::Size32, Writable::from_reg(regs::rsi())),
-        "F7DE",
-        "negl    %esi, %esi",
-    ));
-    insns.push((
-        Inst::neg(OperandSize::Size64, Writable::from_reg(regs::r15())),
-        "49F7DF",
-        "negq    %r15, %r15",
-    ));
-    insns.push((
-        Inst::neg(OperandSize::Size32, Writable::from_reg(regs::r14())),
-        "41F7DE",
-        "negl    %r14d, %r14d",
-    ));
-    insns.push((
-        Inst::neg(OperandSize::Size16, Writable::from_reg(regs::rdi())),
-        "66F7DF",
-        "negw    %di, %di",
-    ));
-    insns.push((
-        Inst::neg(OperandSize::Size8, Writable::from_reg(regs::rdi())),
-        "40F6DF",
-        "negb    %dil, %dil",
-    ));
-    insns.push((
-        Inst::neg(OperandSize::Size8, Writable::from_reg(regs::rax())),
-        "F6D8",
-        "negb    %al, %al",
     ));
 
     // ========================================================
@@ -3263,30 +3176,6 @@ fn test_x64_emit() {
     // XMM_RM_R: Integer Packed
 
     insns.push((
-        Inst::xmm_rm_r(SseOpcode::Psubsb, RegMem::reg(xmm9), w_xmm5),
-        "66410FE8E9",
-        "psubsb  %xmm5, %xmm9, %xmm5",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Psubsw, RegMem::reg(xmm7), w_xmm6),
-        "660FE9F7",
-        "psubsw  %xmm6, %xmm7, %xmm6",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Psubusb, RegMem::reg(xmm12), w_xmm13),
-        "66450FD8EC",
-        "psubusb %xmm13, %xmm12, %xmm13",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Psubusw, RegMem::reg(xmm1), w_xmm8),
-        "66440FD9C1",
-        "psubusw %xmm8, %xmm1, %xmm8",
-    ));
-
-    insns.push((
         Inst::xmm_rm_r(SseOpcode::Pavgb, RegMem::reg(xmm12), w_xmm13),
         "66450FE0EC",
         "pavgb   %xmm13, %xmm12, %xmm13",
@@ -3296,30 +3185,6 @@ fn test_x64_emit() {
         Inst::xmm_rm_r(SseOpcode::Pavgw, RegMem::reg(xmm1), w_xmm8),
         "66440FE3C1",
         "pavgw   %xmm8, %xmm1, %xmm8",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Psubb, RegMem::reg(xmm5), w_xmm9),
-        "66440FF8CD",
-        "psubb   %xmm9, %xmm5, %xmm9",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Psubw, RegMem::reg(xmm6), w_xmm7),
-        "660FF9FE",
-        "psubw   %xmm7, %xmm6, %xmm7",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Psubd, RegMem::reg(xmm13), w_xmm12),
-        "66450FFAE5",
-        "psubd   %xmm12, %xmm13, %xmm12",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Psubq, RegMem::reg(xmm8), w_xmm1),
-        "66410FFBC8",
-        "psubq   %xmm1, %xmm8, %xmm1",
     ));
 
     insns.push((
@@ -3473,12 +3338,6 @@ fn test_x64_emit() {
     ));
 
     insns.push((
-        Inst::xmm_rm_r(SseOpcode::Pxor, RegMem::reg(xmm11), w_xmm2),
-        "66410FEFD3",
-        "pxor    %xmm2, %xmm11, %xmm2",
-    ));
-
-    insns.push((
         Inst::xmm_rm_r(SseOpcode::Pshufb, RegMem::reg(xmm11), w_xmm2),
         "66410F3800D3",
         "pshufb  %xmm2, %xmm11, %xmm2",
@@ -3540,23 +3399,6 @@ fn test_x64_emit() {
 
     // ========================================================
     // XMM_RM_R: Integer Conversion
-    insns.push((
-        Inst::xmm_unary_rm_r(SseOpcode::Cvtdq2ps, RegMem::reg(xmm1), w_xmm8),
-        "440F5BC1",
-        "cvtdq2ps %xmm1, %xmm8",
-    ));
-
-    insns.push((
-        Inst::xmm_unary_rm_r(SseOpcode::Cvttpd2dq, RegMem::reg(xmm15), w_xmm7),
-        "66410FE6FF",
-        "cvttpd2dq %xmm15, %xmm7",
-    ));
-
-    insns.push((
-        Inst::xmm_unary_rm_r(SseOpcode::Cvttps2dq, RegMem::reg(xmm9), w_xmm8),
-        "F3450F5BC1",
-        "cvttps2dq %xmm9, %xmm8",
-    ));
 
     // XMM_Mov_R_M: float stores
     insns.push((
@@ -3690,17 +3532,6 @@ fn test_x64_emit() {
     ));
 
     insns.push((
-        Inst::xmm_rm_r(SseOpcode::Cvtss2sd, RegMem::reg(xmm0), w_xmm1),
-        "F30F5AC8",
-        "cvtss2sd %xmm1, %xmm0, %xmm1",
-    ));
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Cvtsd2ss, RegMem::reg(xmm1), w_xmm0),
-        "F20F5AC1",
-        "cvtsd2ss %xmm0, %xmm1, %xmm0",
-    ));
-
-    insns.push((
         Inst::xmm_unary_rm_r(SseOpcode::Pabsb, RegMem::reg(xmm2), w_xmm1),
         "660F381CCA",
         "pabsb   %xmm2, %xmm1",
@@ -3714,12 +3545,6 @@ fn test_x64_emit() {
         Inst::xmm_unary_rm_r(SseOpcode::Pabsd, RegMem::reg(xmm10), w_xmm11),
         "66450F381EDA",
         "pabsd   %xmm10, %xmm11",
-    ));
-
-    insns.push((
-        Inst::xmm_unary_rm_r(SseOpcode::Cvtdq2pd, RegMem::reg(xmm2), w_xmm8),
-        "F3440FE6C2",
-        "cvtdq2pd %xmm2, %xmm8",
     ));
 
     insns.push((
@@ -3740,18 +3565,6 @@ fn test_x64_emit() {
         "vpopcntb %xmm2, %xmm8",
     ));
 
-    insns.push((
-        Inst::xmm_unary_rm_r(SseOpcode::Cvtpd2ps, RegMem::reg(xmm7), w_xmm7),
-        "660F5AFF",
-        "cvtpd2ps %xmm7, %xmm7",
-    ));
-
-    insns.push((
-        Inst::xmm_unary_rm_r(SseOpcode::Cvtps2pd, RegMem::reg(xmm11), w_xmm9),
-        "450F5ACB",
-        "cvtps2pd %xmm11, %xmm9",
-    ));
-
     // Xmm to int conversions, and conversely.
 
     insns.push((
@@ -3763,26 +3576,6 @@ fn test_x64_emit() {
         Inst::xmm_to_gpr(SseOpcode::Movq, xmm2, w_rdi, OperandSize::Size64),
         "66480F7ED7",
         "movq    %xmm2, %rdi",
-    ));
-    insns.push((
-        Inst::xmm_to_gpr(SseOpcode::Cvttss2si, xmm0, w_rsi, OperandSize::Size32),
-        "F30F2CF0",
-        "cvttss2si %xmm0, %esi",
-    ));
-    insns.push((
-        Inst::xmm_to_gpr(SseOpcode::Cvttss2si, xmm0, w_rdi, OperandSize::Size64),
-        "F3480F2CF8",
-        "cvttss2si %xmm0, %rdi",
-    ));
-    insns.push((
-        Inst::xmm_to_gpr(SseOpcode::Cvttsd2si, xmm0, w_rax, OperandSize::Size32),
-        "F20F2CC0",
-        "cvttsd2si %xmm0, %eax",
-    ));
-    insns.push((
-        Inst::xmm_to_gpr(SseOpcode::Cvttsd2si, xmm0, w_r15, OperandSize::Size64),
-        "F24C0F2CF8",
-        "cvttsd2si %xmm0, %r15",
     ));
 
     insns.push((
@@ -3840,24 +3633,6 @@ fn test_x64_emit() {
         ),
         "664C0F6EFF",
         "movq    %rdi, %xmm15",
-    ));
-
-    // ========================================================
-    // XmmRmi
-    insns.push((
-        Inst::xmm_rmi_reg(SseOpcode::Psraw, RegMemImm::reg(xmm10), w_xmm1),
-        "66410FE1CA",
-        "psraw   %xmm1, %xmm10, %xmm1",
-    ));
-    insns.push((
-        Inst::xmm_rmi_reg(SseOpcode::Pslld, RegMemImm::imm(31), w_xmm1),
-        "660F72F11F",
-        "pslld   %xmm1, $31, %xmm1",
-    ));
-    insns.push((
-        Inst::xmm_rmi_reg(SseOpcode::Psrlq, RegMemImm::imm(1), w_xmm3),
-        "660F73D301",
-        "psrlq   %xmm3, $1, %xmm3",
     ));
 
     // ========================================================

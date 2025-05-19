@@ -1,4 +1,4 @@
-use crate::{store::StoreId, StoreContextMut, VMStore};
+use crate::{StoreContextMut, VMStore, store::StoreId};
 use core::marker::PhantomData;
 
 pub struct StoreToken<T> {

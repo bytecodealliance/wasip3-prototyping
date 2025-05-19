@@ -3,12 +3,12 @@ use core::net::SocketAddr;
 use anyhow::Context as _;
 use wasmtime::component::{Accessor, Resource, ResourceTable};
 
+use crate::p3::ResourceView as _;
 use crate::p3::bindings::sockets::types::{
     ErrorCode, HostUdpSocket, HostUdpSocketConcurrent, IpAddressFamily, IpSocketAddress,
 };
-use crate::p3::sockets::udp::{UdpSocket, MAX_UDP_DATAGRAM_SIZE};
+use crate::p3::sockets::udp::{MAX_UDP_DATAGRAM_SIZE, UdpSocket};
 use crate::p3::sockets::{SocketAddrUse, WasiSockets, WasiSocketsImpl, WasiSocketsView};
-use crate::p3::ResourceView as _;
 
 use super::is_addr_allowed;
 

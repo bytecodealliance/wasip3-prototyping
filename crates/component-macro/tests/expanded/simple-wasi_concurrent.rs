@@ -149,11 +149,24 @@ const _: () = {
             host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
+<<<<<<< HEAD
             D: foo::foo::wasi_filesystem::HostConcurrent + Send,
             for<'a> D::Data<
                 'a,
             >: foo::foo::wasi_filesystem::Host + foo::foo::wall_clock::Host + Send,
             T: 'static + Send,
+||||||| 40315bd2c
+            T: Send + foo::foo::wasi_filesystem::Host<Data = T>
+                + foo::foo::wall_clock::Host + 'static,
+            U: Send + foo::foo::wasi_filesystem::Host<Data = T>
+                + foo::foo::wall_clock::Host,
+=======
+            T: 'static,
+            T: Send + foo::foo::wasi_filesystem::Host<Data = T>
+                + foo::foo::wall_clock::Host,
+            U: Send + foo::foo::wasi_filesystem::Host<Data = T>
+                + foo::foo::wall_clock::Host,
+>>>>>>> upstream/main
         {
             foo::foo::wasi_filesystem::add_to_linker::<T, D>(linker, host_getter)?;
             foo::foo::wall_clock::add_to_linker::<T, D>(linker, host_getter)?;
@@ -243,17 +256,50 @@ pub mod foo {
                 where
                     Self: Sized;
             }
+<<<<<<< HEAD
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send {}
             impl<_T: Host + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
+||||||| 40315bd2c
+            pub trait GetHost<
+                T,
+                D,
+            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
+                type Host: Host<Data = D> + Send;
+            }
+            impl<F, T, D, O> GetHost<T, D> for F
+            where
+                F: Fn(T) -> O + Send + Sync + Copy + 'static,
+                O: Host<Data = D> + Send,
+            {
+                type Host = O;
+            }
+            pub fn add_to_linker_get_host<
+                T,
+                G: for<'a> GetHost<&'a mut T, T, Host: Host<Data = T> + Send>,
+            >(
+=======
+            pub fn add_to_linker_get_host<T, G>(
+>>>>>>> upstream/main
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
+<<<<<<< HEAD
                 D: HostConcurrent,
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
+||||||| 40315bd2c
+                T: Send + 'static,
+=======
+                T: 'static,
+                G: for<'a> wasmtime::component::GetHost<
+                    &'a mut T,
+                    Host: Host<Data = T> + Send,
+                >,
+                T: Send + 'static,
+>>>>>>> upstream/main
             {
                 let mut inst = linker.instance("foo:foo/wasi-filesystem")?;
                 inst.func_wrap_concurrent(
@@ -279,6 +325,85 @@ pub mod foo {
                 )?;
                 Ok(())
             }
+<<<<<<< HEAD
+||||||| 40315bd2c
+            pub fn add_to_linker<T, U>(
+                linker: &mut wasmtime::component::Linker<T>,
+                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            ) -> wasmtime::Result<()>
+            where
+                U: Host<Data = T> + Send,
+                T: Send + 'static,
+            {
+                add_to_linker_get_host(linker, get)
+            }
+            impl<_T: Host> Host for &mut _T {
+                type Data = _T::Data;
+                fn create_directory_at(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> Result<(), Errno> + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::create_directory_at(store)
+                }
+                fn stat(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> Result<DescriptorStat, Errno> + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::stat(store)
+                }
+            }
+=======
+            pub fn add_to_linker<T, U>(
+                linker: &mut wasmtime::component::Linker<T>,
+                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            ) -> wasmtime::Result<()>
+            where
+                T: 'static,
+                U: Host<Data = T> + Send,
+                T: Send + 'static,
+            {
+                add_to_linker_get_host(linker, get)
+            }
+            impl<_T: Host> Host for &mut _T {
+                type Data = _T::Data;
+                fn create_directory_at(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> Result<(), Errno> + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::create_directory_at(store)
+                }
+                fn stat(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> Result<DescriptorStat, Errno> + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::stat(store)
+                }
+            }
+>>>>>>> upstream/main
         }
         #[allow(clippy::all)]
         pub mod wall_clock {
@@ -303,21 +428,80 @@ pub mod foo {
                     1 == < WallClock as wasmtime::component::ComponentType >::ALIGN32
                 );
             };
+<<<<<<< HEAD
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send {}
             impl<_T: Host + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
+||||||| 40315bd2c
+            pub trait Host {}
+            pub trait GetHost<
+                T,
+                D,
+            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
+                type Host: Host + Send;
+            }
+            impl<F, T, D, O> GetHost<T, D> for F
+            where
+                F: Fn(T) -> O + Send + Sync + Copy + 'static,
+                O: Host + Send,
+            {
+                type Host = O;
+            }
+            pub fn add_to_linker_get_host<
+                T,
+                G: for<'a> GetHost<&'a mut T, T, Host: Host + Send>,
+            >(
+=======
+            pub trait Host {}
+            pub fn add_to_linker_get_host<T, G>(
+>>>>>>> upstream/main
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
+<<<<<<< HEAD
                 D: wasmtime::component::HasData,
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
+||||||| 40315bd2c
+                T: Send + 'static,
+=======
+                T: 'static,
+                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host + Send>,
+                T: Send + 'static,
+>>>>>>> upstream/main
             {
                 let mut inst = linker.instance("foo:foo/wall-clock")?;
                 Ok(())
             }
+<<<<<<< HEAD
+||||||| 40315bd2c
+            pub fn add_to_linker<T, U>(
+                linker: &mut wasmtime::component::Linker<T>,
+                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            ) -> wasmtime::Result<()>
+            where
+                U: Host + Send,
+                T: Send + 'static,
+            {
+                add_to_linker_get_host(linker, get)
+            }
+            impl<_T: Host + ?Sized> Host for &mut _T {}
+=======
+            pub fn add_to_linker<T, U>(
+                linker: &mut wasmtime::component::Linker<T>,
+                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            ) -> wasmtime::Result<()>
+            where
+                T: 'static,
+                U: Host + Send,
+                T: Send + 'static,
+            {
+                add_to_linker_get_host(linker, get)
+            }
+            impl<_T: Host + ?Sized> Host for &mut _T {}
+>>>>>>> upstream/main
         }
     }
 }

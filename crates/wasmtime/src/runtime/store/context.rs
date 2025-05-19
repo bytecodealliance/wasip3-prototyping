@@ -8,7 +8,7 @@ use crate::store::{Store, StoreInner};
 // representation of this `struct` is a pointer for now. If the representation
 // changes then the C API will need to be updated
 #[repr(transparent)]
-pub struct StoreContext<'a, T>(pub(crate) &'a StoreInner<T>);
+pub struct StoreContext<'a, T: 'static>(pub(crate) &'a StoreInner<T>);
 
 /// A temporary handle to a [`&mut Store<T>`][`Store`].
 ///
@@ -16,7 +16,7 @@ pub struct StoreContext<'a, T>(pub(crate) &'a StoreInner<T>);
 /// methods if desired.  For more information, see [`Store`].
 // NB the repr(transparent) here is for the same reason as above.
 #[repr(transparent)]
-pub struct StoreContextMut<'a, T>(pub(crate) &'a mut StoreInner<T>);
+pub struct StoreContextMut<'a, T: 'static>(pub(crate) &'a mut StoreInner<T>);
 
 impl<'a, T> StoreContextMut<'a, T> {
     #[doc(hidden)]
@@ -50,7 +50,7 @@ impl<'a, T> StoreContextMut<'a, T> {
 pub trait AsContext {
     /// The host information associated with the [`Store`], aka the `T` in
     /// [`Store<T>`].
-    type Data;
+    type Data: 'static;
 
     /// Returns the store context that this type provides access to.
     fn as_context(&self) -> StoreContext<'_, Self::Data>;
@@ -117,7 +117,7 @@ pub trait AsContextMut: AsContext {
     fn as_context_mut(&mut self) -> StoreContextMut<'_, Self::Data>;
 }
 
-impl<T> AsContext for Store<T> {
+impl<T: 'static> AsContext for Store<T> {
     type Data = T;
 
     #[inline]
@@ -126,14 +126,14 @@ impl<T> AsContext for Store<T> {
     }
 }
 
-impl<T> AsContextMut for Store<T> {
+impl<T: 'static> AsContextMut for Store<T> {
     #[inline]
     fn as_context_mut(&mut self) -> StoreContextMut<'_, T> {
         StoreContextMut(&mut self.inner)
     }
 }
 
-impl<T> AsContext for StoreContext<'_, T> {
+impl<T: 'static> AsContext for StoreContext<'_, T> {
     type Data = T;
 
     #[inline]
@@ -142,7 +142,7 @@ impl<T> AsContext for StoreContext<'_, T> {
     }
 }
 
-impl<T> AsContext for StoreContextMut<'_, T> {
+impl<T: 'static> AsContext for StoreContextMut<'_, T> {
     type Data = T;
 
     #[inline]
@@ -151,14 +151,14 @@ impl<T> AsContext for StoreContextMut<'_, T> {
     }
 }
 
-impl<T> AsContextMut for StoreContextMut<'_, T> {
+impl<T: 'static> AsContextMut for StoreContextMut<'_, T> {
     #[inline]
     fn as_context_mut(&mut self) -> StoreContextMut<'_, T> {
         StoreContextMut(&mut *self.0)
     }
 }
 
-impl<'a, T> From<StoreContextMut<'a, T>> for StoreContext<'a, T> {
+impl<'a, T: 'static> From<StoreContextMut<'a, T>> for StoreContext<'a, T> {
     #[inline]
     fn from(store: StoreContextMut<'a, T>) -> StoreContext<'a, T> {
         StoreContext(store.0)
@@ -167,7 +167,7 @@ impl<'a, T> From<StoreContextMut<'a, T>> for StoreContext<'a, T> {
 
 // Implementations for internal consumers, but these aren't public types so
 // they're not publicly accessible for crate consumers.
-impl<T> AsContext for &'_ StoreInner<T> {
+impl<T: 'static> AsContext for &'_ StoreInner<T> {
     type Data = T;
 
     #[inline]
@@ -176,7 +176,7 @@ impl<T> AsContext for &'_ StoreInner<T> {
     }
 }
 
-impl<T> AsContext for &'_ mut StoreInner<T> {
+impl<T: 'static> AsContext for &'_ mut StoreInner<T> {
     type Data = T;
 
     #[inline]
@@ -185,7 +185,7 @@ impl<T> AsContext for &'_ mut StoreInner<T> {
     }
 }
 
-impl<T> AsContextMut for &'_ mut StoreInner<T> {
+impl<T: 'static> AsContextMut for &'_ mut StoreInner<T> {
     #[inline]
     fn as_context_mut(&mut self) -> StoreContextMut<'_, T> {
         StoreContextMut(&mut **self)

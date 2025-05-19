@@ -3,18 +3,18 @@
 pub use emit_state::EmitState;
 
 use crate::binemit::{Addend, CodeOffset, Reloc};
-use crate::ir::{types, ExternalName, LibCall, TrapCode, Type};
+use crate::ir::{ExternalName, LibCall, TrapCode, Type, types};
 use crate::isa::x64::abi::X64ABIMachineSpec;
 use crate::isa::x64::inst::regs::{pretty_print_reg, show_ireg_sized};
 use crate::isa::x64::settings as x64_settings;
 use crate::isa::{CallConv, FunctionAlignment};
+use crate::{CodegenError, CodegenResult, settings};
 use crate::{machinst::*, trace};
-use crate::{settings, CodegenError, CodegenResult};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::slice;
 use cranelift_assembler_x64 as asm;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use std::fmt::{self, Write};
 use std::string::{String, ToString};
 
@@ -117,8 +117,6 @@ impl Inst {
             | Inst::Mul8 { .. }
             | Inst::IMul { .. }
             | Inst::IMulImm { .. }
-            | Inst::Neg { .. }
-            | Inst::Not { .. }
             | Inst::Nop { .. }
             | Inst::Pop64 { .. }
             | Inst::Push64 { .. }
@@ -158,7 +156,6 @@ impl Inst {
             Inst::GprToXmm { op, .. }
             | Inst::XmmMovRM { op, .. }
             | Inst::XmmMovRMImm { op, .. }
-            | Inst::XmmRmiReg { opcode: op, .. }
             | Inst::XmmRmR { op, .. }
             | Inst::XmmRmRUnaligned { op, .. }
             | Inst::XmmRmRBlend { op, .. }
@@ -167,8 +164,7 @@ impl Inst {
             | Inst::XmmToGprImm { op, .. }
             | Inst::XmmUnaryRmRImm { op, .. }
             | Inst::XmmUnaryRmRUnaligned { op, .. }
-            | Inst::XmmUnaryRmR { op, .. }
-            | Inst::CvtIntToFloat { op, .. } => smallvec![op.available_from()],
+            | Inst::XmmUnaryRmR { op, .. } => smallvec![op.available_from()],
 
             Inst::XmmUnaryRmREvex { op, .. }
             | Inst::XmmRmREvex { op, .. }
@@ -200,6 +196,7 @@ impl Inst {
                         _64b | compat => {}
                         sse => features.push(InstructionSet::SSE),
                         sse2 => features.push(InstructionSet::SSE2),
+                        ssse3 => features.push(InstructionSet::SSSE3),
                     }
                 }
                 features
@@ -253,15 +250,6 @@ impl Inst {
             op,
             src: GprMem::unwrap_new(src),
             dst: WritableGpr::from_writable_reg(dst).unwrap(),
-        }
-    }
-
-    pub(crate) fn not(size: OperandSize, src: Writable<Reg>) -> Inst {
-        debug_assert_eq!(src.to_reg().class(), RegClass::Int);
-        Inst::Not {
-            size,
-            src: Gpr::unwrap_new(src.to_reg()),
-            dst: WritableGpr::from_writable_reg(src).unwrap(),
         }
     }
 
@@ -375,6 +363,7 @@ impl Inst {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn xmm_to_gpr(
         op: SseOpcode,
         src: Reg,
@@ -741,20 +730,6 @@ impl PrettyPrint for Inst {
                     "{} ${imm}, {src}, {dst}",
                     ljustify2(op.to_string(), suffix_bwlq(*size))
                 )
-            }
-
-            Inst::Not { size, src, dst } => {
-                let src = pretty_print_reg(src.to_reg(), size.to_bytes());
-                let dst = pretty_print_reg(dst.to_reg().to_reg(), size.to_bytes());
-                let op = ljustify2("not".to_string(), suffix_bwlq(*size));
-                format!("{op} {src}, {dst}")
-            }
-
-            Inst::Neg { size, src, dst } => {
-                let src = pretty_print_reg(src.to_reg(), size.to_bytes());
-                let dst = pretty_print_reg(dst.to_reg().to_reg(), size.to_bytes());
-                let op = ljustify2("neg".to_string(), suffix_bwlq(*size));
-                format!("{op} {src}, {dst}")
             }
 
             Inst::Div {
@@ -1299,20 +1274,6 @@ impl PrettyPrint for Inst {
                 format!("{op} {src2}, {src1}")
             }
 
-            Inst::CvtIntToFloat {
-                op,
-                src1,
-                src2,
-                dst,
-                src2_size,
-            } => {
-                let src1 = pretty_print_reg(src1.to_reg(), 8);
-                let dst = pretty_print_reg(*dst.to_reg(), 8);
-                let src2 = src2.pretty_print(src2_size.to_bytes());
-                let op = ljustify(op.to_string());
-                format!("{op} {src1}, {src2}, {dst}")
-            }
-
             Inst::CvtIntToFloatVex {
                 op,
                 src1,
@@ -1529,20 +1490,6 @@ impl PrettyPrint for Inst {
                 }
             }
 
-            Inst::XmmRmiReg {
-                opcode,
-                src1,
-                src2,
-                dst,
-                ..
-            } => {
-                let src1 = pretty_print_reg(src1.to_reg(), 8);
-                let dst = pretty_print_reg(dst.to_reg().to_reg(), 8);
-                let src2 = src2.pretty_print(8);
-                let op = ljustify(opcode.to_string());
-                format!("{op} {src1}, {src2}, {dst}")
-            }
-
             Inst::CmpRmiR {
                 size,
                 src1,
@@ -1732,7 +1679,9 @@ impl PrettyPrint for Inst {
                 let load_context_ptr = pretty_print_reg(**load_context_ptr, 8);
                 let in_payload0 = pretty_print_reg(**in_payload0, 8);
                 let out_payload0 = pretty_print_reg(*out_payload0.to_reg(), 8);
-                format!("{out_payload0} = stack_switch_basic {store_context_ptr}, {load_context_ptr}, {in_payload0}")
+                format!(
+                    "{out_payload0} = stack_switch_basic {store_context_ptr}, {load_context_ptr}, {in_payload0}"
+                )
             }
 
             Inst::JmpKnown { dst } => {
@@ -1911,7 +1860,9 @@ impl PrettyPrint for Inst {
                 let dst_old_low = pretty_print_reg(dst_old_low.to_reg(), 8);
                 let dst_old_high = pretty_print_reg(dst_old_high.to_reg(), 8);
                 let mem = mem.pretty_print(16);
-                format!("atomically {{ {dst_old_high}:{dst_old_low} = {mem}; {temp_high}:{temp_low} = {dst_old_high}:{dst_old_low} {op:?} {operand_high}:{operand_low}; {mem} = {temp_high}:{temp_low} }}")
+                format!(
+                    "atomically {{ {dst_old_high}:{dst_old_low} = {mem}; {temp_high}:{temp_low} = {dst_old_high}:{dst_old_low} {op:?} {operand_high}:{operand_low}; {mem} = {temp_high}:{temp_low} }}"
+                )
             }
 
             Inst::Atomic128XchgSeq {
@@ -1926,7 +1877,9 @@ impl PrettyPrint for Inst {
                 let dst_old_low = pretty_print_reg(dst_old_low.to_reg(), 8);
                 let dst_old_high = pretty_print_reg(dst_old_high.to_reg(), 8);
                 let mem = mem.pretty_print(16);
-                format!("atomically {{ {dst_old_high}:{dst_old_low} = {mem}; {mem} = {operand_high}:{operand_low} }}")
+                format!(
+                    "atomically {{ {dst_old_high}:{dst_old_low} = {mem}; {mem} = {operand_high}:{operand_low} }}"
+                )
             }
 
             Inst::Fence { kind } => match kind {
@@ -2009,14 +1962,6 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
             collector.reg_def(dst);
             collector.reg_use(src1);
             src2.get_operands(collector);
-        }
-        Inst::Not { src, dst, .. } => {
-            collector.reg_use(src);
-            collector.reg_reuse_def(dst, 0);
-        }
-        Inst::Neg { src, dst, .. } => {
-            collector.reg_use(src);
-            collector.reg_reuse_def(dst, 0);
         }
         Inst::Div {
             divisor,
@@ -2259,13 +2204,6 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
             collector.reg_use(lhs);
             collector.reg_reuse_def(dst, 0); // Reuse RHS.
         }
-        Inst::XmmRmiReg {
-            src1, src2, dst, ..
-        } => {
-            collector.reg_use(src1);
-            collector.reg_reuse_def(dst, 0); // Reuse RHS.
-            src2.get_operands(collector);
-        }
         Inst::XmmMovRM { src, dst, .. }
         | Inst::XmmMovRMVex { src, dst, .. }
         | Inst::XmmMovRMImm { src, dst, .. }
@@ -2308,13 +2246,6 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
         Inst::GprToXmm { src, dst, .. } | Inst::GprToXmmVex { src, dst, .. } => {
             collector.reg_def(dst);
             src.get_operands(collector);
-        }
-        Inst::CvtIntToFloat {
-            src1, src2, dst, ..
-        } => {
-            collector.reg_use(src1);
-            collector.reg_reuse_def(dst, 0);
-            src2.get_operands(collector);
         }
         Inst::CvtIntToFloatVex {
             src1, src2, dst, ..

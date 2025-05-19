@@ -1,6 +1,8 @@
 //! S390x ISA: binary code emission.
 
 use crate::ir::{self, LibCall, MemFlags, TrapCode};
+use crate::isa::CallConv;
+use crate::isa::s390x::abi::REG_SAVE_AREA_SIZE;
 use crate::isa::s390x::inst::*;
 use crate::isa::s390x::settings as s390x_settings;
 use cranelift_control::ControlPlane;
@@ -72,18 +74,28 @@ pub fn mem_finalize(
     let mem = match mem {
         &MemArg::RegOffset { off, .. }
         | &MemArg::InitialSPOffset { off }
-        | &MemArg::NominalSPOffset { off }
+        | &MemArg::IncomingArgOffset { off }
+        | &MemArg::OutgoingArgOffset { off }
         | &MemArg::SlotOffset { off }
         | &MemArg::SpillOffset { off } => {
             let base = match mem {
                 &MemArg::RegOffset { reg, .. } => reg,
                 &MemArg::InitialSPOffset { .. }
-                | &MemArg::NominalSPOffset { .. }
+                | &MemArg::IncomingArgOffset { .. }
+                | &MemArg::OutgoingArgOffset { .. }
                 | &MemArg::SlotOffset { .. }
                 | &MemArg::SpillOffset { .. } => stack_reg(),
                 _ => unreachable!(),
             };
             let adj = match mem {
+                &MemArg::IncomingArgOffset { .. } => i64::from(
+                    state.incoming_args_size
+                        + REG_SAVE_AREA_SIZE
+                        + state.frame_layout().clobber_size
+                        + state.frame_layout().fixed_frame_storage_size
+                        + state.frame_layout().outgoing_args_size
+                        + state.nominal_sp_offset,
+                ),
                 &MemArg::InitialSPOffset { .. } => i64::from(
                     state.frame_layout().clobber_size
                         + state.frame_layout().fixed_frame_storage_size
@@ -98,7 +110,9 @@ pub fn mem_finalize(
                 &MemArg::SlotOffset { .. } => {
                     i64::from(state.frame_layout().outgoing_args_size + state.nominal_sp_offset)
                 }
-                &MemArg::NominalSPOffset { .. } => i64::from(state.nominal_sp_offset),
+                &MemArg::OutgoingArgOffset { .. } => {
+                    i64::from(REG_SAVE_AREA_SIZE) - i64::from(state.outgoing_sp_offset)
+                }
                 _ => 0,
             };
             let off = off + adj;
@@ -137,7 +151,8 @@ pub fn mem_finalize(
 
     // If this addressing mode cannot be handled by the instruction, use load-address.
     let need_load_address = match &mem {
-        &MemArg::Label { .. } | &MemArg::Symbol { .. } if !mi.have_pcrel => true,
+        &MemArg::Label { .. } | &MemArg::Constant { .. } if !mi.have_pcrel => true,
+        &MemArg::Symbol { .. } if !mi.have_pcrel => true,
         &MemArg::Symbol { flags, .. } if !mi.have_unaligned_pcrel && !flags.aligned() => true,
         &MemArg::BXD20 { .. } if !mi.have_d20 => true,
         &MemArg::BXD12 { index, .. } | &MemArg::BXD20 { index, .. } if !mi.have_index => {
@@ -226,6 +241,11 @@ pub fn mem_emit(
             );
         }
         &MemArg::Label { target } => {
+            sink.use_label_at_offset(sink.cur_offset(), target, LabelUse::BranchRIL);
+            put(sink, &enc_ril_b(opcode_ril.unwrap(), rd, 0));
+        }
+        &MemArg::Constant { constant } => {
+            let target = sink.get_label_for_constant(constant);
             sink.use_label_at_offset(sink.cur_offset(), target, LabelUse::BranchRIL);
             put(sink, &enc_ril_b(opcode_ril.unwrap(), rd, 0));
         }
@@ -1284,6 +1304,15 @@ pub struct EmitState {
     /// ABI, between the AllocateArgs and the actual call instruction.
     pub(crate) nominal_sp_offset: u32,
 
+    /// Offset from the actual SP to the SP during an outgoing function call.
+    /// This is normally always zero, except during processing of the return
+    /// argument handling after a call using the tail-call ABI has returned.
+    pub(crate) outgoing_sp_offset: u32,
+
+    /// Size of the incoming argument area in the caller's frame.  Always zero
+    /// for functions using the tail-call ABI.
+    pub(crate) incoming_args_size: u32,
+
     /// The user stack map for the upcoming instruction, as provided to
     /// `pre_safepoint()`.
     user_stack_map: Option<ir::UserStackMap>,
@@ -1297,8 +1326,15 @@ pub struct EmitState {
 
 impl MachInstEmitState<Inst> for EmitState {
     fn new(abi: &Callee<S390xMachineDeps>, ctrl_plane: ControlPlane) -> Self {
+        let incoming_args_size = if abi.call_conv() == CallConv::Tail {
+            0
+        } else {
+            abi.frame_layout().incoming_args_size
+        };
         EmitState {
             nominal_sp_offset: 0,
+            outgoing_sp_offset: 0,
+            incoming_args_size,
             user_stack_map: None,
             ctrl_plane,
             frame_layout: abi.frame_layout().clone(),
@@ -2356,42 +2392,6 @@ impl Inst {
                     put(sink, &enc_vrr_a(OPCODE_VLR, rd.to_reg(), rm, 0, 0, 0));
                 }
             }
-            &Inst::LoadFpuConst16 { rd, const_data } => {
-                let reg = writable_spilltmp_reg().to_reg();
-                put(sink, &enc_ri_b(OPCODE_BRAS, reg, 6));
-                sink.put2(const_data.swap_bytes());
-                let inst = Inst::VecLoadLaneUndef {
-                    size: 16,
-                    rd,
-                    mem: MemArg::reg(reg, MemFlags::trusted()),
-                    lane_imm: 0,
-                };
-                inst.emit(sink, emit_info, state);
-            }
-            &Inst::LoadFpuConst32 { rd, const_data } => {
-                let reg = writable_spilltmp_reg().to_reg();
-                put(sink, &enc_ri_b(OPCODE_BRAS, reg, 8));
-                sink.put4(const_data.swap_bytes());
-                let inst = Inst::VecLoadLaneUndef {
-                    size: 32,
-                    rd,
-                    mem: MemArg::reg(reg, MemFlags::trusted()),
-                    lane_imm: 0,
-                };
-                inst.emit(sink, emit_info, state);
-            }
-            &Inst::LoadFpuConst64 { rd, const_data } => {
-                let reg = writable_spilltmp_reg().to_reg();
-                put(sink, &enc_ri_b(OPCODE_BRAS, reg, 12));
-                sink.put8(const_data.swap_bytes());
-                let inst = Inst::VecLoadLaneUndef {
-                    size: 64,
-                    rd,
-                    mem: MemArg::reg(reg, MemFlags::trusted()),
-                    lane_imm: 0,
-                };
-                inst.emit(sink, emit_info, state);
-            }
             &Inst::FpuRR { fpu_op, rd, rn } => {
                 let (opcode, m3, m4, m5, opcode_fpr) = match fpu_op {
                     FPUOp1::Abs32 => (0xe7cc, 2, 8, 2, Some(0xb300)), // WFPSO, LPEBR
@@ -2879,35 +2879,6 @@ impl Inst {
                 let opcode = 0xe762; // VLVGP
                 put(sink, &enc_vrr_f(opcode, rd.to_reg(), rn, rm));
             }
-            &Inst::VecLoadConst { rd, const_data } => {
-                let reg = writable_spilltmp_reg().to_reg();
-                put(sink, &enc_ri_b(OPCODE_BRAS, reg, 20));
-                for i in const_data.to_be_bytes().iter() {
-                    sink.put1(*i);
-                }
-                let inst = Inst::VecLoad {
-                    rd,
-                    mem: MemArg::reg(reg, MemFlags::trusted()),
-                };
-                inst.emit(sink, emit_info, state);
-            }
-            &Inst::VecLoadConstReplicate {
-                size,
-                rd,
-                const_data,
-            } => {
-                let reg = writable_spilltmp_reg().to_reg();
-                put(sink, &enc_ri_b(OPCODE_BRAS, reg, (4 + size / 8) as i32));
-                for i in 0..size / 8 {
-                    sink.put1((const_data >> (size - 8 - 8 * i)) as u8);
-                }
-                let inst = Inst::VecLoadReplicate {
-                    size,
-                    rd,
-                    mem: MemArg::reg(reg, MemFlags::trusted()),
-                };
-                inst.emit(sink, emit_info, state);
-            }
             &Inst::VecImmByteMask { rd, mask } => {
                 let opcode = 0xe744; // VGBM
                 put(sink, &enc_vri_a(opcode, rd.to_reg(), mask, 0));
@@ -3148,7 +3119,25 @@ impl Inst {
 
                 let opcode = match size {
                     8 => 0xe740,  // VLEIB
-                    16 => 0xe741, // LEIVH
+                    16 => 0xe741, // VLEIH
+                    32 => 0xe743, // VLEIF
+                    64 => 0xe742, // VLEIG
+                    _ => unreachable!(),
+                };
+                put(
+                    sink,
+                    &enc_vri_a(opcode, rd.to_reg(), imm as u16, lane_imm.into()),
+                );
+            }
+            &Inst::VecInsertLaneImmUndef {
+                size,
+                rd,
+                imm,
+                lane_imm,
+            } => {
+                let opcode = match size {
+                    8 => 0xe740,  // VLEIB
+                    16 => 0xe741, // VLEIH
                     32 => 0xe743, // VLEIF
                     64 => 0xe742, // VLEIG
                     _ => unreachable!(),
@@ -3177,6 +3166,48 @@ impl Inst {
                 );
             }
 
+            &Inst::VecEltRev { lane_count, rd, rn } => {
+                assert!(lane_count >= 2 && lane_count <= 16);
+                let inst = Inst::VecPermuteDWImm {
+                    rd,
+                    rn,
+                    rm: rn,
+                    idx1: 1,
+                    idx2: 0,
+                };
+                inst.emit(sink, emit_info, state);
+                if lane_count >= 4 {
+                    let inst = Inst::VecShiftRR {
+                        shift_op: VecShiftOp::RotL64x2,
+                        rd,
+                        rn: rd.to_reg(),
+                        shift_imm: 32,
+                        shift_reg: zero_reg(),
+                    };
+                    inst.emit(sink, emit_info, state);
+                }
+                if lane_count >= 8 {
+                    let inst = Inst::VecShiftRR {
+                        shift_op: VecShiftOp::RotL32x4,
+                        rd,
+                        rn: rd.to_reg(),
+                        shift_imm: 16,
+                        shift_reg: zero_reg(),
+                    };
+                    inst.emit(sink, emit_info, state);
+                }
+                if lane_count >= 16 {
+                    let inst = Inst::VecShiftRR {
+                        shift_op: VecShiftOp::RotL16x8,
+                        rd,
+                        rn: rd.to_reg(),
+                        shift_imm: 8,
+                        shift_reg: zero_reg(),
+                    };
+                    inst.emit(sink, emit_info, state);
+                }
+            }
+
             &Inst::AllocateArgs { size } => {
                 let inst = if let Ok(size) = i16::try_from(size) {
                     Inst::AluRSImm16 {
@@ -3194,6 +3225,7 @@ impl Inst {
                     }
                 };
                 inst.emit(sink, emit_info, state);
+                assert_eq!(state.nominal_sp_offset, 0);
                 state.nominal_sp_offset += size;
             }
             &Inst::Call { link, ref info } => {
@@ -3222,10 +3254,13 @@ impl Inst {
                 }
 
                 state.nominal_sp_offset -= info.callee_pop_size;
+                assert_eq!(state.nominal_sp_offset, 0);
 
+                state.outgoing_sp_offset = info.callee_pop_size;
                 for inst in S390xMachineDeps::gen_retval_loads(info) {
                     inst.emit(sink, emit_info, state);
                 }
+                state.outgoing_sp_offset = 0;
 
                 // If this is a try-call, jump to the continuation
                 // (normal-return) block.

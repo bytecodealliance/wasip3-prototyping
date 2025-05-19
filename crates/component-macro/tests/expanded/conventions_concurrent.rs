@@ -157,9 +157,18 @@ const _: () = {
             host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
+<<<<<<< HEAD
             D: foo::foo::conventions::HostConcurrent + Send,
             for<'a> D::Data<'a>: foo::foo::conventions::Host + Send,
             T: 'static + Send,
+||||||| 40315bd2c
+            T: Send + foo::foo::conventions::Host<Data = T> + 'static,
+            U: Send + foo::foo::conventions::Host<Data = T>,
+=======
+            T: 'static,
+            T: Send + foo::foo::conventions::Host<Data = T>,
+            U: Send + foo::foo::conventions::Host<Data = T>,
+>>>>>>> upstream/main
         {
             foo::foo::conventions::add_to_linker::<T, D>(linker, host_getter)?;
             Ok(())
@@ -277,17 +286,50 @@ pub mod foo {
                 where
                     Self: Sized;
             }
+<<<<<<< HEAD
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send {}
             impl<_T: Host + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
+||||||| 40315bd2c
+            pub trait GetHost<
+                T,
+                D,
+            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
+                type Host: Host<Data = D> + Send;
+            }
+            impl<F, T, D, O> GetHost<T, D> for F
+            where
+                F: Fn(T) -> O + Send + Sync + Copy + 'static,
+                O: Host<Data = D> + Send,
+            {
+                type Host = O;
+            }
+            pub fn add_to_linker_get_host<
+                T,
+                G: for<'a> GetHost<&'a mut T, T, Host: Host<Data = T> + Send>,
+            >(
+=======
+            pub fn add_to_linker_get_host<T, G>(
+>>>>>>> upstream/main
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
+<<<<<<< HEAD
                 D: HostConcurrent,
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
+||||||| 40315bd2c
+                T: Send + 'static,
+=======
+                T: 'static,
+                G: for<'a> wasmtime::component::GetHost<
+                    &'a mut T,
+                    Host: Host<Data = T> + Send,
+                >,
+                T: Send + 'static,
+>>>>>>> upstream/main
             {
                 let mut inst = linker.instance("foo:foo/conventions")?;
                 inst.func_wrap_concurrent(
@@ -421,6 +463,339 @@ pub mod foo {
                 )?;
                 Ok(())
             }
+<<<<<<< HEAD
+||||||| 40315bd2c
+            pub fn add_to_linker<T, U>(
+                linker: &mut wasmtime::component::Linker<T>,
+                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            ) -> wasmtime::Result<()>
+            where
+                U: Host<Data = T> + Send,
+                T: Send + 'static,
+            {
+                add_to_linker_get_host(linker, get)
+            }
+            impl<_T: Host> Host for &mut _T {
+                type Data = _T::Data;
+                fn kebab_case(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::kebab_case(store)
+                }
+                fn foo(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    x: LudicrousSpeed,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::foo(store, x)
+                }
+                fn function_with_dashes(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::function_with_dashes(store)
+                }
+                fn function_with_no_weird_characters(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::function_with_no_weird_characters(store)
+                }
+                fn apple(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::apple(store)
+                }
+                fn apple_pear(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::apple_pear(store)
+                }
+                fn apple_pear_grape(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::apple_pear_grape(store)
+                }
+                fn a0(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::a0(store)
+                }
+                /// Comment out identifiers that collide when mapped to snake_case, for now; see
+                ///  https://github.com/WebAssembly/component-model/issues/118
+                /// APPLE: func()
+                /// APPLE-pear-GRAPE: func()
+                /// apple-PEAR-grape: func()
+                fn is_xml(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::is_xml(store)
+                }
+                fn explicit(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::explicit(store)
+                }
+                fn explicit_kebab(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::explicit_kebab(store)
+                }
+                /// Identifiers with the same name as keywords are quoted.
+                fn bool(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::bool(store)
+                }
+            }
+=======
+            pub fn add_to_linker<T, U>(
+                linker: &mut wasmtime::component::Linker<T>,
+                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            ) -> wasmtime::Result<()>
+            where
+                T: 'static,
+                U: Host<Data = T> + Send,
+                T: Send + 'static,
+            {
+                add_to_linker_get_host(linker, get)
+            }
+            impl<_T: Host> Host for &mut _T {
+                type Data = _T::Data;
+                fn kebab_case(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::kebab_case(store)
+                }
+                fn foo(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    x: LudicrousSpeed,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::foo(store, x)
+                }
+                fn function_with_dashes(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::function_with_dashes(store)
+                }
+                fn function_with_no_weird_characters(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::function_with_no_weird_characters(store)
+                }
+                fn apple(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::apple(store)
+                }
+                fn apple_pear(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::apple_pear(store)
+                }
+                fn apple_pear_grape(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::apple_pear_grape(store)
+                }
+                fn a0(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::a0(store)
+                }
+                /// Comment out identifiers that collide when mapped to snake_case, for now; see
+                ///  https://github.com/WebAssembly/component-model/issues/118
+                /// APPLE: func()
+                /// APPLE-pear-GRAPE: func()
+                /// apple-PEAR-grape: func()
+                fn is_xml(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::is_xml(store)
+                }
+                fn explicit(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::explicit(store)
+                }
+                fn explicit_kebab(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::explicit_kebab(store)
+                }
+                /// Identifiers with the same name as keywords are quoted.
+                fn bool(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::bool(store)
+                }
+            }
+>>>>>>> upstream/main
         }
     }
 }

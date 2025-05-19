@@ -2,7 +2,7 @@ use core::convert::Infallible;
 use core::error::Error as _;
 use std::sync::Arc;
 
-use anyhow::{bail, Context as _};
+use anyhow::{Context as _, bail};
 use bytes::Bytes;
 use tracing::warn;
 

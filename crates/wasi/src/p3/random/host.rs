@@ -1,5 +1,5 @@
-use cap_rand::distributions::Standard;
 use cap_rand::Rng;
+use cap_rand::distributions::Standard;
 
 use crate::p3::bindings::random::{insecure, insecure_seed, random};
 use crate::p3::random::{WasiRandomImpl, WasiRandomView};

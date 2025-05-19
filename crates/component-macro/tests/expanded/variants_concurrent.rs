@@ -157,9 +157,18 @@ const _: () = {
             host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
+<<<<<<< HEAD
             D: foo::foo::variants::HostConcurrent + Send,
             for<'a> D::Data<'a>: foo::foo::variants::Host + Send,
             T: 'static + Send,
+||||||| 40315bd2c
+            T: Send + foo::foo::variants::Host<Data = T> + 'static,
+            U: Send + foo::foo::variants::Host<Data = T>,
+=======
+            T: 'static,
+            T: Send + foo::foo::variants::Host<Data = T>,
+            U: Send + foo::foo::variants::Host<Data = T>,
+>>>>>>> upstream/main
         {
             foo::foo::variants::add_to_linker::<T, D>(linker, host_getter)?;
             Ok(())
@@ -602,17 +611,50 @@ pub mod foo {
                 where
                     Self: Sized;
             }
+<<<<<<< HEAD
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send {}
             impl<_T: Host + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
+||||||| 40315bd2c
+            pub trait GetHost<
+                T,
+                D,
+            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
+                type Host: Host<Data = D> + Send;
+            }
+            impl<F, T, D, O> GetHost<T, D> for F
+            where
+                F: Fn(T) -> O + Send + Sync + Copy + 'static,
+                O: Host<Data = D> + Send,
+            {
+                type Host = O;
+            }
+            pub fn add_to_linker_get_host<
+                T,
+                G: for<'a> GetHost<&'a mut T, T, Host: Host<Data = T> + Send>,
+            >(
+=======
+            pub fn add_to_linker_get_host<T, G>(
+>>>>>>> upstream/main
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
+<<<<<<< HEAD
                 D: HostConcurrent,
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
+||||||| 40315bd2c
+                T: Send + 'static,
+=======
+                T: 'static,
+                G: for<'a> wasmtime::component::GetHost<
+                    &'a mut T,
+                    Host: Host<Data = T> + Send,
+                >,
+                T: Send + 'static,
+>>>>>>> upstream/main
             {
                 let mut inst = linker.instance("foo:foo/variants")?;
                 inst.func_wrap_concurrent(
@@ -906,6 +948,615 @@ pub mod foo {
                 )?;
                 Ok(())
             }
+<<<<<<< HEAD
+||||||| 40315bd2c
+            pub fn add_to_linker<T, U>(
+                linker: &mut wasmtime::component::Linker<T>,
+                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            ) -> wasmtime::Result<()>
+            where
+                U: Host<Data = T> + Send,
+                T: Send + 'static,
+            {
+                add_to_linker_get_host(linker, get)
+            }
+            impl<_T: Host> Host for &mut _T {
+                type Data = _T::Data;
+                fn e1_arg(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    x: E1,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::e1_arg(store, x)
+                }
+                fn e1_result(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> E1 + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::e1_result(store)
+                }
+                fn v1_arg(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    x: V1,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::v1_arg(store, x)
+                }
+                fn v1_result(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> V1 + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::v1_result(store)
+                }
+                fn bool_arg(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    x: bool,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::bool_arg(store, x)
+                }
+                fn bool_result(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> bool + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::bool_result(store)
+                }
+                fn option_arg(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    a: Option<bool>,
+                    b: Option<()>,
+                    c: Option<u32>,
+                    d: Option<E1>,
+                    e: Option<f32>,
+                    g: Option<Option<bool>>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::option_arg(store, a, b, c, d, e, g)
+                }
+                fn option_result(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> (
+                            Option<bool>,
+                            Option<()>,
+                            Option<u32>,
+                            Option<E1>,
+                            Option<f32>,
+                            Option<Option<bool>>,
+                        ) + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::option_result(store)
+                }
+                fn casts(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    a: Casts1,
+                    b: Casts2,
+                    c: Casts3,
+                    d: Casts4,
+                    e: Casts5,
+                    f: Casts6,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> (
+                            Casts1,
+                            Casts2,
+                            Casts3,
+                            Casts4,
+                            Casts5,
+                            Casts6,
+                        ) + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::casts(store, a, b, c, d, e, f)
+                }
+                fn result_arg(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    a: Result<(), ()>,
+                    b: Result<(), E1>,
+                    c: Result<E1, ()>,
+                    d: Result<(), ()>,
+                    e: Result<u32, V1>,
+                    f: Result<
+                        wasmtime::component::__internal::String,
+                        wasmtime::component::__internal::Vec<u8>,
+                    >,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::result_arg(store, a, b, c, d, e, f)
+                }
+                fn result_result(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> (
+                            Result<(), ()>,
+                            Result<(), E1>,
+                            Result<E1, ()>,
+                            Result<(), ()>,
+                            Result<u32, V1>,
+                            Result<
+                                wasmtime::component::__internal::String,
+                                wasmtime::component::__internal::Vec<u8>,
+                            >,
+                        ) + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::result_result(store)
+                }
+                fn return_result_sugar(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> Result<i32, MyErrno> + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::return_result_sugar(store)
+                }
+                fn return_result_sugar2(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> Result<(), MyErrno> + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::return_result_sugar2(store)
+                }
+                fn return_result_sugar3(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> Result<MyErrno, MyErrno> + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::return_result_sugar3(store)
+                }
+                fn return_result_sugar4(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> Result<(i32, u32), MyErrno> + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::return_result_sugar4(store)
+                }
+                fn return_option_sugar(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> Option<i32> + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::return_option_sugar(store)
+                }
+                fn return_option_sugar2(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> Option<MyErrno> + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::return_option_sugar2(store)
+                }
+                fn result_simple(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> Result<u32, i32> + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::result_simple(store)
+                }
+                fn is_clone_arg(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    a: IsClone,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::is_clone_arg(store, a)
+                }
+                fn is_clone_return(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> IsClone + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::is_clone_return(store)
+                }
+            }
+=======
+            pub fn add_to_linker<T, U>(
+                linker: &mut wasmtime::component::Linker<T>,
+                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
+            ) -> wasmtime::Result<()>
+            where
+                T: 'static,
+                U: Host<Data = T> + Send,
+                T: Send + 'static,
+            {
+                add_to_linker_get_host(linker, get)
+            }
+            impl<_T: Host> Host for &mut _T {
+                type Data = _T::Data;
+                fn e1_arg(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    x: E1,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::e1_arg(store, x)
+                }
+                fn e1_result(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> E1 + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::e1_result(store)
+                }
+                fn v1_arg(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    x: V1,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::v1_arg(store, x)
+                }
+                fn v1_result(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> V1 + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::v1_result(store)
+                }
+                fn bool_arg(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    x: bool,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::bool_arg(store, x)
+                }
+                fn bool_result(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> bool + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::bool_result(store)
+                }
+                fn option_arg(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    a: Option<bool>,
+                    b: Option<()>,
+                    c: Option<u32>,
+                    d: Option<E1>,
+                    e: Option<f32>,
+                    g: Option<Option<bool>>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::option_arg(store, a, b, c, d, e, g)
+                }
+                fn option_result(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> (
+                            Option<bool>,
+                            Option<()>,
+                            Option<u32>,
+                            Option<E1>,
+                            Option<f32>,
+                            Option<Option<bool>>,
+                        ) + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::option_result(store)
+                }
+                fn casts(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    a: Casts1,
+                    b: Casts2,
+                    c: Casts3,
+                    d: Casts4,
+                    e: Casts5,
+                    f: Casts6,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> (
+                            Casts1,
+                            Casts2,
+                            Casts3,
+                            Casts4,
+                            Casts5,
+                            Casts6,
+                        ) + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::casts(store, a, b, c, d, e, f)
+                }
+                fn result_arg(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    a: Result<(), ()>,
+                    b: Result<(), E1>,
+                    c: Result<E1, ()>,
+                    d: Result<(), ()>,
+                    e: Result<u32, V1>,
+                    f: Result<
+                        wasmtime::component::__internal::String,
+                        wasmtime::component::__internal::Vec<u8>,
+                    >,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::result_arg(store, a, b, c, d, e, f)
+                }
+                fn result_result(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> (
+                            Result<(), ()>,
+                            Result<(), E1>,
+                            Result<E1, ()>,
+                            Result<(), ()>,
+                            Result<u32, V1>,
+                            Result<
+                                wasmtime::component::__internal::String,
+                                wasmtime::component::__internal::Vec<u8>,
+                            >,
+                        ) + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::result_result(store)
+                }
+                fn return_result_sugar(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> Result<i32, MyErrno> + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::return_result_sugar(store)
+                }
+                fn return_result_sugar2(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> Result<(), MyErrno> + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::return_result_sugar2(store)
+                }
+                fn return_result_sugar3(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> Result<MyErrno, MyErrno> + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::return_result_sugar3(store)
+                }
+                fn return_result_sugar4(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> Result<(i32, u32), MyErrno> + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::return_result_sugar4(store)
+                }
+                fn return_option_sugar(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> Option<i32> + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::return_option_sugar(store)
+                }
+                fn return_option_sugar2(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> Option<MyErrno> + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::return_option_sugar2(store)
+                }
+                fn result_simple(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> Result<u32, i32> + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::result_simple(store)
+                }
+                fn is_clone_arg(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                    a: IsClone,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> () + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::is_clone_arg(store, a)
+                }
+                fn is_clone_return(
+                    store: wasmtime::StoreContextMut<'_, Self::Data>,
+                ) -> impl ::core::future::Future<
+                    Output = impl FnOnce(
+                        wasmtime::StoreContextMut<'_, Self::Data>,
+                    ) -> IsClone + Send + Sync + 'static,
+                > + Send + Sync + 'static
+                where
+                    Self: Sized,
+                {
+                    <_T as Host>::is_clone_return(store)
+                }
+            }
+>>>>>>> upstream/main
         }
     }
 }

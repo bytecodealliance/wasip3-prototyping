@@ -246,14 +246,14 @@ pub use self::ctx::{WasiCtx, WasiCtxBuilder};
 pub use self::filesystem::{FileInputStream, FsError, FsResult};
 pub use self::network::{SocketError, SocketResult};
 pub use self::stdio::{
-    stderr, stdin, stdout, AsyncStdinStream, AsyncStdoutStream, IsATTY, OutputFile, Stderr, Stdin,
-    StdinStream, Stdout, StdoutStream,
+    AsyncStdinStream, AsyncStdoutStream, IsATTY, OutputFile, Stderr, Stdin, StdinStream, Stdout,
+    StdoutStream, stderr, stdin, stdout,
 };
 pub use self::view::{WasiImpl, WasiView};
 // These contents of wasmtime-wasi-io are re-exported by this module for compatibility:
 // they were originally defined in this module before being factored out, and many
 // users of this module depend on them at these names.
-pub use wasmtime_wasi_io::poll::{subscribe, DynFuture, DynPollable, MakeFuture, Pollable};
+pub use wasmtime_wasi_io::poll::{DynFuture, DynPollable, MakeFuture, Pollable, subscribe};
 pub use wasmtime_wasi_io::streams::{
     DynInputStream, DynOutputStream, Error as IoError, InputStream, OutputStream, StreamError,
     StreamResult,
@@ -339,6 +339,7 @@ pub fn add_to_linker_with_options_async<T: WasiView + 'static>(
     Ok(())
 }
 
+/// Shared functionality for [`add_to_linker_async`] and [`add_to_linker_sync`].
 fn add_nonblocking_to_linker<'a, T: WasiView + 'static, O>(
     linker: &mut Linker<T>,
     options: &'a O,
@@ -375,8 +376,8 @@ where
     Ok(())
 }
 
-/// TODO: should document and probably expose this
-#[doc(hidden)]
+/// Same as [`add_to_linker_async`] except that this only adds interfaces
+/// present in the `wasi:http/proxy` world.
 pub fn add_to_linker_proxy_interfaces_async<T: WasiView + 'static>(
     linker: &mut Linker<T>,
 ) -> anyhow::Result<()> {
@@ -384,7 +385,8 @@ pub fn add_to_linker_proxy_interfaces_async<T: WasiView + 'static>(
     add_proxy_interfaces_nonblocking(linker)
 }
 
-/// TODO: should document and probably expose this
+/// Same as [`add_to_linker_sync`] except that this only adds interfaces
+/// present in the `wasi:http/proxy` world.
 #[doc(hidden)]
 pub fn add_to_linker_proxy_interfaces_sync<T: WasiView + 'static>(
     linker: &mut Linker<T>,
@@ -487,6 +489,8 @@ pub fn add_to_linker_with_options_sync<T: WasiView + 'static>(
     Ok(())
 }
 
+/// Shared functionality of [`add_to_linker_sync`]` and
+/// [`add_to_linker_proxy_interfaces_sync`].
 fn add_sync_wasi_io<T: WasiView + 'static>(
     linker: &mut wasmtime::component::Linker<T>,
 ) -> anyhow::Result<()> {

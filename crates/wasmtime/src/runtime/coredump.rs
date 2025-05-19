@@ -1,8 +1,8 @@
 use crate::hash_map::HashMap;
 use crate::prelude::*;
 use crate::{
-    store::StoreOpaque, AsContextMut, FrameInfo, Global, HeapType, Instance, Memory, Module,
-    StoreContextMut, Val, ValType, WasmBacktrace,
+    AsContextMut, FrameInfo, Global, HeapType, Instance, Memory, Module, StoreContextMut, Val,
+    ValType, WasmBacktrace, store::StoreOpaque,
 };
 use std::fmt;
 
@@ -103,7 +103,7 @@ impl WasmCoreDump {
         self._serialize(store, name)
     }
 
-    fn _serialize<T>(&self, mut store: StoreContextMut<'_, T>, name: &str) -> Vec<u8> {
+    fn _serialize<T: 'static>(&self, mut store: StoreContextMut<'_, T>, name: &str) -> Vec<u8> {
         let mut core_dump = wasm_encoder::Module::new();
 
         core_dump.section(&wasm_encoder::CoreDumpSection::new(name));

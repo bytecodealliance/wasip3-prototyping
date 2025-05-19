@@ -4,7 +4,7 @@ use core::net::SocketAddr;
 use std::net::Shutdown;
 use std::sync::Arc;
 
-use anyhow::{bail, ensure, Context as _};
+use anyhow::{Context as _, bail, ensure};
 use io_lifetimes::AsSocketlike as _;
 use rustix::io::Errno;
 use tokio::sync::mpsc;

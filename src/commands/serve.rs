@@ -1,5 +1,5 @@
 use crate::common::{Profile, RunCommon, RunTarget};
-use anyhow::{anyhow, bail, Context as _, Result};
+use anyhow::{Context as _, Result, anyhow, bail};
 use clap::Parser;
 use http::{Response, StatusCode};
 use http_body_util::BodyExt as _;
@@ -14,13 +14,13 @@ use tokio::sync::Notify;
 use wasmtime::component::{Component, Linker};
 use wasmtime::{AsContextMut, Engine, Store, StoreLimits, UpdateDeadline};
 use wasmtime_wasi::p2::{IoView, StreamError, StreamResult, WasiCtx, WasiCtxBuilder, WasiView};
-use wasmtime_wasi_http::bindings::http::types::{ErrorCode, Scheme};
 use wasmtime_wasi_http::bindings::ProxyPre;
+use wasmtime_wasi_http::bindings::http::types::{ErrorCode, Scheme};
 use wasmtime_wasi_http::body::HyperOutgoingBody;
 use wasmtime_wasi_http::io::TokioIo;
 use wasmtime_wasi_http::{
-    WasiHttpCtx, WasiHttpView, DEFAULT_OUTGOING_BODY_BUFFER_CHUNKS,
-    DEFAULT_OUTGOING_BODY_CHUNK_SIZE,
+    DEFAULT_OUTGOING_BODY_BUFFER_CHUNKS, DEFAULT_OUTGOING_BODY_CHUNK_SIZE, WasiHttpCtx,
+    WasiHttpView,
 };
 
 #[cfg(feature = "wasi-config")]

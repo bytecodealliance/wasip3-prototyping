@@ -2,8 +2,8 @@ use crate::component::func::{Func, LiftContext, LowerContext, Options};
 use crate::component::matching::InstanceType;
 use crate::component::storage::{storage_as_slice, storage_as_slice_mut};
 use crate::prelude::*;
-use crate::runtime::vm::component::ComponentInstance;
 use crate::runtime::vm::SendSyncPtr;
+use crate::runtime::vm::component::ComponentInstance;
 use crate::{AsContextMut, StoreContext, StoreContextMut, ValRaw};
 use alloc::borrow::Cow;
 use alloc::sync::Arc;
@@ -14,8 +14,8 @@ use core::mem::{self, MaybeUninit};
 use core::ptr::NonNull;
 use core::str;
 use wasmtime_environ::component::{
-    CanonicalAbiInfo, ComponentTypes, InterfaceType, StringEncoding, VariantInfo, MAX_FLAT_PARAMS,
-    MAX_FLAT_RESULTS,
+    CanonicalAbiInfo, ComponentTypes, InterfaceType, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS,
+    StringEncoding, VariantInfo,
 };
 
 #[cfg(feature = "component-model-async")]
@@ -25,7 +25,7 @@ use core::any::Any;
 #[cfg(feature = "component-model-async")]
 use core::future::{self, Future};
 #[cfg(feature = "component-model-async")]
-use core::pin::{pin, Pin};
+use core::pin::{Pin, pin};
 #[cfg(feature = "component-model-async")]
 use core::sync::atomic::Ordering::Relaxed;
 
@@ -166,11 +166,7 @@ where
     /// Panics if this is called on a function in an asynchronous store. This
     /// only works with functions defined within a synchronous store. Also
     /// panics if `store` does not own this function.
-    pub fn call<T: Send>(
-        &self,
-        store: impl AsContextMut<Data = T>,
-        params: Params,
-    ) -> Result<Return>
+    pub fn call(&self, store: impl AsContextMut<Data: Send>, params: Params) -> Result<Return>
     where
         Return: Send + Sync + 'static,
     {
@@ -189,9 +185,9 @@ where
     /// only works with functions defined within an asynchronous store. Also
     /// panics if `store` does not own this function.
     #[cfg(feature = "async")]
-    pub async fn call_async<T: Send + 'static>(
+    pub async fn call_async(
         self,
-        mut store: impl AsContextMut<Data = T>,
+        mut store: impl AsContextMut<Data: Send>,
         params: Params,
     ) -> Result<Return>
     where
@@ -247,9 +243,9 @@ where
     /// `Instance::spawn` to poll it from within the event loop.  See
     /// [`Instance::run`] for examples.
     #[cfg(feature = "component-model-async")]
-    pub fn call_concurrent<T: Send + 'static>(
+    pub fn call_concurrent(
         self,
-        mut store: impl AsContextMut<Data = T>,
+        mut store: impl AsContextMut<Data: Send>,
         params: Params,
     ) -> Pin<Box<dyn Future<Output = Result<Return>> + Send + 'static>>
     where
@@ -385,11 +381,7 @@ where
         }
     }
 
-    fn call_impl<T: Send>(
-        &self,
-        mut store: impl AsContextMut<Data = T>,
-        params: Params,
-    ) -> Result<Return>
+    fn call_impl(&self, mut store: impl AsContextMut<Data: Send>, params: Params) -> Result<Return>
     where
         Return: Send + Sync + 'static,
     {
@@ -1698,7 +1690,10 @@ impl WasmStr {
     // in an opt-in basis don't do validation. Additionally there should be some
     // method that returns `[u16]` after validating to avoid the utf16-to-utf8
     // transcode.
-    pub fn to_str<'a, T: 'a>(&self, store: impl Into<StoreContext<'a, T>>) -> Result<Cow<'a, str>> {
+    pub fn to_str<'a, T: 'static>(
+        &self,
+        store: impl Into<StoreContext<'a, T>>,
+    ) -> Result<Cow<'a, str>> {
         let store = store.into().0;
         let memory = self.options.memory(store);
         self.to_str_from_memory(memory)
@@ -1981,7 +1976,7 @@ impl<T: Lift> WasmList<T> {
     ///
     /// Each item of the list may fail to decode and is represented through the
     /// `Result` value of the iterator.
-    pub fn iter<'a, U: 'a>(
+    pub fn iter<'a, U: 'static>(
         &'a self,
         store: impl Into<StoreContextMut<'a, U>>,
     ) -> impl ExactSizeIterator<Item = Result<T>> + 'a {
@@ -2014,7 +2009,7 @@ macro_rules! raw_wasm_list_accessors {
             ///
             /// Panics if the `store` provided is not the one from which this
             /// slice originated.
-            pub fn as_le_slice<'a, T: 'a>(&self, store: impl Into<StoreContext<'a, T>>) -> &'a [$i] {
+            pub fn as_le_slice<'a, T: 'static>(&self, store: impl Into<StoreContext<'a, T>>) -> &'a [$i] {
                 let memory = self.options.memory(store.into().0);
                 self._as_le_slice(memory)
             }
