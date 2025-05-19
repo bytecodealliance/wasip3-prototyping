@@ -148,26 +148,14 @@ const _: () = {
         }
         pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
-<<<<<<< HEAD
             host_getter: fn(&mut T) -> D::Data<'_>,
-||||||| 40315bd2c
-            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-=======
-            get: fn(&mut T) -> D::Data<'_>,
->>>>>>> upstream/main
         ) -> wasmtime::Result<()>
         where
             D: wasmtime::component::HasData,
             for<'a> D::Data<'a>: foo::foo::integers::Host,
             T: 'static,
         {
-<<<<<<< HEAD
             foo::foo::integers::add_to_linker::<T, D>(linker, host_getter)?;
-||||||| 40315bd2c
-            foo::foo::integers::add_to_linker(linker, get)?;
-=======
-            foo::foo::integers::add_to_linker::<T, D>(linker, get)?;
->>>>>>> upstream/main
             Ok(())
         }
         pub fn foo_foo_integers(&self) -> &exports::foo::foo::integers::Guest {
@@ -211,7 +199,6 @@ pub mod foo {
                 fn r8(&mut self) -> i64;
                 fn pair_ret(&mut self) -> (i64, u8);
             }
-<<<<<<< HEAD
             impl<_T: Host> Host for &mut _T {
                 fn a1(&mut self, x: u8) -> () {
                     Host::a1(*self, x)
@@ -278,26 +265,6 @@ pub mod foo {
                     Host::pair_ret(*self)
                 }
             }
-||||||| 40315bd2c
-            pub trait GetHost<
-                T,
-                D,
-            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host;
-            }
-            impl<F, T, D, O> GetHost<T, D> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<
-                T,
-                G: for<'a> GetHost<&'a mut T, T, Host: Host>,
-            >(
-=======
->>>>>>> upstream/main
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
@@ -476,151 +443,6 @@ pub mod foo {
                 )?;
                 Ok(())
             }
-<<<<<<< HEAD
-||||||| 40315bd2c
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + ?Sized> Host for &mut _T {
-                fn a1(&mut self, x: u8) -> () {
-                    Host::a1(*self, x)
-                }
-                fn a2(&mut self, x: i8) -> () {
-                    Host::a2(*self, x)
-                }
-                fn a3(&mut self, x: u16) -> () {
-                    Host::a3(*self, x)
-                }
-                fn a4(&mut self, x: i16) -> () {
-                    Host::a4(*self, x)
-                }
-                fn a5(&mut self, x: u32) -> () {
-                    Host::a5(*self, x)
-                }
-                fn a6(&mut self, x: i32) -> () {
-                    Host::a6(*self, x)
-                }
-                fn a7(&mut self, x: u64) -> () {
-                    Host::a7(*self, x)
-                }
-                fn a8(&mut self, x: i64) -> () {
-                    Host::a8(*self, x)
-                }
-                fn a9(
-                    &mut self,
-                    p1: u8,
-                    p2: i8,
-                    p3: u16,
-                    p4: i16,
-                    p5: u32,
-                    p6: i32,
-                    p7: u64,
-                    p8: i64,
-                ) -> () {
-                    Host::a9(*self, p1, p2, p3, p4, p5, p6, p7, p8)
-                }
-                fn r1(&mut self) -> u8 {
-                    Host::r1(*self)
-                }
-                fn r2(&mut self) -> i8 {
-                    Host::r2(*self)
-                }
-                fn r3(&mut self) -> u16 {
-                    Host::r3(*self)
-                }
-                fn r4(&mut self) -> i16 {
-                    Host::r4(*self)
-                }
-                fn r5(&mut self) -> u32 {
-                    Host::r5(*self)
-                }
-                fn r6(&mut self) -> i32 {
-                    Host::r6(*self)
-                }
-                fn r7(&mut self) -> u64 {
-                    Host::r7(*self)
-                }
-                fn r8(&mut self) -> i64 {
-                    Host::r8(*self)
-                }
-                fn pair_ret(&mut self) -> (i64, u8) {
-                    Host::pair_ret(*self)
-                }
-            }
-=======
-            impl<_T: Host + ?Sized> Host for &mut _T {
-                fn a1(&mut self, x: u8) -> () {
-                    Host::a1(*self, x)
-                }
-                fn a2(&mut self, x: i8) -> () {
-                    Host::a2(*self, x)
-                }
-                fn a3(&mut self, x: u16) -> () {
-                    Host::a3(*self, x)
-                }
-                fn a4(&mut self, x: i16) -> () {
-                    Host::a4(*self, x)
-                }
-                fn a5(&mut self, x: u32) -> () {
-                    Host::a5(*self, x)
-                }
-                fn a6(&mut self, x: i32) -> () {
-                    Host::a6(*self, x)
-                }
-                fn a7(&mut self, x: u64) -> () {
-                    Host::a7(*self, x)
-                }
-                fn a8(&mut self, x: i64) -> () {
-                    Host::a8(*self, x)
-                }
-                fn a9(
-                    &mut self,
-                    p1: u8,
-                    p2: i8,
-                    p3: u16,
-                    p4: i16,
-                    p5: u32,
-                    p6: i32,
-                    p7: u64,
-                    p8: i64,
-                ) -> () {
-                    Host::a9(*self, p1, p2, p3, p4, p5, p6, p7, p8)
-                }
-                fn r1(&mut self) -> u8 {
-                    Host::r1(*self)
-                }
-                fn r2(&mut self) -> i8 {
-                    Host::r2(*self)
-                }
-                fn r3(&mut self) -> u16 {
-                    Host::r3(*self)
-                }
-                fn r4(&mut self) -> i16 {
-                    Host::r4(*self)
-                }
-                fn r5(&mut self) -> u32 {
-                    Host::r5(*self)
-                }
-                fn r6(&mut self) -> i32 {
-                    Host::r6(*self)
-                }
-                fn r7(&mut self) -> u64 {
-                    Host::r7(*self)
-                }
-                fn r8(&mut self) -> i64 {
-                    Host::r8(*self)
-                }
-                fn pair_ret(&mut self) -> (i64, u8) {
-                    Host::pair_ret(*self)
-                }
-            }
->>>>>>> upstream/main
         }
     }
 }

@@ -146,13 +146,7 @@ const _: () = {
         }
         pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
-<<<<<<< HEAD
             host_getter: fn(&mut T) -> D::Data<'_>,
-||||||| 40315bd2c
-            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-=======
-            get: fn(&mut T) -> D::Data<'_>,
->>>>>>> upstream/main
         ) -> wasmtime::Result<()>
         where
             D: wasmtime::component::HasData,
@@ -160,23 +154,10 @@ const _: () = {
                 'a,
             >: a::b::interface_with_live_type::Host
                 + a::b::interface_with_dead_type::Host + Send,
-<<<<<<< HEAD
             T: 'static + Send,
-||||||| 40315bd2c
-=======
-            T: Send + 'static,
->>>>>>> upstream/main
         {
-<<<<<<< HEAD
             a::b::interface_with_live_type::add_to_linker::<T, D>(linker, host_getter)?;
             a::b::interface_with_dead_type::add_to_linker::<T, D>(linker, host_getter)?;
-||||||| 40315bd2c
-            a::b::interface_with_live_type::add_to_linker(linker, get)?;
-            a::b::interface_with_dead_type::add_to_linker(linker, get)?;
-=======
-            a::b::interface_with_live_type::add_to_linker::<T, D>(linker, get)?;
-            a::b::interface_with_dead_type::add_to_linker::<T, D>(linker, get)?;
->>>>>>> upstream/main
             Ok(())
         }
     }
@@ -211,47 +192,19 @@ pub mod a {
             pub trait Host: Send {
                 async fn f(&mut self) -> LiveType;
             }
-<<<<<<< HEAD
             impl<_T: Host + Send> Host for &mut _T {
                 async fn f(&mut self) -> LiveType {
                     Host::f(*self).await
                 }
             }
-||||||| 40315bd2c
-            pub trait GetHost<
-                T,
-                D,
-            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host + Send;
-            }
-            impl<F, T, D, O> GetHost<T, D> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host + Send,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<
-                T,
-                G: for<'a> GetHost<&'a mut T, T, Host: Host + Send>,
-            >(
-=======
->>>>>>> upstream/main
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
                 D: wasmtime::component::HasData,
-<<<<<<< HEAD
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
-||||||| 40315bd2c
-                T: Send,
-=======
-                for<'a> D::Data<'a>: Host + Send,
-                T: Send + 'static,
->>>>>>> upstream/main
             {
                 let mut inst = linker.instance("a:b/interface-with-live-type")?;
                 inst.func_wrap_async(
@@ -279,30 +232,6 @@ pub mod a {
                 )?;
                 Ok(())
             }
-<<<<<<< HEAD
-||||||| 40315bd2c
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host + Send,
-                T: Send,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + ?Sized + Send> Host for &mut _T {
-                async fn f(&mut self) -> LiveType {
-                    Host::f(*self).await
-                }
-            }
-=======
-            impl<_T: Host + ?Sized + Send> Host for &mut _T {
-                async fn f(&mut self) -> LiveType {
-                    Host::f(*self).await
-                }
-            }
->>>>>>> upstream/main
         }
         #[allow(clippy::all)]
         pub mod interface_with_dead_type {
@@ -360,63 +289,19 @@ pub mod a {
             };
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send {}
-<<<<<<< HEAD
             impl<_T: Host + Send> Host for &mut _T {}
-||||||| 40315bd2c
-            pub trait GetHost<
-                T,
-                D,
-            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host + Send;
-            }
-            impl<F, T, D, O> GetHost<T, D> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host + Send,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<
-                T,
-                G: for<'a> GetHost<&'a mut T, T, Host: Host + Send>,
-            >(
-=======
->>>>>>> upstream/main
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
                 D: wasmtime::component::HasData,
-<<<<<<< HEAD
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
-||||||| 40315bd2c
-                T: Send,
-=======
-                for<'a> D::Data<'a>: Host + Send,
-                T: Send + 'static,
->>>>>>> upstream/main
             {
                 let mut inst = linker.instance("a:b/interface-with-dead-type")?;
                 Ok(())
             }
-<<<<<<< HEAD
-||||||| 40315bd2c
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host + Send,
-                T: Send,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
-=======
-            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
->>>>>>> upstream/main
         }
     }
 }

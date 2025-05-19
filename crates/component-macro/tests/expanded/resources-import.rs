@@ -123,26 +123,7 @@ pub struct TheWorld {
 pub trait TheWorldImports: HostWorldResource {
     fn some_world_func(&mut self) -> wasmtime::component::Resource<WorldResource>;
 }
-<<<<<<< HEAD
 impl<_T: TheWorldImports> TheWorldImports for &mut _T {
-||||||| 40315bd2c
-pub trait TheWorldImportsGetHost<
-    T,
-    D,
->: Fn(T) -> <Self as TheWorldImportsGetHost<T, D>>::Host + Send + Sync + Copy + 'static {
-    type Host: TheWorldImports;
-}
-impl<F, T, D, O> TheWorldImportsGetHost<T, D> for F
-where
-    F: Fn(T) -> O + Send + Sync + Copy + 'static,
-    O: TheWorldImports,
-{
-    type Host = O;
-}
-impl<_T: TheWorldImports + ?Sized> TheWorldImports for &mut _T {
-=======
-impl<_T: TheWorldImports + ?Sized> TheWorldImports for &mut _T {
->>>>>>> upstream/main
     fn some_world_func(&mut self) -> wasmtime::component::Resource<WorldResource> {
         TheWorldImports::some_world_func(*self)
     }
@@ -305,13 +286,7 @@ const _: () = {
         }
         pub fn add_to_linker<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
-<<<<<<< HEAD
             host_getter: fn(&mut T) -> D::Data<'_>,
-||||||| 40315bd2c
-            get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-=======
-            get: fn(&mut T) -> D::Data<'_>,
->>>>>>> upstream/main
         ) -> wasmtime::Result<()>
         where
             D: wasmtime::component::HasData,
@@ -323,7 +298,6 @@ const _: () = {
                 + foo::foo::transitive_interface_with_resource::Host + TheWorldImports,
             T: 'static,
         {
-<<<<<<< HEAD
             Self::add_to_linker_imports::<T, D>(linker, host_getter)?;
             foo::foo::resources::add_to_linker::<T, D>(linker, host_getter)?;
             foo::foo::long_use_chain1::add_to_linker::<T, D>(linker, host_getter)?;
@@ -334,26 +308,6 @@ const _: () = {
                 T,
                 D,
             >(linker, host_getter)?;
-||||||| 40315bd2c
-            Self::add_to_linker_imports_get_host(linker, get)?;
-            foo::foo::resources::add_to_linker(linker, get)?;
-            foo::foo::long_use_chain1::add_to_linker(linker, get)?;
-            foo::foo::long_use_chain2::add_to_linker(linker, get)?;
-            foo::foo::long_use_chain3::add_to_linker(linker, get)?;
-            foo::foo::long_use_chain4::add_to_linker(linker, get)?;
-            foo::foo::transitive_interface_with_resource::add_to_linker(linker, get)?;
-=======
-            Self::add_to_linker_imports::<T, D>(linker, get)?;
-            foo::foo::resources::add_to_linker::<T, D>(linker, get)?;
-            foo::foo::long_use_chain1::add_to_linker::<T, D>(linker, get)?;
-            foo::foo::long_use_chain2::add_to_linker::<T, D>(linker, get)?;
-            foo::foo::long_use_chain3::add_to_linker::<T, D>(linker, get)?;
-            foo::foo::long_use_chain4::add_to_linker::<T, D>(linker, get)?;
-            foo::foo::transitive_interface_with_resource::add_to_linker::<
-                T,
-                D,
-            >(linker, get)?;
->>>>>>> upstream/main
             Ok(())
         }
         pub fn call_some_world_func2<S: wasmtime::AsContextMut>(
@@ -531,7 +485,6 @@ pub mod foo {
                 fn record_result(&mut self) -> NestedOwn;
                 fn func_with_handle_typedef(&mut self, x: SomeHandle) -> ();
             }
-<<<<<<< HEAD
             impl<_T: Host> Host for &mut _T {
                 fn bar_own_arg(&mut self, x: wasmtime::component::Resource<Bar>) -> () {
                     Host::bar_own_arg(*self, x)
@@ -630,26 +583,6 @@ pub mod foo {
                     Host::func_with_handle_typedef(*self, x)
                 }
             }
-||||||| 40315bd2c
-            pub trait GetHost<
-                T,
-                D,
-            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host;
-            }
-            impl<F, T, D, O> GetHost<T, D> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<
-                T,
-                G: for<'a> GetHost<&'a mut T, T, Host: Host>,
-            >(
-=======
->>>>>>> upstream/main
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
@@ -902,215 +835,6 @@ pub mod foo {
                 )?;
                 Ok(())
             }
-<<<<<<< HEAD
-||||||| 40315bd2c
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + ?Sized> Host for &mut _T {
-                fn bar_own_arg(&mut self, x: wasmtime::component::Resource<Bar>) -> () {
-                    Host::bar_own_arg(*self, x)
-                }
-                fn bar_borrow_arg(
-                    &mut self,
-                    x: wasmtime::component::Resource<Bar>,
-                ) -> () {
-                    Host::bar_borrow_arg(*self, x)
-                }
-                fn bar_result(&mut self) -> wasmtime::component::Resource<Bar> {
-                    Host::bar_result(*self)
-                }
-                fn tuple_own_arg(
-                    &mut self,
-                    x: (wasmtime::component::Resource<Bar>, u32),
-                ) -> () {
-                    Host::tuple_own_arg(*self, x)
-                }
-                fn tuple_borrow_arg(
-                    &mut self,
-                    x: (wasmtime::component::Resource<Bar>, u32),
-                ) -> () {
-                    Host::tuple_borrow_arg(*self, x)
-                }
-                fn tuple_result(&mut self) -> (wasmtime::component::Resource<Bar>, u32) {
-                    Host::tuple_result(*self)
-                }
-                fn option_own_arg(
-                    &mut self,
-                    x: Option<wasmtime::component::Resource<Bar>>,
-                ) -> () {
-                    Host::option_own_arg(*self, x)
-                }
-                fn option_borrow_arg(
-                    &mut self,
-                    x: Option<wasmtime::component::Resource<Bar>>,
-                ) -> () {
-                    Host::option_borrow_arg(*self, x)
-                }
-                fn option_result(
-                    &mut self,
-                ) -> Option<wasmtime::component::Resource<Bar>> {
-                    Host::option_result(*self)
-                }
-                fn result_own_arg(
-                    &mut self,
-                    x: Result<wasmtime::component::Resource<Bar>, ()>,
-                ) -> () {
-                    Host::result_own_arg(*self, x)
-                }
-                fn result_borrow_arg(
-                    &mut self,
-                    x: Result<wasmtime::component::Resource<Bar>, ()>,
-                ) -> () {
-                    Host::result_borrow_arg(*self, x)
-                }
-                fn result_result(
-                    &mut self,
-                ) -> Result<wasmtime::component::Resource<Bar>, ()> {
-                    Host::result_result(*self)
-                }
-                fn list_own_arg(
-                    &mut self,
-                    x: wasmtime::component::__internal::Vec<
-                        wasmtime::component::Resource<Bar>,
-                    >,
-                ) -> () {
-                    Host::list_own_arg(*self, x)
-                }
-                fn list_borrow_arg(
-                    &mut self,
-                    x: wasmtime::component::__internal::Vec<
-                        wasmtime::component::Resource<Bar>,
-                    >,
-                ) -> () {
-                    Host::list_borrow_arg(*self, x)
-                }
-                fn list_result(
-                    &mut self,
-                ) -> wasmtime::component::__internal::Vec<
-                    wasmtime::component::Resource<Bar>,
-                > {
-                    Host::list_result(*self)
-                }
-                fn record_own_arg(&mut self, x: NestedOwn) -> () {
-                    Host::record_own_arg(*self, x)
-                }
-                fn record_borrow_arg(&mut self, x: NestedBorrow) -> () {
-                    Host::record_borrow_arg(*self, x)
-                }
-                fn record_result(&mut self) -> NestedOwn {
-                    Host::record_result(*self)
-                }
-                fn func_with_handle_typedef(&mut self, x: SomeHandle) -> () {
-                    Host::func_with_handle_typedef(*self, x)
-                }
-            }
-=======
-            impl<_T: Host + ?Sized> Host for &mut _T {
-                fn bar_own_arg(&mut self, x: wasmtime::component::Resource<Bar>) -> () {
-                    Host::bar_own_arg(*self, x)
-                }
-                fn bar_borrow_arg(
-                    &mut self,
-                    x: wasmtime::component::Resource<Bar>,
-                ) -> () {
-                    Host::bar_borrow_arg(*self, x)
-                }
-                fn bar_result(&mut self) -> wasmtime::component::Resource<Bar> {
-                    Host::bar_result(*self)
-                }
-                fn tuple_own_arg(
-                    &mut self,
-                    x: (wasmtime::component::Resource<Bar>, u32),
-                ) -> () {
-                    Host::tuple_own_arg(*self, x)
-                }
-                fn tuple_borrow_arg(
-                    &mut self,
-                    x: (wasmtime::component::Resource<Bar>, u32),
-                ) -> () {
-                    Host::tuple_borrow_arg(*self, x)
-                }
-                fn tuple_result(&mut self) -> (wasmtime::component::Resource<Bar>, u32) {
-                    Host::tuple_result(*self)
-                }
-                fn option_own_arg(
-                    &mut self,
-                    x: Option<wasmtime::component::Resource<Bar>>,
-                ) -> () {
-                    Host::option_own_arg(*self, x)
-                }
-                fn option_borrow_arg(
-                    &mut self,
-                    x: Option<wasmtime::component::Resource<Bar>>,
-                ) -> () {
-                    Host::option_borrow_arg(*self, x)
-                }
-                fn option_result(
-                    &mut self,
-                ) -> Option<wasmtime::component::Resource<Bar>> {
-                    Host::option_result(*self)
-                }
-                fn result_own_arg(
-                    &mut self,
-                    x: Result<wasmtime::component::Resource<Bar>, ()>,
-                ) -> () {
-                    Host::result_own_arg(*self, x)
-                }
-                fn result_borrow_arg(
-                    &mut self,
-                    x: Result<wasmtime::component::Resource<Bar>, ()>,
-                ) -> () {
-                    Host::result_borrow_arg(*self, x)
-                }
-                fn result_result(
-                    &mut self,
-                ) -> Result<wasmtime::component::Resource<Bar>, ()> {
-                    Host::result_result(*self)
-                }
-                fn list_own_arg(
-                    &mut self,
-                    x: wasmtime::component::__internal::Vec<
-                        wasmtime::component::Resource<Bar>,
-                    >,
-                ) -> () {
-                    Host::list_own_arg(*self, x)
-                }
-                fn list_borrow_arg(
-                    &mut self,
-                    x: wasmtime::component::__internal::Vec<
-                        wasmtime::component::Resource<Bar>,
-                    >,
-                ) -> () {
-                    Host::list_borrow_arg(*self, x)
-                }
-                fn list_result(
-                    &mut self,
-                ) -> wasmtime::component::__internal::Vec<
-                    wasmtime::component::Resource<Bar>,
-                > {
-                    Host::list_result(*self)
-                }
-                fn record_own_arg(&mut self, x: NestedOwn) -> () {
-                    Host::record_own_arg(*self, x)
-                }
-                fn record_borrow_arg(&mut self, x: NestedBorrow) -> () {
-                    Host::record_borrow_arg(*self, x)
-                }
-                fn record_result(&mut self) -> NestedOwn {
-                    Host::record_result(*self)
-                }
-                fn func_with_handle_typedef(&mut self, x: SomeHandle) -> () {
-                    Host::func_with_handle_typedef(*self, x)
-                }
-            }
->>>>>>> upstream/main
         }
         #[allow(clippy::all)]
         pub mod long_use_chain1 {
@@ -1131,31 +855,8 @@ pub mod foo {
                     HostA::drop(*self, rep)
                 }
             }
-<<<<<<< HEAD
             pub trait Host: HostA {}
             impl<_T: Host> Host for &mut _T {}
-||||||| 40315bd2c
-            pub trait Host: HostA + Sized {}
-            pub trait GetHost<
-                T,
-                D,
-            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host;
-            }
-            impl<F, T, D, O> GetHost<T, D> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<
-                T,
-                G: for<'a> GetHost<&'a mut T, T, Host: Host>,
-            >(
-=======
-            pub trait Host: HostA + Sized {}
->>>>>>> upstream/main
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
@@ -1178,21 +879,6 @@ pub mod foo {
                 )?;
                 Ok(())
             }
-<<<<<<< HEAD
-||||||| 40315bd2c
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + ?Sized> Host for &mut _T {}
-=======
-            impl<_T: Host + ?Sized> Host for &mut _T {}
->>>>>>> upstream/main
         }
         #[allow(clippy::all)]
         pub mod long_use_chain2 {
@@ -1200,28 +886,7 @@ pub mod foo {
             use wasmtime::component::__internal::{anyhow, Box};
             pub type A = super::super::super::foo::foo::long_use_chain1::A;
             pub trait Host {}
-<<<<<<< HEAD
             impl<_T: Host> Host for &mut _T {}
-||||||| 40315bd2c
-            pub trait GetHost<
-                T,
-                D,
-            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host;
-            }
-            impl<F, T, D, O> GetHost<T, D> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<
-                T,
-                G: for<'a> GetHost<&'a mut T, T, Host: Host>,
-            >(
-=======
->>>>>>> upstream/main
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
@@ -1234,26 +899,6 @@ pub mod foo {
                 let mut inst = linker.instance("foo:foo/long-use-chain2")?;
                 Ok(())
             }
-<<<<<<< HEAD
-||||||| 40315bd2c
-                host_getter: G,
-            ) -> wasmtime::Result<()> {
-                let mut inst = linker.instance("foo:foo/long-use-chain2")?;
-                Ok(())
-            }
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + ?Sized> Host for &mut _T {}
-=======
-            impl<_T: Host + ?Sized> Host for &mut _T {}
->>>>>>> upstream/main
         }
         #[allow(clippy::all)]
         pub mod long_use_chain3 {
@@ -1261,28 +906,7 @@ pub mod foo {
             use wasmtime::component::__internal::{anyhow, Box};
             pub type A = super::super::super::foo::foo::long_use_chain2::A;
             pub trait Host {}
-<<<<<<< HEAD
             impl<_T: Host> Host for &mut _T {}
-||||||| 40315bd2c
-            pub trait GetHost<
-                T,
-                D,
-            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host;
-            }
-            impl<F, T, D, O> GetHost<T, D> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<
-                T,
-                G: for<'a> GetHost<&'a mut T, T, Host: Host>,
-            >(
-=======
->>>>>>> upstream/main
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
@@ -1295,26 +919,6 @@ pub mod foo {
                 let mut inst = linker.instance("foo:foo/long-use-chain3")?;
                 Ok(())
             }
-<<<<<<< HEAD
-||||||| 40315bd2c
-                host_getter: G,
-            ) -> wasmtime::Result<()> {
-                let mut inst = linker.instance("foo:foo/long-use-chain3")?;
-                Ok(())
-            }
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + ?Sized> Host for &mut _T {}
-=======
-            impl<_T: Host + ?Sized> Host for &mut _T {}
->>>>>>> upstream/main
         }
         #[allow(clippy::all)]
         pub mod long_use_chain4 {
@@ -1324,32 +928,11 @@ pub mod foo {
             pub trait Host {
                 fn foo(&mut self) -> wasmtime::component::Resource<A>;
             }
-<<<<<<< HEAD
             impl<_T: Host> Host for &mut _T {
                 fn foo(&mut self) -> wasmtime::component::Resource<A> {
                     Host::foo(*self)
                 }
             }
-||||||| 40315bd2c
-            pub trait GetHost<
-                T,
-                D,
-            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host;
-            }
-            impl<F, T, D, O> GetHost<T, D> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<
-                T,
-                G: for<'a> GetHost<&'a mut T, T, Host: Host>,
-            >(
-=======
->>>>>>> upstream/main
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
@@ -1370,29 +953,6 @@ pub mod foo {
                 )?;
                 Ok(())
             }
-<<<<<<< HEAD
-||||||| 40315bd2c
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + ?Sized> Host for &mut _T {
-                fn foo(&mut self) -> wasmtime::component::Resource<A> {
-                    Host::foo(*self)
-                }
-            }
-=======
-            impl<_T: Host + ?Sized> Host for &mut _T {
-                fn foo(&mut self) -> wasmtime::component::Resource<A> {
-                    Host::foo(*self)
-                }
-            }
->>>>>>> upstream/main
         }
         #[allow(clippy::all)]
         pub mod transitive_interface_with_resource {
@@ -1413,31 +973,8 @@ pub mod foo {
                     HostFoo::drop(*self, rep)
                 }
             }
-<<<<<<< HEAD
             pub trait Host: HostFoo {}
             impl<_T: Host> Host for &mut _T {}
-||||||| 40315bd2c
-            pub trait Host: HostFoo + Sized {}
-            pub trait GetHost<
-                T,
-                D,
-            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host;
-            }
-            impl<F, T, D, O> GetHost<T, D> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<
-                T,
-                G: for<'a> GetHost<&'a mut T, T, Host: Host>,
-            >(
-=======
-            pub trait Host: HostFoo + Sized {}
->>>>>>> upstream/main
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
@@ -1461,21 +998,6 @@ pub mod foo {
                 )?;
                 Ok(())
             }
-<<<<<<< HEAD
-||||||| 40315bd2c
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + ?Sized> Host for &mut _T {}
-=======
-            impl<_T: Host + ?Sized> Host for &mut _T {}
->>>>>>> upstream/main
         }
     }
 }
