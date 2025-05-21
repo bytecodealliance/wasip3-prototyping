@@ -43,10 +43,10 @@ unsafe extern "C" fn task_return_foo(_ptr: *mut u8, _len: usize) {
 #[link(wasm_import_module = "local:local/baz")]
 unsafe extern "C" {
     #[link_name = "[async-lower][async]foo"]
-    fn import_foo(params: *mut u8, results: *mut u8) -> u32;
+    fn import_foo(ptr: *mut u8, len: usize, results: *mut u8) -> u32;
 }
 #[cfg(not(target_arch = "wasm32"))]
-unsafe extern "C" fn import_foo(_params: *mut u8, _results: *mut u8) -> u32 {
+unsafe extern "C" fn import_foo(ptr: *mut u8, len: usize, _results: *mut u8) -> u32 {
     unreachable!()
 }
 
@@ -65,13 +65,9 @@ unsafe extern "C" fn export_foo(ptr: *mut u8, len: usize) {
 
     let layout = Layout::from_size_align(8, 4).unwrap();
 
-    let params = alloc::alloc(layout);
-    *params.cast::<*mut u8>() = s.as_ptr().cast_mut();
-    *params.add(4).cast::<usize>() = s.len();
-
     let results = alloc::alloc(layout);
 
-    let result = import_foo(params, results);
+    let result = import_foo(s.as_ptr().cast_mut(), s.len(), results);
     let mut status = result & 0xf;
     let call = result >> 4;
     let set = waitable_set_new();
@@ -93,7 +89,6 @@ unsafe extern "C" fn export_foo(ptr: *mut u8, len: usize) {
             }
         }
     }
-    alloc::dealloc(params, layout);
 
     let len = *results.add(4).cast::<usize>();
     let s = format!(

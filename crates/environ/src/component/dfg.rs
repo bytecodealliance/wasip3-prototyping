@@ -383,14 +383,11 @@ pub enum Trampoline {
     ResourceTransferBorrow,
     ResourceEnterCall,
     ResourceExitCall,
-    SyncPrepareCall {
+    PrepareCall {
         memory: Option<MemoryId>,
     },
     SyncStartCall {
         callback: Option<CallbackId>,
-    },
-    AsyncPrepareCall {
-        memory: Option<MemoryId>,
     },
     AsyncStartCall {
         callback: Option<CallbackId>,
@@ -895,14 +892,11 @@ impl LinearizeDfg<'_> {
             Trampoline::ResourceTransferBorrow => info::Trampoline::ResourceTransferBorrow,
             Trampoline::ResourceEnterCall => info::Trampoline::ResourceEnterCall,
             Trampoline::ResourceExitCall => info::Trampoline::ResourceExitCall,
-            Trampoline::SyncPrepareCall { memory } => info::Trampoline::SyncPrepareCall {
+            Trampoline::PrepareCall { memory } => info::Trampoline::PrepareCall {
                 memory: memory.map(|v| self.runtime_memory(v)),
             },
             Trampoline::SyncStartCall { callback } => info::Trampoline::SyncStartCall {
                 callback: callback.map(|v| self.runtime_callback(v)),
-            },
-            Trampoline::AsyncPrepareCall { memory } => info::Trampoline::AsyncPrepareCall {
-                memory: memory.map(|v| self.runtime_memory(v)),
             },
             Trampoline::AsyncStartCall {
                 callback,

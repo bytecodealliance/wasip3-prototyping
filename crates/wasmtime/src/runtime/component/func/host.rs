@@ -19,8 +19,8 @@ use core::mem::{self, MaybeUninit};
 use core::pin::Pin;
 use core::ptr::NonNull;
 use wasmtime_environ::component::{
-    CanonicalAbiInfo, ComponentTypes, InterfaceType, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS,
-    RuntimeComponentInstanceIndex, StringEncoding, TypeFuncIndex,
+    CanonicalAbiInfo, ComponentTypes, InterfaceType, MAX_FLAT_ASYNC_PARAMS, MAX_FLAT_PARAMS,
+    MAX_FLAT_RESULTS, RuntimeComponentInstanceIndex, StringEncoding, TypeFuncIndex, TypeTuple,
 };
 
 pub struct HostFunc {
@@ -269,24 +269,6 @@ where
     Params: Lift + Send + Sync + 'static,
     Return: Lower + Send + Sync + 'static,
 {
-    /// Representation of arguments to this function when a return pointer is in
-    /// use, namely the argument list is followed by a single value which is the
-    /// return pointer.
-    #[repr(C)]
-    struct ReturnPointer<T> {
-        args: T,
-        retptr: ValRaw,
-    }
-
-    /// Representation of arguments to this function when the return value is
-    /// returned directly, namely the arguments and return value all start from
-    /// the beginning (aka this is a `union`, not a `struct`).
-    #[repr(C)]
-    union ReturnStack<T: Copy, U: Copy> {
-        args: T,
-        ret: U,
-    }
-
     let options = Options::new(
         store.0.store_opaque().id(),
         NonNull::new(memory),
@@ -310,21 +292,37 @@ where
     if async_ {
         #[cfg(feature = "component-model-async")]
         {
-            let paramptr = storage[0].assume_init();
-            let retptr = storage[1].assume_init();
+            let mut storage = Storage::<'_, Params, u32>::new_async::<Return>(storage);
 
+            // Lift the parameters, either from flat storage or from linear
+            // memory.
             let params = {
                 let lift =
                     &mut LiftContext::new(store.0.store_opaque_mut(), &options, types, instance);
                 lift.enter_call();
-                let ptr = validate_inbounds::<Params>(lift.memory(), &paramptr)?;
-                Params::load(lift, param_tys, &lift.memory()[ptr..][..Params::SIZE32])?
+                storage.lift_params(lift, param_tys)?
+            };
+
+            // Load the return pointer, if present.
+            let retptr = match storage.async_retptr() {
+                Some(ptr) => {
+                    let mut lower =
+                        LowerContext::new(store.as_context_mut(), &options, &types, instance);
+                    validate_inbounds::<Return>(lower.as_slice_mut(), ptr)?
+                }
+                // If there's no return pointer then `Return` should have an
+                // empty flat representation. In this situation pretend the
+                // return pointer was 0 so we have something to shepherd along
+                // into the closure below.
+                None => {
+                    assert_eq!(Return::flatten_count(), 0);
+                    0
+                }
             };
 
             let future = closure(store.as_context_mut(), instance, params);
-
             let instance_ptr = SendSyncPtr::new(NonNull::new(instance).unwrap());
-            let task = instance.first_poll(store, future, caller_instance, {
+            let task = instance.first_poll(store.as_context_mut(), future, caller_instance, {
                 let types = types.clone();
                 move |mut store: StoreContextMut<T>,
                       instance: &mut ComponentInstance,
@@ -333,8 +331,7 @@ where
                         flags.set_may_leave(false);
                         let mut lower =
                             LowerContext::new(store, &options, &types, instance_ptr.as_ptr());
-                        let ptr = validate_inbounds::<Return>(lower.as_slice_mut(), &retptr)?;
-                        ret.store(&mut lower, result_tys, ptr)?;
+                        ret.store(&mut lower, result_tys, retptr)?;
                         flags.set_may_leave(true);
                         lower.exit_call()?;
                         Ok(())
@@ -348,7 +345,8 @@ where
                 Status::Returned.pack(None)
             };
 
-            storage[0] = MaybeUninit::new(ValRaw::i32(status as i32));
+            let mut lower = LowerContext::new(store, &options, &types, instance_ptr.as_ptr());
+            storage.lower_results(&mut lower, InterfaceType::U32, status)?;
         }
         #[cfg(not(feature = "component-model-async"))]
         {
@@ -358,29 +356,7 @@ where
             );
         }
     } else {
-        // There's a 2x2 matrix of whether parameters and results are stored on the
-        // stack or on the heap. Each of the 4 branches here have a different
-        // representation of the storage of arguments/returns.
-        //
-        // Also note that while four branches are listed here only one is taken for
-        // any particular `Params` and `Return` combination. This should be
-        // trivially DCE'd by LLVM. Perhaps one day with enough const programming in
-        // Rust we can make monomorphizations of this function codegen only one
-        // branch, but today is not that day.
-        let mut storage: Storage<'_, Params, Return> = if Params::flatten_count() <= MAX_FLAT_PARAMS
-        {
-            if Return::flatten_count() <= MAX_FLAT_RESULTS {
-                Storage::Direct(slice_to_storage_mut(storage))
-            } else {
-                Storage::ResultsIndirect(slice_to_storage_mut(storage).assume_init_ref())
-            }
-        } else {
-            if Return::flatten_count() <= MAX_FLAT_RESULTS {
-                Storage::ParamsIndirect(slice_to_storage_mut(storage))
-            } else {
-                Storage::Indirect(slice_to_storage_mut(storage).assume_init_ref())
-            }
-        };
+        let mut storage = Storage::<'_, Params, Return>::new_sync(storage);
         let mut lift = LiftContext::new(store.0.store_opaque_mut(), &options, types, instance);
         lift.enter_call();
         let params = storage.lift_params(&mut lift, param_tys)?;
@@ -401,11 +377,136 @@ where
 
     return Ok(());
 
+    /// Type-level representation of the matrix of possibilities of how
+    /// WebAssembly parameters and results are handled in the canonical ABI.
+    ///
+    /// Wasmtime's ABI here always works with `&mut [MaybeUninit<ValRaw>]` as the
+    /// base representation of params/results. Parameters are passed
+    /// sequentially and results are returned by overwriting the parameters.
+    /// That means both params/results start from index 0.
+    ///
+    /// The type-level representation here involves working with the typed
+    /// `P::Lower` and `R::Lower` values which is a type-level representation of
+    /// a lowered value. All lowered values are in essence a sequence of
+    /// `ValRaw` values one after the other to fit within this original array
+    /// that is the basis of Wasmtime's ABI.
+    ///
+    /// The various combinations here are cryptic, but only used in this file.
+    /// This in theory cuts down on the verbosity below, but an explanation of
+    /// the various acronyms here are:
+    ///
+    /// * Pd - params direct - means that parameters are passed directly in
+    ///   their flat representation via `P::Lower`.
+    ///
+    /// * Pi - params indirect - means that parameters are passed indirectly in
+    ///   linear memory and the argument here is `ValRaw` to store the pointer.
+    ///
+    /// * Rd - results direct - means that results are returned directly in
+    ///   their flat representation via `R::Lower`. Note that this is always
+    ///   represented as `MaybeUninit<R::Lower>` as well because the return
+    ///   values may point to uninitialized memory if there were no parameters
+    ///   for example.
+    ///
+    /// * Ri - results indirect - means that results are returned indirectly in
+    ///   linear memory through the pointer specified. Note that this is
+    ///   specified as a `ValRaw` to represent the argument that's being given
+    ///   to the host from WebAssembly.
+    ///
+    /// * Ar - async results - means that the parameters to this call
+    ///   additionally include an async result pointer. Async results are always
+    ///   transmitted via a pointer so this is always a `ValRaw`.
+    ///
+    /// Internally this type makes liberal use of `Union` and `Pair` helpers
+    /// below which are simple `#[repr(C)]` wrappers around a pair of types that
+    /// are a union or a pair.
+    ///
+    /// Note that for any combination of `P` and `R` this `enum` is actually
+    /// pointless as a single variant will be used. In theory we should be able
+    /// to monomorphize based on `P` and `R` to a specific type. This
+    /// monomorphization depends on conditionals like `flatten_count() <= N`,
+    /// however, and I don't know how to encode that in Rust easily. In lieu of
+    /// that we assume LLVM will figure things out and boil away the actual enum
+    /// and runtime dispatch.
     enum Storage<'a, P: ComponentType, R: ComponentType> {
-        Direct(&'a mut MaybeUninit<ReturnStack<P::Lower, R::Lower>>),
-        ParamsIndirect(&'a mut MaybeUninit<ReturnStack<ValRaw, R::Lower>>),
-        ResultsIndirect(&'a ReturnPointer<P::Lower>),
-        Indirect(&'a ReturnPointer<ValRaw>),
+        /// Params: direct, Results: direct
+        ///
+        /// The lowered representation of params/results are overlaid on top of
+        /// each other.
+        PdRd(&'a mut Union<P::Lower, MaybeUninit<R::Lower>>),
+
+        /// Params: direct, Results: indirect
+        ///
+        /// The return pointer comes after the params so this is sequentially
+        /// laid out with one after the other.
+        PdRi(&'a Pair<P::Lower, ValRaw>),
+
+        /// Params: indirect, Results: direct
+        ///
+        /// Here the return values are overlaid on top of the pointer parameter.
+        PiRd(&'a mut Union<ValRaw, MaybeUninit<R::Lower>>),
+
+        /// Params: indirect, Results: indirect
+        ///
+        /// Here the two parameters are laid out sequentially one after the
+        /// other.
+        PiRi(&'a Pair<ValRaw, ValRaw>),
+
+        /// Params: direct + async result, Results: direct
+        ///
+        /// This is like `PdRd` except that the parameters additionally include
+        /// a pointer for where to store the result.
+        PdArRd(&'a mut Union<Pair<P::Lower, ValRaw>, MaybeUninit<R::Lower>>),
+
+        /// Params: indirect + async result, Results: direct
+        ///
+        /// This is like `PiRd` except that the parameters additionally include
+        /// a pointer for where to store the result.
+        PiArRd(&'a mut Union<Pair<ValRaw, ValRaw>, MaybeUninit<R::Lower>>),
+    }
+
+    // Helper structure used above in `Storage` to represent two consecutive
+    // values.
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct Pair<T, U> {
+        a: T,
+        b: U,
+    }
+
+    // Helper structure used above in `Storage` to represent two values overlaid
+    // on each other.
+    #[repr(C)]
+    union Union<T: Copy, U: Copy> {
+        a: T,
+        b: U,
+    }
+
+    /// Representation of where parameters are lifted from.
+    enum Src<'a, T> {
+        /// Parameters are directly lifted from `T`, which is under the hood a
+        /// sequence of `ValRaw`. This is `P::Lower` for example.
+        Direct(&'a T),
+
+        /// Parameters are loaded from linear memory, and this is the wasm
+        /// parameter representing the pointer into linear memory to load from.
+        Indirect(&'a ValRaw),
+    }
+
+    /// Dual of [`Src`], where to store results.
+    enum Dst<'a, T> {
+        /// Results are stored directly in this pointer.
+        ///
+        /// Note that this is a mutable pointer but it's specifically
+        /// `MaybeUninit` as trampolines do not initialize it. The `T` here will
+        /// be `R::Lower` for example.
+        Direct(&'a mut MaybeUninit<T>),
+
+        /// Results are stored in linear memory, and this value is the wasm
+        /// parameter given which represents the pointer into linear memory.
+        ///
+        /// Note that this is not mutable as the parameter is not mutated, but
+        /// memory will be mutated.
+        Indirect(&'a ValRaw),
     }
 
     impl<P, R> Storage<'_, P, R>
@@ -413,39 +514,152 @@ where
         P: ComponentType + Lift,
         R: ComponentType + Lower,
     {
-        unsafe fn lift_params(&self, cx: &mut LiftContext<'_>, ty: InterfaceType) -> Result<P> {
-            match self {
-                Storage::Direct(storage) => P::lift(cx, ty, &storage.assume_init_ref().args),
-                Storage::ResultsIndirect(storage) => P::lift(cx, ty, &storage.args),
-                Storage::ParamsIndirect(storage) => {
-                    let ptr = validate_inbounds::<P>(cx.memory(), &storage.assume_init_ref().args)?;
-                    P::load(cx, ty, &cx.memory()[ptr..][..P::SIZE32])
+        /// Classifies a new `Storage` suitable for use with sync functions.
+        ///
+        /// There's a 2x2 matrix of whether parameters and results are stored on the
+        /// stack or on the heap. Each of the 4 branches here have a different
+        /// representation of the storage of arguments/returns.
+        ///
+        /// Also note that while four branches are listed here only one is taken for
+        /// any particular `Params` and `Return` combination. This should be
+        /// trivially DCE'd by LLVM. Perhaps one day with enough const programming in
+        /// Rust we can make monomorphizations of this function codegen only one
+        /// branch, but today is not that day.
+        ///
+        /// # Safety
+        ///
+        /// Requires that the `storage` provided does indeed match an wasm
+        /// function with the signature of `P` and `R` as params/results.
+        unsafe fn new_sync(storage: &mut [MaybeUninit<ValRaw>]) -> Storage<'_, P, R> {
+            // SAFETY: this `unsafe` is due to the `slice_to_storage_*` helpers
+            // used which view the slice provided as a different type. This
+            // safety should be upheld by the contract of the `ComponentType`
+            // trait and its `Lower` type parameter meaning they're valid to
+            // view as a sequence of `ValRaw` types. Additionally the
+            // `ComponentType` trait ensures that the matching of the runtime
+            // length of `storage` should match the actual size of `P::Lower`
+            // and `R::Lower` or such as needed.
+            unsafe {
+                if P::flatten_count() <= MAX_FLAT_PARAMS {
+                    if R::flatten_count() <= MAX_FLAT_RESULTS {
+                        Storage::PdRd(slice_to_storage_mut(storage).assume_init_mut())
+                    } else {
+                        Storage::PdRi(slice_to_storage_mut(storage).assume_init_ref())
+                    }
+                } else {
+                    if R::flatten_count() <= MAX_FLAT_RESULTS {
+                        Storage::PiRd(slice_to_storage_mut(storage).assume_init_mut())
+                    } else {
+                        Storage::PiRi(slice_to_storage_mut(storage).assume_init_ref())
+                    }
                 }
-                Storage::Indirect(storage) => {
-                    let ptr = validate_inbounds::<P>(cx.memory(), &storage.args)?;
+            }
+        }
+
+        fn lift_params(&self, cx: &mut LiftContext<'_>, ty: InterfaceType) -> Result<P> {
+            match self.lift_src() {
+                Src::Direct(storage) => P::lift(cx, ty, storage),
+                Src::Indirect(ptr) => {
+                    let ptr = validate_inbounds::<P>(cx.memory(), ptr)?;
                     P::load(cx, ty, &cx.memory()[ptr..][..P::SIZE32])
                 }
             }
         }
 
-        unsafe fn lower_results<T>(
+        fn lift_src(&self) -> Src<'_, P::Lower> {
+            match self {
+                // SAFETY: these `unsafe` blocks are due to accessing union
+                // fields. The safety here relies on the contract of the
+                // `ComponentType` trait which should ensure that the types
+                // projected onto a list of wasm parameters are indeed correct.
+                // That means that the projections here, if the types are
+                // correct, all line up to initialized memory that's well-typed
+                // to access.
+                Storage::PdRd(storage) => unsafe { Src::Direct(&storage.a) },
+                Storage::PdRi(storage) => Src::Direct(&storage.a),
+                Storage::PdArRd(storage) => unsafe { Src::Direct(&storage.a.a) },
+                Storage::PiRd(storage) => unsafe { Src::Indirect(&storage.a) },
+                Storage::PiRi(storage) => Src::Indirect(&storage.a),
+                Storage::PiArRd(storage) => unsafe { Src::Indirect(&storage.a.a) },
+            }
+        }
+
+        fn lower_results<T>(
             &mut self,
             cx: &mut LowerContext<'_, T>,
             ty: InterfaceType,
             ret: R,
         ) -> Result<()> {
+            match self.lower_dst() {
+                Dst::Direct(storage) => ret.lower(cx, ty, storage),
+                Dst::Indirect(ptr) => {
+                    let ptr = validate_inbounds::<R>(cx.as_slice_mut(), ptr)?;
+                    ret.store(cx, ty, ptr)
+                }
+            }
+        }
+
+        fn lower_dst(&mut self) -> Dst<'_, R::Lower> {
             match self {
-                Storage::Direct(storage) => ret.lower(cx, ty, map_maybe_uninit!(storage.ret)),
-                Storage::ParamsIndirect(storage) => {
-                    ret.lower(cx, ty, map_maybe_uninit!(storage.ret))
-                }
-                Storage::ResultsIndirect(storage) => {
-                    let ptr = validate_inbounds::<R>(cx.as_slice_mut(), &storage.retptr)?;
-                    ret.store(cx, ty, ptr)
-                }
-                Storage::Indirect(storage) => {
-                    let ptr = validate_inbounds::<R>(cx.as_slice_mut(), &storage.retptr)?;
-                    ret.store(cx, ty, ptr)
+                // SAFETY: these unsafe blocks are due to accessing fields of a
+                // `union` which is not safe in Rust. The returned value is
+                // `MaybeUninit<R::Lower>` in all cases, however, which should
+                // safely model how `union` memory is possibly uninitialized.
+                // Additionally `R::Lower` has the `unsafe` contract that all
+                // its bit patterns must be sound, which additionally should
+                // help make this safe.
+                Storage::PdRd(storage) => unsafe { Dst::Direct(&mut storage.b) },
+                Storage::PiRd(storage) => unsafe { Dst::Direct(&mut storage.b) },
+                Storage::PdArRd(storage) => unsafe { Dst::Direct(&mut storage.b) },
+                Storage::PiArRd(storage) => unsafe { Dst::Direct(&mut storage.b) },
+                Storage::PdRi(storage) => Dst::Indirect(&storage.b),
+                Storage::PiRi(storage) => Dst::Indirect(&storage.b),
+            }
+        }
+
+        fn async_retptr(&self) -> Option<&ValRaw> {
+            match self {
+                // SAFETY: like above these are `unsafe` due to accessing a
+                // `union` field. This should be safe via the construction of
+                // `Storage` which should correctly determine whether or not an
+                // async return pointer is provided and classify the args/rets
+                // appropriately.
+                Storage::PdArRd(storage) => unsafe { Some(&storage.a.b) },
+                Storage::PiArRd(storage) => unsafe { Some(&storage.a.b) },
+                Storage::PdRd(_) | Storage::PiRd(_) | Storage::PdRi(_) | Storage::PiRi(_) => None,
+            }
+        }
+    }
+
+    impl<P> Storage<'_, P, u32>
+    where
+        P: ComponentType + Lift,
+    {
+        /// Classifies a new `Storage` suitable for use with async functions.
+        ///
+        /// # Safety
+        ///
+        /// Requires that the `storage` provided does indeed match an `async`
+        /// wasm function with the signature of `P` and `R` as params/results.
+        unsafe fn new_async<R>(storage: &mut [MaybeUninit<ValRaw>]) -> Storage<'_, P, u32>
+        where
+            R: ComponentType + Lower,
+        {
+            // SAFETY: see `Storage::new` for discussion on why this should be
+            // safe given the unsafe contract of the `ComponentType` trait.
+            unsafe {
+                if P::flatten_count() <= MAX_FLAT_ASYNC_PARAMS {
+                    if R::flatten_count() == 0 {
+                        Storage::PdRd(slice_to_storage_mut(storage).assume_init_mut())
+                    } else {
+                        Storage::PdArRd(slice_to_storage_mut(storage).assume_init_mut())
+                    }
+                } else {
+                    if R::flatten_count() == 0 {
+                        Storage::PiRd(slice_to_storage_mut(storage).assume_init_mut())
+                    } else {
+                        Storage::PiArRd(slice_to_storage_mut(storage).assume_init_mut())
+                    }
                 }
             }
         }
@@ -529,9 +743,6 @@ where
         bail!("cannot leave component instance");
     }
 
-    let args;
-    let ret_index;
-
     let func_ty = &types[ty];
     let param_tys = &types[func_ty.params];
     let result_tys = &types[func_ty.results];
@@ -539,25 +750,28 @@ where
     if async_ {
         #[cfg(feature = "component-model-async")]
         {
-            let paramptr = storage[0].assume_init();
-            let retptr = storage[1].assume_init();
-
-            let params = {
+            let mut params = Vec::new();
+            let ret_index = {
                 let mut lift =
                     &mut LiftContext::new(store.0.store_opaque_mut(), &options, types, instance);
                 lift.enter_call();
-                let mut offset =
-                    validate_inbounds_dynamic(&param_tys.abi, lift.memory(), &paramptr)?;
-                param_tys
-                    .types
-                    .iter()
-                    .map(|ty| {
-                        let abi = types.canonical_abi(ty);
-                        let size = usize::try_from(abi.size32).unwrap();
-                        let memory = &lift.memory()[abi.next_field32_size(&mut offset)..][..size];
-                        Val::load(&mut lift, *ty, memory)
-                    })
-                    .collect::<Result<Vec<_>>>()?
+
+                dynamic_params_load(
+                    &mut lift,
+                    types,
+                    storage,
+                    param_tys,
+                    &mut params,
+                    MAX_FLAT_ASYNC_PARAMS,
+                )?
+            };
+            let retptr = if result_tys.types.len() == 0 {
+                0
+            } else {
+                let retptr = storage[ret_index].assume_init();
+                let mut lower =
+                    LowerContext::new(store.as_context_mut(), &options, &types, instance);
+                validate_inbounds_dynamic(&result_tys.abi, lower.as_slice_mut(), &retptr)?
             };
 
             let future = closure(
@@ -584,11 +798,7 @@ where
 
                         let mut lower =
                             LowerContext::new(store, &options, &types, instance_ptr.as_ptr());
-                        let mut ptr = validate_inbounds_dynamic(
-                            &result_tys.abi,
-                            lower.as_slice_mut(),
-                            &retptr,
-                        )?;
+                        let mut ptr = retptr;
                         for (val, ty) in result_vals.iter().zip(result_tys.types.iter()) {
                             let offset = types.canonical_abi(ty).next_field32_size(&mut ptr);
                             val.store(&mut lower, *ty, offset)?;
@@ -621,35 +831,15 @@ where
     } else {
         let mut cx = LiftContext::new(store.0.store_opaque_mut(), &options, types, instance);
         cx.enter_call();
-        if let Some(param_count) = param_tys.abi.flat_count(MAX_FLAT_PARAMS) {
-            // NB: can use `MaybeUninit::slice_assume_init_ref` when that's stable
-            let mut iter =
-                mem::transmute::<&[MaybeUninit<ValRaw>], &[ValRaw]>(&storage[..param_count]).iter();
-            args = param_tys
-                .types
-                .iter()
-                .map(|ty| Val::lift(&mut cx, *ty, &mut iter))
-                .collect::<Result<Vec<_>>>()?;
-            ret_index = param_count;
-            assert!(iter.next().is_none());
-        } else {
-            let mut offset = validate_inbounds_dynamic(
-                &param_tys.abi,
-                cx.memory(),
-                storage[0].assume_init_ref(),
-            )?;
-            args = param_tys
-                .types
-                .iter()
-                .map(|ty| {
-                    let abi = types.canonical_abi(ty);
-                    let size = usize::try_from(abi.size32).unwrap();
-                    let memory = &cx.memory()[abi.next_field32_size(&mut offset)..][..size];
-                    Val::load(&mut cx, *ty, memory)
-                })
-                .collect::<Result<Vec<_>>>()?;
-            ret_index = 1;
-        };
+        let mut args = Vec::new();
+        let ret_index = dynamic_params_load(
+            &mut cx,
+            types,
+            storage,
+            param_tys,
+            &mut args,
+            MAX_FLAT_PARAMS,
+        )?;
 
         let future = closure(
             store.as_context_mut(),
@@ -688,6 +878,46 @@ where
     }
 
     return Ok(());
+}
+
+/// Loads the parameters for a dynamic host function call into `params`
+///
+/// Returns the number of flat `storage` values consumed.
+///
+/// # Safety
+///
+/// Requires that `param_tys` matches the type signature of the `storage` that
+/// was passed in.
+unsafe fn dynamic_params_load(
+    cx: &mut LiftContext<'_>,
+    types: &ComponentTypes,
+    storage: &[MaybeUninit<ValRaw>],
+    param_tys: &TypeTuple,
+    params: &mut Vec<Val>,
+    max_flat_params: usize,
+) -> Result<usize> {
+    if let Some(param_count) = param_tys.abi.flat_count(max_flat_params) {
+        // NB: can use `MaybeUninit::slice_assume_init_ref` when that's stable
+        let storage =
+            unsafe { mem::transmute::<&[MaybeUninit<ValRaw>], &[ValRaw]>(&storage[..param_count]) };
+        let mut iter = storage.iter();
+        for ty in param_tys.types.iter() {
+            params.push(Val::lift(cx, *ty, &mut iter)?);
+        }
+        assert!(iter.next().is_none());
+        Ok(param_count)
+    } else {
+        let mut offset = validate_inbounds_dynamic(&param_tys.abi, cx.memory(), unsafe {
+            storage[0].assume_init_ref()
+        })?;
+        for ty in param_tys.types.iter() {
+            let abi = types.canonical_abi(ty);
+            let size = usize::try_from(abi.size32).unwrap();
+            let memory = &cx.memory()[abi.next_field32_size(&mut offset)..][..size];
+            params.push(Val::load(cx, *ty, memory)?);
+        }
+        Ok(1)
+    }
 }
 
 pub(crate) fn validate_inbounds_dynamic(

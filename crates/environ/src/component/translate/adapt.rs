@@ -305,19 +305,12 @@ fn fact_import_to_core_def(
         }
         fact::Import::ResourceEnterCall => simple_intrinsic(dfg::Trampoline::ResourceEnterCall),
         fact::Import::ResourceExitCall => simple_intrinsic(dfg::Trampoline::ResourceExitCall),
-        fact::Import::SyncPrepareCall { memory } => {
-            simple_intrinsic(dfg::Trampoline::SyncPrepareCall {
-                memory: memory.as_ref().map(|v| dfg.memories.push(unwrap_memory(v))),
-            })
-        }
+        fact::Import::PrepareCall { memory } => simple_intrinsic(dfg::Trampoline::PrepareCall {
+            memory: memory.as_ref().map(|v| dfg.memories.push(unwrap_memory(v))),
+        }),
         fact::Import::SyncStartCall { callback } => {
             simple_intrinsic(dfg::Trampoline::SyncStartCall {
                 callback: callback.clone().map(|v| dfg.callbacks.push(v)),
-            })
-        }
-        fact::Import::AsyncPrepareCall { memory } => {
-            simple_intrinsic(dfg::Trampoline::AsyncPrepareCall {
-                memory: memory.as_ref().map(|v| dfg.memories.push(unwrap_memory(v))),
             })
         }
         fact::Import::AsyncStartCall {

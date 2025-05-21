@@ -249,11 +249,9 @@ mod one_import_concurrent {
                     )
                     (core instance $libc-instance (instantiate $libc))
                     (core module $m
-                        (import "" "foo" (func $foo (param i32 i32) (result i32)))
+                        (import "" "foo" (func $foo (param) (result i32)))
                         (import "" "task.return" (func $task-return))
                         (func (export "bar") (result i32)
-                            i32.const 0
-                            i32.const 0
                             call $foo
                             drop
                             call $task-return

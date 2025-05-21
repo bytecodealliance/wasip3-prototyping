@@ -6,7 +6,6 @@ mod bindings {
 }
 
 use {
-    std::ptr,
     test_programs::async_::{
         CALLBACK_CODE_EXIT, CALLBACK_CODE_WAIT, EVENT_CANCELLED, EVENT_NONE, EVENT_SUBTASK,
         STATUS_RETURN_CANCELLED, STATUS_RETURNED, STATUS_STARTED, context_get, context_set,
@@ -42,10 +41,10 @@ unsafe fn sleep_millis(_: u64) {
 #[link(wasm_import_module = "local:local/sleep")]
 unsafe extern "C" {
     #[link_name = "[async-lower][async]sleep-millis"]
-    fn sleep_millis_async(_: *mut u8, _: *mut u8) -> u32;
+    fn sleep_millis_async(ms: u64) -> u32;
 }
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn sleep_millis_async(_: *mut u8, _: *mut u8) -> u32 {
+unsafe fn sleep_millis_async(ms: u64) -> u32 {
     unreachable!()
 }
 
@@ -74,13 +73,11 @@ enum State {
         set: u32,
         waitable: u32,
         params: SleepParams,
-        param_ptr: *mut u64,
     },
     S2 {
         set: u32,
         waitable: u32,
         params: SleepParams,
-        param_ptr: *mut u64,
     },
 }
 
@@ -131,9 +128,7 @@ unsafe extern "C" fn callback_sleep_with_options_sleep_millis(
             State::S0(params) => {
                 assert_eq!(event0, EVENT_NONE);
 
-                let param_ptr = Box::into_raw(Box::new(params.time_in_millis));
-
-                let status = sleep_millis_async(param_ptr.cast(), ptr::null_mut());
+                let status = sleep_millis_async(params.time_in_millis);
 
                 let waitable = status >> 4;
                 let status = status & 0xF;
@@ -147,7 +142,6 @@ unsafe extern "C" fn callback_sleep_with_options_sleep_millis(
                     set,
                     waitable,
                     params: *params,
-                    param_ptr,
                 };
 
                 CALLBACK_CODE_WAIT | (set << 4)
@@ -157,7 +151,6 @@ unsafe extern "C" fn callback_sleep_with_options_sleep_millis(
                 set,
                 waitable,
                 params,
-                param_ptr,
             } => {
                 assert_eq!(event0, EVENT_CANCELLED);
 
@@ -194,9 +187,7 @@ unsafe extern "C" fn callback_sleep_with_options_sleep_millis(
 
                     CALLBACK_CODE_EXIT
                 } else {
-                    **param_ptr = params.on_cancel_delay_millis;
-
-                    let status = sleep_millis_async(param_ptr.cast(), ptr::null_mut());
+                    let status = sleep_millis_async(params.on_cancel_delay_millis);
 
                     let waitable = status >> 4;
                     let status = status & 0xF;
@@ -211,7 +202,6 @@ unsafe extern "C" fn callback_sleep_with_options_sleep_millis(
                         set,
                         waitable,
                         params: *params,
-                        param_ptr: *param_ptr,
                     };
 
                     CALLBACK_CODE_WAIT | (set << 4)
@@ -222,7 +212,6 @@ unsafe extern "C" fn callback_sleep_with_options_sleep_millis(
                 set,
                 waitable,
                 params,
-                param_ptr,
             } => {
                 assert_eq!(event0, EVENT_SUBTASK);
                 assert_eq!(event1, *waitable);
@@ -237,7 +226,6 @@ unsafe extern "C" fn callback_sleep_with_options_sleep_millis(
                 waitable_join(*waitable, 0);
                 subtask_drop(*waitable);
                 waitable_set_drop(*set);
-                drop(Box::from_raw(*param_ptr));
 
                 match params.on_cancel {
                     ON_CANCEL_TASK_RETURN => task_return_sleep_millis(),

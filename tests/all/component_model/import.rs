@@ -505,10 +505,8 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
       (local $results i32)
 
       block
-        (local.set $params (call $realloc (i32.const 0) (i32.const 0) (i32.const 4) (i32.const 4)))
-        (i32.store offset=0 (local.get $params) (i32.const 1))
         (local.set $results (call $realloc (i32.const 0) (i32.const 0) (i32.const 4) (i32.const 4)))
-        (call $f1 (local.get $params) (local.get $results))
+        (call $f1 (i32.const 1) (local.get $results))
         drop
         (i32.load offset=0 (local.get $results))
         i32.const 2
@@ -530,10 +528,8 @@ async fn test_stack_and_heap_args_and_rets(concurrent: bool) -> Result<()> {
       end
 
       block
-        (local.set $params (call $realloc (i32.const 0) (i32.const 0) (i32.const 4) (i32.const 4)))
-        (i32.store offset=0 (local.get $params) (i32.const 8))
         (local.set $results (call $realloc (i32.const 0) (i32.const 0) (i32.const 4) (i32.const 8)))
-        (call $f3 (local.get $params) (local.get $results))
+        (call $f3 (i32.const 8) (local.get $results))
         drop
         (call $validate_string_ret (local.get $results))
       end

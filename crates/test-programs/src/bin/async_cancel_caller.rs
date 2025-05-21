@@ -5,14 +5,11 @@ mod bindings {
     });
 }
 
-use {
-    std::ptr,
-    test_programs::async_::{
-        BLOCKED, CALLBACK_CODE_EXIT, CALLBACK_CODE_WAIT, EVENT_NONE, EVENT_SUBTASK,
-        STATUS_RETURN_CANCELLED, STATUS_RETURNED, STATUS_START_CANCELLED, STATUS_STARTED,
-        STATUS_STARTING, context_get, context_set, subtask_cancel, subtask_cancel_async,
-        subtask_drop, waitable_join, waitable_set_drop, waitable_set_new,
-    },
+use test_programs::async_::{
+    BLOCKED, CALLBACK_CODE_EXIT, CALLBACK_CODE_WAIT, EVENT_NONE, EVENT_SUBTASK,
+    STATUS_RETURN_CANCELLED, STATUS_RETURNED, STATUS_START_CANCELLED, STATUS_STARTED,
+    STATUS_STARTING, context_get, context_set, subtask_cancel, subtask_cancel_async, subtask_drop,
+    waitable_join, waitable_set_drop, waitable_set_new,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -42,10 +39,10 @@ mod sleep {
     #[link(wasm_import_module = "local:local/sleep")]
     unsafe extern "C" {
         #[link_name = "[async-lower][async]sleep-millis"]
-        pub fn sleep_millis(_: *mut u8, _: *mut u8) -> u32;
+        pub fn sleep_millis(_: u64) -> u32;
     }
     #[cfg(not(target_arch = "wasm32"))]
-    pub unsafe fn sleep_millis(_: *mut u8, _: *mut u8) -> u32 {
+    pub unsafe fn sleep_millis(_: u64) -> u32 {
         unreachable!()
     }
 }
@@ -55,10 +52,10 @@ mod sleep_with_options {
     #[link(wasm_import_module = "local:local/sleep-with-options")]
     unsafe extern "C" {
         #[link_name = "[async-lower][async]sleep-millis"]
-        pub fn sleep_millis(_: *mut u8, _: *mut u8) -> u32;
+        pub fn sleep_millis(_: *mut u8) -> u32;
     }
     #[cfg(not(target_arch = "wasm32"))]
-    pub unsafe fn sleep_millis(_: *mut u8, _: *mut u8) -> u32 {
+    pub unsafe fn sleep_millis(_: *mut u8) -> u32 {
         unreachable!()
     }
 }
@@ -107,7 +104,6 @@ enum State {
         set: u32,
         waitable: u32,
         params: *mut SleepParams,
-        params2: *mut u64,
     },
 }
 
@@ -141,7 +137,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
                     mode: *mode,
                 }));
 
-                let status = sleep_with_options::sleep_millis(params.cast(), ptr::null_mut());
+                let status = sleep_with_options::sleep_millis(params.cast());
 
                 let waitable = status >> 4;
                 let status = status & 0xF;
@@ -167,7 +163,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
 
                 set_backpressure(false);
 
-                let status = sleep_with_options::sleep_millis(params.cast(), ptr::null_mut());
+                let status = sleep_with_options::sleep_millis(params.cast());
 
                 let waitable = status >> 4;
                 let status = status & 0xF;
@@ -193,7 +189,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
 
                 (*params).on_cancel_delay_millis = 10;
 
-                let status = sleep_with_options::sleep_millis(params.cast(), ptr::null_mut());
+                let status = sleep_with_options::sleep_millis(params.cast());
 
                 let waitable = status >> 4;
                 let status = status & 0xF;
@@ -237,7 +233,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
 
                 (**params).on_cancel = ON_CANCEL_TASK_RETURN;
 
-                let status = sleep_with_options::sleep_millis(params.cast(), ptr::null_mut());
+                let status = sleep_with_options::sleep_millis(params.cast());
 
                 let waitable = status >> 4;
                 let status = status & 0xF;
@@ -288,7 +284,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
                 (**params).on_cancel = ON_CANCEL_TASK_CANCEL;
                 (**params).synchronous_delay = true;
 
-                let status = sleep_with_options::sleep_millis(params.cast(), ptr::null_mut());
+                let status = sleep_with_options::sleep_millis(params.cast());
 
                 let waitable = status >> 4;
                 let status = status & 0xF;
@@ -337,9 +333,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
                 // `STATUS_RETURNED` when complete since the callee cannot
                 // actually be cancelled.
 
-                let params2 = Box::into_raw(Box::new(10u64));
-
-                let status = sleep::sleep_millis(params2.cast(), ptr::null_mut());
+                let status = sleep::sleep_millis(10);
 
                 let waitable = status >> 4;
                 let status = status & 0xF;
@@ -358,7 +352,6 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
                     set,
                     waitable,
                     params: *params,
-                    params2,
                 };
 
                 CALLBACK_CODE_WAIT | (set << 4)
@@ -368,7 +361,6 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
                 set,
                 waitable,
                 params,
-                params2,
             } => {
                 assert_eq!(event0, EVENT_SUBTASK);
                 assert_eq!(event1, *waitable);
@@ -377,7 +369,6 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
                 waitable_join(*waitable, 0);
                 subtask_drop(*waitable);
                 waitable_set_drop(*set);
-                drop(Box::from_raw(*params2));
 
                 // Next, call and cancel `sleep_with_options::sleep_millis` with
                 // a non-zero cancel delay, and specify that the callee should
@@ -387,7 +378,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
 
                 (**params).synchronous_delay = true;
 
-                let status = sleep_with_options::sleep_millis(params.cast(), ptr::null_mut());
+                let status = sleep_with_options::sleep_millis(params.cast());
 
                 let waitable = status >> 4;
                 let status = status & 0xF;
@@ -406,7 +397,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
 
                 (**params).synchronous_delay = false;
 
-                let status = sleep_with_options::sleep_millis(params.cast(), ptr::null_mut());
+                let status = sleep_with_options::sleep_millis(params.cast());
 
                 let waitable = status >> 4;
                 let status = status & 0xF;

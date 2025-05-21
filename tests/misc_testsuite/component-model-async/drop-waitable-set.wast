@@ -18,7 +18,7 @@
       (global $ws (mut i32) (i32.const 0))
       (func $start (global.set $ws (call $waitable-set.new)))
       (start $start)
-      
+
       (func $wait-on-set (export "wait-on-set") (result i32)
         ;; wait on $ws
         (i32.or (i32.const 2 (; WAIT ;)) (i32.shl (global.get $ws) (i32.const 4)))
@@ -57,14 +57,14 @@
     (core instance $memory (instantiate $Memory))
     (core module $Core
       (import "" "mem" (memory 1))
-      (import "" "wait-on-set" (func $wait-on-set (param i32 i32) (result i32)))
+      (import "" "wait-on-set" (func $wait-on-set (result i32)))
       (import "" "drop-while-waiting" (func $drop-while-waiting))
       (func $run (export "run") (result i32)
         (local $ret i32)
 
         ;; start an async call to 'wait-on-set' which blocks, waiting on a
         ;; waitable-set.
-        (local.set $ret (call $wait-on-set (i32.const 0xdeadbeef) (i32.const 0xdeadbeef)))
+        (local.set $ret (call $wait-on-set))
         (if (i32.ne (i32.const 0x11) (local.get $ret))
           (then unreachable))
 
