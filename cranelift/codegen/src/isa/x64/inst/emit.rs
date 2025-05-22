@@ -188,41 +188,6 @@ pub(crate) fn emit(
                 .encode(sink);
         }
 
-        Inst::UnaryRmR { size, op, src, dst } => {
-            let dst = dst.to_reg().to_reg();
-            let rex_flags = RexFlags::from(*size);
-            use UnaryRmROpcode::*;
-            let prefix = match size {
-                OperandSize::Size16 => match op {
-                    Bsr | Bsf => LegacyPrefixes::_66,
-                    Lzcnt | Tzcnt | Popcnt => LegacyPrefixes::_66F3,
-                },
-                OperandSize::Size32 | OperandSize::Size64 => match op {
-                    Bsr | Bsf => LegacyPrefixes::None,
-                    Lzcnt | Tzcnt | Popcnt => LegacyPrefixes::_F3,
-                },
-                _ => unreachable!(),
-            };
-
-            let (opcode, num_opcodes) = match op {
-                Bsr => (0x0fbd, 2),
-                Bsf => (0x0fbc, 2),
-                Lzcnt => (0x0fbd, 2),
-                Tzcnt => (0x0fbc, 2),
-                Popcnt => (0x0fb8, 2),
-            };
-
-            match src.clone().into() {
-                RegMem::Reg { reg: src } => {
-                    emit_std_reg_reg(sink, prefix, opcode, num_opcodes, dst, src, rex_flags);
-                }
-                RegMem::Mem { addr: src } => {
-                    let amode = src.finalize(state.frame_layout(), sink).clone();
-                    emit_std_reg_mem(sink, prefix, opcode, num_opcodes, dst, &amode, rex_flags, 0);
-                }
-            }
-        }
-
         Inst::UnaryRmRVex { size, op, src, dst } => {
             let dst = dst.to_reg().to_reg();
             let src = match src.clone().to_reg_mem().clone() {
@@ -366,142 +331,6 @@ pub(crate) fn emit(
             }
         }
 
-        Inst::Mul {
-            signed,
-            size,
-            src1,
-            src2,
-            dst_lo,
-            dst_hi,
-        } => {
-            let src1 = src1.to_reg();
-            let dst_lo = dst_lo.to_reg().to_reg();
-            let dst_hi = dst_hi.to_reg().to_reg();
-            debug_assert_eq!(src1, regs::rax());
-            debug_assert_eq!(dst_lo, regs::rax());
-            debug_assert_eq!(dst_hi, regs::rdx());
-            let src2 = src2.clone().to_reg_mem().clone();
-
-            let rex_flags = RexFlags::from(*size);
-            let prefix = match size {
-                OperandSize::Size16 => LegacyPrefixes::_66,
-                OperandSize::Size32 => LegacyPrefixes::None,
-                OperandSize::Size64 => LegacyPrefixes::None,
-                _ => unreachable!(),
-            };
-
-            let subopcode = if *signed { 5 } else { 4 };
-            match src2 {
-                RegMem::Reg { reg } => {
-                    let src = int_reg_enc(reg);
-                    emit_std_enc_enc(sink, prefix, 0xF7, 1, subopcode, src, rex_flags)
-                }
-                RegMem::Mem { addr: src } => {
-                    let amode = src.finalize(state.frame_layout(), sink);
-                    emit_std_enc_mem(sink, prefix, 0xF7, 1, subopcode, &amode, rex_flags, 0);
-                }
-            }
-        }
-        Inst::Mul8 {
-            signed,
-            src1,
-            src2,
-            dst,
-        } => {
-            let src1 = src1.to_reg();
-            let dst = dst.to_reg().to_reg();
-            debug_assert_eq!(src1, regs::rax());
-            debug_assert_eq!(dst, regs::rax());
-            let src2 = src2.clone().to_reg_mem().clone();
-
-            let mut rex_flags = RexFlags::from(OperandSize::Size8);
-            let prefix = LegacyPrefixes::None;
-            let subopcode = if *signed { 5 } else { 4 };
-            match src2 {
-                RegMem::Reg { reg } => {
-                    // The intel manual states:
-                    //
-                    // > r/m8 can not be encoded to access the following byte
-                    // > registers if a REX prefix is used: AH, BH, CH, DH
-                    //
-                    // And apparently that also means that a REX prefix must be
-                    // used if it's not one of those registers.
-                    if !(reg == regs::rax()
-                        || reg == regs::rbx()
-                        || reg == regs::rcx()
-                        || reg == regs::rdx())
-                    {
-                        rex_flags.always_emit();
-                    }
-                    let src = int_reg_enc(reg);
-                    emit_std_enc_enc(sink, prefix, 0xF6, 1, subopcode, src, rex_flags)
-                }
-                RegMem::Mem { addr } => {
-                    let amode = addr.finalize(state.frame_layout(), sink);
-                    emit_std_enc_mem(sink, prefix, 0xF6, 1, subopcode, &amode, rex_flags, 0);
-                }
-            }
-        }
-        Inst::IMul {
-            size,
-            src1,
-            src2,
-            dst,
-        } => {
-            let src1 = src1.to_reg();
-            let dst = dst.to_reg().to_reg();
-            debug_assert_eq!(src1, dst);
-            let src2 = src2.clone().to_reg_mem().clone();
-
-            let rex = RexFlags::from(*size);
-            let prefix = LegacyPrefixes::None;
-            match src2 {
-                RegMem::Reg { reg } => {
-                    emit_std_reg_reg(sink, prefix, 0x0FAF, 2, dst, reg, rex);
-                }
-
-                RegMem::Mem { addr } => {
-                    let amode = addr.finalize(state.frame_layout(), sink);
-                    emit_std_reg_mem(sink, prefix, 0x0FAF, 2, dst, &amode, rex, 0);
-                }
-            }
-        }
-
-        Inst::IMulImm {
-            size,
-            src1,
-            src2,
-            dst,
-        } => {
-            let dst = dst.to_reg().to_reg();
-            let src1 = src1.clone().to_reg_mem().clone();
-
-            let rex = RexFlags::from(*size);
-            let prefix = match size {
-                // NB: the intel manual doesn't seem to mention this prefix as
-                // being required
-                OperandSize::Size16 => LegacyPrefixes::_66,
-                _ => LegacyPrefixes::None,
-            };
-            let imm_size = if i8::try_from(*src2).is_ok() {
-                1
-            } else {
-                if *size == OperandSize::Size16 { 2 } else { 4 }
-            };
-            let opcode = if imm_size == 1 { 0x6B } else { 0x69 };
-            match src1 {
-                RegMem::Reg { reg } => {
-                    emit_std_reg_reg(sink, prefix, opcode, 1, dst, reg, rex);
-                }
-
-                RegMem::Mem { addr } => {
-                    let amode = addr.finalize(state.frame_layout(), sink);
-                    emit_std_reg_mem(sink, prefix, opcode, 1, dst, &amode, rex, imm_size);
-                }
-            }
-            emit_simm(sink, imm_size, *src2 as u32);
-        }
-
         Inst::MulX {
             size,
             src1,
@@ -538,32 +367,6 @@ pub(crate) fn emit(
                 .vvvv(dst_lo)
                 .rm(src2)
                 .encode(sink);
-        }
-
-        Inst::SignExtendData { size, src, dst } => {
-            let src = src.to_reg();
-            let dst = dst.to_reg().to_reg();
-            debug_assert_eq!(src, regs::rax());
-            if *size == OperandSize::Size8 {
-                debug_assert_eq!(dst, regs::rax());
-            } else {
-                debug_assert_eq!(dst, regs::rdx());
-            }
-            match size {
-                OperandSize::Size8 => {
-                    sink.put1(0x66);
-                    sink.put1(0x98);
-                }
-                OperandSize::Size16 => {
-                    sink.put1(0x66);
-                    sink.put1(0x99);
-                }
-                OperandSize::Size32 => sink.put1(0x99),
-                OperandSize::Size64 => {
-                    sink.put1(0x48);
-                    sink.put1(0x99);
-                }
-            }
         }
 
         Inst::CheckedSRemSeq { divisor, .. } | Inst::CheckedSRemSeq8 { divisor, .. } => {
@@ -1011,62 +814,6 @@ pub(crate) fn emit(
             // 32-bit: MOV r32, r/m32 is (REX.W==0) 89 /r
             // 64-bit: MOV r64, r/m64 is (REX.W==1) 89 /r
             emit_std_reg_mem(sink, prefix, opcode, 1, src, dst, rex, 0);
-        }
-
-        Inst::ShiftR {
-            size,
-            kind,
-            src,
-            num_bits,
-            dst,
-        } => {
-            let src = src.to_reg();
-            let dst = dst.to_reg().to_reg();
-            debug_assert_eq!(src, dst);
-            let subopcode = match kind {
-                ShiftKind::RotateLeft => 0,
-                ShiftKind::RotateRight => 1,
-                ShiftKind::ShiftLeft => 4,
-                ShiftKind::ShiftRightLogical => 5,
-                ShiftKind::ShiftRightArithmetic => 7,
-            };
-            let enc_dst = int_reg_enc(dst);
-            let rex_flags = RexFlags::from((*size, dst));
-            match num_bits.as_imm8_reg() {
-                &Imm8Reg::Reg { reg } => {
-                    debug_assert_eq!(reg, regs::rcx());
-                    let (opcode, prefix) = match size {
-                        OperandSize::Size8 => (0xD2, LegacyPrefixes::None),
-                        OperandSize::Size16 => (0xD3, LegacyPrefixes::_66),
-                        OperandSize::Size32 => (0xD3, LegacyPrefixes::None),
-                        OperandSize::Size64 => (0xD3, LegacyPrefixes::None),
-                    };
-
-                    // SHL/SHR/SAR %cl, reg8 is (REX.W==0) D2 /subopcode
-                    // SHL/SHR/SAR %cl, reg16 is 66 (REX.W==0) D3 /subopcode
-                    // SHL/SHR/SAR %cl, reg32 is (REX.W==0) D3 /subopcode
-                    // SHL/SHR/SAR %cl, reg64 is (REX.W==1) D3 /subopcode
-                    emit_std_enc_enc(sink, prefix, opcode, 1, subopcode, enc_dst, rex_flags);
-                }
-
-                &Imm8Reg::Imm8 { imm: num_bits } => {
-                    let (opcode, prefix) = match size {
-                        OperandSize::Size8 => (0xC0, LegacyPrefixes::None),
-                        OperandSize::Size16 => (0xC1, LegacyPrefixes::_66),
-                        OperandSize::Size32 => (0xC1, LegacyPrefixes::None),
-                        OperandSize::Size64 => (0xC1, LegacyPrefixes::None),
-                    };
-
-                    // SHL/SHR/SAR $ib, reg8 is (REX.W==0) C0 /subopcode
-                    // SHL/SHR/SAR $ib, reg16 is 66 (REX.W==0) C1 /subopcode
-                    // SHL/SHR/SAR $ib, reg32 is (REX.W==0) C1 /subopcode ib
-                    // SHL/SHR/SAR $ib, reg64 is (REX.W==1) C1 /subopcode ib
-                    // When the shift amount is 1, there's an even shorter encoding, but we don't
-                    // bother with that nicety here.
-                    emit_std_enc_enc(sink, prefix, opcode, 1, subopcode, enc_dst, rex_flags);
-                    sink.put1(num_bits);
-                }
-            }
         }
 
         Inst::CmpRmiR {
@@ -1967,8 +1714,6 @@ pub(crate) fn emit(
                 SseOpcode::Pmovzxwd => (LegacyPrefixes::_66, 0x0F3833, 3),
                 SseOpcode::Pmovzxwq => (LegacyPrefixes::_66, 0x0F3834, 3),
                 SseOpcode::Pmovzxdq => (LegacyPrefixes::_66, 0x0F3835, 3),
-                SseOpcode::Sqrtps => (LegacyPrefixes::None, 0x0F51, 2),
-                SseOpcode::Sqrtpd => (LegacyPrefixes::_66, 0x0F51, 2),
                 SseOpcode::Movddup => (LegacyPrefixes::_F2, 0x0F12, 2),
                 _ => unimplemented!("Opcode {:?} not implemented", op),
             };
@@ -3329,14 +3074,10 @@ pub(crate) fn emit(
             inst.emit(sink, info, state);
 
             // tmp_gpr1 := src >> 1
-            let inst = Inst::shift_r(
-                OperandSize::Size64,
-                ShiftKind::ShiftRightLogical,
-                Imm8Gpr::unwrap_new(Imm8Reg::Imm8 { imm: 1 }),
-                tmp_gpr1.to_reg(),
-                tmp_gpr1,
-            );
-            inst.emit(sink, info, state);
+            Inst::External {
+                inst: asm::inst::shrq_mi::new(tmp_gpr1, 1).into(),
+            }
+            .emit(sink, info, state);
 
             let inst = Inst::gen_move(tmp_gpr2, src, types::I64);
             inst.emit(sink, info, state);

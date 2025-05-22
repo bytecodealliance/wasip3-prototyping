@@ -34,7 +34,6 @@ macro_rules! newtype_of_reg {
         $newtype_option_writable_reg:ident,
         reg_mem: ($($newtype_reg_mem:ident $(aligned:$aligned:ident)?),*),
         reg_mem_imm: ($($newtype_reg_mem_imm:ident $(aligned:$aligned_imm:ident)?),*),
-        $newtype_imm8_reg:ident,
         |$check_reg:ident| $check:expr
     ) => {
         /// A newtype wrapper around `Reg`.
@@ -294,50 +293,6 @@ macro_rules! newtype_of_reg {
                 }
             }
         )*
-
-        /// A newtype wrapper around `Imm8Reg`.
-        #[derive(Clone, Debug)]
-        #[allow(dead_code)] // Used by some newtypes and not others.
-        pub struct $newtype_imm8_reg(Imm8Reg);
-
-        impl From<$newtype_reg> for $newtype_imm8_reg {
-            fn from(r: $newtype_reg) -> Self {
-                Self(Imm8Reg::Reg { reg: r.to_reg() })
-            }
-        }
-
-        impl $newtype_imm8_reg {
-            /// Construct this newtype from the given `Imm8Reg`, or return
-            /// `None` if the `Imm8Reg` is not a valid instance of this newtype.
-            #[allow(dead_code)] // Used by some newtypes and not others.
-            pub fn new(imm8_reg: Imm8Reg) -> Option<Self> {
-                match imm8_reg {
-                    Imm8Reg::Imm8 { .. } => Some(Self(imm8_reg)),
-                    Imm8Reg::Reg { reg } => Some($newtype_reg::new(reg)?.into()),
-                }
-            }
-
-            /// Like `Self::new(imm8_reg).unwrap()` but with better panic
-            /// messages on failure.
-            pub fn unwrap_new(imm8_reg: Imm8Reg) -> Self {
-                match imm8_reg {
-                    Imm8Reg::Imm8 { .. } => Self(imm8_reg),
-                    Imm8Reg::Reg { reg } => $newtype_reg::unwrap_new(reg).into(),
-                }
-            }
-
-            /// Borrow this newtype as its underlying `Imm8Reg`.
-            #[allow(dead_code)] // Used by some newtypes and not others.
-            pub fn as_imm8_reg(&self) -> &Imm8Reg {
-                &self.0
-            }
-
-            /// Borrow this newtype as its underlying `Imm8Reg`.
-            #[allow(dead_code)] // Used by some newtypes and not others.
-            pub fn as_imm8_reg_mut(&mut self) -> &mut Imm8Reg {
-                &mut self.0
-            }
-        }
     };
 }
 
@@ -348,7 +303,6 @@ newtype_of_reg!(
     OptionWritableGpr,
     reg_mem: (GprMem),
     reg_mem_imm: (GprMemImm),
-    Imm8Gpr,
     |reg| reg.class() == RegClass::Int
 );
 
@@ -359,7 +313,6 @@ newtype_of_reg!(
     OptionWritableXmm,
     reg_mem: (XmmMem, XmmMemAligned aligned:true),
     reg_mem_imm: (XmmMemImm, XmmMemAlignedImm aligned:true),
-    Imm8Xmm,
     |reg| reg.class() == RegClass::Float
 );
 
@@ -715,33 +668,6 @@ impl PrettyPrint for RegMemImm {
     }
 }
 
-/// An operand which is either an 8-bit integer immediate or a register.
-#[derive(Clone, Debug)]
-pub enum Imm8Reg {
-    /// 8-bit immediate operand.
-    Imm8 {
-        /// The 8-bit immediate value.
-        imm: u8,
-    },
-    /// A register operand.
-    Reg {
-        /// The underlying register.
-        reg: Reg,
-    },
-}
-
-impl From<u8> for Imm8Reg {
-    fn from(imm: u8) -> Self {
-        Self::Imm8 { imm }
-    }
-}
-
-impl From<Reg> for Imm8Reg {
-    fn from(reg: Reg) -> Self {
-        Self::Reg { reg }
-    }
-}
-
 /// An operand which is either an integer Register or a value in Memory.  This can denote an 8, 16,
 /// 32, 64, or 128 bit value.
 #[derive(Clone, Debug)]
@@ -821,50 +747,6 @@ impl AluRmROpcode {
 impl fmt::Display for AluRmROpcode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str(&format!("{self:?}").to_lowercase())
-    }
-}
-
-#[derive(Clone, PartialEq)]
-/// Unary operations requiring register or memory and register operands.
-pub enum UnaryRmROpcode {
-    /// Bit-scan reverse.
-    Bsr,
-    /// Bit-scan forward.
-    Bsf,
-    /// Counts leading zeroes (Leading Zero CouNT).
-    Lzcnt,
-    /// Counts trailing zeroes (Trailing Zero CouNT).
-    Tzcnt,
-    /// Counts the number of ones (POPulation CouNT).
-    Popcnt,
-}
-
-impl UnaryRmROpcode {
-    pub(crate) fn available_from(&self) -> SmallVec<[InstructionSet; 2]> {
-        match self {
-            UnaryRmROpcode::Bsr | UnaryRmROpcode::Bsf => smallvec![],
-            UnaryRmROpcode::Lzcnt => smallvec![InstructionSet::Lzcnt],
-            UnaryRmROpcode::Tzcnt => smallvec![InstructionSet::BMI1],
-            UnaryRmROpcode::Popcnt => smallvec![InstructionSet::Popcnt],
-        }
-    }
-}
-
-impl fmt::Debug for UnaryRmROpcode {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            UnaryRmROpcode::Bsr => write!(fmt, "bsr"),
-            UnaryRmROpcode::Bsf => write!(fmt, "bsf"),
-            UnaryRmROpcode::Lzcnt => write!(fmt, "lzcnt"),
-            UnaryRmROpcode::Tzcnt => write!(fmt, "tzcnt"),
-            UnaryRmROpcode::Popcnt => write!(fmt, "popcnt"),
-        }
-    }
-}
-
-impl fmt::Display for UnaryRmROpcode {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Debug::fmt(self, f)
     }
 }
 
@@ -1053,8 +935,6 @@ pub enum SseOpcode {
     Roundsd,
     Rsqrtss,
     Shufps,
-    Sqrtps,
-    Sqrtpd,
     Sqrtss,
     Sqrtsd,
     Ucomiss,
@@ -1096,7 +976,6 @@ impl SseOpcode {
             | SseOpcode::Rcpss
             | SseOpcode::Rsqrtss
             | SseOpcode::Shufps
-            | SseOpcode::Sqrtps
             | SseOpcode::Sqrtss
             | SseOpcode::Ucomiss
             | SseOpcode::Unpcklps
@@ -1149,7 +1028,6 @@ impl SseOpcode {
             | SseOpcode::Punpckhwd
             | SseOpcode::Punpcklbw
             | SseOpcode::Punpcklwd
-            | SseOpcode::Sqrtpd
             | SseOpcode::Sqrtsd
             | SseOpcode::Ucomisd
             | SseOpcode::Punpckldq
@@ -1357,8 +1235,6 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Roundsd => "roundsd",
             SseOpcode::Rsqrtss => "rsqrtss",
             SseOpcode::Shufps => "shufps",
-            SseOpcode::Sqrtps => "sqrtps",
-            SseOpcode::Sqrtpd => "sqrtpd",
             SseOpcode::Sqrtss => "sqrtss",
             SseOpcode::Sqrtsd => "sqrtsd",
             SseOpcode::Ucomiss => "ucomiss",
@@ -1792,40 +1668,6 @@ impl fmt::Debug for ExtMode {
 }
 
 impl fmt::Display for ExtMode {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Debug::fmt(self, f)
-    }
-}
-
-/// These indicate the form of a scalar shift/rotate: left, signed right, unsigned right.
-#[derive(Clone, Copy)]
-pub enum ShiftKind {
-    /// Left shift.
-    ShiftLeft,
-    /// Inserts zeros in the most significant bits.
-    ShiftRightLogical,
-    /// Replicates the sign bit in the most significant bits.
-    ShiftRightArithmetic,
-    /// Left rotation.
-    RotateLeft,
-    /// Right rotation.
-    RotateRight,
-}
-
-impl fmt::Debug for ShiftKind {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        let name = match self {
-            ShiftKind::ShiftLeft => "shl",
-            ShiftKind::ShiftRightLogical => "shr",
-            ShiftKind::ShiftRightArithmetic => "sar",
-            ShiftKind::RotateLeft => "rol",
-            ShiftKind::RotateRight => "ror",
-        };
-        write!(fmt, "{name}")
-    }
-}
-
-impl fmt::Display for ShiftKind {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Debug::fmt(self, f)
     }
