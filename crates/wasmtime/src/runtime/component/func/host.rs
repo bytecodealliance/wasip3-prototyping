@@ -19,8 +19,8 @@ use core::mem::{self, MaybeUninit};
 use core::pin::Pin;
 use core::ptr::NonNull;
 use wasmtime_environ::component::{
-    CanonicalAbiInfo, ComponentTypes, InterfaceType, MAX_FLAT_ASYNC_PARAMS, MAX_FLAT_PARAMS,
-    MAX_FLAT_RESULTS, RuntimeComponentInstanceIndex, StringEncoding, TypeFuncIndex, TypeTuple,
+    CanonicalAbiInfo, ComponentTypes, InterfaceType, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS,
+    RuntimeComponentInstanceIndex, StringEncoding, TypeFuncIndex, TypeTuple,
 };
 
 pub struct HostFunc {
@@ -455,12 +455,14 @@ where
         ///
         /// This is like `PdRd` except that the parameters additionally include
         /// a pointer for where to store the result.
+        #[cfg(feature = "component-model-async")]
         PdArRd(&'a mut Union<Pair<P::Lower, ValRaw>, MaybeUninit<R::Lower>>),
 
         /// Params: indirect + async result, Results: direct
         ///
         /// This is like `PiRd` except that the parameters additionally include
         /// a pointer for where to store the result.
+        #[cfg(feature = "component-model-async")]
         PiArRd(&'a mut Union<Pair<ValRaw, ValRaw>, MaybeUninit<R::Lower>>),
     }
 
@@ -577,9 +579,11 @@ where
                 // to access.
                 Storage::PdRd(storage) => unsafe { Src::Direct(&storage.a) },
                 Storage::PdRi(storage) => Src::Direct(&storage.a),
+                #[cfg(feature = "component-model-async")]
                 Storage::PdArRd(storage) => unsafe { Src::Direct(&storage.a.a) },
                 Storage::PiRd(storage) => unsafe { Src::Indirect(&storage.a) },
                 Storage::PiRi(storage) => Src::Indirect(&storage.a),
+                #[cfg(feature = "component-model-async")]
                 Storage::PiArRd(storage) => unsafe { Src::Indirect(&storage.a.a) },
             }
         }
@@ -610,13 +614,16 @@ where
                 // help make this safe.
                 Storage::PdRd(storage) => unsafe { Dst::Direct(&mut storage.b) },
                 Storage::PiRd(storage) => unsafe { Dst::Direct(&mut storage.b) },
+                #[cfg(feature = "component-model-async")]
                 Storage::PdArRd(storage) => unsafe { Dst::Direct(&mut storage.b) },
+                #[cfg(feature = "component-model-async")]
                 Storage::PiArRd(storage) => unsafe { Dst::Direct(&mut storage.b) },
                 Storage::PdRi(storage) => Dst::Indirect(&storage.b),
                 Storage::PiRi(storage) => Dst::Indirect(&storage.b),
             }
         }
 
+        #[cfg(feature = "component-model-async")]
         fn async_retptr(&self) -> Option<&ValRaw> {
             match self {
                 // SAFETY: like above these are `unsafe` due to accessing a
@@ -631,6 +638,7 @@ where
         }
     }
 
+    #[cfg(feature = "component-model-async")]
     impl<P> Storage<'_, P, u32>
     where
         P: ComponentType + Lift,
@@ -648,7 +656,7 @@ where
             // SAFETY: see `Storage::new` for discussion on why this should be
             // safe given the unsafe contract of the `ComponentType` trait.
             unsafe {
-                if P::flatten_count() <= MAX_FLAT_ASYNC_PARAMS {
+                if P::flatten_count() <= wasmtime_environ::component::MAX_FLAT_ASYNC_PARAMS {
                     if R::flatten_count() == 0 {
                         Storage::PdRd(slice_to_storage_mut(storage).assume_init_mut())
                     } else {
@@ -762,7 +770,7 @@ where
                     storage,
                     param_tys,
                     &mut params,
-                    MAX_FLAT_ASYNC_PARAMS,
+                    wasmtime_environ::component::MAX_FLAT_ASYNC_PARAMS,
                 )?
             };
             let retptr = if result_tys.types.len() == 0 {
