@@ -158,13 +158,14 @@ impl dsl::Inst {
                     RegMem(loc) => {
                         let reg = reg.unwrap();
                         let reg_lower = reg.to_string().to_lowercase();
-                        f.add_block(&format!("match &mut self.{loc}"), |f| {
-                            fmtln!(f, "{reg}Mem::{reg}(r) => visitor.{mutability}_{reg_lower}(r),");
-                            fmtln!(f, "{reg}Mem::Mem(m) => visit_amode(m, visitor),");
-                        });
+                        fmtln!(f, "visitor.{mutability}_{reg_lower}_mem(&mut self.{loc});");
                     }
                     Mem(loc) => {
-                        fmtln!(f, "visit_amode(&mut self.{loc}, visitor);");
+                        // Note that this is always "read" because from a
+                        // regalloc perspective when using an amode it means
+                        // that the while a write is happening that's to
+                        // memory, not registers.
+                        fmtln!(f, "visitor.read_amode(&mut self.{loc});");
                     }
                 }
             }
@@ -194,7 +195,7 @@ impl dsl::Inst {
                 f.add_block(
                     "fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result",
                     |f| {
-                        for op in &self.format.operands {
+                        for op in self.format.operands.iter() {
                             let location = op.location;
                             let to_string = location.generate_to_string(op.extension);
                             fmtln!(f, "let {location} = {to_string};");
@@ -207,7 +208,8 @@ impl dsl::Inst {
                             &self.mnemonic
                         };
                         let ordered_ops = self.format.generate_att_style_operands();
-                        fmtln!(f, "write!(f, \"{inst_name} {ordered_ops}\")");
+                        let implicit_ops = self.format.generate_implicit_operands();
+                        fmtln!(f, "write!(f, \"{inst_name} {ordered_ops}{implicit_ops}\")");
                     },
                 );
             },

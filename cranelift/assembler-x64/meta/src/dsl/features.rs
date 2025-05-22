@@ -65,6 +65,10 @@ pub enum Feature {
     sse,
     sse2,
     ssse3,
+    sse41,
+    bmi1,
+    lzcnt,
+    popcnt,
 }
 
 /// List all CPU features.
@@ -80,17 +84,15 @@ pub const ALL_FEATURES: &[Feature] = &[
     Feature::sse,
     Feature::sse2,
     Feature::ssse3,
+    Feature::sse41,
+    Feature::bmi1,
+    Feature::lzcnt,
+    Feature::popcnt,
 ];
 
 impl fmt::Display for Feature {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Feature::_64b => write!(f, "_64b"),
-            Feature::compat => write!(f, "compat"),
-            Feature::sse => write!(f, "sse"),
-            Feature::sse2 => write!(f, "sse2"),
-            Feature::ssse3 => write!(f, "ssse3"),
-        }
+        fmt::Debug::fmt(self, f)
     }
 }
 
