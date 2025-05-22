@@ -43,19 +43,19 @@ mod traps;
 /// callee is an async-lifted export.
 pub const START_FLAG_ASYNC_CALLEE: i32 = 1 << 0;
 
-/// Fixed parameter types for the `sync-prepare` built-in function.
+/// Fixed parameter types for the `prepare_call` built-in function.
 ///
-/// Note that `sync-prepare` also takes a variable number of parameters in
+/// Note that `prepare_call` also takes a variable number of parameters in
 /// addition to these, determined by the signature of the function for which
 /// we're generating an adapter.
-pub static SYNC_PREPARE_FIXED_PARAMS: &[ValType] = &[
-    ValType::FUNCREF,
-    ValType::FUNCREF,
-    ValType::I32,
-    ValType::I32,
-    ValType::I32,
-    ValType::I32,
-    ValType::I32,
+pub static PREPARE_CALL_FIXED_PARAMS: &[ValType] = &[
+    ValType::FUNCREF, // start
+    ValType::FUNCREF, // return
+    ValType::I32,     // caller_instance
+    ValType::I32,     // callee_instance
+    ValType::I32,     // task_return_type
+    ValType::I32,     // string_encoding
+    ValType::I32,     // result_count_or_max_if_async
 ];
 
 /// Representation of an adapter module.
@@ -88,7 +88,6 @@ pub struct Module<'a> {
     imported_resource_exit_call: Option<FuncIndex>,
 
     // Cached versions of imported trampolines for working with the async ABI.
-    imported_async_prepare_calls: HashMap<Option<MemoryIndex>, FuncIndex>,
     imported_async_start_calls: HashMap<(Option<FuncIndex>, Option<FuncIndex>), FuncIndex>,
 
     // Cached versions of imported trampolines for working with `stream`s,
@@ -224,7 +223,6 @@ impl<'a> Module<'a> {
             imported_resource_transfer_borrow: None,
             imported_resource_enter_call: None,
             imported_resource_exit_call: None,
-            imported_async_prepare_calls: HashMap::new(),
             imported_async_start_calls: HashMap::new(),
             imported_future_transfer: None,
             imported_stream_transfer: None,
@@ -485,14 +483,14 @@ impl<'a> Module<'a> {
     /// the parameters, the adapter must use this function to set up the subtask
     /// and stash the parameters as part of that subtask until any backpressure
     /// has cleared.
-    fn import_sync_prepare_call(
+    fn import_prepare_call(
         &mut self,
         suffix: &str,
         params: &[ValType],
         memory: Option<MemoryIndex>,
     ) -> FuncIndex {
         let ty = self.core_types.function(
-            &SYNC_PREPARE_FIXED_PARAMS
+            &PREPARE_CALL_FIXED_PARAMS
                 .iter()
                 .copied()
                 .chain(params.iter().copied())
@@ -504,7 +502,7 @@ impl<'a> Module<'a> {
             &format!("[prepare-call]{suffix}"),
             EntityType::Function(ty),
         );
-        let import = Import::SyncPrepareCall {
+        let import = Import::PrepareCall {
             memory: memory.map(|v| self.imported_memories[v].clone()),
         };
         self.imports.push(import);
@@ -542,35 +540,6 @@ impl<'a> Module<'a> {
         };
         self.imports.push(import);
         self.imported_funcs.push(None)
-    }
-
-    /// Import a host built-in function to set up a subtask for an async-lowered
-    /// import call to an async- or sync-lifted export.
-    fn import_async_prepare_call(
-        &mut self,
-        suffix: &str,
-        memory: Option<MemoryIndex>,
-    ) -> FuncIndex {
-        self.import_simple_get_and_set(
-            "async",
-            &format!("[prepare-call]{suffix}"),
-            &[
-                ValType::FUNCREF,
-                ValType::FUNCREF,
-                ValType::I32,
-                ValType::I32,
-                ValType::I32,
-                ValType::I32,
-                ValType::I32,
-                ValType::I32,
-            ],
-            &[],
-            Import::AsyncPrepareCall {
-                memory: memory.map(|v| self.imported_memories[v].clone()),
-            },
-            |me| me.imported_async_prepare_calls.get(&memory).copied(),
-            |me, v| assert!(me.imported_async_prepare_calls.insert(memory, v).is_none()),
-        )
     }
 
     /// Import a host built-in function to start a subtask for an async-lowered
@@ -822,8 +791,8 @@ pub enum Import {
     /// metadata.
     ResourceExitCall,
     /// An intrinsic used by FACT-generated modules to begin a call involving a
-    /// sync-lowered import and async-lifted export.
-    SyncPrepareCall {
+    /// sync/async-lowered import and sync/async-lifted export.
+    PrepareCall {
         /// The memory used to verify that the memory specified for the
         /// `task.return` that is called at runtime (if any) matches the one
         /// specified in the lifted export.
@@ -834,14 +803,6 @@ pub enum Import {
     SyncStartCall {
         /// The callee's callback function, if any.
         callback: Option<CoreDef>,
-    },
-    /// An intrinsic used by FACT-generated modules to begin a call involving an
-    /// async-lowered import function.
-    AsyncPrepareCall {
-        /// The memory used to verify that the memory specified for the
-        /// `task.return` that is called at runtime (if any) matches the one
-        /// specified in the lifted export.
-        memory: Option<CoreDef>,
     },
     /// An intrinsic used by FACT-generated modules to complete a call involving
     /// an async-lowered import function.

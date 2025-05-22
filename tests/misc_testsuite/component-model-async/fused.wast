@@ -31,8 +31,7 @@
       (import "" "foo" (func $foo (param i32 i32) (result i32)))
       (func (export "run")
         block
-          (i32.store offset=0 (i32.const 1200) (i32.const 42))
-          (call $foo (i32.const 1200) (i32.const 1204))
+          (call $foo (i32.const 42) (i32.const 1204))
           (i32.eq (i32.load offset=0 (i32.const 1204)) (i32.const 42))
           br_if 0
           unreachable
@@ -84,8 +83,7 @@
       (import "" "foo" (func $foo (param i32 i32) (result i32)))
       (func (export "run")
         block
-          (i32.store offset=0 (i32.const 1200) (i32.const 42))
-          (call $foo (i32.const 1200) (i32.const 1204))
+          (call $foo (i32.const 42) (i32.const 1204))
           (i32.eq (i32.load offset=0 (i32.const 1204)) (i32.const 42))
           br_if 0
           unreachable
@@ -130,8 +128,7 @@
       (import "" "foo" (func $foo (param i32 i32) (result i32)))
       (func (export "run")
         block
-          (i32.store offset=0 (i32.const 1200) (i32.const 42))
-          (call $foo (i32.const 1200) (i32.const 1204))
+          (call $foo (i32.const 42) (i32.const 1204))
           (i32.eq (i32.load offset=0 (i32.const 1204)) (i32.const 42))
           br_if 0
           unreachable

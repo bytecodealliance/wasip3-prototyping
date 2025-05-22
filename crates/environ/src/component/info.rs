@@ -957,8 +957,8 @@ pub enum Trampoline {
     ResourceExitCall,
 
     /// An intrinsic used by FACT-generated modules to prepare a call involving
-    /// a sync-lowered import and async-lifted export.
-    SyncPrepareCall {
+    /// a sync/async-lowered import and sync/async-lifted export.
+    PrepareCall {
         /// The memory used to verify that the memory specified for the
         /// `task.return` that is called at runtime matches the one specified in
         /// the lifted export.
@@ -970,15 +970,6 @@ pub enum Trampoline {
     SyncStartCall {
         /// The callee's callback function, if any.
         callback: Option<RuntimeCallbackIndex>,
-    },
-
-    /// An intrinsic used by FACT-generated modules to prepare a call involving
-    /// an async-lowered import function.
-    AsyncPrepareCall {
-        /// The memory used to verify that the memory specified for the
-        /// `task.return` that is called at runtime (if any) matches the one
-        /// specified in the lifted export.
-        memory: Option<RuntimeMemoryIndex>,
     },
 
     /// An intrinsic used by FACT-generated modules to start a call involving
@@ -1086,9 +1077,8 @@ impl Trampoline {
             ResourceTransferBorrow => format!("component-resource-transfer-borrow"),
             ResourceEnterCall => format!("component-resource-enter-call"),
             ResourceExitCall => format!("component-resource-exit-call"),
-            SyncPrepareCall { .. } => format!("component-sync-prepare-call"),
+            PrepareCall { .. } => format!("component-prepare-call"),
             SyncStartCall { .. } => format!("component-sync-start-call"),
-            AsyncPrepareCall { .. } => format!("component-async-prepare-call"),
             AsyncStartCall { .. } => format!("component-async-start-call"),
             FutureTransfer => format!("future-transfer"),
             StreamTransfer => format!("stream-transfer"),

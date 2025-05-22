@@ -6,7 +6,7 @@ use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlags, Value};
 use cranelift_codegen::isa::{CallConv, TargetIsa};
 use cranelift_frontend::FunctionBuilder;
-use wasmtime_environ::fact::SYNC_PREPARE_FIXED_PARAMS;
+use wasmtime_environ::fact::PREPARE_CALL_FIXED_PARAMS;
 use wasmtime_environ::{CompiledFunctionBody, component::*};
 use wasmtime_environ::{
     HostCall, ModuleInternedTypeIndex, PtrSize, TrapSentinel, Tunables, WasmFuncType, WasmValType,
@@ -255,9 +255,8 @@ impl<'a> TrampolineCompiler<'a> {
                     me.raise_if_host_trapped(rets.pop().unwrap());
                 })
             }
-            Trampoline::SyncPrepareCall { memory } => self.translate_sync_prepare(*memory),
+            Trampoline::PrepareCall { memory } => self.translate_prepare(*memory),
             Trampoline::SyncStartCall { callback } => self.translate_sync_start(*callback),
-            Trampoline::AsyncPrepareCall { memory } => self.translate_async_prepare(*memory),
             Trampoline::AsyncStartCall {
                 callback,
                 post_return,
@@ -471,7 +470,7 @@ impl<'a> TrampolineCompiler<'a> {
         );
     }
 
-    fn translate_sync_prepare(&mut self, memory: Option<RuntimeMemoryIndex>) {
+    fn translate_prepare(&mut self, memory: Option<RuntimeMemoryIndex>) {
         match self.abi {
             Abi::Wasm => {}
 
@@ -489,8 +488,8 @@ impl<'a> TrampolineCompiler<'a> {
         let pointer_type = self.isa.pointer_type();
         let wasm_func_ty = &self.types[self.signature].unwrap_func();
 
-        let param_offset = SYNC_PREPARE_FIXED_PARAMS.len();
-        let spill_offset = param_offset + 2;
+        let param_offset = PREPARE_CALL_FIXED_PARAMS.len();
+        let spill_offset = param_offset + 2; // skip caller/callee vmctx
 
         let (values_vec_ptr, len) = self.compiler.allocate_stack_array_and_spill_args(
             &WasmFuncType::new(
@@ -517,7 +516,7 @@ impl<'a> TrampolineCompiler<'a> {
 
         self.translate_intrinsic_libcall(
             vmctx,
-            host::sync_prepare,
+            host::prepare_call,
             &callee_args,
             TrapSentinel::Falsy,
         );
@@ -570,34 +569,6 @@ impl<'a> TrampolineCompiler<'a> {
             values_vec_len,
         );
         self.builder.ins().return_(&results);
-    }
-
-    fn translate_async_prepare(&mut self, memory: Option<RuntimeMemoryIndex>) {
-        match self.abi {
-            Abi::Wasm => {}
-
-            Abi::Array => {
-                // This code can only be called from (FACT-generated) Wasm, so
-                // we don't need to support the array ABI.
-                self.builder.ins().trap(TRAP_INTERNAL_ASSERT);
-                return;
-            }
-        }
-
-        let args = self.builder.func.dfg.block_params(self.block0).to_vec();
-        let vmctx = args[0];
-
-        let mut callee_args = vec![vmctx, self.load_optional_memory(vmctx, memory)];
-
-        // remaining parameters
-        callee_args.extend(args[2..].iter().copied());
-
-        self.translate_intrinsic_libcall(
-            vmctx,
-            host::async_prepare,
-            &callee_args,
-            TrapSentinel::Falsy,
-        );
     }
 
     fn translate_async_start(

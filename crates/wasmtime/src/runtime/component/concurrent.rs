@@ -96,7 +96,8 @@ use {
     wasmtime_environ::{
         PrimaryMap,
         component::{
-            MAX_FLAT_PARAMS, MAX_FLAT_RESULTS, RuntimeComponentInstanceIndex, StringEncoding,
+            MAX_FLAT_PARAMS, MAX_FLAT_RESULTS, PREPARE_ASYNC_NO_RESULT, PREPARE_ASYNC_WITH_RESULT,
+            RuntimeComponentInstanceIndex, StringEncoding,
             TypeComponentGlobalErrorContextTableIndex, TypeComponentLocalErrorContextTableIndex,
             TypeFutureTableIndex, TypeStreamTableIndex, TypeTupleIndex,
         },
@@ -702,7 +703,10 @@ enum WaitableState {
 /// guest->guest call orchestrated by a fused adapter.
 enum CallerInfo {
     /// Metadata for a call to an async-lowered import
-    Async { params: u32, results: u32 },
+    Async {
+        params: Vec<ValRaw>,
+        has_result: bool,
+    },
     /// Metadata for a call to an sync-lowered import
     Sync {
         params: Vec<ValRaw>,
@@ -1545,7 +1549,15 @@ impl ComponentInstance {
         }
 
         let result_info = match &caller_info {
-            CallerInfo::Async { results, .. } => ResultInfo::Heap { results: *results },
+            CallerInfo::Async {
+                has_result: true,
+                params,
+            } => ResultInfo::Heap {
+                results: params.last().unwrap().get_u32(),
+            },
+            CallerInfo::Async {
+                has_result: false, ..
+            } => ResultInfo::Stack { result_count: 0 },
             CallerInfo::Sync {
                 result_count,
                 params,
@@ -1573,16 +1585,22 @@ impl ComponentInstance {
                 assert!(dst.len() <= MAX_FLAT_PARAMS);
                 let mut src = [MaybeUninit::uninit(); MAX_FLAT_PARAMS];
                 let count = match caller_info {
-                    CallerInfo::Async { params, .. } => {
-                        src[0] = MaybeUninit::new(ValRaw::u32(params));
-                        1
+                    // Async callers, if they have a result, use the last
+                    // parameter as a return pointer so chop that off if
+                    // relevant here.
+                    CallerInfo::Async { params, has_result } => {
+                        let params = &params[..params.len() - usize::from(has_result)];
+                        for (param, src) in params.iter().zip(&mut src) {
+                            src.write(*param);
+                        }
+                        params.len()
                     }
+
+                    // Sync callers forward everything directly.
                     CallerInfo::Sync { params, .. } => {
-                        // SAFETY: Transmuting from `&[T]` to
-                        // `&[MaybeUninit<T>]` should be sound for any `T`.
-                        src[..params.len()].copy_from_slice(unsafe {
-                            mem::transmute::<&[ValRaw], &[MaybeUninit<ValRaw>]>(&params)
-                        });
+                        for (param, src) in params.iter().zip(&mut src) {
+                            src.write(*param);
+                        }
                         params.len()
                     }
                 };
@@ -3441,7 +3459,7 @@ impl Instance {
 pub trait VMComponentAsyncStore {
     /// A helper function for fused adapter modules involving calls where the
     /// caller is sync-lowered but the callee is async-lifted.
-    unsafe fn sync_prepare(
+    unsafe fn prepare_call(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -3466,22 +3484,6 @@ pub trait VMComponentAsyncStore {
         param_count: u32,
         storage: *mut MaybeUninit<ValRaw>,
         storage_len: usize,
-    ) -> Result<()>;
-
-    /// A helper function for fused adapter modules involving calls where the
-    /// caller is async-lowered.
-    unsafe fn async_prepare(
-        &mut self,
-        instance: &mut ComponentInstance,
-        memory: *mut VMMemoryDefinition,
-        start: *mut VMFuncRef,
-        return_: *mut VMFuncRef,
-        caller_instance: RuntimeComponentInstanceIndex,
-        callee_instance: RuntimeComponentInstanceIndex,
-        task_return_type: TypeTupleIndex,
-        string_encoding: u8,
-        params: u32,
-        results: u32,
     ) -> Result<()>;
 
     /// A helper function for fused adapter modules involving calls where the
@@ -3598,7 +3600,7 @@ pub trait VMComponentAsyncStore {
 
 /// SAFETY: See trait docs.
 impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
-    unsafe fn sync_prepare(
+    unsafe fn prepare_call(
         &mut self,
         instance: &mut ComponentInstance,
         memory: *mut VMMemoryDefinition,
@@ -3608,10 +3610,15 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
         callee_instance: RuntimeComponentInstanceIndex,
         task_return_type: TypeTupleIndex,
         string_encoding: u8,
-        result_count: u32,
+        result_count_or_max_if_async: u32,
         storage: *mut ValRaw,
         storage_len: usize,
     ) -> Result<()> {
+        // SAFETY: The `wasmtime_cranelift`-generated code that calls
+        // this method will have ensured that `storage` is a valid
+        // pointer containing at least `storage_len` items.
+        let params = unsafe { std::slice::from_raw_parts(storage, storage_len) }.to_vec();
+
         instance.prepare_call(
             StoreContextMut(self),
             start,
@@ -3621,12 +3628,19 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
             task_return_type,
             memory,
             string_encoding,
-            CallerInfo::Sync {
-                // SAFETY: The `wasmtime_cranelift`-generated code that calls
-                // this method will have ensured that `storage` is a valid
-                // pointer containing at least `storage_len` items.
-                params: unsafe { std::slice::from_raw_parts(storage, storage_len) }.to_vec(),
-                result_count,
+            match result_count_or_max_if_async {
+                PREPARE_ASYNC_NO_RESULT => CallerInfo::Async {
+                    params,
+                    has_result: false,
+                },
+                PREPARE_ASYNC_WITH_RESULT => CallerInfo::Async {
+                    params,
+                    has_result: true,
+                },
+                result_count => CallerInfo::Sync {
+                    params,
+                    result_count,
+                },
             },
         )
     }
@@ -3655,32 +3669,6 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
                 Some(unsafe { std::slice::from_raw_parts_mut(storage, storage_len) }),
             )
             .map(drop)
-    }
-
-    unsafe fn async_prepare(
-        &mut self,
-        instance: &mut ComponentInstance,
-        memory: *mut VMMemoryDefinition,
-        start: *mut VMFuncRef,
-        return_: *mut VMFuncRef,
-        caller_instance: RuntimeComponentInstanceIndex,
-        callee_instance: RuntimeComponentInstanceIndex,
-        task_return_type: TypeTupleIndex,
-        string_encoding: u8,
-        params: u32,
-        results: u32,
-    ) -> Result<()> {
-        instance.prepare_call(
-            StoreContextMut(self),
-            start,
-            return_,
-            caller_instance,
-            callee_instance,
-            task_return_type,
-            memory,
-            string_encoding,
-            CallerInfo::Async { params, results },
-        )
     }
 
     unsafe fn async_start(
