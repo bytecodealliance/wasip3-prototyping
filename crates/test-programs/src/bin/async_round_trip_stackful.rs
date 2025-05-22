@@ -46,7 +46,7 @@ unsafe extern "C" {
     fn import_foo(ptr: *mut u8, len: usize, results: *mut u8) -> u32;
 }
 #[cfg(not(target_arch = "wasm32"))]
-unsafe extern "C" fn import_foo(ptr: *mut u8, len: usize, _results: *mut u8) -> u32 {
+unsafe extern "C" fn import_foo(_ptr: *mut u8, _len: usize, _results: *mut u8) -> u32 {
     unreachable!()
 }
 

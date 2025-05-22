@@ -44,7 +44,7 @@ unsafe extern "C" {
     fn sleep_millis_async(ms: u64) -> u32;
 }
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn sleep_millis_async(ms: u64) -> u32 {
+unsafe fn sleep_millis_async(_ms: u64) -> u32 {
     unreachable!()
 }
 
