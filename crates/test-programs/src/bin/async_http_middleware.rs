@@ -18,8 +18,8 @@ use {
         wit_future, wit_stream,
     },
     flate2::{
-        write::{DeflateDecoder, DeflateEncoder},
         Compression,
+        write::{DeflateDecoder, DeflateEncoder},
     },
     std::{io::Write, mem},
     wit_bindgen_rt::async_support::{self, StreamResult},
