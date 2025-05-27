@@ -8,7 +8,6 @@ use wasmtime_wasi::p2::{IoView, WasiCtx, WasiView};
 
 pub mod borrowing_host;
 pub mod closed_streams;
-pub mod proxy;
 pub mod resource_stream;
 pub mod round_trip;
 pub mod round_trip_direct;

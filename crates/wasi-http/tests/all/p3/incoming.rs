@@ -11,7 +11,7 @@ use wasmtime_wasi_http::p3::{Response, WasiHttpCtx};
 
 use super::{Ctx, TestClient};
 
-async fn run_wasi_http<E: Into<ErrorCode> + 'static>(
+pub async fn run_wasi_http<E: Into<ErrorCode> + 'static>(
     component_filename: &str,
     req: http::Request<impl Body<Data = Bytes, Error = E> + Send + Sync + 'static>,
     client: TestClient,

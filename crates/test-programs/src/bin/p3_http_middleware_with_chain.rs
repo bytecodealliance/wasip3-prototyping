@@ -1,7 +1,22 @@
 mod bindings {
     wit_bindgen::generate!({
-        path: "../misc/component-async-tests/wit",
-        world: "middleware-with-chain",
+        path: "../wasi-http/src/p3/wit",
+        world: "local:local/middleware-with-chain",
+        inline: "
+package local:local;
+
+world middleware-with-chain {
+  include wasi:http/proxy@0.3.0-draft;
+
+  import chain-http;
+}
+
+interface chain-http {
+  use wasi:http/types@0.3.0-draft.{request, response, error-code};
+
+  handle: async func(request: request) -> result<response, error-code>;
+}
+        ",
         generate_all,
     });
 
@@ -11,9 +26,11 @@ mod bindings {
 
 use bindings::{
     exports::wasi::http::handler::Guest as Handler,
-    local::local::{chain_http, sleep},
+    local::local::chain_http,
+    wasi::clocks::monotonic_clock,
     wasi::http::types::{ErrorCode, Request, Response},
 };
+use std::time::Duration;
 
 struct Component;
 
@@ -23,7 +40,8 @@ impl Handler for Component {
         // host->guest call to the `wit_bindgen_rt::async_support::callback`
         // function, which exercises different code paths in both the host and
         // the guest, which we want to test here.
-        sleep::sleep_millis(10).await;
+        let duration = Duration::from_millis(10);
+        monotonic_clock::wait_for(duration.as_nanos().try_into().unwrap()).await;
 
         chain_http::handle(request).await
     }

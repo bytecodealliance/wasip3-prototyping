@@ -622,7 +622,6 @@ dependencies = [
  "tempfile",
  "test-programs-artifacts",
  "tokio",
- "wasi-http-draft",
  "wasm-compose",
  "wasmparser 0.232.0",
  "wasmtime",
@@ -3991,16 +3990,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wasi-http-draft"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "futures",
- "wasmtime",
-]
-
-[[package]]
 name = "wasi-nn"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4778,6 +4767,7 @@ dependencies = [
  "async-trait",
  "base64",
  "bytes",
+ "flate2",
  "futures",
  "http",
  "http-body",
@@ -4785,12 +4775,14 @@ dependencies = [
  "hyper",
  "rustls 0.22.4",
  "sha2",
+ "tempfile",
  "test-log",
  "test-programs-artifacts",
  "tokio",
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
+ "wasm-compose",
  "wasmtime",
  "wasmtime-wasi",
  "wasmtime-wasi-io",

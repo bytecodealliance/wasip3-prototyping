@@ -6,6 +6,8 @@ use wasmtime_wasi::p3::bindings::Command;
 
 foreach_p3_http!(assert_test_exists);
 
+use super::proxy::{p3_http_echo, p3_http_middleware, p3_http_middleware_with_chain};
+
 async fn run(path: &str, server: &Server) -> anyhow::Result<()> {
     let engine = test_programs_artifacts::engine(|config| {
         config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);

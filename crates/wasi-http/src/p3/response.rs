@@ -44,8 +44,9 @@ async fn receive_trailers(
             )))))),
         },
         Ok(Some(Err(err))) => Some(Err(Some(err))),
-        Ok(None) => None,
-        Err(..) => Some(Err(None)),
+        // If no trailers were explicitly sent, or if nothing was sent at all,
+        // then interpret that as no trailers.
+        Ok(None) | Err(..) => None,
     }
 }
 
