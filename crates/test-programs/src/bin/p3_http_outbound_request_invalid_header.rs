@@ -63,7 +63,7 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
             Err(HeaderError::InvalidSyntax)
         ));
 
-        let (_, rx) = wit_future::new();
+        let (_, rx) = wit_future::new(|| Ok(None));
         let (req, _) = Request::new(hdrs, None, rx, None);
         let hdrs = req.headers();
 

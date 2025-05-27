@@ -17,7 +17,7 @@ fn make_request() -> (
     FutureReader<Result<(), ErrorCode>>,
 ) {
     let (contents_tx, contents_rx) = wit_stream::new();
-    let (trailers_tx, trailers_rx) = wit_future::new();
+    let (trailers_tx, trailers_rx) = wit_future::new(|| todo!());
     let (request, transmit) = Request::new(
         Headers::from_list(&[("Content-Length".to_string(), b"11".to_vec())]).unwrap(),
         Some(contents_rx),
@@ -67,9 +67,7 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
             });
             let res = handle.unwrap();
             drop(res);
-            transmit
-                .expect("transmit sender dropped")
-                .expect("failed to transmit request");
+            transmit.expect("failed to transmit request");
         }
 
         {
@@ -94,9 +92,7 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
             });
             let res = handle.unwrap();
             drop(res);
-            let err = transmit
-                .expect("transmit sender dropped")
-                .expect_err("request transmission should have failed");
+            let err = transmit.expect_err("request transmission should have failed");
             assert!(
                 matches!(err, ErrorCode::HttpRequestBodySize(Some(3))),
                 "unexpected error: {err:#?}"
@@ -122,9 +118,7 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
             });
             let res = handle.unwrap();
             drop(res);
-            let err = transmit
-                .expect("transmit sender dropped")
-                .expect_err("request transmission should have failed");
+            let err = transmit.expect_err("request transmission should have failed");
             assert!(
                 matches!(err, ErrorCode::HttpRequestBodySize(Some(18))),
                 "unexpected error: {err:#?}"

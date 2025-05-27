@@ -249,19 +249,13 @@ impl<C: WasiHttpViewConcurrent> wasi::http::types::HostBodyConcurrent for WasiHt
     async fn finish<T: 'static>(
         accessor: &mut Accessor<T, Self>,
         this: Resource<Body>,
-    ) -> wasmtime::Result<HostFuture<Resource<Fields>>> {
-        let trailers = accessor.with(|mut store| {
+    ) -> wasmtime::Result<Option<HostFuture<Resource<Fields>>>> {
+        let trailers = accessor.with(|mut store| -> wasmtime::Result<_> {
             let trailers = store.get().table().delete(this)?.trailers;
-            Ok::<FutureReader<_>, anyhow::Error>(match trailers {
-                Some(t) => t,
-                None => {
-                    let instance = store.instance();
-                    instance.future(&mut store)?.1
-                }
-            })
+            Ok(trailers)
         })?;
 
-        Ok(trailers.into())
+        Ok(trailers.map(|t| t.into()))
     }
 }
 

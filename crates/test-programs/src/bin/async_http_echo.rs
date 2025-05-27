@@ -30,7 +30,7 @@ impl Handler for Component {
         } else {
             // ...but we do it the more difficult, less efficient way here to exercise various component model
             // features (e.g. `future`s, `stream`s, and post-return asynchronous execution):
-            let (trailers_tx, trailers_rx) = wit_future::new();
+            let (trailers_tx, trailers_rx) = wit_future::new(|| todo!());
             let (mut pipe_tx, pipe_rx) = wit_stream::new();
 
             async_support::spawn(async move {
@@ -51,8 +51,8 @@ impl Handler for Component {
 
                 drop(pipe_tx);
 
-                if let Some(trailers) = Body::finish(body).await {
-                    trailers_tx.write(trailers).await.unwrap();
+                if let Some(trailers) = Body::finish(body) {
+                    trailers_tx.write(trailers.await).await.unwrap();
                 }
             });
 

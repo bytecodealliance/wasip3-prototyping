@@ -31,8 +31,8 @@ impl Guest for Component {
         FutureReader<String>,
     ) {
         let (mut callee_stream_tx, callee_stream_rx) = wit_stream::new();
-        let (callee_future_tx1, callee_future_rx1) = wit_future::new();
-        let (callee_future_tx2, callee_future_rx2) = wit_future::new();
+        let (callee_future_tx1, callee_future_rx1) = wit_future::new(|| todo!());
+        let (callee_future_tx2, callee_future_rx2) = wit_future::new(|| String::new());
 
         async_support::spawn(async move {
             let mut caller_future_rx1 = Some(caller_future_rx1);
@@ -50,10 +50,7 @@ impl Guest for Component {
                         );
                     }
                     Control::ReadFuture(value) => {
-                        assert_eq!(
-                            caller_future_rx1.take().unwrap().into_future().await,
-                            Some(value)
-                        );
+                        assert_eq!(caller_future_rx1.take().unwrap().into_future().await, value);
                     }
                     Control::WriteStream(value) => {
                         assert!(callee_stream_tx.write_one(value).await.is_none());

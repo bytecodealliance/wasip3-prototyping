@@ -24,7 +24,7 @@ impl Guest for Component {
     }
 
     async fn read_future(rx: FutureReader<u8>, expected: u8, _rx_ignored: FutureReader<u8>) {
-        assert_eq!(rx.await.unwrap(), expected);
+        assert_eq!(rx.await, expected);
     }
 }
 

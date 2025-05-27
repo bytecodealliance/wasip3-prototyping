@@ -36,7 +36,7 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
         );
         let (data_rx, data_fut) = file.read_via_stream(0);
         let contents = data_rx.collect().await;
-        data_fut.await.unwrap().unwrap();
+        data_fut.await.unwrap();
         assert_eq!(
             String::from_utf8_lossy(&contents),
             "\0\0\0\0\0Hello, World!"
@@ -45,7 +45,7 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
         // Test that file read streams behave like other read streams.
         let (data_rx, data_fut) = file.read_via_stream(5);
         let contents = data_rx.collect().await;
-        data_fut.await.unwrap().unwrap();
+        data_fut.await.unwrap();
         assert_eq!(String::from_utf8_lossy(&contents), "Hello, World!");
 
         dir.unlink_file_at(filename.to_string()).await.unwrap();

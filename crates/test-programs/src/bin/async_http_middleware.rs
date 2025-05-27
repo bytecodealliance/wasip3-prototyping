@@ -18,8 +18,8 @@ use {
         wit_future, wit_stream,
     },
     flate2::{
-        Compression,
         write::{DeflateDecoder, DeflateEncoder},
+        Compression,
     },
     std::{io::Write, mem},
     wit_bindgen_rt::async_support::{self, StreamResult},
@@ -60,7 +60,7 @@ impl Handler for Component {
         let body = if content_deflated {
             // Next, spawn a task to pipe and decode the original request body and trailers into a new request
             // we'll create below.  This will run concurrently with any code in the imported `wasi:http/handler`.
-            let (trailers_tx, trailers_rx) = wit_future::new();
+            let (trailers_tx, trailers_rx) = wit_future::new(|| todo!());
             let (mut pipe_tx, pipe_rx) = wit_stream::new();
 
             async_support::spawn(async move {
@@ -84,8 +84,8 @@ impl Handler for Component {
                     drop(pipe_tx);
                 }
 
-                if let Some(trailers) = Body::finish(body).await {
-                    trailers_tx.write(trailers).await.unwrap();
+                if let Some(trailers) = Body::finish(body) {
+                    trailers_tx.write(trailers.await).await.unwrap();
                 }
             });
 
@@ -120,7 +120,7 @@ impl Handler for Component {
             // Spawn another task; this one is to pipe and encode the original response body and trailers into a
             // new response we'll create below.  This will run concurrently with the caller's code (i.e. it won't
             // necessarily complete before we return a value).
-            let (trailers_tx, trailers_rx) = wit_future::new();
+            let (trailers_tx, trailers_rx) = wit_future::new(|| todo!());
             let (mut pipe_tx, pipe_rx) = wit_stream::new();
 
             async_support::spawn(async move {
@@ -144,8 +144,8 @@ impl Handler for Component {
                     drop(pipe_tx);
                 }
 
-                if let Some(trailers) = Body::finish(body).await {
-                    trailers_tx.write(trailers).await.unwrap();
+                if let Some(trailers) = Body::finish(body) {
+                    trailers_tx.write(trailers.await).await.unwrap();
                 }
             });
 

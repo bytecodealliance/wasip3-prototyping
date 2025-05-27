@@ -23,7 +23,7 @@ async fn test_tcp_input_stream_should_be_closed_by_remote_shutdown(family: IpAdd
 
         // Wait for the shutdown signal to reach the client:
         assert!(client_rx.next().await.is_none());
-        assert_eq!(client_fut.await, Some(Ok(())));
+        assert_eq!(client_fut.await, Ok(()));
     })
     .await;
 }
@@ -51,7 +51,7 @@ async fn test_tcp_input_stream_should_be_closed_by_local_shutdown(family: IpAddr
         // Shut down socket locally:
         drop(client_rx);
         // Wait for the shutdown signal to reach the client:
-        assert_eq!(client_fut.await, Some(Ok(())));
+        assert_eq!(client_fut.await, Ok(()));
     }).await;
 }
 
@@ -104,7 +104,7 @@ async fn test_tcp_shutdown_should_not_lose_data(family: IpAddressFamily) {
                     outgoing_data, incoming_data,
                     "Received data should match the sent data"
                 );
-                server_fut.await.unwrap().unwrap()
+                server_fut.await.unwrap()
             },
         );
     })
