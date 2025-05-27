@@ -182,7 +182,7 @@ where
                 Some(Err(err)) => {
                     // TODO: Close the stream with an error context
                     drop(tx);
-                    break Err(err.into());
+                    break Err(err);
                 }
             }
         };

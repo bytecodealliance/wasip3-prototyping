@@ -13,7 +13,7 @@ struct Component;
 
 impl bindings::exports::local::local::run_result::Guest for Component {
     async fn run_fail() -> Result<(), ErrorContext> {
-        Err(ErrorContext::new("error".into()))
+        Err(ErrorContext::new("error"))
     }
 
     async fn run_pass() -> Result<(), ErrorContext> {

@@ -169,6 +169,9 @@ impl From<&Val> for wasmtime_component_val_t {
             Val::Result(_val) => todo!(),
             Val::Flags(_items) => todo!(),
             Val::Resource(_resource_any) => todo!(),
+            Val::Future(_) => todo!(),
+            Val::Stream(_) => todo!(),
+            Val::ErrorContext(_) => todo!(),
         }
     }
 }
