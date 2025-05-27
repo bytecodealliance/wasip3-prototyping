@@ -999,9 +999,6 @@ impl CommonOptions {
             #[expect(deprecated, reason = "forwarding CLI flag")]
             config.wasm_legacy_exceptions(enable);
         }
-        if let Some(enable) = self.wasm.component_model_error_context.or(all) {
-            config.wasm_component_model_error_context(enable);
-        }
 
         macro_rules! handle_conditionally_compiled {
             ($(($feature:tt, $field:tt, $method:tt))*) => ($(
