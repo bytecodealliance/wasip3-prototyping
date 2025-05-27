@@ -200,7 +200,7 @@ impl Val {
                     );
                 }
 
-                Val::Flags(flags.into())
+                Val::Flags(flags)
             }
             InterfaceType::Future(_) => HostFuture::<()>::lift(cx, ty, next(src))?.into_val(),
             InterfaceType::Stream(_) => HostStream::<()>::lift(cx, ty, next(src))?.into_val(),
@@ -324,7 +324,7 @@ impl Val {
                         }
                     }
                 }
-                Val::Flags(flags.into())
+                Val::Flags(flags)
             }
             InterfaceType::Future(_) => HostFuture::<()>::load(cx, ty, bytes)?.into_val(),
             InterfaceType::Stream(_) => HostStream::<()>::load(cx, ty, bytes)?.into_val(),

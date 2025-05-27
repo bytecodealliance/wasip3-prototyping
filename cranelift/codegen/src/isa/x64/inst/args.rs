@@ -11,8 +11,6 @@ use smallvec::{SmallVec, smallvec};
 use std::fmt;
 use std::string::String;
 
-pub use crate::isa::x64::lower::isle::generated_code::DivSignedness;
-
 /// An extension trait for converting `Writable{Xmm,Gpr}` to `Writable<Reg>`.
 pub trait ToWritableReg {
     /// Convert `Writable{Xmm,Gpr}` to `Writable<Reg>`.
@@ -558,15 +556,15 @@ impl SyntheticAmode {
     }
 }
 
-impl Into<SyntheticAmode> for Amode {
-    fn into(self) -> SyntheticAmode {
-        SyntheticAmode::Real(self)
+impl From<Amode> for SyntheticAmode {
+    fn from(amode: Amode) -> SyntheticAmode {
+        SyntheticAmode::Real(amode)
     }
 }
 
-impl Into<SyntheticAmode> for VCodeConstant {
-    fn into(self) -> SyntheticAmode {
-        SyntheticAmode::ConstantOffset(self)
+impl From<VCodeConstant> for SyntheticAmode {
+    fn from(c: VCodeConstant) -> SyntheticAmode {
+        SyntheticAmode::ConstantOffset(c)
     }
 }
 
@@ -836,31 +834,15 @@ pub enum SseOpcode {
     Divss,
     Divsd,
     Insertps,
-    Maxps,
-    Maxpd,
-    Maxss,
-    Maxsd,
-    Minps,
-    Minpd,
-    Minss,
-    Minsd,
     Movaps,
     Movapd,
-    Movd,
     Movdqa,
     Movdqu,
     Movlhps,
-    Movmskps,
-    Movmskpd,
-    Movq,
     Movss,
     Movsd,
     Movups,
     Movupd,
-    Mulps,
-    Mulpd,
-    Mulss,
-    Mulsd,
     Pabsb,
     Pabsw,
     Pabsd,
@@ -880,28 +862,8 @@ pub enum SseOpcode {
     Pcmpgtw,
     Pcmpgtd,
     Pcmpgtq,
-    Pextrb,
-    Pextrw,
-    Pextrd,
-    Pextrq,
-    Pinsrb,
-    Pinsrw,
-    Pinsrd,
     Pmaddubsw,
     Pmaddwd,
-    Pmaxsb,
-    Pmaxsw,
-    Pmaxsd,
-    Pmaxub,
-    Pmaxuw,
-    Pmaxud,
-    Pminsb,
-    Pminsw,
-    Pminsd,
-    Pminub,
-    Pminuw,
-    Pminud,
-    Pmovmskb,
     Pmovsxbd,
     Pmovsxbw,
     Pmovsxbq,
@@ -935,8 +897,6 @@ pub enum SseOpcode {
     Roundsd,
     Rsqrtss,
     Shufps,
-    Sqrtss,
-    Sqrtsd,
     Ucomiss,
     Ucomisd,
     Unpcklps,
@@ -962,21 +922,13 @@ impl SseOpcode {
             | SseOpcode::Cmpss
             | SseOpcode::Divps
             | SseOpcode::Divss
-            | SseOpcode::Maxps
-            | SseOpcode::Maxss
-            | SseOpcode::Minps
-            | SseOpcode::Minss
             | SseOpcode::Movaps
             | SseOpcode::Movlhps
-            | SseOpcode::Movmskps
             | SseOpcode::Movss
             | SseOpcode::Movups
-            | SseOpcode::Mulps
-            | SseOpcode::Mulss
             | SseOpcode::Rcpss
             | SseOpcode::Rsqrtss
             | SseOpcode::Shufps
-            | SseOpcode::Sqrtss
             | SseOpcode::Ucomiss
             | SseOpcode::Unpcklps
             | SseOpcode::Unpckhps => SSE,
@@ -986,20 +938,11 @@ impl SseOpcode {
             | SseOpcode::Comisd
             | SseOpcode::Divpd
             | SseOpcode::Divsd
-            | SseOpcode::Maxpd
-            | SseOpcode::Maxsd
-            | SseOpcode::Minpd
-            | SseOpcode::Minsd
             | SseOpcode::Movapd
-            | SseOpcode::Movd
-            | SseOpcode::Movmskpd
-            | SseOpcode::Movq
             | SseOpcode::Movsd
             | SseOpcode::Movupd
             | SseOpcode::Movdqa
             | SseOpcode::Movdqu
-            | SseOpcode::Mulpd
-            | SseOpcode::Mulsd
             | SseOpcode::Packssdw
             | SseOpcode::Packsswb
             | SseOpcode::Packuswb
@@ -1011,14 +954,7 @@ impl SseOpcode {
             | SseOpcode::Pcmpgtb
             | SseOpcode::Pcmpgtw
             | SseOpcode::Pcmpgtd
-            | SseOpcode::Pextrw
-            | SseOpcode::Pinsrw
             | SseOpcode::Pmaddwd
-            | SseOpcode::Pmaxsw
-            | SseOpcode::Pmaxub
-            | SseOpcode::Pminsw
-            | SseOpcode::Pminub
-            | SseOpcode::Pmovmskb
             | SseOpcode::Pmulhw
             | SseOpcode::Pmulhuw
             | SseOpcode::Pmullw
@@ -1028,7 +964,6 @@ impl SseOpcode {
             | SseOpcode::Punpckhwd
             | SseOpcode::Punpcklbw
             | SseOpcode::Punpcklwd
-            | SseOpcode::Sqrtsd
             | SseOpcode::Ucomisd
             | SseOpcode::Punpckldq
             | SseOpcode::Punpckhdq
@@ -1053,19 +988,6 @@ impl SseOpcode {
             | SseOpcode::Packusdw
             | SseOpcode::Pblendvb
             | SseOpcode::Pcmpeqq
-            | SseOpcode::Pextrb
-            | SseOpcode::Pextrd
-            | SseOpcode::Pextrq
-            | SseOpcode::Pinsrb
-            | SseOpcode::Pinsrd
-            | SseOpcode::Pmaxsb
-            | SseOpcode::Pmaxsd
-            | SseOpcode::Pmaxuw
-            | SseOpcode::Pmaxud
-            | SseOpcode::Pminsb
-            | SseOpcode::Pminsd
-            | SseOpcode::Pminuw
-            | SseOpcode::Pminud
             | SseOpcode::Pmovsxbd
             | SseOpcode::Pmovsxbw
             | SseOpcode::Pmovsxbq
@@ -1094,7 +1016,6 @@ impl SseOpcode {
     /// Returns the src operand size for an instruction.
     pub(crate) fn src_size(&self) -> u8 {
         match self {
-            SseOpcode::Movd => 4,
             _ => 8,
         }
     }
@@ -1102,7 +1023,6 @@ impl SseOpcode {
     /// Is `src2` with this opcode a scalar, as for lane insertions?
     pub(crate) fn has_scalar_src2(self) -> bool {
         match self {
-            SseOpcode::Pinsrb | SseOpcode::Pinsrw | SseOpcode::Pinsrd => true,
             SseOpcode::Pmovsxbw
             | SseOpcode::Pmovsxbd
             | SseOpcode::Pmovsxbq
@@ -1136,31 +1056,15 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Divss => "divss",
             SseOpcode::Divsd => "divsd",
             SseOpcode::Insertps => "insertps",
-            SseOpcode::Maxps => "maxps",
-            SseOpcode::Maxpd => "maxpd",
-            SseOpcode::Maxss => "maxss",
-            SseOpcode::Maxsd => "maxsd",
-            SseOpcode::Minps => "minps",
-            SseOpcode::Minpd => "minpd",
-            SseOpcode::Minss => "minss",
-            SseOpcode::Minsd => "minsd",
             SseOpcode::Movaps => "movaps",
             SseOpcode::Movapd => "movapd",
-            SseOpcode::Movd => "movd",
             SseOpcode::Movdqa => "movdqa",
             SseOpcode::Movdqu => "movdqu",
             SseOpcode::Movlhps => "movlhps",
-            SseOpcode::Movmskps => "movmskps",
-            SseOpcode::Movmskpd => "movmskpd",
-            SseOpcode::Movq => "movq",
             SseOpcode::Movss => "movss",
             SseOpcode::Movsd => "movsd",
             SseOpcode::Movups => "movups",
             SseOpcode::Movupd => "movupd",
-            SseOpcode::Mulps => "mulps",
-            SseOpcode::Mulpd => "mulpd",
-            SseOpcode::Mulss => "mulss",
-            SseOpcode::Mulsd => "mulsd",
             SseOpcode::Pabsb => "pabsb",
             SseOpcode::Pabsw => "pabsw",
             SseOpcode::Pabsd => "pabsd",
@@ -1180,28 +1084,9 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Pcmpgtw => "pcmpgtw",
             SseOpcode::Pcmpgtd => "pcmpgtd",
             SseOpcode::Pcmpgtq => "pcmpgtq",
-            SseOpcode::Pextrb => "pextrb",
-            SseOpcode::Pextrw => "pextrw",
-            SseOpcode::Pextrd => "pextrd",
-            SseOpcode::Pextrq => "pextrq",
-            SseOpcode::Pinsrb => "pinsrb",
-            SseOpcode::Pinsrw => "pinsrw",
-            SseOpcode::Pinsrd => "pinsrd",
             SseOpcode::Pmaddubsw => "pmaddubsw",
             SseOpcode::Pmaddwd => "pmaddwd",
-            SseOpcode::Pmaxsb => "pmaxsb",
-            SseOpcode::Pmaxsw => "pmaxsw",
-            SseOpcode::Pmaxsd => "pmaxsd",
-            SseOpcode::Pmaxub => "pmaxub",
-            SseOpcode::Pmaxuw => "pmaxuw",
-            SseOpcode::Pmaxud => "pmaxud",
-            SseOpcode::Pminsb => "pminsb",
-            SseOpcode::Pminsw => "pminsw",
-            SseOpcode::Pminsd => "pminsd",
-            SseOpcode::Pminub => "pminub",
-            SseOpcode::Pminuw => "pminuw",
-            SseOpcode::Pminud => "pminud",
-            SseOpcode::Pmovmskb => "pmovmskb",
+
             SseOpcode::Pmovsxbd => "pmovsxbd",
             SseOpcode::Pmovsxbw => "pmovsxbw",
             SseOpcode::Pmovsxbq => "pmovsxbq",
@@ -1235,8 +1120,6 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Roundsd => "roundsd",
             SseOpcode::Rsqrtss => "rsqrtss",
             SseOpcode::Shufps => "shufps",
-            SseOpcode::Sqrtss => "sqrtss",
-            SseOpcode::Sqrtsd => "sqrtsd",
             SseOpcode::Ucomiss => "ucomiss",
             SseOpcode::Ucomisd => "ucomisd",
             SseOpcode::Unpcklps => "unpcklps",

@@ -534,12 +534,8 @@ impl TlsWriter {
 
         self.state = WriteState::Writing(wasmtime_wasi::runtime::spawn(async move {
             while !bytes.is_empty() {
-                match stream.write(&bytes).await {
-                    Ok(n) => {
-                        let _ = bytes.split_to(n);
-                    }
-                    Err(e) => return Err(e.into()),
-                }
+                let n = stream.write(&bytes).await?;
+                let _ = bytes.split_to(n);
             }
 
             Ok(stream)
@@ -678,6 +674,7 @@ fn try_lock_for_stream<TlsWriter>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::task::Waker;
     use tokio::sync::oneshot;
 
     #[tokio::test]
@@ -691,7 +688,7 @@ mod tests {
 
         let mut fut = future_streams.ready();
 
-        let mut cx = std::task::Context::from_waker(futures::task::noop_waker_ref());
+        let mut cx = std::task::Context::from_waker(Waker::noop());
         assert!(fut.as_mut().poll(&mut cx).is_pending());
 
         //cancel the readiness check
