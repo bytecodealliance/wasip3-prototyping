@@ -957,7 +957,7 @@ pub enum Trampoline {
     ResourceExitCall,
 
     /// An intrinsic used by FACT-generated modules to prepare a call involving
-    /// a sync/async-lowered import and sync/async-lifted export.
+    /// an async-lowered import and/or an async-lifted export.
     PrepareCall {
         /// The memory used to verify that the memory specified for the
         /// `task.return` that is called at runtime matches the one specified in

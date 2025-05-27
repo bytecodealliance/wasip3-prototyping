@@ -3458,7 +3458,10 @@ impl Instance {
 /// pointers used for async calls).
 pub trait VMComponentAsyncStore {
     /// A helper function for fused adapter modules involving calls where the
-    /// caller is sync-lowered but the callee is async-lifted.
+    /// one of the caller or callee is async.
+    ///
+    /// This helper is not used when the caller and callee both use the sync
+    /// ABI, only when at least one is async is this used.
     unsafe fn prepare_call(
         &mut self,
         instance: &mut ComponentInstance,

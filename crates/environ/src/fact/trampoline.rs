@@ -458,10 +458,11 @@ impl<'a, 'b> Compiler<'a, 'b> {
     /// Invokes the `prepare_call` builtin with the provided parameters for this
     /// adapter.
     ///
-    /// This is part of a {,a}sync -> {,a}sync adapter. This is done to create
-    /// the task on the host side of the runtime and such. This will notably
-    /// invoke a Cranelift builtin which will spill all wasm-level parameters to
-    /// the stack to handle variadic signatures.
+    /// This is part of a async lower and/or async lift adapter. This is not
+    /// used for a sync->sync function call. This is done to create the task on
+    /// the host side of the runtime and such. This will notably invoke a
+    /// Cranelift builtin which will spill all wasm-level parameters to the
+    /// stack to handle variadic signatures.
     ///
     /// Note that the `prepare_sync` parameter here configures the
     /// `result_count_or_max_if_async` parameter to indicate whether this is a

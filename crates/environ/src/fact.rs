@@ -790,8 +790,8 @@ pub enum Import {
     /// Tears down a previous entry and handles checking borrow-related
     /// metadata.
     ResourceExitCall,
-    /// An intrinsic used by FACT-generated modules to begin a call involving a
-    /// sync/async-lowered import and sync/async-lifted export.
+    /// An intrinsic used by FACT-generated modules to begin a call involving
+    /// an async-lowered import and/or an async-lifted export.
     PrepareCall {
         /// The memory used to verify that the memory specified for the
         /// `task.return` that is called at runtime (if any) matches the one
