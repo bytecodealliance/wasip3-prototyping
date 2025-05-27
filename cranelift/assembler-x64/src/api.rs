@@ -2,6 +2,8 @@
 
 use crate::gpr;
 use crate::xmm;
+use crate::{Amode, GprMem, XmmMem};
+use std::fmt;
 use std::{num::NonZeroU8, ops::Index, vec::Vec};
 
 /// Describe how an instruction is emitted into a code buffer.
@@ -67,12 +69,12 @@ impl CodeSink for Vec<u8> {
 }
 
 /// Wrap [`CodeSink`]-specific labels.
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 #[cfg_attr(any(test, feature = "fuzz"), derive(arbitrary::Arbitrary))]
 pub struct Label(pub u32);
 
 /// Wrap [`CodeSink`]-specific constant keys.
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 #[cfg_attr(any(test, feature = "fuzz"), derive(arbitrary::Arbitrary))]
 pub struct Constant(pub u32);
 
@@ -80,6 +82,12 @@ pub struct Constant(pub u32);
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(any(test, feature = "fuzz"), derive(arbitrary::Arbitrary))]
 pub struct TrapCode(pub NonZeroU8);
+
+impl fmt::Display for TrapCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "trap={}", self.0)
+    }
+}
 
 /// A table mapping `KnownOffset` identifiers to their `i32` offset values.
 ///
@@ -90,14 +98,14 @@ pub struct TrapCode(pub NonZeroU8);
 ///
 /// This table allows up to do a "late" look up of these values by their
 /// `KnownOffset`.
-pub trait KnownOffsetTable: Index<KnownOffset, Output = i32> {}
+pub trait KnownOffsetTable: Index<usize, Output = i32> {}
 impl KnownOffsetTable for Vec<i32> {}
 /// Provide a convenient implementation for testing.
 impl KnownOffsetTable for [i32; 2] {}
 
 /// A `KnownOffset` is a unique identifier for a specific offset known only at
 /// emission time.
-pub type KnownOffset = usize;
+pub type KnownOffset = u8;
 
 /// A type set fixing the register types used in the assembler.
 ///
@@ -125,7 +133,7 @@ pub trait Registers {
 }
 
 /// Describe how to interact with an external register type.
-pub trait AsReg: Clone + std::fmt::Debug {
+pub trait AsReg: Copy + Clone + std::fmt::Debug {
     /// Create a register from its hardware encoding.
     ///
     /// This is primarily useful for fuzzing, though it is also useful for
@@ -194,4 +202,54 @@ pub trait RegisterVisitor<R: Registers> {
     /// Visit a read-only fixed SSE register; this register can be modified
     /// in-place but must emit as the hardware encoding `enc`.
     fn fixed_write_xmm(&mut self, reg: &mut R::WriteXmm, enc: u8);
+
+    /// Visit the registers in an [`Amode`].
+    ///
+    /// This is helpful for generated code: it allows capturing the `R::ReadGpr`
+    /// type (which an `Amode` method cannot) and simplifies the code to be
+    /// generated.
+    fn read_amode(&mut self, amode: &mut Amode<R::ReadGpr>) {
+        match amode {
+            Amode::ImmReg { base, .. } => {
+                self.read_gpr(base);
+            }
+            Amode::ImmRegRegShift { base, index, .. } => {
+                self.read_gpr(base);
+                self.read_gpr(index.as_mut());
+            }
+            Amode::RipRelative { .. } => {}
+        }
+    }
+
+    /// Helper method to handle a read/write [`GprMem`] operand.
+    fn read_write_gpr_mem(&mut self, op: &mut GprMem<R::ReadWriteGpr, R::ReadGpr>) {
+        match op {
+            GprMem::Gpr(r) => self.read_write_gpr(r),
+            GprMem::Mem(m) => self.read_amode(m),
+        }
+    }
+
+    /// Helper method to handle a write [`GprMem`] operand.
+    fn write_gpr_mem(&mut self, op: &mut GprMem<R::WriteGpr, R::ReadGpr>) {
+        match op {
+            GprMem::Gpr(r) => self.write_gpr(r),
+            GprMem::Mem(m) => self.read_amode(m),
+        }
+    }
+
+    /// Helper method to handle a read-only [`GprMem`] operand.
+    fn read_gpr_mem(&mut self, op: &mut GprMem<R::ReadGpr, R::ReadGpr>) {
+        match op {
+            GprMem::Gpr(r) => self.read_gpr(r),
+            GprMem::Mem(m) => self.read_amode(m),
+        }
+    }
+
+    /// Helper method to handle a read-only [`XmmMem`] operand.
+    fn read_xmm_mem(&mut self, op: &mut XmmMem<R::ReadXmm, R::ReadGpr>) {
+        match op {
+            XmmMem::Xmm(r) => self.read_xmm(r),
+            XmmMem::Mem(m) => self.read_amode(m),
+        }
+    }
 }

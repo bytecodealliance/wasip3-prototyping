@@ -22,6 +22,10 @@ impl dsl::Inst {
                 let ty = k.generate_type();
                 fmtln!(f, "pub {loc}: {ty},");
             }
+
+            if self.has_trap {
+                fmtln!(f, "pub trap: TrapCode,");
+            }
         });
     }
 
@@ -69,7 +73,12 @@ impl dsl::Inst {
             self.format
                 .operands
                 .iter()
-                .map(|o| format!("{}: impl Into<{}>", o.location, o.generate_type())),
+                .map(|o| format!("{}: impl Into<{}>", o.location, o.generate_type()))
+                .chain(if self.has_trap {
+                    Some("trap: impl Into<TrapCode>".to_string())
+                } else {
+                    None
+                }),
         );
         fmtln!(f, "#[must_use]");
         f.add_block(&format!("pub fn new({params}) -> Self"), |f| {
@@ -77,6 +86,9 @@ impl dsl::Inst {
                 for o in &self.format.operands {
                     let loc = o.location;
                     fmtln!(f, "{loc}: {loc}.into(),");
+                }
+                if self.has_trap {
+                    fmtln!(f, "trap: trap.into(),");
                 }
             });
         });
@@ -121,10 +133,14 @@ impl dsl::Inst {
                         _ => unreachable!(),
                     }
                 }
+                if self.has_trap {
+                    f.comment("Emit trap.");
+                    fmtln!(f, "buf.add_trap(self.trap);");
+                }
 
                 match &self.encoding {
                     dsl::Encoding::Rex(rex) => self.format.generate_rex_encoding(f, rex),
-                    dsl::Encoding::Vex(_) => todo!(),
+                    dsl::Encoding::Vex(vex) => self.format.generate_vex_encoding(f, vex),
                 }
             },
         );
@@ -158,14 +174,16 @@ impl dsl::Inst {
                     RegMem(loc) => {
                         let reg = reg.unwrap();
                         let reg_lower = reg.to_string().to_lowercase();
-                        f.add_block(&format!("match &mut self.{loc}"), |f| {
-                            fmtln!(f, "{reg}Mem::{reg}(r) => visitor.{mutability}_{reg_lower}(r),");
-                            fmtln!(f, "{reg}Mem::Mem(m) => visit_amode(m, visitor),");
-                        });
+                        fmtln!(f, "visitor.{mutability}_{reg_lower}_mem(&mut self.{loc});");
                     }
                     Mem(loc) => {
-                        fmtln!(f, "visit_amode(&mut self.{loc}, visitor);");
+                        // Note that this is always "read" because from a
+                        // regalloc perspective when using an amode it means
+                        // that the while a write is happening that's to
+                        // memory, not registers.
+                        fmtln!(f, "visitor.read_amode(&mut self.{loc});");
                     }
+
                 }
             }
         });
@@ -194,7 +212,7 @@ impl dsl::Inst {
                 f.add_block(
                     "fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result",
                     |f| {
-                        for op in &self.format.operands {
+                        for op in self.format.operands.iter() {
                             let location = op.location;
                             let to_string = location.generate_to_string(op.extension);
                             fmtln!(f, "let {location} = {to_string};");
@@ -207,7 +225,16 @@ impl dsl::Inst {
                             &self.mnemonic
                         };
                         let ordered_ops = self.format.generate_att_style_operands();
-                        fmtln!(f, "write!(f, \"{inst_name} {ordered_ops}\")");
+                        let mut implicit_ops = self.format.generate_implicit_operands();
+                        if self.has_trap {
+                            fmtln!(f, "let trap = self.trap;");
+                            if implicit_ops.is_empty() {
+                                implicit_ops.push_str(" ;; {trap}");
+                            } else {
+                                implicit_ops.push_str(", {trap}");
+                            }
+                        }
+                        fmtln!(f, "write!(f, \"{inst_name} {ordered_ops}{implicit_ops}\")");
                     },
                 );
             },

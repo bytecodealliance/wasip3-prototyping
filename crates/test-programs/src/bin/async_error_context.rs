@@ -15,7 +15,7 @@ struct Component;
 
 impl Guest for Component {
     async fn run() {
-        let err_ctx = ErrorContext::new("error".into());
+        let err_ctx = ErrorContext::new("error");
         _ = err_ctx.debug_message();
     }
 }

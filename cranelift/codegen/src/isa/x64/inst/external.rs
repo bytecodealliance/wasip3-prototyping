@@ -59,13 +59,6 @@ impl From<Writable<Reg>> for asm::GprMem<PairedGpr, Gpr> {
 }
 
 // For ABI ergonomics.
-impl From<Gpr> for asm::GprMem<Gpr, Gpr> {
-    fn from(gpr: Gpr) -> Self {
-        Self::Gpr(gpr)
-    }
-}
-
-// For ABI ergonomics.
 impl From<Reg> for asm::GprMem<Gpr, Gpr> {
     fn from(gpr: Reg) -> Self {
         assert!(gpr.class() == RegClass::Int);
@@ -95,20 +88,6 @@ impl From<Writable<Reg>> for asm::Gpr<WritableGpr> {
         assert!(wgpr.to_reg().class() == RegClass::Int);
         let wgpr = WritableGpr::from_writable_reg(wgpr).unwrap();
         Self::new(wgpr)
-    }
-}
-
-// For Winch ergonomics.
-impl From<PairedGpr> for asm::Gpr<PairedGpr> {
-    fn from(pair: PairedGpr) -> Self {
-        Self::new(pair)
-    }
-}
-
-// For Winch ergonomics.
-impl From<PairedGpr> for asm::GprMem<PairedGpr, Gpr> {
-    fn from(pair: PairedGpr) -> Self {
-        Self::Gpr(pair)
     }
 }
 
@@ -183,13 +162,6 @@ impl From<Reg> for asm::XmmMem<Xmm, Gpr> {
         assert!(xmm.class() == RegClass::Float);
         let xmm = Xmm::unwrap_new(xmm);
         Self::Xmm(xmm)
-    }
-}
-
-// For Winch ergonomics.
-impl From<PairedXmm> for asm::Xmm<PairedXmm> {
-    fn from(pair: PairedXmm) -> Self {
-        Self::new(pair)
     }
 }
 
@@ -359,9 +331,9 @@ fn fixed_reg(enc: u8, class: RegClass) -> Reg {
     Reg::from_real_reg(preg)
 }
 
-impl Into<asm::Amode<Gpr>> for SyntheticAmode {
-    fn into(self) -> asm::Amode<Gpr> {
-        match self {
+impl From<SyntheticAmode> for asm::Amode<Gpr> {
+    fn from(amode: SyntheticAmode) -> asm::Amode<Gpr> {
+        match amode {
             SyntheticAmode::Real(amode) => amode.into(),
             SyntheticAmode::IncomingArg { offset } => asm::Amode::ImmReg {
                 base: Gpr::unwrap_new(regs::rbp()),
@@ -386,9 +358,9 @@ impl Into<asm::Amode<Gpr>> for SyntheticAmode {
     }
 }
 
-impl Into<asm::Amode<Gpr>> for Amode {
-    fn into(self) -> asm::Amode<Gpr> {
-        match self {
+impl From<Amode> for asm::Amode<Gpr> {
+    fn from(amode: Amode) -> asm::Amode<Gpr> {
+        match amode {
             Amode::ImmReg {
                 simm32,
                 base,
@@ -425,8 +397,8 @@ impl Into<asm::Amode<Gpr>> for Amode {
 /// `KnownOffsetTable`.
 #[expect(missing_docs, reason = "self-describing keys")]
 pub mod offsets {
-    pub const KEY_INCOMING_ARG: usize = 0;
-    pub const KEY_SLOT_OFFSET: usize = 1;
+    pub const KEY_INCOMING_ARG: u8 = 0;
+    pub const KEY_SLOT_OFFSET: u8 = 1;
 }
 
 impl asm::CodeSink for MachBuffer<Inst> {
@@ -520,7 +492,7 @@ mod tests {
         assert_eq!(gpr200.to_string(Some(Size::Quadword)), "%v200");
 
         let v300: Reg = VReg::new(300, RegClass::Int).into();
-        let wgpr300 = WritableGpr::from_writable_reg(Writable::from_reg(v300).into()).unwrap();
+        let wgpr300 = WritableGpr::from_writable_reg(Writable::from_reg(v300)).unwrap();
         let pair = PairedGpr {
             read: gpr200,
             write: wgpr300,
@@ -532,7 +504,7 @@ mod tests {
         assert_eq!(xmm400.to_string(None), "%v400");
 
         let v500: Reg = VReg::new(500, RegClass::Float).into();
-        let wxmm500 = WritableXmm::from_writable_reg(Writable::from_reg(v500).into()).unwrap();
+        let wxmm500 = WritableXmm::from_writable_reg(Writable::from_reg(v500)).unwrap();
         let pair = PairedXmm {
             read: xmm400,
             write: wxmm500,

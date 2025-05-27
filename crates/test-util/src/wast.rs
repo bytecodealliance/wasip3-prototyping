@@ -436,6 +436,7 @@ impl WastTest {
                     "misc_testsuite/winch/select.wast",
                     "misc_testsuite/sink-float-but-dont-trap.wast",
                     "misc_testsuite/issue4840.wast",
+                    "misc_testsuite/winch/use-innermost-frame.wast",
                 ];
 
                 return unsupported.iter().any(|part| self.path.ends_with(part));
@@ -539,10 +540,7 @@ impl WastTest {
                     "spec_testsuite/loop.wast",
                     "spec_testsuite/table_copy.wast",
                     "spec_testsuite/table_init.wast",
-                    "misc_testsuite/custom-page-sizes/custom-page-sizes.wast",
                     "misc_testsuite/winch/table_grow.wast",
-                    "spec_testsuite/proposals/custom-page-sizes/custom-page-sizes.wast",
-                    "misc_testsuite/memory64/more-than-4gb.wast",
                     "misc_testsuite/call_indirect.wast",
                 ];
 

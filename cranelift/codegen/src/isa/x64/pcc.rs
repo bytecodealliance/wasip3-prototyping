@@ -5,7 +5,7 @@ use crate::ir::types::*;
 use crate::isa::x64::args::AvxOpcode;
 use crate::isa::x64::inst::Inst;
 use crate::isa::x64::inst::args::{
-    Amode, CC, Gpr, Imm8Reg, RegMem, RegMemImm, ShiftKind, SseOpcode, SyntheticAmode, ToWritableReg,
+    Amode, CC, Gpr, RegMem, RegMemImm, SseOpcode, SyntheticAmode, ToWritableReg,
 };
 use crate::machinst::pcc::*;
 use crate::machinst::{InsnIndex, VCode, VCodeConstantData};
@@ -77,10 +77,7 @@ pub(crate) fn check(
             RegMem::Reg { .. } => undefined_result(ctx, vcode, dst, 64, size.to_bits().into()),
         },
 
-        Inst::UnaryRmR {
-            size, ref src, dst, ..
-        }
-        | Inst::UnaryRmRVex {
+        Inst::UnaryRmRVex {
             size, ref src, dst, ..
         }
         | Inst::UnaryRmRImmVex {
@@ -95,45 +92,7 @@ pub(crate) fn check(
             RegMem::Reg { .. } => undefined_result(ctx, vcode, dst, 64, size.to_bits().into()),
         },
 
-        Inst::Div {
-            size,
-            ref divisor,
-            dst_quotient,
-            dst_remainder,
-            ..
-        } => {
-            match <&RegMem>::from(divisor) {
-                RegMem::Mem { addr } => {
-                    check_load(ctx, None, addr, vcode, size.to_type(), 64)?;
-                }
-                RegMem::Reg { .. } => {}
-            }
-            undefined_result(ctx, vcode, dst_quotient, 64, 64)?;
-            undefined_result(ctx, vcode, dst_remainder, 64, 64)?;
-            Ok(())
-        }
-        Inst::Div8 {
-            dst, ref divisor, ..
-        } => {
-            match <&RegMem>::from(divisor) {
-                RegMem::Mem { addr } => {
-                    check_load(ctx, None, addr, vcode, I8, 64)?;
-                }
-                RegMem::Reg { .. } => {}
-            }
-            // 64-bit result width because result may be negative
-            // hence high bits set.
-            undefined_result(ctx, vcode, dst, 64, 64)?;
-            Ok(())
-        }
-        Inst::Mul {
-            size,
-            dst_lo,
-            dst_hi,
-            ref src2,
-            ..
-        }
-        | Inst::MulX {
+        Inst::MulX {
             size,
             dst_lo,
             dst_hi,
@@ -150,46 +109,6 @@ pub(crate) fn check(
             undefined_result(ctx, vcode, dst_hi, 64, size.to_bits().into())?;
             Ok(())
         }
-        Inst::Mul8 { dst, ref src2, .. } => {
-            match <&RegMem>::from(src2) {
-                RegMem::Mem { addr } => {
-                    check_load(ctx, None, addr, vcode, I8, 64)?;
-                }
-                RegMem::Reg { .. } => {}
-            }
-            undefined_result(ctx, vcode, dst, 64, 16)?;
-            Ok(())
-        }
-        Inst::IMul {
-            size,
-            dst,
-            ref src2,
-            ..
-        } => {
-            match <&RegMem>::from(src2) {
-                RegMem::Mem { addr } => {
-                    check_load(ctx, None, addr, vcode, size.to_type(), 64)?;
-                }
-                RegMem::Reg { .. } => {}
-            }
-            undefined_result(ctx, vcode, dst, 64, size.to_bits().into())?;
-            Ok(())
-        }
-        Inst::IMulImm {
-            size,
-            dst,
-            ref src1,
-            ..
-        } => {
-            match <&RegMem>::from(src1) {
-                RegMem::Mem { addr } => {
-                    check_load(ctx, None, addr, vcode, size.to_type(), 64)?;
-                }
-                RegMem::Reg { .. } => {}
-            }
-            undefined_result(ctx, vcode, dst, 64, size.to_bits().into())?;
-            Ok(())
-        }
         Inst::CheckedSRemSeq {
             dst_quotient,
             dst_remainder,
@@ -201,8 +120,6 @@ pub(crate) fn check(
         }
 
         Inst::CheckedSRemSeq8 { dst, .. } => undefined_result(ctx, vcode, dst, 64, 64),
-
-        Inst::SignExtendData { dst, .. } => undefined_result(ctx, vcode, dst, 64, 64),
 
         Inst::Imm { simm64, dst, .. } => {
             check_output(ctx, vcode, dst.to_writable_reg(), &[], |_vcode| {
@@ -290,30 +207,6 @@ pub(crate) fn check(
             check_store(ctx, Some(src.to_reg()), dst, vcode, size.to_type())
         }
 
-        Inst::ShiftR {
-            size,
-            kind: ShiftKind::ShiftLeft,
-            src,
-            ref num_bits,
-            dst,
-        } => match num_bits.as_imm8_reg() {
-            &Imm8Reg::Imm8 { imm } => {
-                check_unop(ctx, vcode, 64, dst.to_writable_reg(), src.to_reg(), |src| {
-                    clamp_range(
-                        ctx,
-                        64,
-                        size.to_bits().into(),
-                        ctx.shl(src, size.to_bits().into(), imm.into()),
-                    )
-                })
-            }
-            Imm8Reg::Reg { .. } => undefined_result(ctx, vcode, dst, 64, size.to_bits().into()),
-        },
-
-        Inst::ShiftR { size, dst, .. } => {
-            undefined_result(ctx, vcode, dst, 64, size.to_bits().into())
-        }
-
         Inst::CmpRmiR {
             size,
             src1,
@@ -356,8 +249,6 @@ pub(crate) fn check(
         },
 
         Inst::Setcc { dst, .. } => undefined_result(ctx, vcode, dst, 64, 64),
-
-        Inst::Bswap { dst, .. } => undefined_result(ctx, vcode, dst, 64, 64),
 
         Inst::Cmove {
             size,
@@ -558,7 +449,7 @@ pub(crate) fn check(
 
         Inst::XmmToGprImmVex { dst, .. } => ensure_no_fact(vcode, dst.to_writable_reg().to_reg()),
 
-        Inst::GprToXmmVex { dst, ref src, .. } | Inst::GprToXmm { dst, ref src, .. } => {
+        Inst::GprToXmmVex { dst, ref src, .. } => {
             match <&RegMem>::from(src) {
                 RegMem::Mem { addr } => {
                     check_load(ctx, None, addr, vcode, I64, 64)?;
@@ -588,13 +479,9 @@ pub(crate) fn check(
             Ok(())
         }
 
-        Inst::XmmMovRM { ref dst, .. } | Inst::XmmMovRMImm { ref dst, .. } => {
+        Inst::XmmMovRM { ref dst, .. } => {
             check_store(ctx, None, dst, vcode, I8X16)?;
             Ok(())
-        }
-
-        Inst::XmmToGpr { dst, .. } | Inst::XmmToGprImm { dst, .. } => {
-            undefined_result(ctx, vcode, dst, 64, 64)
         }
 
         Inst::CvtIntToFloatVex { dst, ref src2, .. } => {
@@ -666,7 +553,7 @@ pub(crate) fn check(
             op,
             ..
         } if op.has_scalar_src2() => {
-            match <&RegMem>::from(src2) {
+            match src2 {
                 RegMem::Mem { addr } => {
                     check_load(
                         ctx,
@@ -683,7 +570,7 @@ pub(crate) fn check(
         }
 
         Inst::XmmRmRImm { dst, ref src2, .. } => {
-            match <&RegMem>::from(src2) {
+            match src2 {
                 RegMem::Mem { addr } => {
                     check_load(ctx, None, addr, vcode, I8X16, 128)?;
                 }
@@ -720,7 +607,7 @@ pub(crate) fn check(
 
         Inst::ReturnCallUnknown { .. } => Ok(()),
 
-        Inst::CallUnknown { ref info } => match <&RegMem>::from(&info.dest) {
+        Inst::CallUnknown { ref info } => match &info.dest {
             RegMem::Mem { addr } => {
                 check_load(ctx, None, addr, vcode, I64, 64)?;
                 Ok(())
@@ -729,7 +616,7 @@ pub(crate) fn check(
         },
         Inst::JmpUnknown {
             target: ref dest, ..
-        } => match <&RegMem>::from(dest) {
+        } => match dest {
             RegMem::Mem { addr } => {
                 check_load(ctx, None, addr, vcode, I64, 64)?;
                 Ok(())

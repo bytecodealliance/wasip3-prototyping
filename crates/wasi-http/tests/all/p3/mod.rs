@@ -141,7 +141,7 @@ impl Client for TestClient {
         if let Some(rejected_authority) = &self.rejected_authority {
             let authority = request.uri().authority().map(ToString::to_string).unwrap();
             if &authority == rejected_authority {
-                return Ok(Err(ErrorCode::HttpRequestDenied.into()));
+                return Ok(Err(ErrorCode::HttpRequestDenied));
             }
         }
         Ok(default_send_request(request, options).await)

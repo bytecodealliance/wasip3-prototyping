@@ -158,8 +158,7 @@ enum Event {
     },
     StreamRead {
         code: ReturnCode,
-        handle: u32,
-        ty: TypeStreamTableIndex,
+        pending: Option<(TypeStreamTableIndex, u32)>,
     },
     StreamWrite {
         code: ReturnCode,
@@ -167,8 +166,7 @@ enum Event {
     },
     FutureRead {
         code: ReturnCode,
-        handle: u32,
-        ty: TypeFutureTableIndex,
+        pending: Option<(TypeFutureTableIndex, u32)>,
     },
     FutureWrite {
         code: ReturnCode,
@@ -4282,7 +4280,10 @@ impl Waitable {
     /// the state of the stream or future.
     fn on_delivery(&self, instance: &mut ComponentInstance, event: Event) {
         match event {
-            Event::FutureRead { ty, handle, .. }
+            Event::FutureRead {
+                pending: Some((ty, handle)),
+                ..
+            }
             | Event::FutureWrite {
                 pending: Some((ty, handle)),
                 ..
@@ -4304,7 +4305,10 @@ impl Waitable {
                     _ => unreachable!(),
                 };
             }
-            Event::StreamRead { ty, handle, .. }
+            Event::StreamRead {
+                pending: Some((ty, handle)),
+                ..
+            }
             | Event::StreamWrite {
                 pending: Some((ty, handle)),
                 ..

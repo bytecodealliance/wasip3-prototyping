@@ -218,10 +218,7 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>
                 let mut store = token.as_context_mut(store);
                 let ptr = instance as *mut _;
                 let types = instance.component_types().clone();
-                let count = buffer
-                    .remaining()
-                    .len()
-                    .min(usize::try_from(count).unwrap());
+                let count = buffer.remaining().len().min(count);
 
                 store.with_attached_instance(instance, |mut store, _| {
                     // SAFETY: `ptr` is derived from `interface` and thus known
@@ -1678,7 +1675,7 @@ impl ComponentInstance {
                             })?
                         }
                         WriteEvent::Close => super::with_local_instance(|_, instance| {
-                            instance.host_close_writer(rep)
+                            instance.host_close_writer(rep, kind)
                         })?,
                         WriteEvent::Watch { tx } => super::with_local_instance(|_, instance| {
                             let state = instance.get_mut(TableId::<TransmitState>::new(rep))?;
@@ -1739,7 +1736,7 @@ impl ComponentInstance {
                             })?
                         }
                         ReadEvent::Close => super::with_local_instance(|store, instance| {
-                            instance.host_close_reader(store, rep)
+                            instance.host_close_reader(store, rep, kind)
                         })?,
                         ReadEvent::Watch { tx } => super::with_local_instance(|_, instance| {
                             let state = instance.get_mut(TableId::<TransmitState>::new(rep))?;
@@ -1768,6 +1765,82 @@ impl ComponentInstance {
 
     fn set_event(&mut self, waitable: u32, event: Event) -> Result<()> {
         Waitable::Transmit(TableId::<TransmitHandle>::new(waitable)).set_event(self, Some(event))
+    }
+
+    /// Set or update the event for the specified waitable.
+    ///
+    /// If there is already an event set for this waitable, we assert that it is
+    /// of the same variant as the new one and reuse the `ReturnCode` count and
+    /// the `pending` field if applicable.
+    // TODO: This is a bit awkward due to how
+    // `Event::{Stream,Future}{Write,Read}` and
+    // `ReturnCode::{Completed,Closed,Cancelled}` are currently represented.
+    // Consider updating those representations in a way that allows this
+    // function to be simplified.
+    fn update_event(&mut self, waitable: u32, event: Event) -> Result<()> {
+        let waitable = Waitable::Transmit(TableId::<TransmitHandle>::new(waitable));
+
+        fn update_code(old: ReturnCode, new: ReturnCode) -> ReturnCode {
+            let (ReturnCode::Completed(count)
+            | ReturnCode::Closed(count)
+            | ReturnCode::Cancelled(count)) = old
+            else {
+                unreachable!()
+            };
+
+            match new {
+                ReturnCode::Closed(0) => ReturnCode::Closed(count),
+                ReturnCode::Cancelled(0) => ReturnCode::Cancelled(count),
+                _ => unreachable!(),
+            }
+        }
+
+        let event = match (waitable.take_event(self)?, event) {
+            (None, _) => event,
+            (
+                Some(Event::FutureWrite {
+                    code: old_code,
+                    pending: old_pending,
+                }),
+                Event::FutureWrite { code, pending },
+            ) => Event::FutureWrite {
+                code: update_code(old_code, code),
+                pending: old_pending.or(pending),
+            },
+            (
+                Some(Event::FutureRead {
+                    code: old_code,
+                    pending: old_pending,
+                }),
+                Event::FutureRead { code, pending },
+            ) => Event::FutureRead {
+                code: update_code(old_code, code),
+                pending: old_pending.or(pending),
+            },
+            (
+                Some(Event::StreamWrite {
+                    code: old_code,
+                    pending: old_pending,
+                }),
+                Event::StreamWrite { code, pending },
+            ) => Event::StreamWrite {
+                code: update_code(old_code, code),
+                pending: old_pending.or(pending),
+            },
+            (
+                Some(Event::StreamRead {
+                    code: old_code,
+                    pending: old_pending,
+                }),
+                Event::StreamRead { code, pending },
+            ) => Event::StreamRead {
+                code: update_code(old_code, code),
+                pending: old_pending.or(pending),
+            },
+            _ => unreachable!(),
+        };
+
+        waitable.set_event(self, Some(event))
     }
 
     fn get_mut_by_index(
@@ -1898,8 +1971,14 @@ impl ComponentInstance {
                 self.set_event(
                     read_handle.rep(),
                     match ty {
-                        TableIndex::Future(ty) => Event::FutureRead { code, ty, handle },
-                        TableIndex::Stream(ty) => Event::StreamRead { code, ty, handle },
+                        TableIndex::Future(ty) => Event::FutureRead {
+                            code,
+                            pending: Some((ty, handle)),
+                        },
+                        TableIndex::Stream(ty) => Event::StreamRead {
+                            code,
+                            pending: Some((ty, handle)),
+                        },
                     },
                 )?;
             }
@@ -1929,7 +2008,7 @@ impl ComponentInstance {
         }
 
         if let PostWrite::Close = post_write {
-            self.host_close_writer(transmit_rep)?;
+            self.host_close_writer(transmit_rep, kind)?;
         }
 
         Ok(())
@@ -2128,7 +2207,7 @@ impl ComponentInstance {
     /// # Arguments
     ///
     /// * `transmit_rep` - The `TransmitState` rep for the stream or future.
-    fn host_close_writer(&mut self, transmit_rep: u32) -> Result<()> {
+    fn host_close_writer(&mut self, transmit_rep: u32, kind: TransmitKind) -> Result<()> {
         let transmit_id = TableId::<TransmitState>::new(transmit_rep);
         let transmit = self
             .get_mut(transmit_id)
@@ -2161,32 +2240,26 @@ impl ComponentInstance {
             ReadState::Open
         };
 
+        let read_handle = transmit.read_handle;
+
         // Swap in the new read state
         match mem::replace(&mut transmit.read, new_state) {
             // If the guest was ready to read, then we cannot close the reader (or writer)
             // we must deliver the event, and update the state associated with the handle to
             // represent that a read must be performed
             ReadState::GuestReady { ty, handle, .. } => {
-                let read_handle = transmit.read_handle;
-
-                let code = ReturnCode::Closed(
-                    if let Some(Event::StreamRead {
-                        code: ReturnCode::Completed(count),
-                        ..
-                    }) = self.take_event(read_handle.rep())?
-                    {
-                        count
-                    } else {
-                        0
-                    },
-                );
-
                 // Ensure the final read of the guest is queued, with appropriate closure indicator
-                self.set_event(
+                self.update_event(
                     read_handle.rep(),
                     match ty {
-                        TableIndex::Future(ty) => Event::FutureRead { code, ty, handle },
-                        TableIndex::Stream(ty) => Event::StreamRead { code, ty, handle },
+                        TableIndex::Future(ty) => Event::FutureRead {
+                            code: ReturnCode::Closed(0),
+                            pending: Some((ty, handle)),
+                        },
+                        TableIndex::Stream(ty) => Event::StreamRead {
+                            code: ReturnCode::Closed(0),
+                            pending: Some((ty, handle)),
+                        },
                     },
                 )?;
             }
@@ -2198,7 +2271,21 @@ impl ComponentInstance {
             }
 
             // If the read state is open, then there are no registered readers of the stream/future
-            ReadState::Open => {}
+            ReadState::Open => {
+                self.update_event(
+                    read_handle.rep(),
+                    match kind {
+                        TransmitKind::Future => Event::FutureRead {
+                            code: ReturnCode::Closed(0),
+                            pending: None,
+                        },
+                        TransmitKind::Stream => Event::StreamRead {
+                            code: ReturnCode::Closed(0),
+                            pending: None,
+                        },
+                    },
+                )?;
+            }
 
             // If the read state was already closed, then we can remove the transmit state completely
             // (both writer and reader have been closed)
@@ -2216,7 +2303,12 @@ impl ComponentInstance {
     ///
     /// * `store` - The store to which this instance belongs
     /// * `transmit_rep` - The `TransmitState` rep for the stream or future.
-    fn host_close_reader(&mut self, store: &mut dyn VMStore, transmit_rep: u32) -> Result<()> {
+    fn host_close_reader(
+        &mut self,
+        store: &mut dyn VMStore,
+        transmit_rep: u32,
+        kind: TransmitKind,
+    ) -> Result<()> {
         let transmit_id = TableId::<TransmitState>::new(transmit_rep);
         let transmit = self
             .get_mut(transmit_id)
@@ -2233,6 +2325,8 @@ impl ComponentInstance {
             WriteState::Open
         };
 
+        let write_handle = transmit.write_handle;
+
         match mem::replace(&mut transmit.write, new_state) {
             // If a guest is waiting to write, notify it that the read end has
             // been closed.
@@ -2242,47 +2336,44 @@ impl ComponentInstance {
                 post_write,
                 ..
             } => {
-                let write_handle = transmit.write_handle;
-
-                let pending = if let PostWrite::Close = post_write {
+                if let PostWrite::Close = post_write {
                     self.delete_transmit(transmit_id)?;
-                    false
                 } else {
-                    true
+                    self.update_event(
+                        write_handle.rep(),
+                        match ty {
+                            TableIndex::Future(ty) => Event::FutureWrite {
+                                code: ReturnCode::Closed(0),
+                                pending: Some((ty, handle)),
+                            },
+                            TableIndex::Stream(ty) => Event::StreamWrite {
+                                code: ReturnCode::Closed(0),
+                                pending: Some((ty, handle)),
+                            },
+                        },
+                    )?;
                 };
-
-                let code = ReturnCode::Closed(
-                    if let Some(Event::StreamWrite {
-                        code: ReturnCode::Completed(count),
-                        ..
-                    }) = self.take_event(write_handle.rep())?
-                    {
-                        count
-                    } else {
-                        0
-                    },
-                );
-
-                self.set_event(
-                    write_handle.rep(),
-                    match ty {
-                        TableIndex::Future(ty) => Event::FutureWrite {
-                            code,
-                            pending: pending.then_some((ty, handle)),
-                        },
-                        TableIndex::Stream(ty) => Event::StreamWrite {
-                            code,
-                            pending: pending.then_some((ty, handle)),
-                        },
-                    },
-                )?;
             }
 
             WriteState::HostReady { accept, .. } => {
                 accept(store, self, Reader::End)?;
             }
 
-            WriteState::Open => {}
+            WriteState::Open => {
+                self.update_event(
+                    write_handle.rep(),
+                    match kind {
+                        TransmitKind::Future => Event::FutureWrite {
+                            code: ReturnCode::Closed(0),
+                            pending: None,
+                        },
+                        TransmitKind::Stream => Event::StreamWrite {
+                            code: ReturnCode::Closed(0),
+                            pending: None,
+                        },
+                    },
+                )?;
+            }
 
             WriteState::Closed => {
                 log::trace!("host_close_reader delete {transmit_rep}");
@@ -2528,8 +2619,8 @@ impl ComponentInstance {
                 ty,
                 flat_abi,
                 options,
-                address: usize::try_from(address).unwrap(),
-                count: usize::try_from(count).unwrap(),
+                address,
+                count,
                 handle,
                 post_write: PostWrite::Continue,
             };
@@ -2608,13 +2699,11 @@ impl ComponentInstance {
                         match read_ty {
                             TableIndex::Future(ty) => Event::FutureRead {
                                 code,
-                                ty,
-                                handle: read_handle,
+                                pending: Some((ty, read_handle)),
                             },
                             TableIndex::Stream(ty) => Event::StreamRead {
                                 code,
-                                ty,
-                                handle: read_handle,
+                                pending: Some((ty, read_handle)),
                             },
                         },
                     )?;
@@ -2735,7 +2824,7 @@ impl ComponentInstance {
                 ty,
                 flat_abi,
                 options,
-                address: usize::try_from(address).unwrap(),
+                address,
                 count: usize::try_from(count).unwrap(),
                 handle,
             };
@@ -2849,7 +2938,7 @@ impl ComponentInstance {
                     Reader::Guest {
                         options: &options,
                         ty,
-                        address: usize::try_from(address).unwrap(),
+                        address,
                         count: count.try_into().unwrap(),
                     },
                 )?;
@@ -2936,12 +3025,16 @@ impl ComponentInstance {
 
     /// Close the writable end of the specified stream or future from the guest.
     fn guest_close_writable(&mut self, ty: TableIndex, writer: u32) -> Result<()> {
-        let (transmit_rep, WaitableState::Stream(_, state) | WaitableState::Future(_, state)) =
-            self.state_table(ty)
-                .remove_by_index(writer)
-                .context("failed to find writer")?
-        else {
-            bail!("invalid stream or future handle");
+        let (transmit_rep, state) = self
+            .state_table(ty)
+            .remove_by_index(writer)
+            .context("failed to find writer")?;
+        let (state, kind) = match state {
+            WaitableState::Stream(_, state) => (state, TransmitKind::Stream),
+            WaitableState::Future(_, state) => (state, TransmitKind::Future),
+            _ => {
+                bail!("invalid stream or future handle");
+            }
         };
         match state {
             StreamFutureState::Write => {}
@@ -2955,7 +3048,7 @@ impl ComponentInstance {
             .get(TableId::<TransmitHandle>::new(transmit_rep))?
             .state
             .rep();
-        self.host_close_writer(transmit_rep)
+        self.host_close_writer(transmit_rep, kind)
     }
 
     /// Close the readable end of the specified stream or future from the guest.
@@ -2965,10 +3058,13 @@ impl ComponentInstance {
         ty: TableIndex,
         reader: u32,
     ) -> Result<()> {
-        let (rep, WaitableState::Stream(_, state) | WaitableState::Future(_, state)) =
-            self.state_table(ty).remove_by_index(reader)?
-        else {
-            bail!("invalid stream or future handle");
+        let (rep, state) = self.state_table(ty).remove_by_index(reader)?;
+        let (state, kind) = match state {
+            WaitableState::Stream(_, state) => (state, TransmitKind::Stream),
+            WaitableState::Future(_, state) => (state, TransmitKind::Future),
+            _ => {
+                bail!("invalid stream or future handle");
+            }
         };
         match state {
             StreamFutureState::Read => {}
@@ -2980,7 +3076,7 @@ impl ComponentInstance {
         let id = TableId::<TransmitHandle>::new(rep);
         let rep = self.get(id)?.state.rep();
         log::trace!("guest_close_readable: close reader {id:?}");
-        self.host_close_reader(store, rep)
+        self.host_close_reader(store, rep, kind)
     }
 
     /// Create a new error context for the given component.

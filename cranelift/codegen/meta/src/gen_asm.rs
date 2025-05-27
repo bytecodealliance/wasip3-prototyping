@@ -1,7 +1,7 @@
 //! Generate the Cranelift-specific integration of the x64 assembler.
 
 use cranelift_assembler_x64_meta::dsl::{
-    Format, Inst, Mutability, Operand, OperandKind, format::RegClass,
+    Format, Inst, Location, Mutability, Operand, OperandKind, RegClass,
 };
 use cranelift_srcgen::{Formatter, fmtln};
 
@@ -89,86 +89,102 @@ pub fn rust_convert_isle_to_assembler(op: &Operand) -> String {
 /// This function panics if the instruction has no operands.
 pub fn generate_macro_inst_fn(f: &mut Formatter, inst: &Inst) {
     let struct_name = inst.name();
-    let operands = inst.format.operands.iter().collect::<Vec<_>>();
-    let results = inst
-        .format
-        .operands
+    let operands = inst.format.operands.iter().cloned().collect::<Vec<_>>();
+    let results = operands
         .iter()
         .filter(|o| o.mutability.is_write())
         .collect::<Vec<_>>();
     let rust_params = operands
         .iter()
-        .filter(|o| o.mutability.is_read())
+        .filter(|o| is_raw_operand_param(o))
         .map(|o| format!("{}: {}", o.location, rust_param_raw(o)))
+        .chain(if inst.has_trap {
+            Some(format!("trap: &TrapCode"))
+        } else {
+            None
+        })
         .collect::<Vec<_>>()
         .join(", ");
     f.add_block(
         &format!("fn x64_{struct_name}_raw(&mut self, {rust_params}) -> AssemblerOutputs"),
         |f| {
+            f.comment("Convert ISLE types to assembler types.");
             for op in operands.iter() {
                 let loc = op.location;
                 let cvt = rust_convert_isle_to_assembler(op);
                 fmtln!(f, "let {loc} = {cvt};");
             }
-            let args = operands
+            let mut args = operands
                 .iter()
                 .map(|o| format!("{}.clone()", o.location))
                 .collect::<Vec<_>>();
+            if inst.has_trap {
+                args.push(format!("{ASM}::TrapCode(trap.as_raw())"));
+            }
             let args = args.join(", ");
+            f.empty_line();
+
+            f.comment("Build the instruction.");
             fmtln!(
                 f,
                 "let inst = {ASM}::inst::{struct_name}::new({args}).into();"
             );
             fmtln!(f, "let inst = MInst::External {{ inst }};");
+            f.empty_line();
 
-            use cranelift_assembler_x64_meta::dsl::Mutability::*;
+            // When an instruction writes to an operand, Cranelift expects a
+            // returned value to use in other instructions: we return this
+            // information in the `AssemblerOutputs` struct defined in ISLE
+            // (below). The general rule here is that memory stores will create
+            // a `SideEffect` whereas for write or read-write registers we will
+            // return some form of `Ret*`.
+            f.comment("Return a type ISLE can work with.");
+            let access_reg = |op: &Operand| match op.mutability {
+                Mutability::Read => unreachable!(),
+                Mutability::Write => "to_reg()",
+                Mutability::ReadWrite => "write.to_reg()",
+            };
+            let ty_var_of_reg = |loc: Location| {
+                let ty = loc.reg_class().unwrap().to_string();
+                let var = ty.to_lowercase();
+                (ty, var)
+            };
             match results.as_slice() {
                 [] => fmtln!(f, "SideEffectNoResult::Inst(inst)"),
-                [one] => match one.mutability {
-                    Read => unreachable!(),
-                    Write => match one.location.kind() {
-                        // One write-only register output? Output the
-                        // instruction and that register.
-                        OperandKind::Reg(r) => {
-                            let ty = r.reg_class().unwrap().to_string();
-                            let var = ty.to_lowercase();
-                            fmtln!(f, "let {var} = {r}.as_ref().to_reg();");
-                            fmtln!(f, "AssemblerOutputs::Ret{ty} {{ inst, {var} }}");
-                        }
-                        _ => unimplemented!(),
-                    },
-                    ReadWrite => match one.location.kind() {
-                        OperandKind::Imm(_) => unreachable!(),
-                        // One read/write register output? Output the instruction
-                        // and that register.
-                        OperandKind::Reg(r) | OperandKind::FixedReg(r) => {
-                            let ty = r.reg_class().unwrap().to_string();
-                            let var = ty.to_lowercase();
-                            fmtln!(f, "let {var} = {r}.as_ref().write.to_reg();",);
-                            fmtln!(f, "AssemblerOutputs::Ret{ty} {{ inst, {var} }}");
-                        }
-                        // One read/write memory operand? Output a side effect.
-                        OperandKind::Mem(_) => {
-                            fmtln!(f, "AssemblerOutputs::SideEffect {{ inst }}")
-                        }
-                        // One read/write regmem output? We need to output
-                        // everything and it'll internally disambiguate which was
-                        // emitted (e.g. the mem variant or the register variant).
-                        OperandKind::RegMem(rm) => {
-                            assert_eq!(results.len(), 1);
-                            let ty = rm.reg_class().unwrap().to_string();
-                            let var = ty.to_lowercase();
-                            f.add_block(&format!("match {rm}"), |f| {
-                                f.add_block(&format!("asm::{ty}Mem::{ty}(reg) => "), |f| {
-                                    fmtln!(f, "let {var} = reg.write.to_reg();");
-                                    fmtln!(f, "AssemblerOutputs::Ret{ty} {{ inst, {var} }} ");
-                                });
-                                f.add_block(&format!("asm::{ty}Mem::Mem(_) => "), |f| {
-                                    fmtln!(f, "AssemblerOutputs::SideEffect {{ inst }} ");
-                                });
+                [op] => match op.location.kind() {
+                    OperandKind::Imm(_) => unreachable!(),
+                    OperandKind::Reg(r) | OperandKind::FixedReg(r) => {
+                        let (ty, var) = ty_var_of_reg(r);
+                        fmtln!(f, "let {var} = {r}.as_ref().{};", access_reg(op));
+                        fmtln!(f, "AssemblerOutputs::Ret{ty} {{ inst, {var} }}");
+                    }
+                    OperandKind::Mem(_) => {
+                        fmtln!(f, "AssemblerOutputs::SideEffect {{ inst }}")
+                    }
+                    OperandKind::RegMem(rm) => {
+                        let (ty, var) = ty_var_of_reg(rm);
+                        f.add_block(&format!("match {rm}"), |f| {
+                            f.add_block(&format!("{ASM}::{ty}Mem::{ty}(reg) => "), |f| {
+                                fmtln!(f, "let {var} = reg.{};", access_reg(op));
+                                fmtln!(f, "AssemblerOutputs::Ret{ty} {{ inst, {var} }} ");
                             });
-                        }
-                    },
+                            f.add_block(&format!("{ASM}::{ty}Mem::Mem(_) => "), |f| {
+                                fmtln!(f, "AssemblerOutputs::SideEffect {{ inst }} ");
+                            });
+                        });
+                    }
+                },
+                // For now, we assume that if there are two results, they are
+                // coming from a register-writing instruction like `mul`. The
+                // `match` below can be expanded as needed.
+                [op1, op2] => match (op1.location.kind(), op2.location.kind()) {
+                    (OperandKind::FixedReg(loc1), OperandKind::FixedReg(loc2)) => {
+                        fmtln!(f, "let one = {loc1}.as_ref().{}.to_reg();", access_reg(op1));
+                        fmtln!(f, "let two = {loc2}.as_ref().{}.to_reg();", access_reg(op2));
+                        fmtln!(f, "let regs = ValueRegs::two(one, two);");
+                        fmtln!(f, "AssemblerOutputs::RetValueRegs {{ inst, regs }}");
+                    }
+                    _ => unimplemented!("unhandled results: {results:?}"),
                 },
                 _ => panic!("instruction has more than one result"),
             }
@@ -234,13 +250,16 @@ pub enum IsleConstructor {
     /// a result in memory, however.
     RetMemorySideEffect,
 
-    /// This constructor produces a `Gpr` value, meaning that it will write the
-    /// result to a `Gpr`.
+    /// This constructor produces a `Gpr` value, meaning that the instruction
+    /// will write its result to a single GPR register.
     RetGpr,
 
-    /// This constructor produces an `Xmm` value, meaning that it will write the
-    /// result to an `Xmm`.
+    /// This is similar to `RetGpr`, but for XMM registers.
     RetXmm,
+
+    /// This "special" constructor captures multiple written-to registers (e.g.
+    /// `mul`).
+    RetValueRegs,
 }
 
 impl IsleConstructor {
@@ -250,6 +269,7 @@ impl IsleConstructor {
             IsleConstructor::RetMemorySideEffect => "SideEffectNoResult",
             IsleConstructor::RetGpr => "Gpr",
             IsleConstructor::RetXmm => "Xmm",
+            IsleConstructor::RetValueRegs => "ValueRegs",
         }
     }
 
@@ -260,6 +280,7 @@ impl IsleConstructor {
             IsleConstructor::RetMemorySideEffect => "defer_side_effect",
             IsleConstructor::RetGpr => "emit_ret_gpr",
             IsleConstructor::RetXmm => "emit_ret_xmm",
+            IsleConstructor::RetValueRegs => "emit_ret_value_regs",
         }
     }
 
@@ -267,8 +288,21 @@ impl IsleConstructor {
     pub fn suffix(&self) -> &'static str {
         match self {
             IsleConstructor::RetMemorySideEffect => "_mem",
-            IsleConstructor::RetGpr => "",
-            IsleConstructor::RetXmm => "",
+            IsleConstructor::RetGpr | IsleConstructor::RetXmm | IsleConstructor::RetValueRegs => "",
+        }
+    }
+
+    /// Returns whether this constructor will include a write-only `RegMem`
+    /// operand as an argument to the constructor.
+    ///
+    /// Memory-based ctors take an `Amode`, but register-based ctors don't take
+    /// the result as an argument and instead manufacture it internally.
+    pub fn includes_write_only_reg_mem(&self) -> bool {
+        match self {
+            IsleConstructor::RetMemorySideEffect => true,
+            IsleConstructor::RetGpr | IsleConstructor::RetXmm | IsleConstructor::RetValueRegs => {
+                false
+            }
         }
     }
 }
@@ -285,6 +319,7 @@ pub fn isle_param_for_ctor(op: &Operand, ctor: IsleConstructor) -> String {
             IsleConstructor::RetMemorySideEffect => "Amode".to_string(),
             IsleConstructor::RetGpr => "Gpr".to_string(),
             IsleConstructor::RetXmm => "Xmm".to_string(),
+            IsleConstructor::RetValueRegs => "ValueRegs".to_string(),
         },
 
         // everything else is the same as the "raw" variant
@@ -336,6 +371,14 @@ pub fn isle_constructors(format: &Format) -> Vec<IsleConstructor> {
                 },
             },
         },
+        [one, two] => {
+            // For now, we assume that if there are two results, they are coming
+            // from a register-writing instruction like `mul`. This can be
+            // expanded as needed.
+            assert!(matches!(one.location.kind(), FixedReg(_)));
+            assert!(matches!(two.location.kind(), FixedReg(_)));
+            vec![IsleConstructor::RetValueRegs]
+        }
         other => panic!("unsupported number of write operands {other:?}"),
     }
 }
@@ -369,6 +412,12 @@ pub fn isle_constructors(format: &Format) -> Vec<IsleConstructor> {
 ///
 /// This function panics if the instruction has no operands.
 pub fn generate_isle_inst_decls(f: &mut Formatter, inst: &Inst) {
+    let (trap_type, trap_name) = if inst.has_trap {
+        (Some("TrapCode".to_string()), Some("trap".to_string()))
+    } else {
+        (None, None)
+    };
+
     // First declare the "raw" constructor which is implemented in Rust
     // with `generate_isle_macro` above. This is an "extern" constructor
     // with relatively raw types. This is not intended to be used by
@@ -379,11 +428,12 @@ pub fn generate_isle_inst_decls(f: &mut Formatter, inst: &Inst) {
         .format
         .operands
         .iter()
-        .filter(|o| o.mutability.is_read())
+        .filter(|o| is_raw_operand_param(o))
         .collect::<Vec<_>>();
     let raw_param_tys = params
         .iter()
         .map(|o| isle_param_raw(o))
+        .chain(trap_type.clone())
         .collect::<Vec<_>>()
         .join(" ");
     fmtln!(f, "(decl {raw_name} ({raw_param_tys}) AssemblerOutputs)");
@@ -396,26 +446,61 @@ pub fn generate_isle_inst_decls(f: &mut Formatter, inst: &Inst) {
     // The main purpose of these constructors is to have faithful type
     // signatures for the SSA nature of VCode/ISLE, effectively translating
     // x64's type system to ISLE/VCode's type system.
+    //
+    // Note that the `params` from above are partitioned into explicit/implicit
+    // parameters based on the `ctor` we're generating here. That means, for
+    // example, that a write-only `RegMem` will have one ctor which produces a
+    // register that takes no argument, but one ctors will take an `Amode` which
+    // is the address to write to.
     for ctor in isle_constructors(&inst.format) {
         let suffix = ctor.suffix();
         let rule_name = format!("x64_{struct_name}{suffix}");
         let result_ty = ctor.result_ty();
-        let param_tys = params
+        let mut explicit_params = Vec::new();
+        let mut implicit_params = Vec::new();
+        for param in params.iter() {
+            if param.mutability.is_read() || ctor.includes_write_only_reg_mem() {
+                explicit_params.push(param);
+            } else {
+                implicit_params.push(param);
+            }
+        }
+        assert!(implicit_params.len() <= 1);
+        let param_tys = explicit_params
             .iter()
             .map(|o| isle_param_for_ctor(o, ctor))
+            .chain(trap_type.clone())
             .collect::<Vec<_>>()
             .join(" ");
-        let param_names = params
+        let param_names = explicit_params
             .iter()
             .map(|o| o.location.to_string())
+            .chain(trap_name.clone())
             .collect::<Vec<_>>()
             .join(" ");
         let convert = ctor.conversion_constructor();
 
+        // Generate implicit parameters to the `*_raw` constructor. Currently
+        // this is only destination gpr/xmm temps if the result of this entire
+        // constructor is a gpr/xmm register.
+        let implicit_params = implicit_params
+            .iter()
+            .map(|o| {
+                assert!(matches!(o.location.kind(), OperandKind::RegMem(_)));
+                match ctor {
+                    IsleConstructor::RetMemorySideEffect => unreachable!(),
+                    IsleConstructor::RetGpr => "(temp_writable_gpr)",
+                    IsleConstructor::RetXmm => "(temp_writable_xmm)",
+                    IsleConstructor::RetValueRegs => todo!(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
         fmtln!(f, "(decl {rule_name} ({param_tys}) {result_ty})");
         fmtln!(
             f,
-            "(rule ({rule_name} {param_names}) ({convert} ({raw_name} {param_names})))"
+            "(rule ({rule_name} {param_names}) ({convert} ({raw_name} {implicit_params} {param_names})))"
         );
     }
 }
@@ -435,8 +520,8 @@ pub fn generate_isle(f: &mut Formatter, insts: &[Inst]) {
     fmtln!(f, "    ;; Used for instructions that return an");
     fmtln!(f, "    ;; XMM register.");
     fmtln!(f, "    (RetXmm (inst MInst) (xmm Xmm))");
-    fmtln!(f, "    ;; TODO: eventually add more variants for");
-    fmtln!(f, "    ;; multi-return, XMM, etc.; see");
+    fmtln!(f, "    ;; Used for multi-return instructions.");
+    fmtln!(f, "    (RetValueRegs (inst MInst) (regs ValueRegs))");
     fmtln!(
         f,
         "    ;; https://github.com/bytecodealliance/wasmtime/pull/10276"
@@ -457,6 +542,16 @@ pub fn generate_isle(f: &mut Formatter, insts: &[Inst]) {
     fmtln!(f, "    (let ((_ Unit (emit inst))) xmm))");
     f.empty_line();
 
+    fmtln!(f, ";; Directly emit instructions that return multiple");
+    fmtln!(f, ";; registers (e.g. `mul`).");
+    fmtln!(f, "(decl emit_ret_value_regs (AssemblerOutputs) ValueRegs)");
+    fmtln!(
+        f,
+        "(rule (emit_ret_value_regs (AssemblerOutputs.RetValueRegs inst regs))"
+    );
+    fmtln!(f, "    (let ((_ Unit (emit inst))) regs))");
+    f.empty_line();
+
     fmtln!(f, ";; Pass along the side-effecting instruction");
     fmtln!(f, ";; for later emission.");
     fmtln!(
@@ -474,4 +569,17 @@ pub fn generate_isle(f: &mut Formatter, insts: &[Inst]) {
         generate_isle_inst_decls(f, inst);
         f.empty_line();
     }
+}
+
+/// Returns whether `o` is included in the `*_raw` constructor generated in
+/// ISLE/Rust.
+///
+/// This notably includes all operands that are read as those are the
+/// data-dependencies of an instruction. This additionally includes, though,
+/// write-only `RegMem` operands. In this situation the `RegMem` operand is
+/// dynamically a `RegMem::Reg`, a temp register synthesized in ISLE, or a
+/// `RegMem::Mem`, an operand from the constructor of the original entrypoint
+/// itself.
+fn is_raw_operand_param(o: &Operand) -> bool {
+    o.mutability.is_read() || matches!(o.location.kind(), OperandKind::RegMem(_))
 }
