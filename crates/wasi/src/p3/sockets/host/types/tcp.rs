@@ -4,7 +4,7 @@ use core::net::SocketAddr;
 use std::net::Shutdown;
 use std::sync::Arc;
 
-use anyhow::{Context as _, bail, ensure};
+use anyhow::{bail, ensure, Context as _};
 use io_lifetimes::AsSocketlike as _;
 use rustix::io::Errno;
 use tokio::sync::mpsc;
@@ -443,7 +443,7 @@ where
                 .stream::<_, _, Vec<_>, _, _>(&mut view)
                 .context("failed to create stream")?;
             let (res_tx, res_rx) = instance
-                .future(&mut view)
+                .future(|| unreachable!(), &mut view)
                 .context("failed to create future")?;
             let mut binding = view.get();
             let sock = get_socket(binding.table(), &socket)?;

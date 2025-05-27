@@ -4,10 +4,10 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use bytes::{Bytes, BytesMut};
-use component_async_tests::{Ctx, sleep};
+use component_async_tests::{sleep, Ctx};
 use futures::{
-    FutureExt,
     stream::{FuturesUnordered, TryStreamExt},
+    FutureExt,
 };
 use tokio::fs;
 use wasi_http_draft::wasi::http::types::{ErrorCode, Method, Scheme};
@@ -95,8 +95,8 @@ pub async fn async_http_middleware_with_chain() -> Result<()> {
 async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
     use {
         flate2::{
-            Compression,
             write::{DeflateDecoder, DeflateEncoder},
+            Compression,
         },
         std::io::Write,
     };
@@ -158,7 +158,8 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
 
     let trailers = vec![("fizz".into(), b"buzz".into())];
 
-    let (request_trailers_tx, request_trailers_rx) = instance.future(&mut store)?;
+    let (request_trailers_tx, request_trailers_rx) =
+        instance.future(|| unreachable!(), &mut store)?;
 
     let request_trailers = IoView::table(store.data_mut()).push(Fields(trailers.clone()))?;
 
@@ -233,13 +234,11 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
                         (k.as_str(), v.as_slice()),
                         ("content-encoding", b"deflate")
                     )));
-                    assert!(
-                        response
-                            .headers
-                            .0
-                            .iter()
-                            .all(|(k, _)| k.as_str() != "content-length")
-                    );
+                    assert!(response
+                        .headers
+                        .0
+                        .iter()
+                        .all(|(k, _)| k.as_str() != "content-length"));
                 }
 
                 response_trailers = response.body.trailers.take();

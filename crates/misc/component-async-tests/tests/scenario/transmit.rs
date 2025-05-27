@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use futures::{
     future::{self, FutureExt},
     stream::{FuturesUnordered, TryStreamExt},
@@ -17,7 +17,7 @@ use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::transmit::bindings::exports::local::local::transmit::Control;
 use component_async_tests::util::{compose, config, test_run, test_run_with_count};
-use component_async_tests::{Ctx, sleep, transmit};
+use component_async_tests::{sleep, transmit, Ctx};
 
 use cancel::exports::local::local::cancel::Mode;
 
@@ -345,8 +345,8 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
     let (control_tx, control_rx) = instance.stream::<_, _, Option<_>, _, _>(&mut store)?;
     let (caller_stream_tx, caller_stream_rx) =
         instance.stream::<_, _, Option<_>, _, _>(&mut store)?;
-    let (caller_future1_tx, caller_future1_rx) = instance.future(&mut store)?;
-    let (_caller_future2_tx, caller_future2_rx) = instance.future(&mut store)?;
+    let (caller_future1_tx, caller_future1_rx) = instance.future(|| unreachable!(), &mut store)?;
+    let (_caller_future2_tx, caller_future2_rx) = instance.future(|| unreachable!(), &mut store)?;
 
     let mut futures = FuturesUnordered::<
         Pin<Box<dyn Future<Output = Result<Event<Test>>> + Send + 'static>>,

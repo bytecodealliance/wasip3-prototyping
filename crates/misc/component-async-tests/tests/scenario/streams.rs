@@ -1,6 +1,6 @@
 use {
     anyhow::Result,
-    component_async_tests::{Ctx, closed_streams, util::config},
+    component_async_tests::{closed_streams, util::config, Ctx},
     futures::{
         future::{self, FutureExt},
         stream::{FuturesUnordered, StreamExt, TryStreamExt},
@@ -11,8 +11,8 @@ use {
     },
     tokio::fs,
     wasmtime::{
-        Engine, Store,
         component::{Component, Linker, ResourceTable, StreamReader, StreamWriter, VecBuffer},
+        Engine, Store,
     },
     wasmtime_wasi::p2::WasiCtxBuilder,
 };
@@ -65,24 +65,24 @@ pub async fn async_watch_streams() -> Result<()> {
     instance.run(&mut store, rx.watch_writer().0).await?;
 
     // Test watching and then dropping the read end of a future.
-    let (tx, rx) = instance.future::<u8, _, _>(&mut store)?;
+    let (tx, rx) = instance.future::<u8, _, _>(|| unreachable!(), &mut store)?;
     let watch = tx.watch_reader().0;
     drop(rx);
     instance.run(&mut store, watch).await?;
 
     // Test dropping and then watching the read end of a future.
-    let (tx, rx) = instance.future::<u8, _, _>(&mut store)?;
+    let (tx, rx) = instance.future::<u8, _, _>(|| unreachable!(), &mut store)?;
     drop(rx);
     instance.run(&mut store, tx.watch_reader().0).await?;
 
     // Test watching and then dropping the write end of a future.
-    let (tx, rx) = instance.future::<u8, _, _>(&mut store)?;
+    let (tx, rx) = instance.future::<u8, _, _>(|| 42, &mut store)?;
     let watch = rx.watch_writer().0;
     drop(tx);
     instance.run(&mut store, watch).await?;
 
     // Test dropping and then watching the write end of a future.
-    let (tx, rx) = instance.future::<u8, _, _>(&mut store)?;
+    let (tx, rx) = instance.future::<u8, _, _>(|| 42, &mut store)?;
     drop(tx);
     instance.run(&mut store, rx.watch_writer().0).await?;
 
@@ -123,13 +123,11 @@ pub async fn async_watch_streams() -> Result<()> {
     instance
         .run(&mut store, future::poll_fn(|cx| future.as_mut().poll(cx)))
         .await?;
-    assert!(
-        instance
-            .run(&mut store, watch.into_inner().write_all(Some(42)))
-            .await?
-            .0
-            .is_none()
-    );
+    assert!(instance
+        .run(&mut store, watch.into_inner().write_all(Some(42)))
+        .await?
+        .0
+        .is_none());
 
     Ok(())
 }
@@ -242,8 +240,8 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
 
     // Next, test futures host->host
     {
-        let (tx, rx) = instance.future(&mut store)?;
-        let (tx_ignored, rx_ignored) = instance.future(&mut store)?;
+        let (tx, rx) = instance.future(|| unreachable!(), &mut store)?;
+        let (tx_ignored, rx_ignored) = instance.future(|| unreachable!(), &mut store)?;
 
         let mut futures = FuturesUnordered::new();
         futures.push(tx.write(value).map(FutureEvent::Write).boxed());
@@ -340,8 +338,8 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
 
     // Next, test futures host->guest
     {
-        let (tx, rx) = instance.future(&mut store)?;
-        let (tx_ignored, rx_ignored) = instance.future(&mut store)?;
+        let (tx, rx) = instance.future(|| unreachable!(), &mut store)?;
+        let (tx_ignored, rx_ignored) = instance.future(|| unreachable!(), &mut store)?;
 
         let mut futures = FuturesUnordered::new();
         futures.push(

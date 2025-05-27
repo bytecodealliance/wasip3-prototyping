@@ -1,21 +1,21 @@
 use {
     super::{
+        table::{TableDebug, TableId},
         Event, GlobalErrorContextRefCount, HostTaskOutput, LocalErrorContextRefCount, StateTable,
         Waitable, WaitableCommon, WaitableState,
-        table::{TableDebug, TableId},
     },
     crate::{
-        AsContextMut, StoreContextMut, VMStore, ValRaw,
         component::{
-            Instance, Lower, Val, WasmList, WasmStr,
             func::{self, Lift, LiftContext, LowerContext, Options},
             matching::InstanceType,
             values::{ErrorContextAny, FutureAny, StreamAny},
+            Instance, Lower, Val, WasmList, WasmStr,
         },
         store::{StoreId, StoreToken},
-        vm::{SendSyncPtr, VMFuncRef, VMMemoryDefinition, component::ComponentInstance},
+        vm::{component::ComponentInstance, SendSyncPtr, VMFuncRef, VMMemoryDefinition},
+        AsContextMut, StoreContextMut, VMStore, ValRaw,
     },
-    anyhow::{Context, Result, anyhow, bail},
+    anyhow::{anyhow, bail, Context, Result},
     buffers::Extender,
     futures::{
         channel::{mpsc, oneshot},
@@ -202,10 +202,10 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>
     tx: oneshot::Sender<HostResult<B>>,
     kind: TransmitKind,
 ) -> impl FnOnce(&mut dyn VMStore, &mut ComponentInstance, Reader) -> Result<ReturnCode>
-+ Send
-+ Sync
-+ 'static
-+ use<T, B, U> {
+       + Send
+       + Sync
+       + 'static
+       + use<T, B, U> {
     let token = StoreToken::new(store);
     move |store, instance, reader| {
         let code = match reader {
@@ -381,7 +381,7 @@ enum WriteEvent<B> {
         tx: oneshot::Sender<HostResult<B>>,
     },
     /// Close the write end of the stream or future.
-    Close,
+    Close(Option<Box<dyn FnOnce() -> B + Send + Sync>>),
     /// Watch the read (i.e. opposite) end of this stream or future, dropping
     /// the specified sender when it is closed.
     Watch { tx: oneshot::Sender<()> },
@@ -488,17 +488,20 @@ fn watch<T: Send + 'static>(
 }
 
 /// Represents the writable end of a Component Model `future`.
-pub struct FutureWriter<T> {
+pub struct FutureWriter<T: 'static> {
+    default: Option<fn() -> T>,
     instance: SendSyncPtr<ComponentInstance>,
     tx: Option<mpsc::Sender<WriteEvent<Option<T>>>>,
 }
 
 impl<T> FutureWriter<T> {
     fn new(
+        default: fn() -> T,
         tx: Option<mpsc::Sender<WriteEvent<Option<T>>>>,
         instance: &mut ComponentInstance,
     ) -> Self {
         Self {
+            default: Some(default),
             instance: SendSyncPtr::new(instance.into()),
             tx,
         }
@@ -525,6 +528,7 @@ impl<T> FutureWriter<T> {
                 tx,
             },
         );
+        self.default = None;
         let instance = self.instance;
         super::checked(
             instance,
@@ -563,7 +567,13 @@ impl<T> FutureWriter<T> {
 impl<T> Drop for FutureWriter<T> {
     fn drop(&mut self) {
         if let Some(mut tx) = self.tx.take() {
-            send(&mut tx, WriteEvent::Close);
+            send(
+                &mut tx,
+                WriteEvent::Close(self.default.take().map(|v| {
+                    Box::new(move || Some(v()))
+                        as Box<dyn FnOnce() -> Option<T> + Send + Sync + 'static>
+                })),
+            );
         }
     }
 }
@@ -960,7 +970,7 @@ impl<B> StreamWriter<B> {
 impl<T> Drop for StreamWriter<T> {
     fn drop(&mut self) {
         if let Some(mut tx) = self.tx.take() {
-            send(&mut tx, WriteEvent::Close);
+            send(&mut tx, WriteEvent::Close(None));
         }
     }
 }
@@ -1523,6 +1533,7 @@ impl Instance {
         S: AsContextMut<Data = U>,
     >(
         &self,
+        default: fn() -> T,
         mut store: S,
     ) -> Result<(FutureWriter<T>, FutureReader<T>)> {
         store
@@ -1532,6 +1543,7 @@ impl Instance {
 
                 Ok((
                     FutureWriter::new(
+                        default,
                         Some(instance.start_write_event_loop::<_, _, U>(
                             store.as_context_mut(),
                             write.rep(),
@@ -1674,7 +1686,19 @@ impl ComponentInstance {
                                 )
                             })?
                         }
-                        WriteEvent::Close => super::with_local_instance(|_, instance| {
+                        WriteEvent::Close(default) => super::with_local_instance(|_, instance| {
+                            if let Some(default) = default {
+                                super::with_local_instance(|store, instance| {
+                                    instance.host_write::<_, _, U>(
+                                        token.as_context_mut(store),
+                                        rep,
+                                        default(),
+                                        PostWrite::Continue,
+                                        oneshot::channel().0,
+                                        kind,
+                                    )
+                                })?;
+                            }
                             instance.host_close_writer(rep, kind)
                         })?,
                         WriteEvent::Watch { tx } => super::with_local_instance(|_, instance| {

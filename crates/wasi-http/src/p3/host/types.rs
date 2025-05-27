@@ -9,13 +9,13 @@ use crate::p3::host::{
     push_request, push_response,
 };
 use crate::p3::{
-    Body, BodyContext, BodyFrame, ContentLength, DEFAULT_BUFFER_CAPACITY, Request, RequestOptions,
-    Response, WasiHttp, WasiHttpImpl, WasiHttpView,
+    Body, BodyContext, BodyFrame, ContentLength, Request, RequestOptions, Response, WasiHttp,
+    WasiHttpImpl, WasiHttpView, DEFAULT_BUFFER_CAPACITY,
 };
-use anyhow::{Context as _, bail};
+use anyhow::{bail, Context as _};
 use bytes::{Bytes, BytesMut};
-use core::future::Future;
 use core::future::poll_fn;
+use core::future::Future;
 use core::mem;
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
@@ -29,9 +29,9 @@ use std::sync::Arc;
 use wasmtime::component::{
     Accessor, AccessorTask, FutureWriter, HostFuture, HostStream, Resource, StreamWriter,
 };
-use wasmtime_wasi::ResourceTable;
 use wasmtime_wasi::p3::bindings::clocks::monotonic_clock::Duration;
 use wasmtime_wasi::p3::{ResourceView as _, WithChildren};
+use wasmtime_wasi::ResourceTable;
 
 fn get_request_options<'a>(
     table: &'a ResourceTable,
@@ -749,7 +749,7 @@ where
         store.with(|mut view| {
             let instance = view.instance();
             let (res_tx, res_rx) = instance
-                .future(&mut view)
+                .future(|| unreachable!(), &mut view)
                 .context("failed to create future")?;
             let contents = contents.map(|contents| {
                 contents
@@ -793,7 +793,7 @@ where
                 .stream::<_, _, Vec<_>, _, _>(&mut view)
                 .context("failed to create stream")?;
             let (trailers_tx, trailers_rx) = instance
-                .future(&mut view)
+                .future(|| unreachable!(), &mut view)
                 .context("failed to create future")?;
             let mut binding = view.get();
             let Request { body, .. } = get_request_mut(binding.table(), &req)?;
@@ -1075,7 +1075,7 @@ where
         store.with(|mut view| {
             let instance = view.instance();
             let (res_tx, res_rx) = instance
-                .future(&mut view)
+                .future(|| unreachable!(), &mut view)
                 .context("failed to create future")?;
             let contents = contents.map(|contents| {
                 contents
@@ -1110,7 +1110,7 @@ where
                 .stream::<_, _, Vec<_>, _, _>(&mut view)
                 .context("failed to create stream")?;
             let (trailers_tx, trailers_rx) = instance
-                .future(&mut view)
+                .future(|| unreachable!(), &mut view)
                 .context("failed to create future")?;
             let mut binding = view.get();
             let Response { body, .. } = get_response_mut(binding.table(), &res)?;
