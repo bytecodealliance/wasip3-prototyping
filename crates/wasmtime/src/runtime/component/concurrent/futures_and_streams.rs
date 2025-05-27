@@ -218,10 +218,7 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>
                 let mut store = token.as_context_mut(store);
                 let ptr = instance as *mut _;
                 let types = instance.component_types().clone();
-                let count = buffer
-                    .remaining()
-                    .len()
-                    .min(usize::try_from(count).unwrap());
+                let count = buffer.remaining().len().min(count);
 
                 store.with_attached_instance(instance, |mut store, _| {
                     // SAFETY: `ptr` is derived from `interface` and thus known
@@ -2528,8 +2525,8 @@ impl ComponentInstance {
                 ty,
                 flat_abi,
                 options,
-                address: usize::try_from(address).unwrap(),
-                count: usize::try_from(count).unwrap(),
+                address,
+                count,
                 handle,
                 post_write: PostWrite::Continue,
             };
@@ -2735,7 +2732,7 @@ impl ComponentInstance {
                 ty,
                 flat_abi,
                 options,
-                address: usize::try_from(address).unwrap(),
+                address,
                 count: usize::try_from(count).unwrap(),
                 handle,
             };
@@ -2849,7 +2846,7 @@ impl ComponentInstance {
                     Reader::Guest {
                         options: &options,
                         ty,
-                        address: usize::try_from(address).unwrap(),
+                        address,
                         count: count.try_into().unwrap(),
                     },
                 )?;

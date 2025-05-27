@@ -92,13 +92,6 @@ impl Inst {
         Inst::Setcc { cc, dst }
     }
 
-    fn bswap(size: OperandSize, dst: Writable<Reg>) -> Inst {
-        debug_assert!(dst.to_reg().class() == RegClass::Int);
-        let src = Gpr::unwrap_new(dst.to_reg());
-        let dst = WritableGpr::from_writable_reg(dst).unwrap();
-        Inst::Bswap { size, src, dst }
-    }
-
     fn xmm_rm_r_imm(
         op: SseOpcode,
         src: RegMem,
@@ -1080,87 +1073,6 @@ fn test_x64_emit() {
     // General tests for each insn.  Don't forget to follow the
     // guidelines commented just prior to `fn x64_emit`.
     //
-
-    // ========================================================
-    // Div
-    insns.push((
-        Inst::div(
-            OperandSize::Size32,
-            DivSignedness::Signed,
-            TrapCode::INTEGER_DIVISION_BY_ZERO,
-            RegMem::reg(regs::rsi()),
-            Gpr::unwrap_new(regs::rax()),
-            Gpr::unwrap_new(regs::rdx()),
-            WritableGpr::from_reg(Gpr::unwrap_new(regs::rax())),
-            WritableGpr::from_reg(Gpr::unwrap_new(regs::rdx())),
-        ),
-        "F7FE",
-        "idiv    %eax, %edx, %esi, %eax, %edx ; trap=int_divz",
-    ));
-    insns.push((
-        Inst::div(
-            OperandSize::Size64,
-            DivSignedness::Signed,
-            TrapCode::INTEGER_DIVISION_BY_ZERO,
-            RegMem::reg(regs::r15()),
-            Gpr::unwrap_new(regs::rax()),
-            Gpr::unwrap_new(regs::rdx()),
-            WritableGpr::from_reg(Gpr::unwrap_new(regs::rax())),
-            WritableGpr::from_reg(Gpr::unwrap_new(regs::rdx())),
-        ),
-        "49F7FF",
-        "idiv    %rax, %rdx, %r15, %rax, %rdx ; trap=int_divz",
-    ));
-    insns.push((
-        Inst::div(
-            OperandSize::Size32,
-            DivSignedness::Unsigned,
-            TrapCode::INTEGER_DIVISION_BY_ZERO,
-            RegMem::reg(regs::r14()),
-            Gpr::unwrap_new(regs::rax()),
-            Gpr::unwrap_new(regs::rdx()),
-            WritableGpr::from_reg(Gpr::unwrap_new(regs::rax())),
-            WritableGpr::from_reg(Gpr::unwrap_new(regs::rdx())),
-        ),
-        "41F7F6",
-        "div     %eax, %edx, %r14d, %eax, %edx ; trap=int_divz",
-    ));
-    insns.push((
-        Inst::div(
-            OperandSize::Size64,
-            DivSignedness::Unsigned,
-            TrapCode::INTEGER_DIVISION_BY_ZERO,
-            RegMem::reg(regs::rdi()),
-            Gpr::unwrap_new(regs::rax()),
-            Gpr::unwrap_new(regs::rdx()),
-            WritableGpr::from_reg(Gpr::unwrap_new(regs::rax())),
-            WritableGpr::from_reg(Gpr::unwrap_new(regs::rdx())),
-        ),
-        "48F7F7",
-        "div     %rax, %rdx, %rdi, %rax, %rdx ; trap=int_divz",
-    ));
-    insns.push((
-        Inst::div8(
-            DivSignedness::Unsigned,
-            TrapCode::INTEGER_DIVISION_BY_ZERO,
-            RegMem::reg(regs::rax()),
-            Gpr::unwrap_new(regs::rax()),
-            WritableGpr::from_reg(Gpr::unwrap_new(regs::rax())),
-        ),
-        "F6F0",
-        "div     %al, %al, %al ; trap=int_divz",
-    ));
-    insns.push((
-        Inst::div8(
-            DivSignedness::Unsigned,
-            TrapCode::INTEGER_DIVISION_BY_ZERO,
-            RegMem::reg(regs::rsi()),
-            Gpr::unwrap_new(regs::rax()),
-            WritableGpr::from_reg(Gpr::unwrap_new(regs::rax())),
-        ),
-        "40F6F6",
-        "div     %al, %sil, %al ; trap=int_divz",
-    ));
 
     // ========================================================
     // Imm_R
@@ -2439,54 +2351,6 @@ fn test_x64_emit() {
     insns.push((Inst::setcc(CC::NP, w_r8), "410F9BC0", "setnp   %r8b"));
 
     // ========================================================
-    // Bswap
-    insns.push((
-        Inst::bswap(OperandSize::Size64, w_rax),
-        "480FC8",
-        "bswapq  %rax, %rax",
-    ));
-    insns.push((
-        Inst::bswap(OperandSize::Size64, w_r8),
-        "490FC8",
-        "bswapq  %r8, %r8",
-    ));
-    insns.push((
-        Inst::bswap(OperandSize::Size32, w_rax),
-        "0FC8",
-        "bswapl  %eax, %eax",
-    ));
-    insns.push((
-        Inst::bswap(OperandSize::Size64, w_rcx),
-        "480FC9",
-        "bswapq  %rcx, %rcx",
-    ));
-    insns.push((
-        Inst::bswap(OperandSize::Size32, w_rcx),
-        "0FC9",
-        "bswapl  %ecx, %ecx",
-    ));
-    insns.push((
-        Inst::bswap(OperandSize::Size64, w_r11),
-        "490FCB",
-        "bswapq  %r11, %r11",
-    ));
-    insns.push((
-        Inst::bswap(OperandSize::Size32, w_r11),
-        "410FCB",
-        "bswapl  %r11d, %r11d",
-    ));
-    insns.push((
-        Inst::bswap(OperandSize::Size64, w_r14),
-        "490FCE",
-        "bswapq  %r14, %r14",
-    ));
-    insns.push((
-        Inst::bswap(OperandSize::Size32, w_r14),
-        "410FCE",
-        "bswapl  %r14d, %r14d",
-    ));
-
-    // ========================================================
     // Cmove
     insns.push((
         Inst::cmove(OperandSize::Size16, CC::O, RegMem::reg(rdi), w_rsi),
@@ -2776,17 +2640,6 @@ fn test_x64_emit() {
     // XMM_RM_R: float binary ops
 
     insns.push((
-        Inst::xmm_rm_r(SseOpcode::Mulss, RegMem::reg(xmm5), w_xmm4),
-        "F30F59E5",
-        "mulss   %xmm4, %xmm5, %xmm4",
-    ));
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Mulsd, RegMem::reg(xmm5), w_xmm4),
-        "F20F59E5",
-        "mulsd   %xmm4, %xmm5, %xmm4",
-    ));
-
-    insns.push((
         Inst::xmm_rm_r(SseOpcode::Divss, RegMem::reg(xmm8), w_xmm7),
         "F3410F5EF8",
         "divss   %xmm7, %xmm8, %xmm7",
@@ -2906,78 +2759,6 @@ fn test_x64_emit() {
         Inst::xmm_rm_r(SseOpcode::Pmaddwd, RegMem::reg(xmm8), w_xmm1),
         "66410FF5C8",
         "pmaddwd %xmm1, %xmm8, %xmm1",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Pmaxsb, RegMem::reg(xmm15), w_xmm6),
-        "66410F383CF7",
-        "pmaxsb  %xmm6, %xmm15, %xmm6",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Pmaxsw, RegMem::reg(xmm15), w_xmm6),
-        "66410FEEF7",
-        "pmaxsw  %xmm6, %xmm15, %xmm6",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Pmaxsd, RegMem::reg(xmm15), w_xmm6),
-        "66410F383DF7",
-        "pmaxsd  %xmm6, %xmm15, %xmm6",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Pmaxub, RegMem::reg(xmm14), w_xmm1),
-        "66410FDECE",
-        "pmaxub  %xmm1, %xmm14, %xmm1",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Pmaxuw, RegMem::reg(xmm14), w_xmm1),
-        "66410F383ECE",
-        "pmaxuw  %xmm1, %xmm14, %xmm1",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Pmaxud, RegMem::reg(xmm14), w_xmm1),
-        "66410F383FCE",
-        "pmaxud  %xmm1, %xmm14, %xmm1",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Pminsb, RegMem::reg(xmm8), w_xmm9),
-        "66450F3838C8",
-        "pminsb  %xmm9, %xmm8, %xmm9",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Pminsw, RegMem::reg(xmm8), w_xmm9),
-        "66450FEAC8",
-        "pminsw  %xmm9, %xmm8, %xmm9",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Pminsd, RegMem::reg(xmm8), w_xmm9),
-        "66450F3839C8",
-        "pminsd  %xmm9, %xmm8, %xmm9",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Pminub, RegMem::reg(xmm3), w_xmm2),
-        "660FDAD3",
-        "pminub  %xmm2, %xmm3, %xmm2",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Pminuw, RegMem::reg(xmm3), w_xmm2),
-        "660F383AD3",
-        "pminuw  %xmm2, %xmm3, %xmm2",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Pminud, RegMem::reg(xmm3), w_xmm2),
-        "660F383BD3",
-        "pminud  %xmm2, %xmm3, %xmm2",
     ));
 
     insns.push((
@@ -3164,17 +2945,6 @@ fn test_x64_emit() {
     ));
 
     insns.push((
-        Inst::xmm_rm_r(SseOpcode::Sqrtss, RegMem::reg(xmm7), w_xmm8),
-        "F3440F51C7",
-        "sqrtss  %xmm8, %xmm7, %xmm8",
-    ));
-    insns.push((
-        Inst::xmm_rm_r(SseOpcode::Sqrtsd, RegMem::reg(xmm1), w_xmm2),
-        "F20F51D1",
-        "sqrtsd  %xmm2, %xmm1, %xmm2",
-    ));
-
-    insns.push((
         Inst::xmm_unary_rm_r(SseOpcode::Pabsb, RegMem::reg(xmm2), w_xmm1),
         "660F381CCA",
         "pabsb   %xmm2, %xmm1",
@@ -3206,76 +2976,6 @@ fn test_x64_emit() {
         Inst::xmm_unary_rm_r_evex(Avx512Opcode::Vpopcntb, RegMem::reg(xmm2), w_xmm8),
         "62727D0854C2",
         "vpopcntb %xmm2, %xmm8",
-    ));
-
-    // Xmm to int conversions, and conversely.
-
-    insns.push((
-        Inst::xmm_to_gpr(SseOpcode::Movd, xmm0, w_rsi, OperandSize::Size32),
-        "660F7EC6",
-        "movd    %xmm0, %esi",
-    ));
-    insns.push((
-        Inst::xmm_to_gpr(SseOpcode::Movq, xmm2, w_rdi, OperandSize::Size64),
-        "66480F7ED7",
-        "movq    %xmm2, %rdi",
-    ));
-
-    insns.push((
-        Inst::xmm_to_gpr(SseOpcode::Pmovmskb, xmm10, w_rax, OperandSize::Size32),
-        "66410FD7C2",
-        "pmovmskb %xmm10, %eax",
-    ));
-    insns.push((
-        Inst::xmm_to_gpr(SseOpcode::Movmskps, xmm2, w_rax, OperandSize::Size32),
-        "0F50C2",
-        "movmskps %xmm2, %eax",
-    ));
-    insns.push((
-        Inst::xmm_to_gpr(SseOpcode::Movmskpd, xmm0, w_rcx, OperandSize::Size32),
-        "660F50C8",
-        "movmskpd %xmm0, %ecx",
-    ));
-
-    insns.push((
-        Inst::gpr_to_xmm(
-            SseOpcode::Movd,
-            RegMem::reg(rax),
-            OperandSize::Size32,
-            w_xmm15,
-        ),
-        "66440F6EF8",
-        "movd    %eax, %xmm15",
-    ));
-    insns.push((
-        Inst::gpr_to_xmm(
-            SseOpcode::Movd,
-            RegMem::mem(Amode::imm_reg(2, r10)),
-            OperandSize::Size32,
-            w_xmm9,
-        ),
-        "66450F6E4A02",
-        "movd    2(%r10), %xmm9",
-    ));
-    insns.push((
-        Inst::gpr_to_xmm(
-            SseOpcode::Movd,
-            RegMem::reg(rsi),
-            OperandSize::Size32,
-            w_xmm1,
-        ),
-        "660F6ECE",
-        "movd    %esi, %xmm1",
-    ));
-    insns.push((
-        Inst::gpr_to_xmm(
-            SseOpcode::Movq,
-            RegMem::reg(rdi),
-            OperandSize::Size64,
-            w_xmm15,
-        ),
-        "664C0F6EFF",
-        "movq    %rdi, %xmm15",
     ));
 
     // ========================================================

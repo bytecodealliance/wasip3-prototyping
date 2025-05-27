@@ -125,7 +125,7 @@ impl AmodeOffsetPlusKnownOffset {
     #[must_use]
     pub fn value(&self, offsets: &impl KnownOffsetTable) -> i32 {
         let known_offset = match self.offset {
-            Some(offset) => offsets[offset],
+            Some(offset) => offsets[usize::from(offset)],
             None => 0,
         };
         known_offset
@@ -352,7 +352,7 @@ impl<R: AsReg, M: AsReg> From<Amode<M>> for XmmMem<R, M> {
 }
 
 /// Emit the ModRM/SIB/displacement sequence for a memory operand.
-fn emit_modrm_sib_disp<R: AsReg>(
+pub fn emit_modrm_sib_disp<R: AsReg>(
     sink: &mut impl CodeSink,
     offsets: &impl KnownOffsetTable,
     enc_g: u8,

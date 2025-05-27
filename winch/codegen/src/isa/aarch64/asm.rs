@@ -71,9 +71,9 @@ impl From<FloatCmpKind> for Cond {
     }
 }
 
-impl Into<ScalarSize> for OperandSize {
-    fn into(self) -> ScalarSize {
-        match self {
+impl From<OperandSize> for ScalarSize {
+    fn from(size: OperandSize) -> ScalarSize {
+        match size {
             OperandSize::S8 => ScalarSize::Size8,
             OperandSize::S16 => ScalarSize::Size16,
             OperandSize::S32 => ScalarSize::Size32,
@@ -342,9 +342,22 @@ impl Assembler {
         self.alu_rrr_extend(ALUOp::Add, rm, rn, rd, size);
     }
 
+    /// Add with three registers, setting overflow flags.
+    pub fn adds_rrr(&mut self, rm: Reg, rn: Reg, rd: WritableReg, size: OperandSize) {
+        self.alu_rrr_extend(ALUOp::AddS, rm, rn, rd, size);
+    }
+
     /// Add immediate and register.
     pub fn add_ir(&mut self, imm: u64, rn: Reg, rd: WritableReg, size: OperandSize) {
-        let alu_op = ALUOp::Add;
+        self.alu_ir(ALUOp::Add, imm, rn, rd, size)
+    }
+
+    /// Add immediate and register, setting overflow flags.
+    pub fn adds_ir(&mut self, imm: u64, rn: Reg, rd: WritableReg, size: OperandSize) {
+        self.alu_ir(ALUOp::AddS, imm, rn, rd, size)
+    }
+
+    fn alu_ir(&mut self, alu_op: ALUOp, imm: u64, rn: Reg, rd: WritableReg, size: OperandSize) {
         if let Some(imm) = Imm12::maybe_from_u64(imm) {
             self.alu_rri(alu_op, imm, rn, rd, size);
         } else {
@@ -510,7 +523,7 @@ impl Assembler {
         };
 
         let scratch = regs::scratch();
-        self.alu_rrr(op, divisor, dividend, writable!(scratch.into()), size);
+        self.alu_rrr(op, divisor, dividend, writable!(scratch), size);
 
         self.alu_rrrr(
             ALUOp3::MSub,
