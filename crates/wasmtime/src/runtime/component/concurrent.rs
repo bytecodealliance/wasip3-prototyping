@@ -82,7 +82,7 @@ use {
         future::Future,
         marker::PhantomData,
         mem::{self, MaybeUninit},
-        ops::{DerefMut, Range},
+        ops::Range,
         pin::{Pin, pin},
         ptr::{self, NonNull},
         sync::{
@@ -658,12 +658,12 @@ fn poll_with_state<T: 'static, F: Future + ?Sized>(
                 let mut spawned = spawned.try_lock().unwrap();
                 // Poll the inner future if present; otherwise it has been
                 // cancelled, in which case we return `Poll::Ready` immediately.
-                let inner = mem::replace(DerefMut::deref_mut(&mut spawned), AbortWrapper::Aborted);
+                let inner = mem::replace(&mut *spawned, AbortWrapper::Aborted);
                 if let AbortWrapper::Unpolled(mut future)
                 | AbortWrapper::Polled { mut future, .. } = inner
                 {
                     let result = poll_with_state::<T, _>(token, cx, future.as_mut());
-                    *DerefMut::deref_mut(&mut spawned) = AbortWrapper::Polled {
+                    *spawned = AbortWrapper::Polled {
                         future,
                         waker: cx.waker().clone(),
                     };
@@ -1963,7 +1963,7 @@ impl ComponentInstance {
             move |cx| {
                 let mut wrapped = wrapped.try_lock().unwrap();
 
-                let inner = mem::replace(DerefMut::deref_mut(&mut wrapped), AbortWrapper::Aborted);
+                let inner = mem::replace(&mut *wrapped, AbortWrapper::Aborted);
                 if let AbortWrapper::Unpolled(mut future)
                 | AbortWrapper::Polled { mut future, .. } = inner
                 {
@@ -1983,7 +1983,7 @@ impl ComponentInstance {
 
                     let result = future.as_mut().poll(cx);
 
-                    *DerefMut::deref_mut(&mut wrapped) = AbortWrapper::Polled {
+                    *wrapped = AbortWrapper::Polled {
                         future,
                         waker: cx.waker().clone(),
                     };
