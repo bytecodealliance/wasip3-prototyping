@@ -175,7 +175,7 @@ pub mod foo {
                 fn f32_result(&mut self) -> f32;
                 fn f64_result(&mut self) -> f64;
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn f32_param(&mut self, x: f32) -> () {
                     Host::f32_param(*self, x)
                 }

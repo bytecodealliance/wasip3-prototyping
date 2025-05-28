@@ -297,7 +297,7 @@ pub mod foo {
                 async fn roundtrip_flag32(&mut self, x: Flag32) -> Flag32;
                 async fn roundtrip_flag64(&mut self, x: Flag64) -> Flag64;
             }
-            impl<_T: Host + Send> Host for &mut _T {
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
                 async fn roundtrip_flag1(&mut self, x: Flag1) -> Flag1 {
                     Host::roundtrip_flag1(*self, x).await
                 }

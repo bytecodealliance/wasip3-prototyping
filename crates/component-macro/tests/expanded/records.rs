@@ -337,7 +337,7 @@ pub mod foo {
                 fn aggregate_result(&mut self) -> Aggregates;
                 fn typedef_inout(&mut self, e: TupleTypedef2) -> i32;
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn tuple_arg(&mut self, x: (char, u32)) -> () {
                     Host::tuple_arg(*self, x)
                 }

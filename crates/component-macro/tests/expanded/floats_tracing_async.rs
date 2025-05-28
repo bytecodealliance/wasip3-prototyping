@@ -182,7 +182,7 @@ pub mod foo {
                 async fn f32_result(&mut self) -> f32;
                 async fn f64_result(&mut self) -> f64;
             }
-            impl<_T: Host + Send> Host for &mut _T {
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
                 async fn f32_param(&mut self, x: f32) -> () {
                     Host::f32_param(*self, x).await
                 }

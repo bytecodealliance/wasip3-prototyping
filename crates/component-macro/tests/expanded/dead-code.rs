@@ -185,7 +185,7 @@ pub mod a {
             pub trait Host {
                 fn f(&mut self) -> LiveType;
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn f(&mut self) -> LiveType {
                     Host::f(*self)
                 }
@@ -266,7 +266,7 @@ pub mod a {
                 assert!(4 == < V as wasmtime::component::ComponentType >::ALIGN32);
             };
             pub trait Host {}
-            impl<_T: Host> Host for &mut _T {}
+            impl<_T: Host + ?Sized> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,

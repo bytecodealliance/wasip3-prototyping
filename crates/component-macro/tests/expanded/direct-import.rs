@@ -90,7 +90,7 @@ pub struct Foo {}
 pub trait FooImports {
     fn foo(&mut self) -> ();
 }
-impl<_T: FooImports> FooImports for &mut _T {
+impl<_T: FooImports + ?Sized> FooImports for &mut _T {
     fn foo(&mut self) -> () {
         FooImports::foo(*self)
     }

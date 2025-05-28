@@ -159,7 +159,7 @@ pub mod imports {
     pub trait Host {
         fn y(&mut self) -> ();
     }
-    impl<_T: Host> Host for &mut _T {
+    impl<_T: Host + ?Sized> Host for &mut _T {
         fn y(&mut self) -> () {
             Host::y(*self)
         }

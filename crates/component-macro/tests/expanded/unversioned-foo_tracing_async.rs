@@ -196,7 +196,7 @@ pub mod foo {
             pub trait Host: Send {
                 async fn g(&mut self) -> Result<(), Error>;
             }
-            impl<_T: Host + Send> Host for &mut _T {
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
                 async fn g(&mut self) -> Result<(), Error> {
                     Host::g(*self).await
                 }

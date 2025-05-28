@@ -184,7 +184,7 @@ pub mod foo {
                 async fn f5(&mut self) -> (u32, u32);
                 async fn f6(&mut self, a: u32, b: u32, c: u32) -> (u32, u32, u32);
             }
-            impl<_T: Host + Send> Host for &mut _T {
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
                 async fn f1(&mut self) -> () {
                     Host::f1(*self).await
                 }

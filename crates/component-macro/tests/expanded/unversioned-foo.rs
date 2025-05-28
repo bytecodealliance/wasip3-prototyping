@@ -189,7 +189,7 @@ pub mod foo {
             pub trait Host {
                 fn g(&mut self) -> Result<(), Error>;
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn g(&mut self) -> Result<(), Error> {
                     Host::g(*self)
                 }

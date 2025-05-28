@@ -90,7 +90,7 @@ pub struct Host_ {}
 pub trait Host_Imports {
     fn foo(&mut self) -> ();
 }
-impl<_T: Host_Imports> Host_Imports for &mut _T {
+impl<_T: Host_Imports + ?Sized> Host_Imports for &mut _T {
     fn foo(&mut self) -> () {
         Host_Imports::foo(*self)
     }

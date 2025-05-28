@@ -207,7 +207,7 @@ pub mod foo {
                 );
             };
             pub trait Host {}
-            impl<_T: Host> Host for &mut _T {}
+            impl<_T: Host + ?Sized> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
@@ -240,7 +240,7 @@ pub mod http_fetch {
     pub trait Host {
         fn fetch_request(&mut self, request: Request) -> Response;
     }
-    impl<_T: Host> Host for &mut _T {
+    impl<_T: Host + ?Sized> Host for &mut _T {
         fn fetch_request(&mut self, request: Request) -> Response {
             Host::fetch_request(*self, request)
         }

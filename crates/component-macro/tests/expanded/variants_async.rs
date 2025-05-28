@@ -518,7 +518,7 @@ pub mod foo {
                 async fn is_clone_arg(&mut self, a: IsClone) -> ();
                 async fn is_clone_return(&mut self) -> IsClone;
             }
-            impl<_T: Host + Send> Host for &mut _T {
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
                 async fn e1_arg(&mut self, x: E1) -> () {
                     Host::e1_arg(*self, x).await
                 }

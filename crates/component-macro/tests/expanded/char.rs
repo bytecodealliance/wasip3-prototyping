@@ -173,7 +173,7 @@ pub mod foo {
                 /// A function that returns a character
                 fn return_char(&mut self) -> char;
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 /// A function that accepts a character
                 fn take_char(&mut self, x: char) -> () {
                     Host::take_char(*self, x)

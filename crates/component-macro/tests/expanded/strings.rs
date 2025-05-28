@@ -178,7 +178,7 @@ pub mod foo {
                     b: wasmtime::component::__internal::String,
                 ) -> wasmtime::component::__internal::String;
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn a(&mut self, x: wasmtime::component::__internal::String) -> () {
                     Host::a(*self, x)
                 }

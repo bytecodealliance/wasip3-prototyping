@@ -91,11 +91,10 @@ pub struct FooIndices {}
 /// [`Linker`]: wasmtime::component::Linker
 pub struct Foo {}
 #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-#[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
 pub trait FooImports: Send {
     async fn foo(&mut self) -> ();
 }
-impl<_T: FooImports + Send> FooImports for &mut _T {
+impl<_T: FooImports + ?Sized + Send> FooImports for &mut _T {
     async fn foo(&mut self) -> () {
         FooImports::foo(*self).await
     }

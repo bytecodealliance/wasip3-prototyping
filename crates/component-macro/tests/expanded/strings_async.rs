@@ -185,7 +185,7 @@ pub mod foo {
                     b: wasmtime::component::__internal::String,
                 ) -> wasmtime::component::__internal::String;
             }
-            impl<_T: Host + Send> Host for &mut _T {
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
                 async fn a(&mut self, x: wasmtime::component::__internal::String) -> () {
                     Host::a(*self, x).await
                 }

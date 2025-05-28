@@ -290,7 +290,7 @@ pub mod foo {
                 fn roundtrip_flag32(&mut self, x: Flag32) -> Flag32;
                 fn roundtrip_flag64(&mut self, x: Flag64) -> Flag64;
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn roundtrip_flag1(&mut self, x: Flag1) -> Flag1 {
                     Host::roundtrip_flag1(*self, x)
                 }

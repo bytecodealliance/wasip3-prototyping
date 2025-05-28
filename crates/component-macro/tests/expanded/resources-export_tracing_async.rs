@@ -226,7 +226,7 @@ pub mod foo {
                     rep: wasmtime::component::Resource<Y>,
                 ) -> wasmtime::Result<()>;
             }
-            impl<_T: HostY + Send> HostY for &mut _T {
+            impl<_T: HostY + ?Sized + Send> HostY for &mut _T {
                 async fn drop(
                     &mut self,
                     rep: wasmtime::component::Resource<Y>,
@@ -236,7 +236,7 @@ pub mod foo {
             }
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send + HostY {}
-            impl<_T: Host + Send> Host for &mut _T {}
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,

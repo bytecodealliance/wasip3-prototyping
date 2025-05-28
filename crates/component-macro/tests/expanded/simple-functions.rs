@@ -177,7 +177,7 @@ pub mod foo {
                 fn f5(&mut self) -> (u32, u32);
                 fn f6(&mut self, a: u32, b: u32, c: u32) -> (u32, u32, u32);
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn f1(&mut self) -> () {
                     Host::f1(*self)
                 }
