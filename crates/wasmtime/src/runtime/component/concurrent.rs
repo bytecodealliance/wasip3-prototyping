@@ -217,7 +217,10 @@ const START_FLAG_ASYNC_CALLEE: u32 = fact::START_FLAG_ASYNC_CALLEE as u32;
 /// instance to which the current host task belongs.
 ///
 /// See [`Accessor::with`] for details.
-pub struct Access<'a, T: 'static, D: HasData = HasSelf<T>>(&'a mut Accessor<T, D>);
+pub struct Access<'a, T: 'static, D: HasData = HasSelf<T>> {
+    accessor: &'a mut Accessor<T, D>,
+    store: StoreContextMut<'a, T>,
+}
 
 impl<'a, T, D> Access<'a, T, D>
 where
@@ -226,12 +229,12 @@ where
 {
     /// Get mutable access to the store data.
     pub fn data_mut(&mut self) -> &mut T {
-        self.as_context_mut().0.data_mut()
+        self.store.data_mut()
     }
 
     /// Get mutable access to the store data.
     pub fn get(&mut self) -> D::Data<'_> {
-        let get_data = self.0.get_data;
+        let get_data = self.accessor.get_data;
         get_data(self.data_mut())
     }
 
@@ -242,12 +245,12 @@ where
     where
         T: 'static,
     {
-        self.0.spawn(task)
+        self.accessor.spawn(task)
     }
 
     /// Retrieve the component instance of the caller.
     pub fn instance(&self) -> Instance {
-        self.0.instance()
+        self.accessor.instance()
     }
 }
 
@@ -259,8 +262,7 @@ where
     type Data = T;
 
     fn as_context(&self) -> StoreContext<T> {
-        // SAFETY: See corresponding comment in `Self::as_context_mut`.
-        unsafe { StoreContext(&*(self.0.get)().cast()) }
+        self.store.as_context()
     }
 }
 
@@ -270,16 +272,7 @@ where
     T: 'static,
 {
     fn as_context_mut(&mut self) -> StoreContextMut<T> {
-        // SAFETY: Per the contract documented for `Accessor::new`, this will
-        // either return exclusive access to the store or panic if it is somehow
-        // called outside its intended scope.
-        //
-        // Note that, per the design of `Accessor::with`, the borrow checker
-        // will ensure that the reference we return here cannot outlive the
-        // scope of the closure passed to `Accessor::with` and thus cannot be
-        // used beyond the current `Future::poll` call for the host task which
-        // received the backing `Accessor`.
-        unsafe { StoreContextMut(&mut *(self.0.get)().cast()) }
+        self.store.as_context_mut()
     }
 }
 
@@ -339,7 +332,25 @@ where
     /// access to something in the store data, it must be cloned (using
     /// e.g. `Arc::clone` if appropriate).
     pub fn with<R: 'static>(&mut self, fun: impl FnOnce(Access<'_, T, D>) -> R) -> R {
-        fun(Access(self))
+        // SAFETY: Per the contract documented for `Accessor::new`, this will
+        // either return exclusive access to the store or panic if it is somehow
+        // called outside its intended scope.
+        //
+        // Note that, per the design of `Accessor::with`, the borrow checker
+        // will ensure that the reference we return here cannot outlive the
+        // scope of the closure passed to `Accessor::with` and thus cannot be
+        // used beyond the current `Future::poll` call for the host task which
+        // received the backing `Accessor`.
+        //
+        // TODO: `Accessor` should have a `StoreToken` to make this cast more
+        // safe
+        //
+        // TODO: something needs to prevent two `Accessor`s from using `with` at
+        // the same time.
+        fun(Access {
+            store: unsafe { StoreContextMut(&mut *(self.get)().cast()) },
+            accessor: self,
+        })
     }
 
     /// TODO: is this safe? unsafe? should there be a lifetime in the
