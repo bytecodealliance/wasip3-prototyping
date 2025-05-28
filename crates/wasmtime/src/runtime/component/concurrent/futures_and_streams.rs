@@ -1686,9 +1686,9 @@ impl ComponentInstance {
                                 )
                             })?
                         }
-                        WriteEvent::Close(default) => super::with_local_instance(|_, instance| {
-                            if let Some(default) = default {
-                                super::with_local_instance(|store, instance| {
+                        WriteEvent::Close(default) => {
+                            super::with_local_instance(|store, instance| {
+                                if let Some(default) = default {
                                     instance.host_write::<_, _, U>(
                                         token.as_context_mut(store),
                                         rep,
@@ -1696,11 +1696,11 @@ impl ComponentInstance {
                                         PostWrite::Continue,
                                         oneshot::channel().0,
                                         kind,
-                                    )
-                                })?;
-                            }
-                            instance.host_close_writer(rep, kind)
-                        })?,
+                                    )?;
+                                }
+                                instance.host_close_writer(rep, kind)
+                            })?
+                        }
                         WriteEvent::Watch { tx } => super::with_local_instance(|_, instance| {
                             let state = instance.get_mut(TableId::<TransmitState>::new(rep))?;
                             if !matches!(&state.read, ReadState::Closed) {
@@ -1764,7 +1764,18 @@ impl ComponentInstance {
                         })?,
                         ReadEvent::Watch { tx } => super::with_local_instance(|_, instance| {
                             let state = instance.get_mut(TableId::<TransmitState>::new(rep))?;
-                            if !matches!(&state.write, WriteState::Closed) {
+                            if !matches!(
+                                &state.write,
+                                WriteState::Closed
+                                    | WriteState::GuestReady {
+                                        post_write: PostWrite::Close,
+                                        ..
+                                    }
+                                    | WriteState::HostReady {
+                                        post_write: PostWrite::Close,
+                                        ..
+                                    }
+                            ) {
                                 state.writer_watcher = Some(tx);
                             }
                             Ok::<_, anyhow::Error>(())

@@ -65,13 +65,13 @@ pub async fn async_watch_streams() -> Result<()> {
     instance.run(&mut store, rx.watch_writer().0).await?;
 
     // Test watching and then dropping the read end of a future.
-    let (tx, rx) = instance.future::<u8, _, _>(|| unreachable!(), &mut store)?;
+    let (tx, rx) = instance.future::<u8, _, _>(|| 42, &mut store)?;
     let watch = tx.watch_reader().0;
     drop(rx);
     instance.run(&mut store, watch).await?;
 
     // Test dropping and then watching the read end of a future.
-    let (tx, rx) = instance.future::<u8, _, _>(|| unreachable!(), &mut store)?;
+    let (tx, rx) = instance.future::<u8, _, _>(|| 42, &mut store)?;
     drop(rx);
     instance.run(&mut store, tx.watch_reader().0).await?;
 
@@ -241,7 +241,7 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
     // Next, test futures host->host
     {
         let (tx, rx) = instance.future(|| unreachable!(), &mut store)?;
-        let (tx_ignored, rx_ignored) = instance.future(|| unreachable!(), &mut store)?;
+        let (tx_ignored, rx_ignored) = instance.future(|| 42u8, &mut store)?;
 
         let mut futures = FuturesUnordered::new();
         futures.push(tx.write(value).map(FutureEvent::Write).boxed());
