@@ -661,7 +661,7 @@ fn poll_with_state<T: 'static, F: Future + ?Sized>(
                 if let AbortWrapper::Unpolled(mut future)
                 | AbortWrapper::Polled { mut future, .. } = inner
                 {
-                    let result = poll_with_state::<T, _>(token, cx, future.as_mut());
+                    let result = poll_with_state(token, cx, future.as_mut());
                     *spawned = AbortWrapper::Polled {
                         future,
                         waker: cx.waker().clone(),
@@ -3390,7 +3390,7 @@ impl Instance {
                 let mut future = Box::pin(async move { fun(&mut accessor).await });
                 let token = StoreToken::new(store);
                 Box::pin(future::poll_fn(move |cx| {
-                    poll_with_state::<U, _>(token, cx, future.as_mut())
+                    poll_with_state(token, cx, future.as_mut())
                 }))
             })
     }
