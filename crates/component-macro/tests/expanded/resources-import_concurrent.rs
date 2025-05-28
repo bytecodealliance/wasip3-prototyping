@@ -27,7 +27,7 @@ pub trait HostWorldResource: Send {
         rep: wasmtime::component::Resource<WorldResource>,
     ) -> wasmtime::Result<()>;
 }
-impl<_T: HostWorldResource + Send> HostWorldResource for &mut _T {
+impl<_T: HostWorldResource + ?Sized + Send> HostWorldResource for &mut _T {
     async fn drop(
         &mut self,
         rep: wasmtime::component::Resource<WorldResource>,
@@ -134,7 +134,6 @@ pub struct TheWorld {
     some_world_func2: wasmtime::component::Func,
 }
 #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-#[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
 pub trait TheWorldImportsConcurrent: wasmtime::component::HasData + Send + HostWorldResourceConcurrent {
     fn some_world_func<T: 'static>(
         accessor: &mut wasmtime::component::Accessor<T, Self>,
@@ -146,7 +145,7 @@ pub trait TheWorldImportsConcurrent: wasmtime::component::HasData + Send + HostW
 }
 #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
 pub trait TheWorldImports: Send + HostWorldResource {}
-impl<_T: TheWorldImports + Send> TheWorldImports for &mut _T {}
+impl<_T: TheWorldImports + ?Sized + Send> TheWorldImports for &mut _T {}
 const _: () = {
     #[allow(unused_imports)]
     use wasmtime::component::__internal::anyhow;
@@ -419,7 +418,7 @@ pub mod foo {
                     rep: wasmtime::component::Resource<Bar>,
                 ) -> wasmtime::Result<()>;
             }
-            impl<_T: HostBar + Send> HostBar for &mut _T {
+            impl<_T: HostBar + ?Sized + Send> HostBar for &mut _T {
                 async fn drop(
                     &mut self,
                     rep: wasmtime::component::Resource<Bar>,
@@ -611,7 +610,7 @@ pub mod foo {
             }
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send + HostBar {}
-            impl<_T: Host + Send> Host for &mut _T {}
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
@@ -956,7 +955,7 @@ pub mod foo {
                     rep: wasmtime::component::Resource<A>,
                 ) -> wasmtime::Result<()>;
             }
-            impl<_T: HostA + Send> HostA for &mut _T {
+            impl<_T: HostA + ?Sized + Send> HostA for &mut _T {
                 async fn drop(
                     &mut self,
                     rep: wasmtime::component::Resource<A>,
@@ -966,7 +965,7 @@ pub mod foo {
             }
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send + HostA {}
-            impl<_T: Host + Send> Host for &mut _T {}
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
@@ -1000,7 +999,7 @@ pub mod foo {
             pub type A = super::super::super::foo::foo::long_use_chain1::A;
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send {}
-            impl<_T: Host + Send> Host for &mut _T {}
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
@@ -1021,7 +1020,7 @@ pub mod foo {
             pub type A = super::super::super::foo::foo::long_use_chain2::A;
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send {}
-            impl<_T: Host + Send> Host for &mut _T {}
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
@@ -1052,7 +1051,7 @@ pub mod foo {
             }
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send {}
-            impl<_T: Host + Send> Host for &mut _T {}
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
@@ -1088,7 +1087,7 @@ pub mod foo {
                     rep: wasmtime::component::Resource<Foo>,
                 ) -> wasmtime::Result<()>;
             }
-            impl<_T: HostFoo + Send> HostFoo for &mut _T {
+            impl<_T: HostFoo + ?Sized + Send> HostFoo for &mut _T {
                 async fn drop(
                     &mut self,
                     rep: wasmtime::component::Resource<Foo>,
@@ -1098,7 +1097,7 @@ pub mod foo {
             }
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send + HostFoo {}
-            impl<_T: Host + Send> Host for &mut _T {}
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,

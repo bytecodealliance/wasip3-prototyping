@@ -149,25 +149,12 @@ const _: () = {
             host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-<<<<<<< HEAD
             D: a::b::interface_with_live_type::HostConcurrent + Send,
             for<'a> D::Data<
                 'a,
             >: a::b::interface_with_live_type::Host
                 + a::b::interface_with_dead_type::Host + Send,
             T: 'static + Send,
-||||||| 40315bd2c
-            T: Send + a::b::interface_with_live_type::Host<Data = T>
-                + a::b::interface_with_dead_type::Host + 'static,
-            U: Send + a::b::interface_with_live_type::Host<Data = T>
-                + a::b::interface_with_dead_type::Host,
-=======
-            T: 'static,
-            T: Send + a::b::interface_with_live_type::Host<Data = T>
-                + a::b::interface_with_dead_type::Host,
-            U: Send + a::b::interface_with_live_type::Host<Data = T>
-                + a::b::interface_with_dead_type::Host,
->>>>>>> upstream/main
         {
             a::b::interface_with_live_type::add_to_linker::<T, D>(linker, host_getter)?;
             a::b::interface_with_dead_type::add_to_linker::<T, D>(linker, host_getter)?;
@@ -209,50 +196,17 @@ pub mod a {
                 where
                     Self: Sized;
             }
-<<<<<<< HEAD
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send {}
-            impl<_T: Host + Send> Host for &mut _T {}
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
-||||||| 40315bd2c
-            pub trait GetHost<
-                T,
-                D,
-            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host<Data = D> + Send;
-            }
-            impl<F, T, D, O> GetHost<T, D> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host<Data = D> + Send,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<
-                T,
-                G: for<'a> GetHost<&'a mut T, T, Host: Host<Data = T> + Send>,
-            >(
-=======
-            pub fn add_to_linker_get_host<T, G>(
->>>>>>> upstream/main
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-<<<<<<< HEAD
                 D: HostConcurrent,
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
-||||||| 40315bd2c
-                T: Send + 'static,
-=======
-                T: 'static,
-                G: for<'a> wasmtime::component::GetHost<
-                    &'a mut T,
-                    Host: Host<Data = T> + Send,
-                >,
-                T: Send + 'static,
->>>>>>> upstream/main
             {
                 let mut inst = linker.instance("a:b/interface-with-live-type")?;
                 inst.func_wrap_concurrent(
@@ -267,61 +221,6 @@ pub mod a {
                 )?;
                 Ok(())
             }
-<<<<<<< HEAD
-||||||| 40315bd2c
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host<Data = T> + Send,
-                T: Send + 'static,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host> Host for &mut _T {
-                type Data = _T::Data;
-                fn f(
-                    store: wasmtime::StoreContextMut<'_, Self::Data>,
-                ) -> impl ::core::future::Future<
-                    Output = impl FnOnce(
-                        wasmtime::StoreContextMut<'_, Self::Data>,
-                    ) -> LiveType + Send + Sync + 'static,
-                > + Send + Sync + 'static
-                where
-                    Self: Sized,
-                {
-                    <_T as Host>::f(store)
-                }
-            }
-=======
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                T: 'static,
-                U: Host<Data = T> + Send,
-                T: Send + 'static,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host> Host for &mut _T {
-                type Data = _T::Data;
-                fn f(
-                    store: wasmtime::StoreContextMut<'_, Self::Data>,
-                ) -> impl ::core::future::Future<
-                    Output = impl FnOnce(
-                        wasmtime::StoreContextMut<'_, Self::Data>,
-                    ) -> LiveType + Send + Sync + 'static,
-                > + Send + Sync + 'static
-                where
-                    Self: Sized,
-                {
-                    <_T as Host>::f(store)
-                }
-            }
->>>>>>> upstream/main
         }
         #[allow(clippy::all)]
         pub mod interface_with_dead_type {
@@ -377,80 +276,21 @@ pub mod a {
                 assert!(8 == < V as wasmtime::component::ComponentType >::SIZE32);
                 assert!(4 == < V as wasmtime::component::ComponentType >::ALIGN32);
             };
-<<<<<<< HEAD
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send {}
-            impl<_T: Host + Send> Host for &mut _T {}
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
-||||||| 40315bd2c
-            pub trait Host {}
-            pub trait GetHost<
-                T,
-                D,
-            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host + Send;
-            }
-            impl<F, T, D, O> GetHost<T, D> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host + Send,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<
-                T,
-                G: for<'a> GetHost<&'a mut T, T, Host: Host + Send>,
-            >(
-=======
-            pub trait Host {}
-            pub fn add_to_linker_get_host<T, G>(
->>>>>>> upstream/main
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-<<<<<<< HEAD
                 D: wasmtime::component::HasData,
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
-||||||| 40315bd2c
-                T: Send + 'static,
-=======
-                T: 'static,
-                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host + Send>,
-                T: Send + 'static,
->>>>>>> upstream/main
             {
                 let mut inst = linker.instance("a:b/interface-with-dead-type")?;
                 Ok(())
             }
-<<<<<<< HEAD
-||||||| 40315bd2c
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host + Send,
-                T: Send + 'static,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + ?Sized> Host for &mut _T {}
-=======
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                T: 'static,
-                U: Host + Send,
-                T: Send + 'static,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + ?Sized> Host for &mut _T {}
->>>>>>> upstream/main
         }
     }
 }

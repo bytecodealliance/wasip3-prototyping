@@ -91,7 +91,6 @@ pub struct FooIndices {}
 /// [`Linker`]: wasmtime::component::Linker
 pub struct Foo {}
 #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-#[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
 pub trait FooImportsConcurrent: wasmtime::component::HasData + Send {
     fn foo<T: 'static>(
         accessor: &mut wasmtime::component::Accessor<T, Self>,
@@ -101,7 +100,7 @@ pub trait FooImportsConcurrent: wasmtime::component::HasData + Send {
 }
 #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
 pub trait FooImports: Send {}
-impl<_T: FooImports + Send> FooImports for &mut _T {}
+impl<_T: FooImports + ?Sized + Send> FooImports for &mut _T {}
 const _: () = {
     #[allow(unused_imports)]
     use wasmtime::component::__internal::anyhow;

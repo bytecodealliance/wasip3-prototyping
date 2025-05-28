@@ -95,7 +95,7 @@ pub trait HostBaz: Send {
         rep: wasmtime::component::Resource<Baz>,
     ) -> wasmtime::Result<()>;
 }
-impl<_T: HostBaz + Send> HostBaz for &mut _T {
+impl<_T: HostBaz + ?Sized + Send> HostBaz for &mut _T {
     async fn drop(
         &mut self,
         rep: wasmtime::component::Resource<Baz>,
@@ -196,7 +196,6 @@ pub struct TheWorldIndices {}
 /// [`Linker`]: wasmtime::component::Linker
 pub struct TheWorld {}
 #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-#[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
 pub trait TheWorldImportsConcurrent: wasmtime::component::HasData + Send + HostBazConcurrent {
     fn foo<T: 'static>(
         accessor: &mut wasmtime::component::Accessor<T, Self>,
@@ -206,7 +205,7 @@ pub trait TheWorldImportsConcurrent: wasmtime::component::HasData + Send + HostB
 }
 #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
 pub trait TheWorldImports: Send + HostBaz {}
-impl<_T: TheWorldImports + Send> TheWorldImports for &mut _T {}
+impl<_T: TheWorldImports + ?Sized + Send> TheWorldImports for &mut _T {}
 const _: () = {
     #[allow(unused_imports)]
     use wasmtime::component::__internal::anyhow;
@@ -412,7 +411,7 @@ pub mod foo {
                     rep: wasmtime::component::Resource<Bar>,
                 ) -> wasmtime::Result<()>;
             }
-            impl<_T: HostBar + Send> HostBar for &mut _T {
+            impl<_T: HostBar + ?Sized + Send> HostBar for &mut _T {
                 async fn drop(
                     &mut self,
                     rep: wasmtime::component::Resource<Bar>,
@@ -430,7 +429,7 @@ pub mod foo {
             }
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send + HostBar {}
-            impl<_T: Host + Send> Host for &mut _T {}
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 options: &LinkOptions,
