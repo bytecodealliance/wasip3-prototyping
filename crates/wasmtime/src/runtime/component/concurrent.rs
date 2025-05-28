@@ -377,25 +377,16 @@ where
     where
         T: 'static,
     {
-        let mut accessor = Self {
+        let instance = self.instance.unwrap();
+        let accessor = Self {
             token: self.token,
             get: self.get,
             get_data: self.get_data,
             instance: self.instance,
         };
-        let future = Arc::new(Mutex::new(AbortWrapper::Unpolled(Box::pin(async move {
-            task.run(&mut accessor).await
-        }))));
-        let handle = AbortHandle::new(future.clone());
-        self.with(|access| {
-            access
-                .store
-                .0
-                .concurrent_async_state()
-                .spawned_tasks
-                .push(future);
-        });
-        handle
+        self.with(|mut access| {
+            instance.spawn_with_accessor(access.as_context_mut(), accessor, task)
+        })
     }
 
     /// Retrieve the component instance of the caller.
@@ -654,25 +645,7 @@ fn poll_with_state<T: 'static, F: Future + ?Sized>(
 
         let spawned_tasks = mem::take(&mut store_cx.0.concurrent_async_state().spawned_tasks);
         for spawned in spawned_tasks {
-            // Wrap the future in a `poll_fn` closure to handle cancellation.
-            instance.spawn(future::poll_fn(move |cx| {
-                let mut spawned = spawned.try_lock().unwrap();
-                // Poll the inner future if present; otherwise it has been
-                // cancelled, in which case we return `Poll::Ready` immediately.
-                let inner = mem::replace(&mut *spawned, AbortWrapper::Aborted);
-                if let AbortWrapper::Unpolled(mut future)
-                | AbortWrapper::Polled { mut future, .. } = inner
-                {
-                    let result = poll_with_state(token, cx, future.as_mut());
-                    *spawned = AbortWrapper::Polled {
-                        future,
-                        waker: cx.waker().clone(),
-                    };
-                    result
-                } else {
-                    Poll::Ready(Ok(()))
-                }
-            }))
+            instance.push_future(spawned);
         }
 
         result
@@ -1000,10 +973,6 @@ impl ComponentInstance {
         // work item to the "high priority" queue, which will actually push to
         // `ConcurrentState::futures` later.
         self.push_high_priority(WorkItem::PushFuture(Mutex::new(future)));
-    }
-
-    pub(crate) fn spawn(&mut self, task: impl Future<Output = Result<()>> + Send + 'static) {
-        self.push_future(Box::pin(task.map(HostTaskOutput::Result)))
     }
 
     fn waitable_tables(
@@ -3406,29 +3375,69 @@ impl Instance {
     /// for this instance is run.
     ///
     /// The returned [`SpawnHandle`] may be used to cancel the task.
-    pub fn spawn<U: Send + 'static>(
+    pub fn spawn<U: 'static>(
         &self,
         mut store: impl AsContextMut<Data = U>,
         task: impl AccessorTask<U, HasSelf<U>, Result<()>>,
     ) -> AbortHandle {
         let mut store = store.as_context_mut();
-        let mut future = self.run_with_raw(store.as_context_mut(), move |accessor| {
-            Box::pin(future::ready(accessor.spawn(task)))
-        });
+        // SAFETY: TODO
+        let accessor =
+            unsafe { Accessor::new(StoreToken::new(store.as_context_mut()), Some(*self)) };
+        self.spawn_with_accessor(store, accessor, task)
+    }
 
-        let poll = store.with_detached_instance(self, |store, instance| {
-            poll_with_local_instance(
-                store.0.traitobj_mut(),
-                instance,
-                &mut future.as_mut(),
-                &mut Context::from_waker(&dummy_waker()),
-            )
-        });
+    /// Internal implementation of `spawn` functions where a `store` is
+    /// available along with an `Accessor`.
+    fn spawn_with_accessor<T, D>(
+        &self,
+        mut store: StoreContextMut<T>,
+        mut accessor: Accessor<T, D>,
+        task: impl AccessorTask<T, D, Result<()>>,
+    ) -> AbortHandle
+    where
+        T: 'static,
+        D: HasData,
+    {
+        let mut store = store.as_context_mut();
 
-        match poll {
-            Poll::Ready(handle) => handle,
-            Poll::Pending => unreachable!(),
-        }
+        // Here a `future` is created with a connection to the `handle` being
+        // returned such that if the `handle` is dropped then the future will be
+        // dropped immediately.
+        //
+        // This `future` is then used to create a "host task" which is pushed
+        // directly into `ComponentInstance` once it's all prepared.
+        // Additionally `poll_fn` is used to hook all calls to `poll` and test
+        // if the returned `AbortHandle` has been dropped yet.
+        let future = Arc::new(Mutex::new(AbortWrapper::Unpolled(Box::pin(async move {
+            task.run(&mut accessor).await
+        }))));
+        let handle = AbortHandle::new(future.clone());
+        let token = StoreToken::new(store.as_context_mut());
+        let spawned = future.clone();
+        let future = Box::pin(future::poll_fn({
+            move |cx| {
+                let mut spawned = spawned.try_lock().unwrap();
+                // Poll the inner future if present; otherwise it has been
+                // cancelled, in which case we return `Poll::Ready` immediately.
+                let inner = mem::replace(&mut *spawned, AbortWrapper::Aborted);
+                if let AbortWrapper::Unpolled(mut future)
+                | AbortWrapper::Polled { mut future, .. } = inner
+                {
+                    let result = poll_with_state(token, cx, future.as_mut());
+                    *spawned = AbortWrapper::Polled {
+                        future,
+                        waker: cx.waker().clone(),
+                    };
+                    result.map(HostTaskOutput::Result)
+                } else {
+                    Poll::Ready(HostTaskOutput::Result(Ok(())))
+                }
+            }
+        }));
+        store.with_detached_instance(self, |_, instance| instance.push_future(future));
+
+        handle
     }
 }
 
@@ -4458,7 +4467,7 @@ pub(crate) struct AsyncState {
 
     /// List of spawned tasks built up during a polling operation. This is
     /// drained after the poll in `poll_with_state`.
-    spawned_tasks: Vec<Spawned>,
+    spawned_tasks: Vec<HostTaskFuture>,
 }
 
 impl Default for AsyncState {
