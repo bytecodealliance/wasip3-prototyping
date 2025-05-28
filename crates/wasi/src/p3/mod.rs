@@ -152,7 +152,7 @@ where
     }
 }
 
-pub struct IoTask<T, E> {
+pub struct IoTask<T, E: 'static> {
     pub data: StreamWriter<VecBuffer<T>>,
     pub result: FutureWriter<Result<(), E>>,
     pub rx: mpsc::Receiver<Result<Vec<T>, E>>,

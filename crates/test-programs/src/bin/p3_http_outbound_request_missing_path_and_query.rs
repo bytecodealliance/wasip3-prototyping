@@ -9,7 +9,7 @@ test_programs::p3::export!(Component);
 impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
     async fn run() -> Result<(), ()> {
         let fields = Fields::new();
-        let (_, rx) = wit_future::new();
+        let (_, rx) = wit_future::new(|| Ok(None));
         let (req, _) = Request::new(fields, None, rx, None);
         req.set_method(&Method::Get).unwrap();
         req.set_scheme(Some(&Scheme::Https)).unwrap();

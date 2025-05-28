@@ -34,7 +34,7 @@ impl test_programs::p3::proxy::exports::wasi::http::handler::Guest for T {
 
         let hdrs = Headers::new();
         let (mut contents_tx, contents_rx) = wit_stream::new();
-        let (trailers_tx, trailers_rx) = wit_future::new();
+        let (trailers_tx, trailers_rx) = wit_future::new(|| todo!());
         let (resp, transmit) = Response::new(hdrs, Some(contents_rx), trailers_rx);
         spawn(async {
             join!(
@@ -47,12 +47,7 @@ impl test_programs::p3::proxy::exports::wasi::http::handler::Guest for T {
                         .await
                         .expect("failed to write trailers");
                 },
-                async {
-                    transmit
-                        .await
-                        .expect("failed to transmit response")
-                        .unwrap()
-                }
+                async { transmit.await.unwrap() }
             );
         });
         Ok(resp)

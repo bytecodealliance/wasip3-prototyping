@@ -153,7 +153,7 @@
       (import "" "transform" (func $transform (param i32 i32) (result i32)))
 
       (func $run (export "run") (result i32)
-        (local $ret i32) (local $ret64 i64) (local $paramp i32) (local $retp i32)
+        (local $ret i32) (local $ret64 i64) (local $retp i32)
         (local $insr i32) (local $insw i32) (local $outsr i32)
         (local $subtask i32)
         (local $ws i32)
@@ -168,10 +168,8 @@
           (then unreachable))
 
         ;; call 'transform' which will return a readable stream $outsr eagerly
-        (local.set $paramp (i32.const 4))
         (local.set $retp (i32.const 8))
-        (i32.store (local.get $paramp) (local.get $insr))
-        (local.set $ret (call $transform (local.get $paramp) (local.get $retp)))
+        (local.set $ret (call $transform (local.get $insr) (local.get $retp)))
         (if (i32.ne (i32.const 2 (; RETURNED=2 | (0<<4) ;)) (local.get $ret))
           (then unreachable))
         (local.set $outsr (i32.load (local.get $retp)))
@@ -193,7 +191,7 @@
         (local.set $ret (call $stream.write (local.get $insw) (i32.const 16) (i32.const 12)))
         (if (i32.ne (i32.const -1 (; BLOCKED ;)) (local.get $ret))
           (then unreachable))
-        
+
         ;; wait for transform to read our write and close all the streams
         (local.set $ws (call $waitable-set.new))
         (call $waitable.join (local.get $insw) (local.get $ws))

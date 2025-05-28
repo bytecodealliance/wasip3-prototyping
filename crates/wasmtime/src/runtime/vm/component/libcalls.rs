@@ -753,7 +753,7 @@ unsafe fn subtask_cancel(
 }
 
 #[cfg(feature = "component-model-async")]
-unsafe fn sync_prepare(
+unsafe fn prepare_call(
     vmctx: NonNull<VMComponentContext>,
     memory: *mut u8,
     start: *mut u8,
@@ -762,12 +762,12 @@ unsafe fn sync_prepare(
     callee_instance: u32,
     task_return_type: u32,
     string_encoding: u32,
-    result_count: u32,
+    result_count_or_max_if_async: u32,
     storage: *mut u8,
     storage_len: usize,
 ) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        store.component_async_store().sync_prepare(
+        store.component_async_store().prepare_call(
             instance,
             memory.cast::<crate::vm::VMMemoryDefinition>(),
             start.cast::<crate::vm::VMFuncRef>(),
@@ -776,7 +776,7 @@ unsafe fn sync_prepare(
             wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(callee_instance),
             wasmtime_environ::component::TypeTupleIndex::from_u32(task_return_type),
             u8::try_from(string_encoding).unwrap(),
-            result_count,
+            result_count_or_max_if_async,
             storage.cast::<crate::ValRaw>(),
             storage_len,
         )
@@ -800,35 +800,6 @@ unsafe fn sync_start(
             param_count,
             storage.cast::<std::mem::MaybeUninit<crate::ValRaw>>(),
             storage_len,
-        )
-    })
-}
-
-#[cfg(feature = "component-model-async")]
-unsafe fn async_prepare(
-    vmctx: NonNull<VMComponentContext>,
-    memory: *mut u8,
-    start: *mut u8,
-    return_: *mut u8,
-    caller_instance: u32,
-    callee_instance: u32,
-    task_return_type: u32,
-    string_encoding: u32,
-    params: u32,
-    results: u32,
-) -> Result<()> {
-    ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        store.component_async_store().async_prepare(
-            instance,
-            memory.cast::<crate::vm::VMMemoryDefinition>(),
-            start.cast::<crate::vm::VMFuncRef>(),
-            return_.cast::<crate::vm::VMFuncRef>(),
-            wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
-            wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(callee_instance),
-            wasmtime_environ::component::TypeTupleIndex::from_u32(task_return_type),
-            u8::try_from(string_encoding).unwrap(),
-            params,
-            results,
         )
     })
 }

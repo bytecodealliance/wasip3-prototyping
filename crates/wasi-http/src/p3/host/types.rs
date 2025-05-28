@@ -749,7 +749,7 @@ where
         store.with(|mut view| {
             let instance = view.instance();
             let (res_tx, res_rx) = instance
-                .future(&mut view)
+                .future(|| Ok(()), &mut view)
                 .context("failed to create future")?;
             let contents = contents.map(|contents| {
                 contents
@@ -793,7 +793,7 @@ where
                 .stream::<_, _, Vec<_>, _, _>(&mut view)
                 .context("failed to create stream")?;
             let (trailers_tx, trailers_rx) = instance
-                .future(&mut view)
+                .future(|| Ok(None), &mut view)
                 .context("failed to create future")?;
             let mut binding = view.get();
             let Request { body, .. } = get_request_mut(binding.table(), &req)?;
@@ -1075,7 +1075,7 @@ where
         store.with(|mut view| {
             let instance = view.instance();
             let (res_tx, res_rx) = instance
-                .future(&mut view)
+                .future(|| Ok(()), &mut view)
                 .context("failed to create future")?;
             let contents = contents.map(|contents| {
                 contents
@@ -1110,7 +1110,7 @@ where
                 .stream::<_, _, Vec<_>, _, _>(&mut view)
                 .context("failed to create stream")?;
             let (trailers_tx, trailers_rx) = instance
-                .future(&mut view)
+                .future(|| Ok(None), &mut view)
                 .context("failed to create future")?;
             let mut binding = view.get();
             let Response { body, .. } = get_response_mut(binding.table(), &res)?;

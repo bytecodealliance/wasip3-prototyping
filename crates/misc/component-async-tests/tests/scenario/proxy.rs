@@ -158,7 +158,8 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
 
     let trailers = vec![("fizz".into(), b"buzz".into())];
 
-    let (request_trailers_tx, request_trailers_rx) = instance.future(&mut store)?;
+    let (request_trailers_tx, request_trailers_rx) =
+        instance.future(|| unreachable!(), &mut store)?;
 
     let request_trailers = IoView::table(store.data_mut()).push(Fields(trailers.clone()))?;
 

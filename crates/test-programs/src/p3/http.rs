@@ -71,7 +71,7 @@ pub async fn request(
         .map_err(|_err| anyhow!("failed to set between_bytes_timeout"))?;
 
     let (mut contents_tx, contents_rx) = wit_stream::new();
-    let (trailers_tx, trailers_rx) = wit_future::new();
+    let (trailers_tx, trailers_rx) = wit_future::new(|| Ok(None));
     let (request, transmit) =
         types::Request::new(headers, Some(contents_rx), trailers_rx, Some(options));
 
@@ -89,12 +89,7 @@ pub async fn request(
         .map_err(|()| anyhow!("failed to set path_with_query"))?;
 
     let (transmit, handle) = join!(
-        async {
-            transmit
-                .await
-                .context("transmit sender dropped")?
-                .context("failed to transmit request")
-        },
+        async { transmit.await.context("failed to transmit request") },
         async {
             let response = handler::handle(request).await?;
             let status = response.status_code();
@@ -112,10 +107,7 @@ pub async fn request(
                 },
                 async {
                     let body = body_rx.collect().await;
-                    let trailers = trailers_rx
-                        .await
-                        .context("trailers sender dropped")?
-                        .context("failed to read body")?;
+                    let trailers = trailers_rx.await.context("failed to read body")?;
                     let trailers = trailers.map(|trailers| trailers.entries());
                     anyhow::Ok(Response {
                         status,

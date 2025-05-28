@@ -47,7 +47,7 @@ async fn test_tcp_sample_application(family: IpAddressFamily, bind_address: IpSo
 
             // Check that we sent and received our message!
             assert_eq!(data, first_message); // Not guaranteed to work but should work in practice.
-            fut.await.unwrap().unwrap()
+            fut.await.unwrap()
         },
     );
 
@@ -76,7 +76,7 @@ async fn test_tcp_sample_application(family: IpAddressFamily, bind_address: IpSo
 
             // Check that we sent and received our message!
             assert_eq!(data, second_message); // Not guaranteed to work but should work in practice.
-            fut.await.unwrap().unwrap()
+            fut.await.unwrap()
         }
     );
 }

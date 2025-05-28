@@ -266,7 +266,7 @@ interface types {
 
     /// Takes ownership of `body`, and returns a `trailers`.  This function will
     /// trap if a `stream` child is still alive.
-    finish: static func(this: body) -> future<trailers>;
+    finish: static func(this: body) -> option<future<trailers>>;
   }
 
   /// Represents an HTTP Request.

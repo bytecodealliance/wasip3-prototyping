@@ -1251,6 +1251,7 @@ impl<'a, 'data> Translator<'a, 'data> {
                     ret.callback = Some(idx);
                 }
                 wasmparser::CanonicalOption::CoreType(_) => todo!(),
+                wasmparser::CanonicalOption::Gc => todo!(),
             }
         }
         return ret;

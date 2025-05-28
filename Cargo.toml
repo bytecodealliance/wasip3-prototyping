@@ -305,17 +305,17 @@ wit-bindgen-rt = { version = "0.42.1", default-features = false }
 wit-bindgen-rust-macro = { version = "0.42.1", default-features = false }
 
 # wasm-tools family:
-wasmparser = { version = "0.230.0", default-features = false, features = ['simd'] }
-wat = "1.230.0"
-wast = "230.0.0"
-wasmprinter = "0.230.0"
-wasm-encoder = "0.230.0"
-wasm-smith = "0.230.0"
-wasm-mutate = "0.230.0"
-wit-parser = "0.230.0"
-wit-component = "0.230.0"
-wasm-wave = "0.230.0"
-wasm-compose = "0.230.0"
+wasmparser = { version = "0.232.0", default-features = false, features = ['simd'] }
+wat = "1.232.0"
+wast = "232.0.0"
+wasmprinter = "0.232.0"
+wasm-encoder = "0.232.0"
+wasm-smith = "0.232.0"
+wasm-mutate = "0.232.0"
+wit-parser = "0.232.0"
+wit-component = "0.232.0"
+wasm-wave = "0.232.0"
+wasm-compose = "0.232.0"
 
 # Non-Bytecode Alliance maintained dependencies:
 # --------------------------
@@ -606,9 +606,9 @@ lto = true
 # wasm-wave = { git = "https://github.com/bytecodealliance/wasm-tools" }
 # wasm-compose = { git = "https://github.com/bytecodealliance/wasm-tools" }
 # wasm-metadata = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wit-bindgen = { git = "https://github.com/alexcrichton/wit-bindgen", branch = 'fix-a-tpyo' }
-# wit-bindgen-rt = { git = "https://github.com/alexcrichton/wit-bindgen", branch = 'fix-a-tpyo' }
-# wit-bindgen-rust-macro = { git = "https://github.com/alexcrichton/wit-bindgen", branch = 'fix-a-tpyo' }
+wit-bindgen = { git = "https://github.com/bytecodealliance/wit-bindgen" }
+wit-bindgen-rt = { git = "https://github.com/bytecodealliance/wit-bindgen" }
+wit-bindgen-rust-macro = { git = "https://github.com/bytecodealliance/wit-bindgen" }
 
 # wasmparser = { path = '../wasm-tools/crates/wasmparser' }
 # wat = { path = '../wasm-tools/crates/wat' }

@@ -29,8 +29,8 @@ impl Guest for Component {
     async fn run() {
         let (mut control_tx, control_rx) = wit_stream::new();
         let (mut caller_stream_tx, caller_stream_rx) = wit_stream::new();
-        let (mut caller_future_tx1, caller_future_rx1) = wit_future::new();
-        let (caller_future_tx2, caller_future_rx2) = wit_future::new();
+        let (mut caller_future_tx1, caller_future_rx1) = wit_future::new(|| todo!());
+        let (caller_future_tx2, caller_future_rx2) = wit_future::new(|| String::new());
 
         let (mut callee_stream_rx, mut callee_future_rx1, callee_future_rx2) = transmit::exchange(
             control_rx,
@@ -195,7 +195,7 @@ impl Guest for Component {
                 .await
                 .is_none()
         );
-        assert_eq!(callee_future_rx1.into_future().await, Some("b".into()));
+        assert_eq!(callee_future_rx1.into_future().await, "b");
 
         // Start writing a value to the stream, but drop the stream without telling the peer to read.
         let send = Box::pin(caller_stream_tx.write_one("d".into()));

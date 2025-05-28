@@ -48,7 +48,7 @@
   (core func $waitable-set.wait (canon waitable-set.wait (memory $libc "mem")))
 
   (core module $m
-    (import "" "f" (func $f (param i32 i32) (result i32)))
+    (import "" "f" (func $f (result i32)))
     (import "" "turn-on-backpressure" (func $turn-on-backpressure))
     (import "" "waitable-set.new" (func $waitable-set.new (result i32)))
     (import "" "waitable.join" (func $waitable.join (param i32 i32)))
@@ -59,7 +59,7 @@
       (local $set i32)
       call $turn-on-backpressure
 
-      (local.set $status (call $f (i32.const 0) (i32.const 0)))
+      (local.set $status (call $f))
 
       ;; low 4 bits should be "STARTING == 0"
       (i32.ne

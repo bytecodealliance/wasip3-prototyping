@@ -64,7 +64,7 @@ where
                 .stream::<_, _, Vec<_>, _, _>(&mut view)
                 .context("failed to create stream")?;
             let (res_tx, res_rx) = instance
-                .future(&mut view)
+                .future(|| unreachable!(), &mut view)
                 .context("failed to create future")?;
             let mut binding = view.get();
             let fd = get_descriptor(binding.table(), &fd)?;
@@ -321,7 +321,7 @@ where
                 .stream::<_, _, Vec<_>, _, _>(&mut view)
                 .context("failed to create stream")?;
             let (res_tx, res_rx) = instance
-                .future(&mut view)
+                .future(|| unreachable!(), &mut view)
                 .context("failed to create future")?;
             let mut binding = view.get();
             let fd = get_descriptor(binding.table(), &fd)?;

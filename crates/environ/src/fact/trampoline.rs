@@ -17,10 +17,11 @@
 
 use crate::component::{
     CanonicalAbiInfo, ComponentTypesBuilder, FLAG_MAY_ENTER, FLAG_MAY_LEAVE, FixedEncoding as FE,
-    FlatType, InterfaceType, MAX_FLAT_PARAMS, StringEncoding, Transcode,
-    TypeComponentLocalErrorContextTableIndex, TypeEnumIndex, TypeFlagsIndex, TypeFutureTableIndex,
-    TypeListIndex, TypeOptionIndex, TypeRecordIndex, TypeResourceTableIndex, TypeResultIndex,
-    TypeStreamTableIndex, TypeTupleIndex, TypeVariantIndex, VariantInfo,
+    FlatType, InterfaceType, MAX_FLAT_ASYNC_PARAMS, MAX_FLAT_PARAMS, PREPARE_ASYNC_NO_RESULT,
+    PREPARE_ASYNC_WITH_RESULT, StringEncoding, Transcode, TypeComponentLocalErrorContextTableIndex,
+    TypeEnumIndex, TypeFlagsIndex, TypeFutureTableIndex, TypeListIndex, TypeOptionIndex,
+    TypeRecordIndex, TypeResourceTableIndex, TypeResultIndex, TypeStreamTableIndex, TypeTupleIndex,
+    TypeVariantIndex, VariantInfo,
 };
 use crate::fact::signature::Signature;
 use crate::fact::transcode::Transcoder;
@@ -31,6 +32,7 @@ use crate::fact::{
 };
 use crate::prelude::*;
 use crate::{FuncIndex, GlobalIndex};
+use cranelift_entity::Signed;
 use std::collections::HashMap;
 use std::mem;
 use std::ops::Range;
@@ -186,12 +188,13 @@ pub(super) fn compile(module: &mut Module<'_>, adapter: &AdapterData) {
             // point a `STATUS_RETURNED` event will be delivered to the caller.
             let start = async_start_adapter(module);
             let return_ = async_return_adapter(module);
-            let (compiler, _, lift_sig) = compiler(module, adapter);
+            let (compiler, lower_sig, lift_sig) = compiler(module, adapter);
             compiler.compile_async_to_async_adapter(
                 adapter,
                 start,
                 return_,
                 i32::try_from(lift_sig.params.len()).unwrap(),
+                &lower_sig,
             );
         }
         (false, true) => {
@@ -241,13 +244,14 @@ pub(super) fn compile(module: &mut Module<'_>, adapter: &AdapterData) {
             let lift_sig = module.types.signature(&adapter.lift, Context::Lift);
             let start = async_start_adapter(module);
             let return_ = async_return_adapter(module);
-            let (compiler, ..) = compiler(module, adapter);
+            let (compiler, lower_sig, ..) = compiler(module, adapter);
             compiler.compile_async_to_sync_adapter(
                 adapter,
                 start,
                 return_,
                 i32::try_from(lift_sig.params.len()).unwrap(),
                 i32::try_from(lift_sig.results.len()).unwrap(),
+                &lower_sig,
             );
         }
     }
@@ -418,40 +422,13 @@ impl<'a, 'b> Compiler<'a, 'b> {
         start: FunctionId,
         return_: FunctionId,
         param_count: i32,
+        lower_sig: &Signature,
     ) {
-        let prepare = self
-            .module
-            .import_async_prepare_call(&adapter.name, adapter.lift.options.memory);
         let start_call =
             self.module
                 .import_async_start_call(&adapter.name, adapter.lift.options.callback, None);
 
-        self.flush_code();
-        self.module.funcs[self.result]
-            .body
-            .push(Body::RefFunc(start));
-        self.module.funcs[self.result]
-            .body
-            .push(Body::RefFunc(return_));
-        self.instruction(I32Const(
-            i32::try_from(adapter.lower.instance.as_u32()).unwrap(),
-        ));
-        self.instruction(I32Const(
-            i32::try_from(adapter.lift.instance.as_u32()).unwrap(),
-        ));
-        self.instruction(I32Const(
-            i32::try_from(self.types[adapter.lift.ty].results.as_u32()).unwrap(),
-        ));
-        self.instruction(I32Const(i32::from(
-            adapter.lift.options.string_encoding as u8,
-        )));
-        // Async-lowered imports pass params and receive results via linear
-        // memory, and those pointers are in the the first and second params to
-        // this adapter.  We pass them on to the host so it can store them in
-        // the subtask for later use.
-        self.instruction(LocalGet(0));
-        self.instruction(LocalGet(1));
-        self.instruction(Call(prepare.as_u32()));
+        self.call_prepare(adapter, start, return_, lower_sig, false);
 
         // TODO: As an optimization, consider checking the backpressure flag on
         // the callee instance and, if it's unset _and_ the callee uses a
@@ -478,32 +455,30 @@ impl<'a, 'b> Compiler<'a, 'b> {
         self.finish()
     }
 
-    /// Compile an adapter function supporting a sync-lowered import to an
-    /// async-lifted export.
+    /// Invokes the `prepare_call` builtin with the provided parameters for this
+    /// adapter.
     ///
-    /// This uses a pair of `sync-prepare` and `sync-start` built-in functions
-    /// to set up and start a subtask, respectively.  `sync-prepare` accepts
-    /// `start` and `return_` functions which copy the parameters and results,
-    /// respectively; the host will call the former when the callee has cleared
-    /// its backpressure flag and the latter when the callee has called
-    /// `task.return`.
-    fn compile_sync_to_async_adapter(
-        mut self,
+    /// This is part of a async lower and/or async lift adapter. This is not
+    /// used for a sync->sync function call. This is done to create the task on
+    /// the host side of the runtime and such. This will notably invoke a
+    /// Cranelift builtin which will spill all wasm-level parameters to the
+    /// stack to handle variadic signatures.
+    ///
+    /// Note that the `prepare_sync` parameter here configures the
+    /// `result_count_or_max_if_async` parameter to indicate whether this is a
+    /// sync or async prepare.
+    fn call_prepare(
+        &mut self,
         adapter: &AdapterData,
         start: FunctionId,
         return_: FunctionId,
-        lift_param_count: i32,
         lower_sig: &Signature,
+        prepare_sync: bool,
     ) {
-        let prepare = self.module.import_sync_prepare_call(
+        let prepare = self.module.import_prepare_call(
             &adapter.name,
             &lower_sig.params,
             adapter.lift.options.memory,
-        );
-        let start_call = self.module.import_sync_start_call(
-            &adapter.name,
-            adapter.lift.options.callback,
-            &lower_sig.results,
         );
 
         self.flush_code();
@@ -525,28 +500,63 @@ impl<'a, 'b> Compiler<'a, 'b> {
         self.instruction(I32Const(i32::from(
             adapter.lift.options.string_encoding as u8,
         )));
-        self.instruction(I32Const(
-            i32::try_from(
-                self.types
-                    .flatten_types(
-                        &adapter.lower.options,
-                        usize::MAX,
-                        self.types[self.types[adapter.lower.ty].results]
-                            .types
-                            .iter()
-                            .copied(),
-                    )
-                    .map(|v| v.len())
-                    .unwrap_or(usize::try_from(i32::MAX).unwrap()),
-            )
-            .unwrap(),
-        ));
 
+        // flag this as a preparation for either an async call or sync call,
+        // depending on `prepare_sync`
+        let result_types = &self.types[self.types[adapter.lower.ty].results].types;
+        if prepare_sync {
+            self.instruction(I32Const(
+                i32::try_from(
+                    self.types
+                        .flatten_types(
+                            &adapter.lower.options,
+                            usize::MAX,
+                            result_types.iter().copied(),
+                        )
+                        .map(|v| v.len())
+                        .unwrap_or(usize::try_from(i32::MAX).unwrap()),
+                )
+                .unwrap(),
+            ));
+        } else {
+            if result_types.len() > 0 {
+                self.instruction(I32Const(PREPARE_ASYNC_WITH_RESULT.signed()));
+            } else {
+                self.instruction(I32Const(PREPARE_ASYNC_NO_RESULT.signed()));
+            }
+        }
+
+        // forward all our own arguments on to the host stub
         for index in 0..lower_sig.params.len() {
             self.instruction(LocalGet(u32::try_from(index).unwrap()));
         }
-
         self.instruction(Call(prepare.as_u32()));
+    }
+
+    /// Compile an adapter function supporting a sync-lowered import to an
+    /// async-lifted export.
+    ///
+    /// This uses a pair of `sync-prepare` and `sync-start` built-in functions
+    /// to set up and start a subtask, respectively.  `sync-prepare` accepts
+    /// `start` and `return_` functions which copy the parameters and results,
+    /// respectively; the host will call the former when the callee has cleared
+    /// its backpressure flag and the latter when the callee has called
+    /// `task.return`.
+    fn compile_sync_to_async_adapter(
+        mut self,
+        adapter: &AdapterData,
+        start: FunctionId,
+        return_: FunctionId,
+        lift_param_count: i32,
+        lower_sig: &Signature,
+    ) {
+        let start_call = self.module.import_sync_start_call(
+            &adapter.name,
+            adapter.lift.options.callback,
+            &lower_sig.results,
+        );
+
+        self.call_prepare(adapter, start, return_, lower_sig, true);
 
         // TODO: As an optimization, consider checking the backpressure flag on
         // the callee instance and, if it's unset _and_ the callee uses a
@@ -584,36 +594,13 @@ impl<'a, 'b> Compiler<'a, 'b> {
         return_: FunctionId,
         param_count: i32,
         result_count: i32,
+        lower_sig: &Signature,
     ) {
-        let prepare = self
-            .module
-            .import_async_prepare_call(&adapter.name, adapter.lift.options.memory);
         let start_call =
             self.module
                 .import_async_start_call(&adapter.name, None, adapter.lift.post_return);
 
-        self.flush_code();
-        self.module.funcs[self.result]
-            .body
-            .push(Body::RefFunc(start));
-        self.module.funcs[self.result]
-            .body
-            .push(Body::RefFunc(return_));
-        self.instruction(I32Const(
-            i32::try_from(adapter.lower.instance.as_u32()).unwrap(),
-        ));
-        self.instruction(I32Const(
-            i32::try_from(adapter.lift.instance.as_u32()).unwrap(),
-        ));
-        self.instruction(I32Const(
-            i32::try_from(self.types[adapter.lift.ty].results.as_u32()).unwrap(),
-        ));
-        self.instruction(I32Const(i32::from(
-            adapter.lift.options.string_encoding as u8,
-        )));
-        self.instruction(LocalGet(0));
-        self.instruction(LocalGet(1));
-        self.instruction(Call(prepare.as_u32()));
+        self.call_prepare(adapter, start, return_, lower_sig, false);
 
         // We export this function so we can pass a funcref to the host.
         //
@@ -809,12 +796,17 @@ impl<'a, 'b> Compiler<'a, 'b> {
         // TODO: handle subtyping
         assert_eq!(src_tys.len(), dst_tys.len());
 
-        let src_flat = if adapter.lower.options.async_ {
-            None
+        // Async lowered functions have a smaller limit on flat parameters, but
+        // their destination, a lifted function, does not have a different limit
+        // than sync functions.
+        let max_flat_params = if adapter.lower.options.async_ {
+            MAX_FLAT_ASYNC_PARAMS
         } else {
-            self.types
-                .flatten_types(lower_opts, MAX_FLAT_PARAMS, src_tys.iter().copied())
+            MAX_FLAT_PARAMS
         };
+        let src_flat =
+            self.types
+                .flatten_types(lower_opts, max_flat_params, src_tys.iter().copied());
         let dst_flat =
             self.types
                 .flatten_types(lift_opts, MAX_FLAT_PARAMS, dst_tys.iter().copied());

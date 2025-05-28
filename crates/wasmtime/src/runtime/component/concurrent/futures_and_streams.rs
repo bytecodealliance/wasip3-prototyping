@@ -381,7 +381,7 @@ enum WriteEvent<B> {
         tx: oneshot::Sender<HostResult<B>>,
     },
     /// Close the write end of the stream or future.
-    Close,
+    Close(Option<Box<dyn FnOnce() -> B + Send + Sync>>),
     /// Watch the read (i.e. opposite) end of this stream or future, dropping
     /// the specified sender when it is closed.
     Watch { tx: oneshot::Sender<()> },
@@ -488,17 +488,20 @@ fn watch<T: Send + 'static>(
 }
 
 /// Represents the writable end of a Component Model `future`.
-pub struct FutureWriter<T> {
+pub struct FutureWriter<T: 'static> {
+    default: Option<fn() -> T>,
     instance: SendSyncPtr<ComponentInstance>,
     tx: Option<mpsc::Sender<WriteEvent<Option<T>>>>,
 }
 
 impl<T> FutureWriter<T> {
     fn new(
+        default: fn() -> T,
         tx: Option<mpsc::Sender<WriteEvent<Option<T>>>>,
         instance: &mut ComponentInstance,
     ) -> Self {
         Self {
+            default: Some(default),
             instance: SendSyncPtr::new(instance.into()),
             tx,
         }
@@ -525,6 +528,7 @@ impl<T> FutureWriter<T> {
                 tx,
             },
         );
+        self.default = None;
         let instance = self.instance;
         super::checked(
             instance,
@@ -563,7 +567,13 @@ impl<T> FutureWriter<T> {
 impl<T> Drop for FutureWriter<T> {
     fn drop(&mut self) {
         if let Some(mut tx) = self.tx.take() {
-            send(&mut tx, WriteEvent::Close);
+            send(
+                &mut tx,
+                WriteEvent::Close(self.default.take().map(|v| {
+                    Box::new(move || Some(v()))
+                        as Box<dyn FnOnce() -> Option<T> + Send + Sync + 'static>
+                })),
+            );
         }
     }
 }
@@ -960,7 +970,7 @@ impl<B> StreamWriter<B> {
 impl<T> Drop for StreamWriter<T> {
     fn drop(&mut self) {
         if let Some(mut tx) = self.tx.take() {
-            send(&mut tx, WriteEvent::Close);
+            send(&mut tx, WriteEvent::Close(None));
         }
     }
 }
@@ -1517,12 +1527,24 @@ enum Reader<'a> {
 impl Instance {
     /// Create a new Component Model `future` as pair of writable and readable ends,
     /// the latter of which may be passed to guest code.
+    ///
+    /// The `default` parameter will be used if the returned `FutureWriter` is
+    /// dropped before `FutureWriter::write` is called.  Since the write end of
+    /// a Component Model `future` must be written to before it is closed, and
+    /// since Rust does not currently provide a way to statically enforce that
+    /// (e.g. linear typing), we use this mechanism to ensure a value is always
+    /// written prior to closing.
+    ///
+    /// If there's no plausible default value, and you're sure
+    /// `FutureWriter::write` will be called, you can consider passing `||
+    /// unreachable!()` as the `default` parameter.
     pub fn future<
         T: func::Lower + func::Lift + Send + Sync + 'static,
         U: 'static,
         S: AsContextMut<Data = U>,
     >(
         &self,
+        default: fn() -> T,
         mut store: S,
     ) -> Result<(FutureWriter<T>, FutureReader<T>)> {
         store
@@ -1532,6 +1554,7 @@ impl Instance {
 
                 Ok((
                     FutureWriter::new(
+                        default,
                         Some(instance.start_write_event_loop::<_, _, U>(
                             store.as_context_mut(),
                             write.rep(),
@@ -1674,9 +1697,21 @@ impl ComponentInstance {
                                 )
                             })?
                         }
-                        WriteEvent::Close => super::with_local_instance(|_, instance| {
-                            instance.host_close_writer(rep, kind)
-                        })?,
+                        WriteEvent::Close(default) => {
+                            super::with_local_instance(|store, instance| {
+                                if let Some(default) = default {
+                                    instance.host_write::<_, _, U>(
+                                        token.as_context_mut(store),
+                                        rep,
+                                        default(),
+                                        PostWrite::Continue,
+                                        oneshot::channel().0,
+                                        kind,
+                                    )?;
+                                }
+                                instance.host_close_writer(rep, kind)
+                            })?
+                        }
                         WriteEvent::Watch { tx } => super::with_local_instance(|_, instance| {
                             let state = instance.get_mut(TableId::<TransmitState>::new(rep))?;
                             if !matches!(&state.read, ReadState::Closed) {
@@ -1740,7 +1775,18 @@ impl ComponentInstance {
                         })?,
                         ReadEvent::Watch { tx } => super::with_local_instance(|_, instance| {
                             let state = instance.get_mut(TableId::<TransmitState>::new(rep))?;
-                            if !matches!(&state.write, WriteState::Closed) {
+                            if !matches!(
+                                &state.write,
+                                WriteState::Closed
+                                    | WriteState::GuestReady {
+                                        post_write: PostWrite::Close,
+                                        ..
+                                    }
+                                    | WriteState::HostReady {
+                                        post_write: PostWrite::Close,
+                                        ..
+                                    }
+                            ) {
                                 state.writer_watcher = Some(tx);
                             }
                             Ok::<_, anyhow::Error>(())
