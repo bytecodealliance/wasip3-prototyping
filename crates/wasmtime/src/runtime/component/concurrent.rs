@@ -3430,17 +3430,6 @@ impl Instance {
             Poll::Pending => unreachable!(),
         }
     }
-
-    #[doc(hidden)]
-    pub fn spawn_raw(
-        &self,
-        mut store: impl AsContextMut,
-        task: impl std::future::Future<Output = Result<()>> + Send + 'static,
-    ) {
-        store
-            .as_context_mut()
-            .with_detached_instance(self, |_, instance| instance.spawn(task))
-    }
 }
 
 /// Trait representing component model ABI async intrinsics and fused adapter
