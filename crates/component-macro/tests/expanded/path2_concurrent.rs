@@ -149,18 +149,9 @@ const _: () = {
             host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-<<<<<<< HEAD
             D: wasmtime::component::HasData,
             for<'a> D::Data<'a>: paths::path2::test::Host + Send,
             T: 'static + Send,
-||||||| 40315bd2c
-            T: Send + paths::path2::test::Host + 'static,
-            U: Send + paths::path2::test::Host,
-=======
-            T: 'static,
-            T: Send + paths::path2::test::Host,
-            U: Send + paths::path2::test::Host,
->>>>>>> upstream/main
         {
             paths::path2::test::add_to_linker::<T, D>(linker, host_getter)?;
             Ok(())
@@ -173,80 +164,21 @@ pub mod paths {
         pub mod test {
             #[allow(unused_imports)]
             use wasmtime::component::__internal::{anyhow, Box};
-<<<<<<< HEAD
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send {}
-            impl<_T: Host + Send> Host for &mut _T {}
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
-||||||| 40315bd2c
-            pub trait Host {}
-            pub trait GetHost<
-                T,
-                D,
-            >: Fn(T) -> <Self as GetHost<T, D>>::Host + Send + Sync + Copy + 'static {
-                type Host: Host + Send;
-            }
-            impl<F, T, D, O> GetHost<T, D> for F
-            where
-                F: Fn(T) -> O + Send + Sync + Copy + 'static,
-                O: Host + Send,
-            {
-                type Host = O;
-            }
-            pub fn add_to_linker_get_host<
-                T,
-                G: for<'a> GetHost<&'a mut T, T, Host: Host + Send>,
-            >(
-=======
-            pub trait Host {}
-            pub fn add_to_linker_get_host<T, G>(
->>>>>>> upstream/main
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-<<<<<<< HEAD
                 D: wasmtime::component::HasData,
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
-||||||| 40315bd2c
-                T: Send + 'static,
-=======
-                T: 'static,
-                G: for<'a> wasmtime::component::GetHost<&'a mut T, Host: Host + Send>,
-                T: Send + 'static,
->>>>>>> upstream/main
             {
                 let mut inst = linker.instance("paths:path2/test")?;
                 Ok(())
             }
-<<<<<<< HEAD
-||||||| 40315bd2c
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                U: Host + Send,
-                T: Send + 'static,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + ?Sized> Host for &mut _T {}
-=======
-            pub fn add_to_linker<T, U>(
-                linker: &mut wasmtime::component::Linker<T>,
-                get: impl Fn(&mut T) -> &mut U + Send + Sync + Copy + 'static,
-            ) -> wasmtime::Result<()>
-            where
-                T: 'static,
-                U: Host + Send,
-                T: Send + 'static,
-            {
-                add_to_linker_get_host(linker, get)
-            }
-            impl<_T: Host + ?Sized> Host for &mut _T {}
->>>>>>> upstream/main
         }
     }
 }

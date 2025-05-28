@@ -214,7 +214,7 @@ pub mod foo {
             };
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send {}
-            impl<_T: Host + Send> Host for &mut _T {}
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
@@ -255,7 +255,7 @@ pub mod http_fetch {
     }
     #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
     pub trait Host: Send {}
-    impl<_T: Host + Send> Host for &mut _T {}
+    impl<_T: Host + ?Sized + Send> Host for &mut _T {}
     pub fn add_to_linker<T, D>(
         linker: &mut wasmtime::component::Linker<T>,
         host_getter: fn(&mut T) -> D::Data<'_>,

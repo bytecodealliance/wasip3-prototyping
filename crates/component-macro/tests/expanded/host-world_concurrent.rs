@@ -91,7 +91,6 @@ pub struct Host_Indices {}
 /// [`Linker`]: wasmtime::component::Linker
 pub struct Host_ {}
 #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-#[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
 pub trait Host_ImportsConcurrent: wasmtime::component::HasData + Send {
     fn foo<T: 'static>(
         accessor: &mut wasmtime::component::Accessor<T, Self>,
@@ -101,7 +100,7 @@ pub trait Host_ImportsConcurrent: wasmtime::component::HasData + Send {
 }
 #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
 pub trait Host_Imports: Send {}
-impl<_T: Host_Imports + Send> Host_Imports for &mut _T {}
+impl<_T: Host_Imports + ?Sized + Send> Host_Imports for &mut _T {}
 const _: () = {
     #[allow(unused_imports)]
     use wasmtime::component::__internal::anyhow;
