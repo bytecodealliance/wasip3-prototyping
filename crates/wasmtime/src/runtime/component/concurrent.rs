@@ -289,7 +289,6 @@ where
     get_data: fn(&mut T) -> D::Data<'_>,
     spawn: fn(Spawned),
     instance: Option<Instance>,
-    _phantom: PhantomData<fn() -> *mut StoreInner<T>>,
 }
 
 impl<T> Accessor<T> {
@@ -316,7 +315,6 @@ impl<T> Accessor<T> {
             get_data: |x| x,
             spawn: spawn_task,
             instance,
-            _phantom: PhantomData,
         }
     }
 }
@@ -365,7 +363,6 @@ where
             get_data,
             spawn: self.spawn,
             instance: self.instance,
-            _phantom: PhantomData,
         }
     }
 
@@ -387,7 +384,6 @@ where
             get_data: self.get_data,
             spawn: self.spawn,
             instance: self.instance,
-            _phantom: PhantomData,
         };
         let future = Arc::new(Mutex::new(AbortWrapper::Unpolled(Box::pin(async move {
             task.run(&mut accessor).await
