@@ -285,6 +285,7 @@ pub struct Accessor<T: 'static, D = HasSelf<T>>
 where
     D: HasData,
 {
+    token: StoreToken<T>,
     get: fn() -> *mut dyn VMStore,
     get_data: fn(&mut T) -> D::Data<'_>,
     instance: Option<Instance>,
@@ -308,8 +309,9 @@ impl<T> Accessor<T> {
     /// intended scope.  If it returns, the caller must be granted exclusive
     /// access to that store until the call to `Future::poll` for the current
     /// host task returns.
-    unsafe fn new(instance: Option<Instance>) -> Self {
+    unsafe fn new(token: StoreToken<T>, instance: Option<Instance>) -> Self {
         Self {
+            token,
             get: get_store,
             get_data: |x| x,
             instance,
@@ -338,13 +340,11 @@ where
         // used beyond the current `Future::poll` call for the host task which
         // received the backing `Accessor`.
         //
-        // TODO: `Accessor` should have a `StoreToken` to make this cast more
-        // safe
-        //
         // TODO: something needs to prevent two `Accessor`s from using `with` at
         // the same time.
+        let vmstore = unsafe { &mut *(self.get)() };
         fun(Access {
-            store: unsafe { StoreContextMut(&mut *(self.get)().cast()) },
+            store: self.token.as_context_mut(vmstore),
             accessor: self,
         })
     }
@@ -357,6 +357,7 @@ where
         get_data: fn(&mut T) -> D2::Data<'_>,
     ) -> Accessor<T, D2> {
         Accessor {
+            token: self.token,
             get: self.get,
             get_data,
             instance: self.instance,
@@ -377,6 +378,7 @@ where
         T: 'static,
     {
         let mut accessor = Self {
+            token: self.token,
             get: self.get,
             get_data: self.get_data,
             instance: self.instance,
@@ -1911,13 +1913,13 @@ impl ComponentInstance {
         P: Send + Sync + 'static,
         R: Send + Sync + 'static,
     {
+        let token = StoreToken::new(store);
         // SAFETY: The `get_store` function we pass here is backed by a
         // thread-local variable which `poll_with_state` will populate and reset
         // with valid pointers to the store data and the store itself each time
         // the returned future is polled, respectively.
-        let mut accessor = unsafe { Accessor::new(self.instance()) };
+        let mut accessor = unsafe { Accessor::new(token, self.instance()) };
         let mut future = Box::pin(async move { closure(&mut accessor, params).await });
-        let token = StoreToken::new(store);
         Box::pin(future::poll_fn(move |cx| {
             poll_with_state(token, cx, future.as_mut())
         }))
@@ -3385,10 +3387,10 @@ impl Instance {
         store
             .as_context_mut()
             .with_detached_instance(self, |store, instance| {
-                // SAFETY: See corresponding comment in `ComponentInstance::wrap_call`.
-                let mut accessor = unsafe { Accessor::new(instance.instance()) };
-                let mut future = Box::pin(async move { fun(&mut accessor).await });
                 let token = StoreToken::new(store);
+                // SAFETY: See corresponding comment in `ComponentInstance::wrap_call`.
+                let mut accessor = unsafe { Accessor::new(token, instance.instance()) };
+                let mut future = Box::pin(async move { fun(&mut accessor).await });
                 Box::pin(future::poll_fn(move |cx| {
                     poll_with_state(token, cx, future.as_mut())
                 }))
