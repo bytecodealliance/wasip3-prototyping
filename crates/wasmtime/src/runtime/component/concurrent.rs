@@ -292,7 +292,7 @@ pub struct Accessor<T: 'static, D = HasSelf<T>>
 where
     D: HasData,
 {
-    get: Arc<dyn Fn() -> *mut (dyn VMStore) + Send + Sync>,
+    get: fn() -> *mut dyn VMStore,
     get_data: fn(&mut T) -> D::Data<'_>,
     spawn: fn(Spawned),
     instance: Option<Instance>,
@@ -328,7 +328,7 @@ where
         instance: Option<Instance>,
     ) -> Self {
         Self {
-            get: Arc::new(get),
+            get,
             get_data,
             spawn,
             instance,
@@ -354,7 +354,7 @@ where
         get_data: fn(&mut T) -> D2::Data<'_>,
     ) -> Accessor<T, D2> {
         Accessor {
-            get: self.get.clone(),
+            get: self.get,
             get_data,
             spawn: self.spawn,
             instance: self.instance,
@@ -376,7 +376,7 @@ where
         T: 'static,
     {
         let mut accessor = Self {
-            get: self.get.clone(),
+            get: self.get,
             get_data: self.get_data,
             spawn: self.spawn,
             instance: self.instance,
