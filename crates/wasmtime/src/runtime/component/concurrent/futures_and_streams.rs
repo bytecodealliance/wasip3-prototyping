@@ -1527,6 +1527,17 @@ enum Reader<'a> {
 impl Instance {
     /// Create a new Component Model `future` as pair of writable and readable ends,
     /// the latter of which may be passed to guest code.
+    ///
+    /// The `default` parameter will be used if the returned `FutureWriter` is
+    /// dropped before `FutureWriter::write` is called.  Since the write end of
+    /// a Component Model `future` must be written to before it is closed, and
+    /// since Rust does not currently provide a way to statically enforce that
+    /// (e.g. linear typing), we use this mechanism to ensure a value is always
+    /// written prior to closing.
+    ///
+    /// If there's no plausible default value, and you're sure
+    /// `FutureWriter::write` will be called, you can consider passing `||
+    /// unreachable!()` as the `default` parameter.
     pub fn future<
         T: func::Lower + func::Lift + Send + Sync + 'static,
         U: 'static,
