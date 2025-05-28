@@ -287,7 +287,6 @@ where
 {
     get: fn() -> *mut dyn VMStore,
     get_data: fn(&mut T) -> D::Data<'_>,
-    spawn: fn(Spawned),
     instance: Option<Instance>,
 }
 
@@ -313,7 +312,6 @@ impl<T> Accessor<T> {
         Self {
             get: get_store,
             get_data: |x| x,
-            spawn: spawn_task,
             instance,
         }
     }
@@ -361,7 +359,6 @@ where
         Accessor {
             get: self.get,
             get_data,
-            spawn: self.spawn,
             instance: self.instance,
         }
     }
@@ -382,14 +379,20 @@ where
         let mut accessor = Self {
             get: self.get,
             get_data: self.get_data,
-            spawn: self.spawn,
             instance: self.instance,
         };
         let future = Arc::new(Mutex::new(AbortWrapper::Unpolled(Box::pin(async move {
             task.run(&mut accessor).await
         }))));
         let handle = AbortHandle::new(future.clone());
-        (self.spawn)(future);
+        self.with(|access| {
+            access
+                .store
+                .0
+                .concurrent_async_state()
+                .spawned_tasks
+                .push(future);
+        });
         handle
     }
 
@@ -494,7 +497,6 @@ where
 /// task, if any.
 struct State {
     store: *mut dyn VMStore,
-    spawned: Vec<Spawned>,
 }
 
 /// Thread-local state for making the store and component instance available to
@@ -622,12 +624,6 @@ fn get_store() -> *mut dyn VMStore {
         .unwrap()
 }
 
-/// Appends the specified background task to the `State::spawned` list in
-/// `STATE`.
-fn spawn_task(task: Spawned) {
-    STATE.with(|v| v.borrow_mut().as_mut().unwrap().spawned.push(task));
-}
-
 /// Poll the specified future using the store and instance references borrowed
 /// using `with_local_instance`.
 ///
@@ -648,18 +644,14 @@ fn poll_with_state<T: 'static, F: Future + ?Sized>(
         let store_ptr = store as *mut dyn VMStore;
         let mut store_cx = token.as_context_mut(store);
 
-        let (result, spawned) = store_cx.with_attached_instance(instance, |_, _| {
-            let old_state = STATE.with(|v| {
-                v.replace(Some(State {
-                    store: store_ptr,
-                    spawned: Vec::new(),
-                }))
-            });
+        let result = store_cx.with_attached_instance(instance, |_, _| {
+            let old_state = STATE.with(|v| v.replace(Some(State { store: store_ptr })));
             let _reset_state = ResetState(old_state);
-            (future.poll(cx), STATE.with(|v| v.take()).unwrap().spawned)
+            future.poll(cx)
         });
 
-        for spawned in spawned {
+        let spawned_tasks = mem::take(&mut store_cx.0.concurrent_async_state().spawned_tasks);
+        for spawned in spawned_tasks {
             // Wrap the future in a `poll_fn` closure to handle cancellation.
             instance.spawn(future::poll_fn(move |cx| {
                 let mut spawned = spawned.try_lock().unwrap();
@@ -4472,6 +4464,10 @@ pub(crate) struct AsyncState {
     >,
     /// See `PollContext`
     current_poll_cx: UnsafeCell<PollContext>,
+
+    /// List of spawned tasks built up during a polling operation. This is
+    /// drained after the poll in `poll_with_state`.
+    spawned_tasks: Vec<Spawned>,
 }
 
 impl Default for AsyncState {
@@ -4479,6 +4475,7 @@ impl Default for AsyncState {
         Self {
             current_suspend: UnsafeCell::new(ptr::null_mut()),
             current_poll_cx: UnsafeCell::new(PollContext::default()),
+            spawned_tasks: Vec::new(),
         }
     }
 }
