@@ -4,10 +4,10 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use bytes::{Bytes, BytesMut};
-use component_async_tests::{sleep, Ctx};
+use component_async_tests::{Ctx, sleep};
 use futures::{
-    stream::{FuturesUnordered, TryStreamExt},
     FutureExt,
+    stream::{FuturesUnordered, TryStreamExt},
 };
 use tokio::fs;
 use wasi_http_draft::wasi::http::types::{ErrorCode, Method, Scheme};
@@ -95,8 +95,8 @@ pub async fn async_http_middleware_with_chain() -> Result<()> {
 async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
     use {
         flate2::{
-            write::{DeflateDecoder, DeflateEncoder},
             Compression,
+            write::{DeflateDecoder, DeflateEncoder},
         },
         std::io::Write,
     };
@@ -234,11 +234,13 @@ async fn test_http_echo(component: &[u8], use_compression: bool) -> Result<()> {
                         (k.as_str(), v.as_slice()),
                         ("content-encoding", b"deflate")
                     )));
-                    assert!(response
-                        .headers
-                        .0
-                        .iter()
-                        .all(|(k, _)| k.as_str() != "content-length"));
+                    assert!(
+                        response
+                            .headers
+                            .0
+                            .iter()
+                            .all(|(k, _)| k.as_str() != "content-length")
+                    );
                 }
 
                 response_trailers = response.body.trailers.take();
