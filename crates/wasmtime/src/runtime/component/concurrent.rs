@@ -320,8 +320,7 @@ where
     /// intended scope.  If it returns, the caller must be granted exclusive
     /// access to that store until the call to `Future::poll` for the current
     /// host task returns.
-    #[doc(hidden)]
-    pub unsafe fn new(
+    unsafe fn new(
         get: fn() -> *mut dyn VMStore,
         get_data: fn(&mut T) -> D::Data<'_>,
         spawn: fn(Spawned),
