@@ -2,7 +2,6 @@ pub mod backpressure;
 pub mod borrowing;
 pub mod error_context;
 pub mod post_return;
-pub mod proxy;
 pub mod read_resource_stream;
 pub mod round_trip;
 pub mod round_trip_direct;

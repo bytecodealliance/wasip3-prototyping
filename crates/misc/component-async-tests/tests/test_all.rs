@@ -17,7 +17,6 @@ use scenario::error_context::{
     async_error_context, async_error_context_callee, async_error_context_caller,
 };
 use scenario::post_return::{async_post_return_callee, async_post_return_caller};
-use scenario::proxy::{async_http_echo, async_http_middleware, async_http_middleware_with_chain};
 use scenario::read_resource_stream::async_read_resource_stream;
 use scenario::round_trip::{
     async_round_trip_stackful, async_round_trip_stackless, async_round_trip_stackless_sync_import,

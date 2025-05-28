@@ -128,12 +128,6 @@ interface closed {
   read-future: func(rx: future<u8>, expected: u8, rx-ignore: future<u8>);
 }
 
-interface chain-http {
-  use wasi:http/types@0.3.0-draft.{request, response, error-code};
-
-  handle: async func(request: request) -> result<response, error-code>;
-}
-
 interface sleep {
   sleep-millis: async func(time-in-millis: u64);
 }
@@ -283,13 +277,6 @@ world read-resource-stream {
 
 world closed-streams {
   export closed;
-}
-
-world middleware-with-chain {
-  include wasi:http/proxy@0.3.0-draft;
-
-  import sleep;
-  import chain-http;
 }
 
 world sleep-host {

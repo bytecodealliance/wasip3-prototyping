@@ -1,17 +1,7 @@
-mod bindings {
-    wit_bindgen::generate!({
-        path: "../misc/component-async-tests/wit",
-        world: "wasi:http/proxy",
-    });
-
-    use super::Component;
-    export!(Component);
-}
-
 use {
-    bindings::{
-        exports::wasi::http::handler::Guest as Handler,
-        wasi::http::types::{Body, ErrorCode, Request, Response},
+    test_programs::p3::{
+        proxy::exports::wasi::http::handler::Guest as Handler,
+        wasi::http::types::{ErrorCode, Request, Response},
         wit_future, wit_stream,
     },
     wit_bindgen_rt::async_support::{self, StreamResult},
@@ -19,14 +9,19 @@ use {
 
 struct Component;
 
+test_programs::p3::proxy::export!(Component);
+
 impl Handler for Component {
     /// Return a response which echoes the request headers, body, and trailers.
     async fn handle(request: Request) -> Result<Response, ErrorCode> {
-        let (headers, body) = Request::into_parts(request);
+        let headers = request.headers();
+        let (body, trailers) = request.body().unwrap();
 
-        if false {
+        // let (headers, body) = Request::into_parts(request);
+
+        let (response, _result) = if false {
             // This is the easy and efficient way to do it...
-            Ok(Response::new(headers, body))
+            Response::new(headers, Some(body), trailers)
         } else {
             // ...but we do it the more difficult, less efficient way here to exercise various component model
             // features (e.g. `future`s, `stream`s, and post-return asynchronous execution):
@@ -34,7 +29,7 @@ impl Handler for Component {
             let (mut pipe_tx, pipe_rx) = wit_stream::new();
 
             async_support::spawn(async move {
-                let mut body_rx = body.stream().unwrap();
+                let mut body_rx = body;
                 let mut chunk = Vec::with_capacity(1024);
                 loop {
                     let (status, buf) = body_rx.read(chunk).await;
@@ -51,16 +46,14 @@ impl Handler for Component {
 
                 drop(pipe_tx);
 
-                if let Some(trailers) = Body::finish(body) {
-                    trailers_tx.write(trailers.await).await.unwrap();
-                }
+                trailers_tx.write(trailers.await).await.unwrap();
+                drop(request);
             });
 
-            Ok(Response::new(
-                headers,
-                Body::new_with_trailers(pipe_rx, trailers_rx),
-            ))
-        }
+            Response::new(headers, Some(pipe_rx), trailers_rx)
+        };
+
+        Ok(response)
     }
 }
 

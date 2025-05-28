@@ -1,31 +1,23 @@
-mod bindings {
-    wit_bindgen::generate!({
-        path: "../misc/component-async-tests/wit",
-        world: "wasi:http/proxy",
-    });
-
-    use super::Component;
-    export!(Component);
-}
-
 use {
-    bindings::{
-        exports::wasi::http::handler::Guest as Handler,
-        wasi::http::{
-            handler,
-            types::{Body, ErrorCode, Headers, Request, Response},
-        },
-        wit_future, wit_stream,
-    },
     flate2::{
         Compression,
         write::{DeflateDecoder, DeflateEncoder},
     },
     std::{io::Write, mem},
+    test_programs::p3::{
+        proxy::exports::wasi::http::handler::Guest as Handler,
+        wasi::http::{
+            handler,
+            types::{ErrorCode, Headers, Request, Response},
+        },
+        wit_future, wit_stream,
+    },
     wit_bindgen_rt::async_support::{self, StreamResult},
 };
 
 struct Component;
+
+test_programs::p3::proxy::export!(Component);
 
 impl Handler for Component {
     /// Forward the specified request to the imported `wasi:http/handler`, transparently decoding the request body
@@ -39,7 +31,7 @@ impl Handler for Component {
         let authority = request.authority();
         let mut accept_deflated = false;
         let mut content_deflated = false;
-        let (headers, body) = Request::into_parts(request);
+        let headers = request.headers();
         let mut headers = headers.entries();
         headers.retain(|(k, v)| match (k.as_str(), v.as_slice()) {
             ("accept-encoding", value)
@@ -56,8 +48,9 @@ impl Handler for Component {
             }
             _ => true,
         });
+        let (mut body, trailers) = request.body().unwrap();
 
-        let body = if content_deflated {
+        let (body, trailers) = if content_deflated {
             // Next, spawn a task to pipe and decode the original request body and trailers into a new request
             // we'll create below.  This will run concurrently with any code in the imported `wasi:http/handler`.
             let (trailers_tx, trailers_rx) = wit_future::new(|| todo!());
@@ -65,17 +58,15 @@ impl Handler for Component {
 
             async_support::spawn(async move {
                 {
-                    let mut body_rx = body.stream().unwrap();
-
                     let mut decoder = DeflateDecoder::new(Vec::new());
 
-                    let (mut status, mut chunk) = body_rx.read(Vec::with_capacity(64 * 1024)).await;
+                    let (mut status, mut chunk) = body.read(Vec::with_capacity(64 * 1024)).await;
                     while let StreamResult::Complete(_) = status {
                         decoder.write_all(&chunk).unwrap();
                         let remaining = pipe_tx.write_all(mem::take(decoder.get_mut())).await;
                         assert!(remaining.is_empty());
                         *decoder.get_mut() = remaining;
-                        (status, chunk) = body_rx.read(chunk).await;
+                        (status, chunk) = body.read(chunk).await;
                     }
 
                     let remaining = pipe_tx.write_all(decoder.finish().unwrap()).await;
@@ -84,19 +75,24 @@ impl Handler for Component {
                     drop(pipe_tx);
                 }
 
-                if let Some(trailers) = Body::finish(body) {
-                    trailers_tx.write(trailers.await).await.unwrap();
-                }
+                trailers_tx.write(trailers.await).await.unwrap();
+
+                drop(request);
             });
 
-            Body::new_with_trailers(pipe_rx, trailers_rx)
+            (pipe_rx, trailers_rx)
         } else {
-            body
+            (body, trailers)
         };
 
         // While the above task (if any) is running, synthesize a request from the parts collected above and pass
         // it to the imported `wasi:http/handler`.
-        let my_request = Request::new(Headers::from_list(&headers).unwrap(), body, None);
+        let (my_request, _request_complete) = Request::new(
+            Headers::from_list(&headers).unwrap(),
+            Some(body),
+            trailers,
+            None,
+        );
         my_request.set_method(&method).unwrap();
         my_request.set_scheme(scheme.as_ref()).unwrap();
         my_request
@@ -108,13 +104,13 @@ impl Handler for Component {
 
         // Now that we have the response, extract the parts, adding an extra header if we'll be encoding the body.
         let status_code = response.status_code();
-        let (headers, body) = Response::into_parts(response);
-        let mut headers = headers.entries();
+        let mut headers = response.headers().entries();
         if accept_deflated {
             headers.push(("content-encoding".into(), b"deflate".into()));
         }
 
-        let body = if accept_deflated {
+        let (mut body, trailers) = response.body().unwrap();
+        let (body, trailers) = if accept_deflated {
             headers.retain(|(name, _value)| name != "content-length");
 
             // Spawn another task; this one is to pipe and encode the original response body and trailers into a
@@ -125,17 +121,16 @@ impl Handler for Component {
 
             async_support::spawn(async move {
                 {
-                    let mut body_rx = body.stream().unwrap();
-
                     let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
-                    let (mut status, mut chunk) = body_rx.read(Vec::with_capacity(64 * 1024)).await;
+                    let (mut status, mut chunk) = body.read(Vec::with_capacity(64 * 1024)).await;
 
                     while let StreamResult::Complete(_) = status {
                         encoder.write_all(&chunk).unwrap();
                         let remaining = pipe_tx.write_all(mem::take(encoder.get_mut())).await;
                         assert!(remaining.is_empty());
                         *encoder.get_mut() = remaining;
-                        (status, chunk) = body_rx.read(chunk).await;
+                        chunk.clear();
+                        (status, chunk) = body.read(chunk).await;
                     }
 
                     let remaining = pipe_tx.write_all(encoder.finish().unwrap()).await;
@@ -144,19 +139,19 @@ impl Handler for Component {
                     drop(pipe_tx);
                 }
 
-                if let Some(trailers) = Body::finish(body) {
-                    trailers_tx.write(trailers.await).await.unwrap();
-                }
+                trailers_tx.write(trailers.await).await.unwrap();
+                drop(response);
             });
 
-            Body::new_with_trailers(pipe_rx, trailers_rx)
+            (pipe_rx, trailers_rx)
         } else {
-            body
+            (body, trailers)
         };
 
         // While the above tasks (if any) are running, synthesize a response from the parts collected above and
         // return it.
-        let my_response = Response::new(Headers::from_list(&headers).unwrap(), body);
+        let (my_response, _response_complete) =
+            Response::new(Headers::from_list(&headers).unwrap(), Some(body), trailers);
         my_response.set_status_code(status_code).unwrap();
 
         Ok(my_response)

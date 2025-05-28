@@ -18,6 +18,7 @@ use wasmtime_wasi_http::p3::{
 
 mod incoming;
 mod outgoing;
+mod proxy;
 
 struct Ctx<C: Client = TestClient> {
     cli: WasiCliCtx,
