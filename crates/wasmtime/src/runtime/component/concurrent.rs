@@ -299,10 +299,7 @@ where
     _phantom: PhantomData<fn() -> *mut StoreInner<T>>,
 }
 
-impl<T, D> Accessor<T, D>
-where
-    D: HasData,
-{
+impl<T> Accessor<T> {
     /// Creates a new `Accessor` backed by the specified functions.
     ///
     /// - `get`: used to retrieve the store
@@ -320,21 +317,21 @@ where
     /// intended scope.  If it returns, the caller must be granted exclusive
     /// access to that store until the call to `Future::poll` for the current
     /// host task returns.
-    unsafe fn new(
-        get: fn() -> *mut dyn VMStore,
-        get_data: fn(&mut T) -> D::Data<'_>,
-        spawn: fn(Spawned),
-        instance: Option<Instance>,
-    ) -> Self {
+    unsafe fn new(instance: Option<Instance>) -> Self {
         Self {
-            get,
-            get_data,
-            spawn,
+            get: get_store,
+            get_data: |x| x,
+            spawn: spawn_task,
             instance,
             _phantom: PhantomData,
         }
     }
+}
 
+impl<T, D> Accessor<T, D>
+where
+    D: HasData,
+{
     /// Run the specified closure, passing it mutable access to the store data.
     ///
     /// Note that the return value of the closure must be `'static`, meaning it
@@ -1919,7 +1916,7 @@ impl ComponentInstance {
         // thread-local variable which `poll_with_state` will populate and reset
         // with valid pointers to the store data and the store itself each time
         // the returned future is polled, respectively.
-        let mut accessor = unsafe { Accessor::new(get_store, |x| x, spawn_task, self.instance()) };
+        let mut accessor = unsafe { Accessor::new(self.instance()) };
         let mut future = Box::pin(async move { closure(&mut accessor, params).await });
         let token = StoreToken::new(store);
         Box::pin(future::poll_fn(move |cx| {
@@ -3390,8 +3387,7 @@ impl Instance {
             .as_context_mut()
             .with_detached_instance(self, |store, instance| {
                 // SAFETY: See corresponding comment in `ComponentInstance::wrap_call`.
-                let mut accessor =
-                    unsafe { Accessor::new(get_store, |x| x, spawn_task, instance.instance()) };
+                let mut accessor = unsafe { Accessor::new(instance.instance()) };
                 let mut future = Box::pin(async move { fun(&mut accessor).await });
                 let token = StoreToken::new(store);
                 Box::pin(future::poll_fn(move |cx| {
