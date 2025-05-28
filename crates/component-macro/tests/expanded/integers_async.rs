@@ -206,7 +206,7 @@ pub mod foo {
                 async fn r8(&mut self) -> i64;
                 async fn pair_ret(&mut self) -> (i64, u8);
             }
-            impl<_T: Host + Send> Host for &mut _T {
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
                 async fn a1(&mut self, x: u8) -> () {
                     Host::a1(*self, x).await
                 }

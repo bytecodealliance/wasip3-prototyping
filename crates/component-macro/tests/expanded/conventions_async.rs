@@ -228,7 +228,7 @@ pub mod foo {
                 /// Identifiers with the same name as keywords are quoted.
                 async fn bool(&mut self) -> ();
             }
-            impl<_T: Host + Send> Host for &mut _T {
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
                 async fn kebab_case(&mut self) -> () {
                     Host::kebab_case(*self).await
                 }

@@ -226,7 +226,7 @@ pub mod foo {
                 fn create_directory_at(&mut self) -> Result<(), Errno>;
                 fn stat(&mut self) -> Result<DescriptorStat, Errno>;
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn create_directory_at(&mut self) -> Result<(), Errno> {
                     Host::create_directory_at(*self)
                 }
@@ -287,7 +287,7 @@ pub mod foo {
                 );
             };
             pub trait Host {}
-            impl<_T: Host> Host for &mut _T {}
+            impl<_T: Host + ?Sized> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,

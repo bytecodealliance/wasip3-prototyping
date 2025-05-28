@@ -91,11 +91,10 @@ pub struct Host_Indices {}
 /// [`Linker`]: wasmtime::component::Linker
 pub struct Host_ {}
 #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-#[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
 pub trait Host_Imports: Send {
     async fn foo(&mut self) -> ();
 }
-impl<_T: Host_Imports + Send> Host_Imports for &mut _T {
+impl<_T: Host_Imports + ?Sized + Send> Host_Imports for &mut _T {
     async fn foo(&mut self) -> () {
         Host_Imports::foo(*self).await
     }

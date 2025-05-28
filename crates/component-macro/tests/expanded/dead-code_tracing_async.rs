@@ -192,7 +192,7 @@ pub mod a {
             pub trait Host: Send {
                 async fn f(&mut self) -> LiveType;
             }
-            impl<_T: Host + Send> Host for &mut _T {
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
                 async fn f(&mut self) -> LiveType {
                     Host::f(*self).await
                 }
@@ -289,7 +289,7 @@ pub mod a {
             };
             #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send {}
-            impl<_T: Host + Send> Host for &mut _T {}
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,

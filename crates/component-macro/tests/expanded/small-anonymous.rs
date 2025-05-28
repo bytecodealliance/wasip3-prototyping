@@ -217,7 +217,7 @@ pub mod foo {
                     &mut self,
                 ) -> Result<Option<wasmtime::component::__internal::String>, Error>;
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn option_test(
                     &mut self,
                 ) -> Result<Option<wasmtime::component::__internal::String>, Error> {

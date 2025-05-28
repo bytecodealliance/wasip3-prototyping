@@ -344,7 +344,7 @@ pub mod foo {
                 async fn aggregate_result(&mut self) -> Aggregates;
                 async fn typedef_inout(&mut self, e: TupleTypedef2) -> i32;
             }
-            impl<_T: Host + Send> Host for &mut _T {
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
                 async fn tuple_arg(&mut self, x: (char, u32)) -> () {
                     Host::tuple_arg(*self, x).await
                 }

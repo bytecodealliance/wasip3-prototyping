@@ -225,7 +225,7 @@ pub mod foo {
                 assert!(2 == < T as wasmtime::component::ComponentType >::ALIGN32);
             };
             pub trait Host {}
-            impl<_T: Host> Host for &mut _T {}
+            impl<_T: Host + ?Sized> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,

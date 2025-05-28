@@ -8,7 +8,7 @@ pub trait HostWorldResource {
         rep: wasmtime::component::Resource<WorldResource>,
     ) -> wasmtime::Result<()>;
 }
-impl<_T: HostWorldResource> HostWorldResource for &mut _T {
+impl<_T: HostWorldResource + ?Sized> HostWorldResource for &mut _T {
     fn new(&mut self) -> wasmtime::component::Resource<WorldResource> {
         HostWorldResource::new(*self)
     }
@@ -123,7 +123,7 @@ pub struct TheWorld {
 pub trait TheWorldImports: HostWorldResource {
     fn some_world_func(&mut self) -> wasmtime::component::Resource<WorldResource>;
 }
-impl<_T: TheWorldImports> TheWorldImports for &mut _T {
+impl<_T: TheWorldImports + ?Sized> TheWorldImports for &mut _T {
     fn some_world_func(&mut self) -> wasmtime::component::Resource<WorldResource> {
         TheWorldImports::some_world_func(*self)
     }
@@ -350,7 +350,7 @@ pub mod foo {
                     rep: wasmtime::component::Resource<Bar>,
                 ) -> wasmtime::Result<()>;
             }
-            impl<_T: HostBar> HostBar for &mut _T {
+            impl<_T: HostBar + ?Sized> HostBar for &mut _T {
                 fn new(&mut self) -> wasmtime::component::Resource<Bar> {
                     HostBar::new(*self)
                 }
@@ -485,7 +485,7 @@ pub mod foo {
                 fn record_result(&mut self) -> NestedOwn;
                 fn func_with_handle_typedef(&mut self, x: SomeHandle) -> ();
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn bar_own_arg(&mut self, x: wasmtime::component::Resource<Bar>) -> () {
                     Host::bar_own_arg(*self, x)
                 }
@@ -847,7 +847,7 @@ pub mod foo {
                     rep: wasmtime::component::Resource<A>,
                 ) -> wasmtime::Result<()>;
             }
-            impl<_T: HostA> HostA for &mut _T {
+            impl<_T: HostA + ?Sized> HostA for &mut _T {
                 fn drop(
                     &mut self,
                     rep: wasmtime::component::Resource<A>,
@@ -856,7 +856,7 @@ pub mod foo {
                 }
             }
             pub trait Host: HostA {}
-            impl<_T: Host> Host for &mut _T {}
+            impl<_T: Host + ?Sized> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
@@ -886,7 +886,7 @@ pub mod foo {
             use wasmtime::component::__internal::{anyhow, Box};
             pub type A = super::super::super::foo::foo::long_use_chain1::A;
             pub trait Host {}
-            impl<_T: Host> Host for &mut _T {}
+            impl<_T: Host + ?Sized> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
@@ -906,7 +906,7 @@ pub mod foo {
             use wasmtime::component::__internal::{anyhow, Box};
             pub type A = super::super::super::foo::foo::long_use_chain2::A;
             pub trait Host {}
-            impl<_T: Host> Host for &mut _T {}
+            impl<_T: Host + ?Sized> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
@@ -928,7 +928,7 @@ pub mod foo {
             pub trait Host {
                 fn foo(&mut self) -> wasmtime::component::Resource<A>;
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn foo(&mut self) -> wasmtime::component::Resource<A> {
                     Host::foo(*self)
                 }
@@ -965,7 +965,7 @@ pub mod foo {
                     rep: wasmtime::component::Resource<Foo>,
                 ) -> wasmtime::Result<()>;
             }
-            impl<_T: HostFoo> HostFoo for &mut _T {
+            impl<_T: HostFoo + ?Sized> HostFoo for &mut _T {
                 fn drop(
                     &mut self,
                     rep: wasmtime::component::Resource<Foo>,
@@ -974,7 +974,7 @@ pub mod foo {
                 }
             }
             pub trait Host: HostFoo {}
-            impl<_T: Host> Host for &mut _T {}
+            impl<_T: Host + ?Sized> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,

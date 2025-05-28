@@ -446,7 +446,7 @@ pub mod foo {
                     a: LoadStoreAllSizes,
                 ) -> LoadStoreAllSizes;
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn list_u8_param(
                     &mut self,
                     x: wasmtime::component::__internal::Vec<u8>,

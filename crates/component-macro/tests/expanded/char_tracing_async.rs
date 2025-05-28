@@ -180,7 +180,7 @@ pub mod foo {
                 /// A function that returns a character
                 async fn return_char(&mut self) -> char;
             }
-            impl<_T: Host + Send> Host for &mut _T {
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
                 /// A function that accepts a character
                 async fn take_char(&mut self, x: char) -> () {
                     Host::take_char(*self, x).await

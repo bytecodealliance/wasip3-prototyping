@@ -1,5 +1,4 @@
 use super::*;
-use crate::*;
 use test_programs_artifacts::*;
 use wasmtime_wasi::p2::bindings::Command;
 

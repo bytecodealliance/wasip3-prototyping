@@ -1366,15 +1366,7 @@ impl Wasmtime {
             return None;
         }
 
-        let wt = self.wasmtime_path();
         let world_camel = to_rust_upper_camel_case(&resolve.worlds[world].name);
-
-        if let CallStyle::Async | CallStyle::Concurrent = self.opts.call_style() {
-            uwriteln!(
-                self.src,
-                "#[{wt}::component::__internal::trait_variant_make(::core::marker::Send)]",
-            );
-        }
 
         let functions = self.import_functions.clone();
         let mut generator = InterfaceGenerator::new(self, resolve);
@@ -3064,7 +3056,7 @@ fn convert_{snake}(&mut self, err: {root}{custom_name}) -> {wt}::Result<{camel}>
         let maybe_send = if is_maybe_async { "+ Send" } else { "" };
         uwriteln!(
             self.src,
-            "impl <_T: {trait_name} {maybe_send}> {trait_name} for &mut _T {{"
+            "impl <_T: {trait_name} + ?Sized {maybe_send}> {trait_name} for &mut _T {{"
         );
         for func in partition.sync.iter() {
             let call_style = self.import_call_style(func);

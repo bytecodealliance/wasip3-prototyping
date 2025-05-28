@@ -181,7 +181,7 @@ pub mod foo {
             pub trait Host {
                 fn a(&mut self) -> Foo;
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn a(&mut self) -> Foo {
                     Host::a(*self)
                 }
@@ -219,7 +219,7 @@ pub mod foo {
             pub trait Host {
                 fn a(&mut self) -> Foo;
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn a(&mut self) -> Foo {
                     Host::a(*self)
                 }
@@ -257,7 +257,7 @@ pub mod foo {
             pub trait Host {
                 fn a(&mut self) -> Foo;
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn a(&mut self) -> Foo {
                     Host::a(*self)
                 }
@@ -297,7 +297,7 @@ pub mod d {
     pub trait Host {
         fn b(&mut self) -> Foo;
     }
-    impl<_T: Host> Host for &mut _T {
+    impl<_T: Host + ?Sized> Host for &mut _T {
         fn b(&mut self) -> Foo {
             Host::b(*self)
         }

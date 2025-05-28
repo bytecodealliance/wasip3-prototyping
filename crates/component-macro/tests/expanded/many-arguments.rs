@@ -272,7 +272,7 @@ pub mod foo {
                 ) -> ();
                 fn big_argument(&mut self, x: BigStruct) -> ();
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn many_args(
                     &mut self,
                     a1: u64,

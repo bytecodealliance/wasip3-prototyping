@@ -83,7 +83,7 @@ pub trait HostBaz {
     fn foo(&mut self, self_: wasmtime::component::Resource<Baz>) -> ();
     fn drop(&mut self, rep: wasmtime::component::Resource<Baz>) -> wasmtime::Result<()>;
 }
-impl<_T: HostBaz> HostBaz for &mut _T {
+impl<_T: HostBaz + ?Sized> HostBaz for &mut _T {
     fn foo(&mut self, self_: wasmtime::component::Resource<Baz>) -> () {
         HostBaz::foo(*self, self_)
     }
@@ -183,7 +183,7 @@ pub struct TheWorld {}
 pub trait TheWorldImports: HostBaz {
     fn foo(&mut self) -> ();
 }
-impl<_T: TheWorldImports> TheWorldImports for &mut _T {
+impl<_T: TheWorldImports + ?Sized> TheWorldImports for &mut _T {
     fn foo(&mut self) -> () {
         TheWorldImports::foo(*self)
     }
@@ -368,7 +368,7 @@ pub mod foo {
                     rep: wasmtime::component::Resource<Bar>,
                 ) -> wasmtime::Result<()>;
             }
-            impl<_T: HostBar> HostBar for &mut _T {
+            impl<_T: HostBar + ?Sized> HostBar for &mut _T {
                 fn foo(&mut self, self_: wasmtime::component::Resource<Bar>) -> () {
                     HostBar::foo(*self, self_)
                 }
@@ -382,7 +382,7 @@ pub mod foo {
             pub trait Host: HostBar {
                 fn foo(&mut self) -> ();
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn foo(&mut self) -> () {
                     Host::foo(*self)
                 }

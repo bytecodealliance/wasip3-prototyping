@@ -199,7 +199,7 @@ pub mod foo {
                 fn r8(&mut self) -> i64;
                 fn pair_ret(&mut self) -> (i64, u8);
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn a1(&mut self, x: u8) -> () {
                     Host::a1(*self, x)
                 }

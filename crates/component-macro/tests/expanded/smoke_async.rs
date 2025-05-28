@@ -166,7 +166,7 @@ pub mod imports {
     pub trait Host: Send {
         async fn y(&mut self) -> ();
     }
-    impl<_T: Host + Send> Host for &mut _T {
+    impl<_T: Host + ?Sized + Send> Host for &mut _T {
         async fn y(&mut self) -> () {
             Host::y(*self).await
         }

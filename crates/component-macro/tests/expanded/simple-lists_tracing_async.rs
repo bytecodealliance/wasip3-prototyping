@@ -201,7 +201,7 @@ pub mod foo {
                     wasmtime::component::__internal::Vec<u32>,
                 >;
             }
-            impl<_T: Host + Send> Host for &mut _T {
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
                 async fn simple_list1(
                     &mut self,
                     l: wasmtime::component::__internal::Vec<u32>,

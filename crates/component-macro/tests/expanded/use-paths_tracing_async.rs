@@ -189,7 +189,7 @@ pub mod foo {
             pub trait Host: Send {
                 async fn a(&mut self) -> Foo;
             }
-            impl<_T: Host + Send> Host for &mut _T {
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
                 async fn a(&mut self) -> Foo {
                     Host::a(*self).await
                 }
@@ -243,7 +243,7 @@ pub mod foo {
             pub trait Host: Send {
                 async fn a(&mut self) -> Foo;
             }
-            impl<_T: Host + Send> Host for &mut _T {
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
                 async fn a(&mut self) -> Foo {
                     Host::a(*self).await
                 }
@@ -297,7 +297,7 @@ pub mod foo {
             pub trait Host: Send {
                 async fn a(&mut self) -> Foo;
             }
-            impl<_T: Host + Send> Host for &mut _T {
+            impl<_T: Host + ?Sized + Send> Host for &mut _T {
                 async fn a(&mut self) -> Foo {
                     Host::a(*self).await
                 }
@@ -353,7 +353,7 @@ pub mod d {
     pub trait Host: Send {
         async fn b(&mut self) -> Foo;
     }
-    impl<_T: Host + Send> Host for &mut _T {
+    impl<_T: Host + ?Sized + Send> Host for &mut _T {
         async fn b(&mut self) -> Foo {
             Host::b(*self).await
         }

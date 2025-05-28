@@ -181,7 +181,7 @@ pub mod my {
             pub trait Host {
                 fn x(&mut self) -> ();
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn x(&mut self) -> () {
                     Host::x(*self)
                 }
@@ -216,7 +216,7 @@ pub mod my {
             pub trait Host {
                 fn x(&mut self) -> ();
             }
-            impl<_T: Host> Host for &mut _T {
+            impl<_T: Host + ?Sized> Host for &mut _T {
                 fn x(&mut self) -> () {
                     Host::x(*self)
                 }
