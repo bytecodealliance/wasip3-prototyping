@@ -1416,6 +1416,8 @@ struct TransmitState {
     writer_watcher: Option<oneshot::Sender<()>>,
     /// Like `writer_watcher`, but for the reverse direction.
     reader_watcher: Option<oneshot::Sender<()>>,
+    /// Whether the write end may be closed or not.
+    may_close_writer: bool,
 }
 
 impl Default for TransmitState {
@@ -1427,6 +1429,7 @@ impl Default for TransmitState {
             write: WriteState::Open,
             reader_watcher: None,
             writer_watcher: None,
+            may_close_writer: true,
         }
     }
 }
@@ -1550,7 +1553,7 @@ impl Instance {
         store
             .as_context_mut()
             .with_detached_instance(self, |mut store, instance| {
-                let (write, read) = instance.new_transmit()?;
+                let (write, read) = instance.new_transmit(TransmitKind::Future)?;
 
                 Ok((
                     FutureWriter::new(
@@ -1591,7 +1594,7 @@ impl Instance {
         store
             .as_context_mut()
             .with_detached_instance(self, |mut store, instance| {
-                let (write, read) = instance.new_transmit()?;
+                let (write, read) = instance.new_transmit(TransmitKind::Stream)?;
 
                 Ok((
                     StreamWriter::new(
@@ -1899,7 +1902,10 @@ impl ComponentInstance {
 
     /// Allocate a new future or stream, including the `TransmitState` and the
     /// `TransmitHandle`s corresponding to the read and write ends.
-    fn new_transmit(&mut self) -> Result<(TableId<TransmitHandle>, TableId<TransmitHandle>)> {
+    fn new_transmit(
+        &mut self,
+        kind: TransmitKind,
+    ) -> Result<(TableId<TransmitHandle>, TableId<TransmitHandle>)> {
         let state_id = self.push(TransmitState::default())?;
 
         let write = self.push(TransmitHandle::new(state_id))?;
@@ -1908,6 +1914,10 @@ impl ComponentInstance {
         let state = self.get_mut(state_id)?;
         state.write_handle = write;
         state.read_handle = read;
+
+        if let TransmitKind::Future = kind {
+            state.may_close_writer = false;
+        }
 
         log::trace!("new transmit: state {state_id:?}; write {write:?}; read {read:?}",);
 
@@ -1941,7 +1951,10 @@ impl ComponentInstance {
     /// write ends to the (sub-)component instance to which the specified
     /// `TableIndex` belongs.
     fn guest_new(&mut self, ty: TableIndex) -> Result<ResourcePair> {
-        let (write, read) = self.new_transmit()?;
+        let (write, read) = self.new_transmit(match ty {
+            TableIndex::Future(_) => TransmitKind::Future,
+            TableIndex::Stream(_) => TransmitKind::Stream,
+        })?;
         let read = self
             .state_table(ty)
             .insert(read.rep(), waitable_state(ty, StreamFutureState::Read))?;
@@ -1975,6 +1988,7 @@ impl ComponentInstance {
         let transmit = self
             .get_mut(transmit_id)
             .with_context(|| format!("retrieving state for transmit [{transmit_rep}]"))?;
+        transmit.may_close_writer = true;
 
         let new_state = if let ReadState::Closed = &transmit.read {
             ReadState::Closed
@@ -2176,8 +2190,11 @@ impl ComponentInstance {
 
     /// Cancel a pending stream or future write from the host.
     ///
-    /// `rep` is the `TransmitState` rep for the stream or future.
-    fn host_cancel_write(&mut self, rep: u32) -> Result<ReturnCode> {
+    /// # Arguments
+    ///
+    /// * `rep` - The `TransmitState` rep for the stream or future.
+    /// * `kind` - Whether `rep` is for a stream or a future.
+    fn host_cancel_write(&mut self, rep: u32, kind: TransmitKind) -> Result<ReturnCode> {
         let transmit_id = TableId::<TransmitState>::new(rep);
         let transmit = self.get_mut(transmit_id)?;
 
@@ -2207,6 +2224,10 @@ impl ComponentInstance {
         }
 
         log::trace!("cancelled write {transmit_id:?}");
+
+        if let (TransmitKind::Future, ReturnCode::Cancelled(0)) = (kind, code) {
+            transmit.may_close_writer = false;
+        }
 
         Ok(code)
     }
@@ -2258,6 +2279,10 @@ impl ComponentInstance {
         let transmit = self
             .get_mut(transmit_id)
             .with_context(|| format!("error closing writer {transmit_rep}"))?;
+
+        if !transmit.may_close_writer {
+            bail!("cannot close future write end without first writing a value")
+        }
 
         transmit.writer_watcher = None;
 
@@ -2652,6 +2677,7 @@ impl ComponentInstance {
         let transmit_id = self.get(transmit_handle)?.state;
         log::trace!("guest_write {transmit_handle:?} (handle {handle}; state {transmit_id:?})",);
         let transmit = self.get_mut(transmit_id)?;
+        transmit.may_close_writer = true;
         let new_state = if let ReadState::Closed = &transmit.read {
             ReadState::Closed
         } else {
@@ -3018,10 +3044,11 @@ impl ComponentInstance {
         writer: u32,
         _async_: bool,
     ) -> Result<ReturnCode> {
-        let (rep, WaitableState::Stream(_, state) | WaitableState::Future(_, state)) =
-            self.state_table(ty).get_mut_by_index(writer)?
-        else {
-            bail!("invalid stream or future handle");
+        let (rep, state) = self.state_table(ty).get_mut_by_index(writer)?;
+        let (state, kind) = match state {
+            WaitableState::Stream(_, state) => (state, TransmitKind::Stream),
+            WaitableState::Future(_, state) => (state, TransmitKind::Future),
+            _ => bail!("invalid stream or future handle"),
         };
         let id = TableId::<TransmitHandle>::new(rep);
         log::trace!("guest cancel write {id:?} (handle {writer})");
@@ -3037,7 +3064,7 @@ impl ComponentInstance {
             }
         }
         let rep = self.get(id)?.state.rep();
-        self.host_cancel_write(rep)
+        self.host_cancel_write(rep, kind)
     }
 
     /// Cancel a pending read for the specified stream or future from the guest.

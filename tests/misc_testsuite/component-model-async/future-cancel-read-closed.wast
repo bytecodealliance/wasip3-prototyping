@@ -8,11 +8,13 @@
   (core instance $libc (instantiate $libc))
   (core func $read (canon future.read $f async (memory $libc "mem")))
   (core func $cancel (canon future.cancel-read $f))
+  (core func $write (canon future.write $f async (memory $libc "mem")))
   (core func $close-write (canon future.close-writable $f))
   (core module $m
     (import "" "new" (func $new (result i64)))
     (import "" "read" (func $read (param i32 i32) (result i32)))
     (import "" "cancel" (func $cancel (param i32) (result i32)))
+    (import "" "write" (func $write (param i32 i32) (result i32)))
     (import "" "close-write" (func $close-write (param i32)))
 
     (func (export "f") (result i32)
@@ -34,6 +36,10 @@
 
       ;; close the write end
       local.get $write
+      i32.const 0
+      call $write
+      drop
+      local.get $write
       call $close-write
 
       ;; cancel the read, returning the result
@@ -47,6 +53,7 @@
       (export "new" (func $new))
       (export "read" (func $read))
       (export "cancel" (func $cancel))
+      (export "write" (func $write))
       (export "close-write" (func $close-write))
     ))
   ))
@@ -54,4 +61,4 @@
   (func (export "f") (result u32) (canon lift (core func $i "f")))
 )
 
-(assert_return (invoke "f") (u32.const 1)) ;; expect CLOSED status (not CANCELLED)
+(assert_return (invoke "f") (u32.const 0x11)) ;; expect CLOSED status (not CANCELLED)
