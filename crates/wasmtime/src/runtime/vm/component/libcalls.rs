@@ -1200,7 +1200,7 @@ unsafe fn error_context_new(
 ) -> Result<u32> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
         instance.error_context_new(
-            store,
+            store.store_opaque_mut(),
             memory.cast::<crate::vm::VMMemoryDefinition>(),
             realloc.cast::<crate::vm::VMFuncRef>(),
             string_encoding,

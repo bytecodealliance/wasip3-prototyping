@@ -506,7 +506,7 @@ impl InstanceData {
 
 struct Instantiator<'a> {
     component: &'a Component,
-    data: InstanceData,
+    instance: Instance,
     core_imports: OwnedImports,
     imports: &'a PrimaryMap<RuntimeImportIndex, RuntimeImport>,
 }
@@ -547,21 +547,40 @@ impl<'a> Instantiator<'a> {
         store.modules_mut().register_component(component);
         let imported_resources: ImportedResources =
             PrimaryMap::with_capacity(env_component.imported_resources.len());
+        let instance = Instance(store.store_data_mut().insert(None));
+        store[instance.0] = Some(Box::new(InstanceData {
+            instances: PrimaryMap::with_capacity(env_component.num_runtime_instances as usize),
+            component: component.clone(),
+            state: OwnedComponentInstance::new(
+                component.runtime_info(),
+                Arc::new(imported_resources),
+                store.traitobj(),
+                instance,
+            ),
+            imports: imports.clone(),
+        }));
+
         Instantiator {
             component,
             imports,
             core_imports: OwnedImports::empty(),
-            data: InstanceData {
-                instances: PrimaryMap::with_capacity(env_component.num_runtime_instances as usize),
-                component: component.clone(),
-                state: OwnedComponentInstance::new(
-                    component.runtime_info(),
-                    Arc::new(imported_resources),
-                    store.traitobj(),
-                ),
-                imports: imports.clone(),
-            },
+            instance,
         }
+    }
+
+    fn data<'b>(&self, store: &'b mut StoreOpaque) -> &'b mut InstanceData {
+        store[self.instance.0].as_mut().unwrap()
+    }
+
+    fn with_data<R>(
+        &self,
+        store: &mut StoreOpaque,
+        fun: impl FnOnce(&mut StoreOpaque, &mut InstanceData) -> R,
+    ) -> R {
+        let mut data = store[self.instance.0].take().unwrap();
+        let result = fun(store, &mut data);
+        store[self.instance.0] = Some(data);
+        result
     }
 
     fn run<T>(&mut self, store: &mut StoreContextMut<'_, T>) -> Result<()> {
@@ -577,9 +596,11 @@ impl<'a> Instantiator<'a> {
                 } => (*ty, NonNull::from(dtor_funcref)),
                 _ => unreachable!(),
             };
-            let i = self.data.resource_types_mut().push(ty);
+            let i = self.data(store.0).resource_types_mut().push(ty);
             assert_eq!(i, idx);
-            self.data.state.set_resource_destructor(idx, Some(func_ref));
+            self.data(store.0)
+                .state
+                .set_resource_destructor(idx, Some(func_ref));
         }
 
         // Next configure all `VMFuncRef`s for trampolines that this component
@@ -593,9 +614,12 @@ impl<'a> Instantiator<'a> {
                 None => panic!("found unregistered signature: {sig:?}"),
             };
 
-            self.data
-                .state
-                .set_trampoline(idx, ptrs.wasm_call, ptrs.array_call, signature);
+            self.data(store.0).state.set_trampoline(
+                idx,
+                ptrs.wasm_call,
+                ptrs.array_call,
+                signature,
+            );
         }
 
         for initializer in env_component.initializers.iter() {
@@ -642,7 +666,7 @@ impl<'a> Instantiator<'a> {
                     let i = unsafe {
                         crate::Instance::new_started_impl(store, module, imports.as_ref())?
                     };
-                    self.data.instances.push(i);
+                    self.data(store.0).instances.push(i);
                 }
 
                 GlobalInitializer::LowerImport { import, index } => {
@@ -650,7 +674,9 @@ impl<'a> Instantiator<'a> {
                         RuntimeImport::Func(func) => func,
                         _ => unreachable!(),
                     };
-                    self.data.state.set_lowering(*index, func.lowering());
+                    self.data(store.0)
+                        .state
+                        .set_lowering(*index, func.lowering());
                 }
 
                 GlobalInitializer::ExtractTable(table) => self.extract_table(store.0, table),
@@ -676,10 +702,12 @@ impl<'a> Instantiator<'a> {
     }
 
     fn resource(&mut self, store: &mut StoreOpaque, resource: &Resource) {
-        let dtor = resource
-            .dtor
-            .as_ref()
-            .map(|dtor| self.data.lookup_def(store, dtor));
+        let dtor = self.with_data(store, |store, data| {
+            resource
+                .dtor
+                .as_ref()
+                .map(|dtor| data.lookup_def(store, dtor))
+        });
         let dtor = dtor.map(|export| match export {
             crate::runtime::vm::Export::Function(f) => f.func_ref,
             _ => unreachable!(),
@@ -688,58 +716,62 @@ impl<'a> Instantiator<'a> {
             .component
             .env_component()
             .resource_index(resource.index);
-        self.data.state.set_resource_destructor(index, dtor);
-        let ty = ResourceType::guest(store.id(), &self.data.state, resource.index);
-        let i = self.data.resource_types_mut().push(ty);
+        self.data(store).state.set_resource_destructor(index, dtor);
+        let ty = ResourceType::guest(store.id(), &self.data(store).state, resource.index);
+        let i = self.data(store).resource_types_mut().push(ty);
         debug_assert_eq!(i, index);
     }
 
     fn extract_memory(&mut self, store: &mut StoreOpaque, memory: &ExtractMemory) {
-        let mem = match self.data.lookup_export(store, &memory.export) {
-            crate::runtime::vm::Export::Memory(m) => m,
-            _ => unreachable!(),
-        };
-        self.data
-            .state
-            .set_runtime_memory(memory.index, mem.definition);
+        self.with_data(store, |store, data| {
+            let mem = match data.lookup_export(store, &memory.export) {
+                crate::runtime::vm::Export::Memory(m) => m,
+                _ => unreachable!(),
+            };
+            data.state.set_runtime_memory(memory.index, mem.definition);
+        });
     }
 
     fn extract_realloc(&mut self, store: &mut StoreOpaque, realloc: &ExtractRealloc) {
-        let func_ref = match self.data.lookup_def(store, &realloc.def) {
-            crate::runtime::vm::Export::Function(f) => f.func_ref,
-            _ => unreachable!(),
-        };
-        self.data.state.set_runtime_realloc(realloc.index, func_ref);
+        self.with_data(store, |store, data| {
+            let func_ref = match data.lookup_def(store, &realloc.def) {
+                crate::runtime::vm::Export::Function(f) => f.func_ref,
+                _ => unreachable!(),
+            };
+            data.state.set_runtime_realloc(realloc.index, func_ref);
+        });
     }
 
     fn extract_callback(&mut self, store: &mut StoreOpaque, callback: &ExtractCallback) {
-        let func_ref = match self.data.lookup_def(store, &callback.def) {
-            crate::runtime::vm::Export::Function(f) => f.func_ref,
-            _ => unreachable!(),
-        };
-        self.data
-            .state
-            .set_runtime_callback(callback.index, func_ref);
+        self.with_data(store, |store, data| {
+            let func_ref = match data.lookup_def(store, &callback.def) {
+                crate::runtime::vm::Export::Function(f) => f.func_ref,
+                _ => unreachable!(),
+            };
+            data.state.set_runtime_callback(callback.index, func_ref);
+        });
     }
 
     fn extract_post_return(&mut self, store: &mut StoreOpaque, post_return: &ExtractPostReturn) {
-        let func_ref = match self.data.lookup_def(store, &post_return.def) {
-            crate::runtime::vm::Export::Function(f) => f.func_ref,
-            _ => unreachable!(),
-        };
-        self.data
-            .state
-            .set_runtime_post_return(post_return.index, func_ref);
+        self.with_data(store, |store, data| {
+            let func_ref = match data.lookup_def(store, &post_return.def) {
+                crate::runtime::vm::Export::Function(f) => f.func_ref,
+                _ => unreachable!(),
+            };
+            data.state
+                .set_runtime_post_return(post_return.index, func_ref);
+        });
     }
 
     fn extract_table(&mut self, store: &mut StoreOpaque, table: &ExtractTable) {
-        let export = match self.data.lookup_export(store, &table.export) {
-            crate::runtime::vm::Export::Table(t) => t,
-            _ => unreachable!(),
-        };
-        self.data
-            .state
-            .set_runtime_table(table.index, export.definition, export.vmctx);
+        self.with_data(store, |store, data| {
+            let export = match data.lookup_export(store, &table.export) {
+                crate::runtime::vm::Export::Table(t) => t,
+                _ => unreachable!(),
+            };
+            data.state
+                .set_runtime_table(table.index, export.definition, export.vmctx);
+        });
     }
 
     fn build_imports<'b>(
@@ -766,7 +798,7 @@ impl<'a> Instantiator<'a> {
             // The unsafety here should be ok since the `export` is loaded
             // directly from an instance which should only give us valid export
             // items.
-            let export = self.data.lookup_def(store, arg);
+            let export = self.with_data(store, |store, data| data.lookup_def(store, arg));
             unsafe {
                 self.core_imports.push_export(&export);
             }
@@ -785,7 +817,7 @@ impl<'a> Instantiator<'a> {
         imp_name: &str,
         expected: EntityType,
     ) {
-        let export = self.data.lookup_def(store, arg);
+        let export = self.with_data(store, |store, data| data.lookup_def(store, arg));
 
         // If this value is a core wasm function then the type check is inlined
         // here. This can otherwise fail `Extern::from_wasmtime_export` because
@@ -940,17 +972,7 @@ impl<T: 'static> InstancePre<T> {
                 .decrement_component_instance_count();
             e
         })?;
-        let data = Box::new(instantiator.data);
-        let instance = Instance(store.0.store_data_mut().insert(Some(data)));
-        store.0.push_component_instance(instance);
-        #[cfg(feature = "component-model-async")]
-        {
-            // SAFETY: We have exclusive access to the store, which we means we
-            // have exclusive access to any `ComponentInstance` which resides in
-            // the store.
-            let reference = unsafe { &mut *store.0[instance.0].as_ref().unwrap().instance_ptr() };
-            reference.instance = Some(instance);
-        }
-        Ok(instance)
+        store.0.push_component_instance(instantiator.instance);
+        Ok(instantiator.instance)
     }
 }

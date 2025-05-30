@@ -288,7 +288,7 @@ where
     token: StoreToken<T>,
     get: fn() -> *mut dyn VMStore,
     get_data: fn(&mut T) -> D::Data<'_>,
-    instance: Option<Instance>,
+    instance: Instance,
 }
 
 impl<T> Accessor<T> {
@@ -309,7 +309,7 @@ impl<T> Accessor<T> {
     /// intended scope.  If it returns, the caller must be granted exclusive
     /// access to that store until the call to `Future::poll` for the current
     /// host task returns.
-    unsafe fn new(token: StoreToken<T>, instance: Option<Instance>) -> Self {
+    unsafe fn new(token: StoreToken<T>, instance: Instance) -> Self {
         Self {
             token,
             get: get_store,
@@ -377,7 +377,7 @@ where
     where
         T: 'static,
     {
-        let instance = self.instance.unwrap();
+        let instance = self.instance;
         let accessor = Self {
             token: self.token,
             get: self.get,
@@ -391,11 +391,6 @@ where
 
     /// Retrieve the component instance of the caller.
     pub fn instance(&self) -> Instance {
-        self.instance.unwrap()
-    }
-
-    #[doc(hidden)]
-    pub fn maybe_instance(&self) -> Option<Instance> {
         self.instance
     }
 }
@@ -515,16 +510,15 @@ enum InstanceThreadLocalState {
     /// they can be mutably referenced without either one aliasing the other.
     Detached {
         instance: SendSyncPtr<ComponentInstance>,
+        handle: Instance,
         store: VMStoreRawPtr,
     },
     /// The specified instance's event loop is currently polling a future, and
-    /// the instance handle is available via the `instance` field.
+    /// the instance handle is available via the `handle` field.
     ///
     /// In this case, the store and instance are in an "attached" state, meaning
     /// care must be taken to avoid creating mutable reference aliases.
-    Attached {
-        instance: SendSyncPtr<ComponentInstance>,
-    },
+    Attached { handle: Instance },
 }
 
 impl fmt::Debug for InstanceThreadLocalState {
@@ -560,7 +554,10 @@ fn with_local_instance<R>(fun: impl FnOnce(&mut dyn VMStore, &mut ComponentInsta
         INSTANCE_STATE.with(|v| v.replace(InstanceThreadLocalState::Polling)),
     );
 
-    let InstanceThreadLocalState::Detached { instance, store } = state.0 else {
+    let InstanceThreadLocalState::Detached {
+        instance, store, ..
+    } = state.0
+    else {
         unreachable!("expected `Detached`; got `{:?}`", state.0)
     };
     let (store, instance) = unsafe { (&mut *store.0.as_ptr(), &mut *instance.as_ptr()) };
@@ -581,6 +578,7 @@ fn poll_with_local_instance<F: Future + Send + ?Sized>(
     let state = ResetInstanceThreadLocalState(INSTANCE_STATE.with(|v| {
         v.replace(InstanceThreadLocalState::Detached {
             instance: SendSyncPtr::new(instance.into()),
+            handle: instance.instance,
             store: VMStoreRawPtr(store.into()),
         })
     }));
@@ -819,24 +817,7 @@ impl fmt::Debug for WorkItem {
 }
 
 impl<T> StoreContextMut<'_, T> {
-    /// Temporarily split the specified store and instance into a "detached"
-    /// state (i.e. clearing the pointers they have to each other) so that they
-    /// can both safely be exclusively referenced without accidentally aliasing
-    /// one via the other.
-    ///
-    /// This will take the specified instance out of the store, null out the
-    /// pointer in the instance which points back to the store, call the
-    /// specified function with exclusive references to both, and then reset
-    /// everything back to the way it was before returning a result.
-    ///
-    /// This is appropriate for use in code which needs safe, exclusive access
-    /// to both the store and the instance simultaneously.  Note that you'll
-    /// need to temporarily re-attach the instance to the store using
-    /// `with_attached_instance` when calling guest code or calling
-    /// application-defined host functions, since they both expect the instance
-    /// to be in an "attached" state.
-    ///
-    /// See also `with_detached_instance_async` for async closures.
+    /// Temporary code which will go away soon.  Nothing to see here, folks.
     fn with_detached_instance<R>(
         &mut self,
         instance: &Instance,
@@ -849,18 +830,22 @@ impl<T> StoreContextMut<'_, T> {
             }
             _ => unreachable!(),
         }));
-        let ptr = self.0.hide_instance(*instance);
-        // SAFETY: We've taken the instance out of the store, so now we own
-        // it and can take an exclusive reference to it.
-        let reference = unsafe { &mut *ptr };
-        reference.set_store(None);
-        let result = fun(self.as_context_mut(), reference);
-        reference.set_store(Some(VMStoreRawPtr(self.traitobj())));
-        self.0.unhide_instance(*instance);
-        result
+        // SAFETY: This isn't safe at all, since `fun` will easily be able to
+        // create aliases of `instance` using
+        // e.g. `StoreOpaque::component_instance_mut`.  As of this writing,
+        // we're relying on `fun` never doing that except within a
+        // `with_attached_instance` closure where it's sound.
+        //
+        // We're planning to remove `with_{a,de}tached_instance[_async]` soon
+        // anyway and migrate the code which uses it to deal in `Instance`
+        // parameters rather than `&mut ComponentInstance` parameters,
+        // retrieving the latter only as necessary, with soundness enforced by
+        // the borrow checker, at which point this will go away.
+        let instance = unsafe { &mut *self.0[instance.0].as_mut().unwrap().instance_ptr() };
+        fun(self.as_context_mut(), instance)
     }
 
-    /// Same as `with_detached_instance`, but for async closures.
+    /// Temporary code which will go away soon.  Nothing to see here, folks.
     async fn with_detached_instance_async<R>(
         &mut self,
         instance: &Instance,
@@ -873,55 +858,47 @@ impl<T> StoreContextMut<'_, T> {
             }
             _ => unreachable!(),
         }));
-        let ptr = self.0.hide_instance(*instance);
-        // SAFETY: We've taken the instance out of the store, so now we own
-        // it and can take an exclusive reference to it.
-        let reference = unsafe { &mut *ptr };
-        reference.set_store(None);
-        let result = fun(self.as_context_mut(), reference).await;
-        reference.set_store(Some(VMStoreRawPtr(self.traitobj())));
-        self.0.unhide_instance(*instance);
-        result
+        // SAFETY: See corresponding comment in `with_detached_instance`
+        let instance = unsafe { &mut *self.0[instance.0].as_mut().unwrap().instance_ptr() };
+        fun(self.as_context_mut(), instance).await
     }
 
-    /// Temporarily the operation performed by `with_detached_instance{_async}`.
-    /// See the docs for those functions for details.
+    /// Temporary code which will go away soon.  Nothing to see here, folks.
     pub(crate) fn with_attached_instance<R>(
         &mut self,
         instance: &mut ComponentInstance,
-        fun: impl FnOnce(StoreContextMut<'_, T>, Option<Instance>) -> R,
+        fun: impl FnOnce(StoreContextMut<'_, T>, Instance) -> R,
     ) -> R {
         let _state = ResetInstanceThreadLocalState(INSTANCE_STATE.with(|v| match v.get() {
             state @ InstanceThreadLocalState::None => state,
-            state @ InstanceThreadLocalState::Polling => {
-                if instance.instance.is_some() {
-                    v.replace(InstanceThreadLocalState::Attached {
-                        instance: SendSyncPtr::new(instance.into()),
-                    })
-                } else {
-                    state
-                }
-            }
+            InstanceThreadLocalState::Polling => v.replace(InstanceThreadLocalState::Attached {
+                handle: instance.instance,
+            }),
             _ => unreachable!(),
         }));
-        if let Some(handle) = instance.instance {
-            self.0.unhide_instance(handle);
-        }
-        instance.set_store(Some(VMStoreRawPtr(self.traitobj())));
-        let result = fun(self.as_context_mut(), instance.instance);
-        instance.set_store(None);
-        if let Some(handle) = instance.instance {
-            self.0.hide_instance(handle);
-        }
-        result
+        fun(self.as_context_mut(), instance.instance)
+    }
+}
+
+impl StoreOpaque {
+    /// Temporary code which will go away soon.  Nothing to see here, folks.
+    pub(crate) fn with_attached_instance<R>(
+        &mut self,
+        instance: &mut ComponentInstance,
+        fun: impl FnOnce(&mut StoreOpaque, Instance) -> R,
+    ) -> R {
+        let _state = ResetInstanceThreadLocalState(INSTANCE_STATE.with(|v| match v.get() {
+            state @ InstanceThreadLocalState::None => state,
+            InstanceThreadLocalState::Polling => v.replace(InstanceThreadLocalState::Attached {
+                handle: instance.instance,
+            }),
+            _ => unreachable!(),
+        }));
+        fun(self, instance.instance)
     }
 }
 
 impl ComponentInstance {
-    pub(crate) fn instance(&self) -> Option<Instance> {
-        self.instance
-    }
-
     fn instance_state(&mut self, instance: RuntimeComponentInstanceIndex) -> &mut InstanceState {
         self.concurrent_state
             .instance_states
@@ -1887,7 +1864,7 @@ impl ComponentInstance {
         // thread-local variable which `poll_with_state` will populate and reset
         // with valid pointers to the store data and the store itself each time
         // the returned future is polled, respectively.
-        let mut accessor = unsafe { Accessor::new(token, self.instance()) };
+        let mut accessor = unsafe { Accessor::new(token, self.instance) };
         let mut future = Box::pin(async move { closure(&mut accessor, params).await });
         Box::pin(future::poll_fn(move |cx| {
             poll_with_state(token, cx, future.as_mut())
@@ -3358,7 +3335,7 @@ impl Instance {
             .with_detached_instance(self, |store, instance| {
                 let token = StoreToken::new(store);
                 // SAFETY: See corresponding comment in `ComponentInstance::wrap_call`.
-                let mut accessor = unsafe { Accessor::new(token, instance.instance()) };
+                let mut accessor = unsafe { Accessor::new(token, instance.instance) };
                 let mut future = Box::pin(async move { fun(&mut accessor).await });
                 Box::pin(future::poll_fn(move |cx| {
                     poll_with_state(token, cx, future.as_mut())
@@ -3382,8 +3359,7 @@ impl Instance {
     ) -> AbortHandle {
         let mut store = store.as_context_mut();
         // SAFETY: TODO
-        let accessor =
-            unsafe { Accessor::new(StoreToken::new(store.as_context_mut()), Some(*self)) };
+        let accessor = unsafe { Accessor::new(StoreToken::new(store.as_context_mut()), *self) };
         self.spawn_with_accessor(store, accessor, task)
     }
 
@@ -4751,7 +4727,7 @@ fn for_any_lift<
 ///
 /// See `Instance::run` for details.
 fn checked<F: Future + Send + 'static>(
-    instance: SendSyncPtr<ComponentInstance>,
+    instance: Instance,
     fut: F,
 ) -> impl Future<Output = F::Output> + Send + 'static {
     let mut fut = Box::pin(fut);
@@ -4764,12 +4740,8 @@ fn checked<F: Future + Send + 'static>(
         ";
         INSTANCE_STATE.with(|v| {
             let matched = match v.get() {
-                InstanceThreadLocalState::Detached {
-                    instance: local, ..
-                }
-                | InstanceThreadLocalState::Attached { instance: local } => {
-                    local.as_ptr() == instance.as_ptr()
-                }
+                InstanceThreadLocalState::Detached { handle, .. }
+                | InstanceThreadLocalState::Attached { handle } => handle.0 == instance.0,
                 InstanceThreadLocalState::None => false,
                 InstanceThreadLocalState::Polling => unreachable!(),
             };
@@ -5299,12 +5271,8 @@ pub(crate) fn queue_call<T: 'static, R: Send + 'static>(
 
     queue_call0(store.as_context_mut(), handle, task, param_count)?;
 
-    let func_data = &store[handle.0];
-    let instance = func_data.instance;
-    let instance_ptr = store.0[instance.0].as_ref().unwrap().instance_ptr();
-
     Ok(checked(
-        SendSyncPtr::new(NonNull::new(instance_ptr).unwrap()),
+        store[handle.0].instance,
         rx.map(|result| {
             result
                 .map(|v| *v.downcast().unwrap())
