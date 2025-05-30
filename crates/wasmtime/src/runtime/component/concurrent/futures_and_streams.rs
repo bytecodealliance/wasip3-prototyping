@@ -12,8 +12,8 @@ use {
             matching::InstanceType,
             values::{ErrorContextAny, FutureAny, StreamAny},
         },
-        store::{StoreId, StoreToken},
-        vm::{SendSyncPtr, VMFuncRef, VMMemoryDefinition, component::ComponentInstance},
+        store::{StoreOpaque, StoreToken},
+        vm::{VMFuncRef, VMMemoryDefinition, component::ComponentInstance},
     },
     anyhow::{Context, Result, anyhow, bail},
     buffers::Extender,
@@ -216,16 +216,12 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>
                 count,
             } => {
                 let mut store = token.as_context_mut(store);
-                let ptr = instance as *mut _;
                 let types = instance.component_types().clone();
                 let count = buffer.remaining().len().min(count);
 
-                store.with_attached_instance(instance, |mut store, _| {
-                    // SAFETY: `ptr` is derived from `interface` and thus known
-                    // to be valid.
-                    let lower = unsafe {
-                        &mut LowerContext::new(store.as_context_mut(), options, &types, ptr)
-                    };
+                store.with_attached_instance(instance, |mut store, instance| {
+                    let lower =
+                        &mut LowerContext::new(store.as_context_mut(), options, &types, instance);
                     if address % usize::try_from(T::ALIGN32)? != 0 {
                         bail!("read pointer not aligned");
                     }
@@ -453,7 +449,7 @@ impl<T> Watch<T> {
 /// either that `Receiver` resolves or `Watch::into_inner` has been called on
 /// the returned `Watch`.
 fn watch<T: Send + 'static>(
-    instance: SendSyncPtr<ComponentInstance>,
+    instance: Instance,
     rx: oneshot::Receiver<()>,
     inner: T,
 ) -> (impl Future<Output = ()> + Send + 'static, Watch<T>) {
@@ -490,7 +486,7 @@ fn watch<T: Send + 'static>(
 /// Represents the writable end of a Component Model `future`.
 pub struct FutureWriter<T: 'static> {
     default: Option<fn() -> T>,
-    instance: SendSyncPtr<ComponentInstance>,
+    instance: Instance,
     tx: Option<mpsc::Sender<WriteEvent<Option<T>>>>,
 }
 
@@ -498,11 +494,11 @@ impl<T> FutureWriter<T> {
     fn new(
         default: fn() -> T,
         tx: Option<mpsc::Sender<WriteEvent<Option<T>>>>,
-        instance: &mut ComponentInstance,
+        instance: Instance,
     ) -> Self {
         Self {
             default: Some(default),
-            instance: SendSyncPtr::new(instance.into()),
+            instance,
             tx,
         }
     }
@@ -587,20 +583,16 @@ impl<T> Drop for FutureWriter<T> {
 /// to a `FutureReader` or passed to the guest, any writes on the write end may
 /// block forever.
 pub struct HostFuture<T> {
-    instance: SendSyncPtr<ComponentInstance>,
-    id: StoreId,
+    instance: Instance,
     rep: u32,
     _phantom: PhantomData<T>,
 }
 
 impl<T> HostFuture<T> {
     /// Create a new `HostFuture`.
-    ///
-    /// SAFETY: `id` must match the store to which `instance` belongs.
-    unsafe fn new(rep: u32, id: StoreId, instance: &mut ComponentInstance) -> Self {
+    fn new(rep: u32, instance: Instance) -> Self {
         Self {
-            instance: SendSyncPtr::new(instance.into()),
-            id,
+            instance,
             rep,
             _phantom: PhantomData,
         }
@@ -611,21 +603,14 @@ impl<T> HostFuture<T> {
     where
         T: func::Lower + func::Lift + Send + Sync + 'static,
     {
-        let store = store.as_context_mut();
-        assert_eq!(store.0.id(), self.id);
-        // SAFETY: The `StoreId` comparison we did above proved that this
-        // `ComponentInstance` belongs to this store, and since we have
-        // exclusive access to the store we also have exclusive access to the
-        // `ComponentInstance`.
-        let instance = unsafe { &mut *self.instance.as_ptr() };
         FutureReader {
             instance: self.instance,
-            id: self.id,
             rep: self.rep,
-            tx: Some(instance.start_read_event_loop::<_, _, U>(
-                store,
-                self.rep,
-                TransmitKind::Future,
+            tx: Some(store.as_context_mut().with_detached_instance(
+                &self.instance,
+                |store, instance| {
+                    instance.start_read_event_loop::<_, _, U>(store, self.rep, TransmitKind::Future)
+                },
             )),
         }
     }
@@ -646,23 +631,18 @@ impl<T> HostFuture<T> {
             bail!("expected `future`; got `{}`", value.desc());
         };
         let store = store.as_context_mut();
-        // SAFETY: We have exclusive access to the store, which we means we have
-        // exclusive access to any `ComponentInstance` which resides in the
-        // store.
-        let instance = unsafe { &mut *store.0[instance.0].as_ref().unwrap().instance_ptr() };
-        instance.get(TableId::<TransmitHandle>::new(*rep))?; // Just make sure it's present
-        Ok(unsafe { Self::new(*rep, store.0.id(), instance) })
+        store
+            .0
+            .component_instance(instance)
+            .get(TableId::<TransmitHandle>::new(*rep))?; // Just make sure it's present
+        Ok(Self::new(*rep, instance))
     }
 
     /// Transfer ownership of the read end of a future from a guest to the host.
     fn lift_from_index(cx: &mut LiftContext<'_>, ty: InterfaceType, index: u32) -> Result<Self> {
         match ty {
             InterfaceType::Future(src) => {
-                // SAFETY: Per the contract of `LiftContext::new`, the
-                // `instance` field must be valid for as long as the
-                // `LiftContext` itself is valid.
-                let instance = unsafe { &mut *cx.instance };
-                let state_table = instance.state_table(TableIndex::Future(src));
+                let state_table = cx.instance.state_table(TableIndex::Future(src));
                 let (rep, state) =
                     get_mut_by_index_from(state_table, TableIndex::Future(src), index)?;
 
@@ -674,7 +654,7 @@ impl<T> HostFuture<T> {
                     StreamFutureState::Busy => bail!("cannot transfer busy future"),
                 }
 
-                Ok(unsafe { Self::new(rep, cx.store_id(), instance) })
+                Ok(Self::new(rep, cx.instance.instance))
             }
             _ => func::bad_type_info(),
         }
@@ -689,15 +669,13 @@ pub(crate) fn lower_future_to_index<U>(
 ) -> Result<u32> {
     match ty {
         InterfaceType::Future(dst) => {
-            // SAFETY: Per the contract of `LowerContext::new`, the `instance`
-            // field must be valid for as long as the `LowerContext` itself is
-            // valid, as long as we don't try to access it via the `store` at
-            // the same time (which we don't).
-            let instance = unsafe { &mut *cx.instance };
-            let state = instance.get(TableId::<TransmitHandle>::new(rep))?.state;
-            let rep = instance.get(state)?.read_handle.rep();
+            let state = cx
+                .instance()
+                .get(TableId::<TransmitHandle>::new(rep))?
+                .state;
+            let rep = cx.instance().get(state)?.read_handle.rep();
 
-            instance
+            cx.instance_mut()
                 .state_table(TableIndex::Future(dst))
                 .insert(rep, WaitableState::Future(dst, StreamFutureState::Read))
         }
@@ -760,7 +738,6 @@ impl<T> From<FutureReader<T>> for HostFuture<T> {
 
         Self {
             instance: value.instance,
-            id: value.id,
             rep: value.rep,
             _phantom: PhantomData,
         }
@@ -772,25 +749,14 @@ impl<T> From<FutureReader<T>> for HostFuture<T> {
 /// In order to pass this end to guest code, first convert it to a
 /// [`HostFuture`] using the `into` method.
 pub struct FutureReader<T> {
-    instance: SendSyncPtr<ComponentInstance>,
-    id: StoreId,
+    instance: Instance,
     rep: u32,
     tx: Option<mpsc::Sender<ReadEvent<Option<T>>>>,
 }
 
 impl<T> FutureReader<T> {
-    fn new<U>(
-        rep: u32,
-        tx: Option<mpsc::Sender<ReadEvent<Option<T>>>>,
-        instance: &mut ComponentInstance,
-        store: StoreContextMut<U>,
-    ) -> Self {
-        Self {
-            instance: SendSyncPtr::new(instance.into()),
-            id: store.0.id(),
-            rep,
-            tx,
-        }
+    fn new(rep: u32, tx: Option<mpsc::Sender<ReadEvent<Option<T>>>>, instance: Instance) -> Self {
+        Self { instance, rep, tx }
     }
 
     /// Read the value from this `future`.
@@ -862,16 +828,13 @@ impl<T> Drop for FutureReader<T> {
 
 /// Represents the writable end of a Component Model `stream`.
 pub struct StreamWriter<B> {
-    instance: SendSyncPtr<ComponentInstance>,
+    instance: Instance,
     tx: Option<mpsc::Sender<WriteEvent<B>>>,
 }
 
 impl<B> StreamWriter<B> {
-    fn new(tx: Option<mpsc::Sender<WriteEvent<B>>>, instance: &mut ComponentInstance) -> Self {
-        Self {
-            instance: SendSyncPtr::new(instance.into()),
-            tx,
-        }
+    fn new(tx: Option<mpsc::Sender<WriteEvent<B>>>, instance: Instance) -> Self {
+        Self { instance, tx }
     }
 
     /// Write the specified items to the `stream`.
@@ -984,20 +947,16 @@ impl<T> Drop for StreamWriter<T> {
 /// to a `StreamReader` or passed to the guest, any writes on the write end may
 /// block forever.
 pub struct HostStream<T> {
-    instance: SendSyncPtr<ComponentInstance>,
-    id: StoreId,
+    instance: Instance,
     rep: u32,
     _phantom: PhantomData<T>,
 }
 
 impl<T> HostStream<T> {
     /// Create a new `HostStream`.
-    ///
-    /// SAFETY: `id` must match the store to which `instance` belongs.
-    unsafe fn new(rep: u32, id: StoreId, instance: &mut ComponentInstance) -> Self {
+    fn new(rep: u32, instance: Instance) -> Self {
         Self {
-            instance: SendSyncPtr::new(instance.into()),
-            id,
+            instance,
             rep,
             _phantom: PhantomData,
         }
@@ -1012,21 +971,14 @@ impl<T> HostStream<T> {
         T: func::Lower + func::Lift + Send + 'static,
         B: ReadBuffer<T>,
     {
-        let store = store.as_context_mut();
-        assert_eq!(store.0.id(), self.id);
-        // SAFETY: The `StoreId` comparison we did above proved that this
-        // `ComponentInstance` belongs to this store, and since we have
-        // exclusive access to the store we also have exclusive access to the
-        // `ComponentInstance`.
-        let instance = unsafe { &mut *self.instance.as_ptr() };
         StreamReader {
             instance: self.instance,
-            id: self.id,
             rep: self.rep,
-            tx: Some(instance.start_read_event_loop::<_, _, U>(
-                store,
-                self.rep,
-                TransmitKind::Stream,
+            tx: Some(store.as_context_mut().with_detached_instance(
+                &self.instance,
+                |store, instance| {
+                    instance.start_read_event_loop::<_, _, U>(store, self.rep, TransmitKind::Stream)
+                },
             )),
         }
     }
@@ -1047,23 +999,18 @@ impl<T> HostStream<T> {
             bail!("expected `stream`; got `{}`", value.desc());
         };
         let store = store.as_context_mut();
-        // SAFETY: We have exclusive access to the store, which we means we have
-        // exclusive access to any `ComponentInstance` which resides in the
-        // store.
-        let instance = unsafe { &mut *store.0[instance.0].as_ref().unwrap().instance_ptr() };
-        instance.get(TableId::<TransmitHandle>::new(*rep))?; // Just make sure it's present
-        Ok(unsafe { Self::new(*rep, store.0.id(), instance) })
+        store
+            .0
+            .component_instance(instance)
+            .get(TableId::<TransmitHandle>::new(*rep))?; // Just make sure it's present
+        Ok(Self::new(*rep, instance))
     }
 
     /// Transfer ownership of the read end of a stream from a guest to the host.
     fn lift_from_index(cx: &mut LiftContext<'_>, ty: InterfaceType, index: u32) -> Result<Self> {
         match ty {
             InterfaceType::Stream(src) => {
-                // SAFETY: Per the contract of `LiftContext::new`, the
-                // `instance` field must be valid for as long as the
-                // `LiftContext` itself is valid.
-                let instance = unsafe { &mut *cx.instance };
-                let state_table = instance.state_table(TableIndex::Stream(src));
+                let state_table = cx.instance.state_table(TableIndex::Stream(src));
                 let (rep, state) =
                     get_mut_by_index_from(state_table, TableIndex::Stream(src), index)?;
 
@@ -1075,7 +1022,7 @@ impl<T> HostStream<T> {
                     StreamFutureState::Busy => bail!("cannot transfer busy stream"),
                 }
 
-                Ok(unsafe { Self::new(rep, cx.store_id(), instance) })
+                Ok(Self::new(rep, cx.instance.instance))
             }
             _ => func::bad_type_info(),
         }
@@ -1090,15 +1037,13 @@ pub(crate) fn lower_stream_to_index<U>(
 ) -> Result<u32> {
     match ty {
         InterfaceType::Stream(dst) => {
-            // SAFETY: Per the contract of `LowerContext::new`, the `instance`
-            // field must be valid for as long as the `LowerContext` itself is
-            // valid, as long as we don't try to access it via the `store` at
-            // the same time (which we don't).
-            let instance = unsafe { &mut *cx.instance };
-            let state = instance.get(TableId::<TransmitHandle>::new(rep))?.state;
-            let rep = instance.get(state)?.read_handle.rep();
+            let state = cx
+                .instance()
+                .get(TableId::<TransmitHandle>::new(rep))?
+                .state;
+            let rep = cx.instance().get(state)?.read_handle.rep();
 
-            instance
+            cx.instance_mut()
                 .state_table(TableIndex::Stream(dst))
                 .insert(rep, WaitableState::Stream(dst, StreamFutureState::Read))
         }
@@ -1161,7 +1106,6 @@ impl<T, B> From<StreamReader<B>> for HostStream<T> {
 
         Self {
             instance: value.instance,
-            id: value.id,
             rep: value.rep,
             _phantom: PhantomData,
         }
@@ -1173,25 +1117,14 @@ impl<T, B> From<StreamReader<B>> for HostStream<T> {
 /// In order to pass this end to guest code, first convert it to a
 /// [`HostStream`] using the `into` method.
 pub struct StreamReader<B> {
-    instance: SendSyncPtr<ComponentInstance>,
-    id: StoreId,
+    instance: Instance,
     rep: u32,
     tx: Option<mpsc::Sender<ReadEvent<B>>>,
 }
 
 impl<B> StreamReader<B> {
-    fn new<U>(
-        rep: u32,
-        tx: Option<mpsc::Sender<ReadEvent<B>>>,
-        instance: &mut ComponentInstance,
-        store: StoreContextMut<U>,
-    ) -> Self {
-        Self {
-            instance: SendSyncPtr::new(instance.into()),
-            id: store.0.id(),
-            rep,
-            tx,
-        }
+    fn new(rep: u32, tx: Option<mpsc::Sender<ReadEvent<B>>>, instance: Instance) -> Self {
+        Self { instance, rep, tx }
     }
 
     /// Read values from this `stream`.
@@ -1282,11 +1215,8 @@ impl ErrorContext {
     fn lift_from_index(cx: &mut LiftContext<'_>, ty: InterfaceType, index: u32) -> Result<Self> {
         match ty {
             InterfaceType::ErrorContext(src) => {
-                // SAFETY: Per the contract of `LiftContext::new`, the
-                // `instance` field must be valid for as long as the
-                // `LiftContext` itself is valid.
-                let instance = unsafe { &mut *cx.instance };
-                let (rep, _) = instance
+                let (rep, _) = cx
+                    .instance
                     .error_context_tables()
                     .get_mut(src)
                     .expect("error context table index present in (sub)component table during lift")
@@ -1306,12 +1236,8 @@ pub(crate) fn lower_error_context_to_index<U>(
 ) -> Result<u32> {
     match ty {
         InterfaceType::ErrorContext(dst) => {
-            // SAFETY: Per the contract of `LowerContext::new`, the `instance`
-            // field must be valid for as long as the `LowerContext` itself is
-            // valid, as long as we don't try to access it via the `store` at
-            // the same time (which we don't).
-            let instance = unsafe { &mut *cx.instance };
-            let tbl = &mut instance
+            let tbl = &mut cx
+                .instance_mut()
                 .error_context_tables()
                 .get_mut(dst)
                 .expect("error context table index present in (sub)component table during lower");
@@ -1550,6 +1476,7 @@ impl Instance {
         default: fn() -> T,
         mut store: S,
     ) -> Result<(FutureWriter<T>, FutureReader<T>)> {
+        let handle = *self;
         store
             .as_context_mut()
             .with_detached_instance(self, |mut store, instance| {
@@ -1563,7 +1490,7 @@ impl Instance {
                             write.rep(),
                             TransmitKind::Future,
                         )),
-                        instance,
+                        handle,
                     ),
                     FutureReader::new(
                         read.rep(),
@@ -1572,8 +1499,7 @@ impl Instance {
                             read.rep(),
                             TransmitKind::Future,
                         )),
-                        instance,
-                        store,
+                        handle,
                     ),
                 ))
             })
@@ -1591,6 +1517,7 @@ impl Instance {
         &self,
         mut store: S,
     ) -> Result<(StreamWriter<W>, StreamReader<R>)> {
+        let handle = *self;
         store
             .as_context_mut()
             .with_detached_instance(self, |mut store, instance| {
@@ -1603,7 +1530,7 @@ impl Instance {
                             write.rep(),
                             TransmitKind::Stream,
                         )),
-                        instance,
+                        handle,
                     ),
                     StreamReader::new(
                         read.rep(),
@@ -1612,8 +1539,7 @@ impl Instance {
                             read.rep(),
                             TransmitKind::Stream,
                         )),
-                        instance,
-                        store,
+                        handle,
                     ),
                 ))
             })
@@ -2085,7 +2011,7 @@ impl ComponentInstance {
     /// * `kind` - whether this is a stream or a future
     fn host_read<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U: 'static>(
         &mut self,
-        store: StoreContextMut<U>,
+        mut store: StoreContextMut<U>,
         rep: u32,
         mut buffer: B,
         tx: oneshot::Sender<HostResult<B>>,
@@ -2120,17 +2046,20 @@ impl ComponentInstance {
                 ..
             } => {
                 let write_handle = transmit.write_handle;
-                let instance = self as *mut _;
-                let types = self.component_types();
-                // SAFETY: `instance` is derived from `self` and thus known to be valid.
-                let lift = unsafe {
-                    &mut LiftContext::new(store.0.store_opaque_mut(), &options, types, instance)
-                };
-                let code = accept_writer::<T, B, U>(buffer, tx, kind)(Writer::Guest {
-                    lift,
-                    ty: payload(ty, types),
-                    address,
-                    count,
+                let types = self.component_types().clone();
+                let code = store.with_attached_instance(self, |store, instance| {
+                    let lift = &mut LiftContext::new(
+                        store.0.store_opaque_mut(),
+                        &options,
+                        &types,
+                        instance,
+                    );
+                    accept_writer::<T, B, U>(buffer, tx, kind)(Writer::Guest {
+                        lift,
+                        ty: payload(ty, &types),
+                        address,
+                        count,
+                    })
                 })?;
 
                 let pending = if let PostWrite::Close = post_write {
@@ -2473,7 +2402,6 @@ impl ComponentInstance {
             (TableIndex::Future(write_ty), TableIndex::Future(read_ty)) => {
                 assert_eq!(count, 1);
 
-                let instance = self as *mut _;
                 let types = self.component_types().clone();
                 let val = types[types[write_ty].ty]
                     .payload
@@ -2484,40 +2412,34 @@ impl ComponentInstance {
                             bail!("write pointer not aligned");
                         }
 
-                        // SAFETY: `instance` is derived from `self` and thus
-                        // known to be valid.
-                        let lift = unsafe {
-                            &mut LiftContext::new(
+                        store.with_attached_instance(self, |store, instance| {
+                            let lift = &mut LiftContext::new(
                                 store.0.store_opaque_mut(),
                                 write_options,
                                 &types,
                                 instance,
-                            )
-                        };
-                        let bytes = lift
-                            .memory()
-                            .get(write_address..)
-                            .and_then(|b| b.get(..usize::try_from(abi.size32).unwrap()))
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("write pointer out of bounds of memory")
-                            })?;
+                            );
+                            let bytes = lift
+                                .memory()
+                                .get(write_address..)
+                                .and_then(|b| b.get(..usize::try_from(abi.size32).unwrap()))
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!("write pointer out of bounds of memory")
+                                })?;
 
-                        Val::load(lift, ty, bytes)
+                            Val::load(lift, ty, bytes)
+                        })
                     })
                     .transpose()?;
 
                 if let Some(val) = val {
-                    store.with_attached_instance(self, |mut store, _| {
-                        // SAFETY: `instance` is derived from `self` and thus
-                        // known to be valid.
-                        let lower = unsafe {
-                            &mut LowerContext::new(
-                                store.as_context_mut(),
-                                read_options,
-                                &types,
-                                instance,
-                            )
-                        };
+                    store.with_attached_instance(self, |mut store, instance| {
+                        let lower = &mut LowerContext::new(
+                            store.as_context_mut(),
+                            read_options,
+                            &types,
+                            instance,
+                        );
                         let ty = types[types[read_ty].ty].payload.unwrap();
                         let ptr = func::validate_inbounds_dynamic(
                             types.canonical_abi(&ty),
@@ -2529,13 +2451,7 @@ impl ComponentInstance {
                 }
             }
             (TableIndex::Stream(write_ty), TableIndex::Stream(read_ty)) => {
-                let instance = self as *mut _;
-                let types = self.component_types();
-                let store_opaque = store.0.store_opaque_mut();
-                // SAFETY: `instance` is derived from `self` and thus known to
-                // be valid.
-                let lift =
-                    unsafe { &mut LiftContext::new(store_opaque, write_options, types, instance) };
+                let types = self.component_types().clone();
                 if let Some(flat_abi) = flat_abi {
                     // Fast path memcpy for "flat" (i.e. no pointers or handles) payloads:
                     let length_in_bytes = usize::try_from(flat_abi.size).unwrap() * count;
@@ -2546,6 +2462,8 @@ impl ComponentInstance {
                         if read_address % usize::try_from(flat_abi.align)? != 0 {
                             bail!("read pointer not aligned");
                         }
+
+                        let store_opaque = store.0.store_opaque_mut();
 
                         {
                             let src = write_options
@@ -2570,37 +2488,37 @@ impl ComponentInstance {
                         }
                     }
                 } else {
-                    let ty = types[types[write_ty].ty].payload.unwrap();
-                    let abi = lift.types.canonical_abi(&ty);
-                    let size = usize::try_from(abi.size32).unwrap();
-                    if write_address % usize::try_from(abi.align32)? != 0 {
-                        bail!("write pointer not aligned");
-                    }
-                    let bytes = lift
-                        .memory()
-                        .get(write_address..)
-                        .and_then(|b| b.get(..size * count))
-                        .ok_or_else(|| anyhow::anyhow!("write pointer out of bounds of memory"))?;
+                    store.with_attached_instance(self, |mut store, instance| {
+                        let store_opaque = store.0.store_opaque_mut();
+                        let lift =
+                            &mut LiftContext::new(store_opaque, write_options, &types, instance);
+                        let ty = types[types[write_ty].ty].payload.unwrap();
+                        let abi = lift.types.canonical_abi(&ty);
+                        let size = usize::try_from(abi.size32).unwrap();
+                        if write_address % usize::try_from(abi.align32)? != 0 {
+                            bail!("write pointer not aligned");
+                        }
+                        let bytes = lift
+                            .memory()
+                            .get(write_address..)
+                            .and_then(|b| b.get(..size * count))
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("write pointer out of bounds of memory")
+                            })?;
 
-                    let values = (0..count)
-                        .map(|index| Val::load(lift, ty, &bytes[(index * size)..][..size]))
-                        .collect::<Result<Vec<_>>>()?;
+                        let values = (0..count)
+                            .map(|index| Val::load(lift, ty, &bytes[(index * size)..][..size]))
+                            .collect::<Result<Vec<_>>>()?;
 
-                    let id = TableId::<TransmitHandle>::new(rep);
-                    log::trace!("copy values {values:?} for {id:?}");
+                        let id = TableId::<TransmitHandle>::new(rep);
+                        log::trace!("copy values {values:?} for {id:?}");
 
-                    let types = types.clone();
-                    store.with_attached_instance(self, |mut store, _| {
-                        // SAFETY: `instance` is derived from `self` and thus
-                        // known to be valid.
-                        let lower = unsafe {
-                            &mut LowerContext::new(
-                                store.as_context_mut(),
-                                read_options,
-                                &types,
-                                instance,
-                            )
-                        };
+                        let lower = &mut LowerContext::new(
+                            store.as_context_mut(),
+                            read_options,
+                            &types,
+                            instance,
+                        );
                         let ty = types[types[read_ty].ty].payload.unwrap();
                         let abi = lower.types.canonical_abi(&ty);
                         if read_address % usize::try_from(abi.align32)? != 0 {
@@ -2635,7 +2553,7 @@ impl ComponentInstance {
     /// respective guest entities.
     pub(super) unsafe fn guest_write<T: 'static>(
         &mut self,
-        store: StoreContextMut<T>,
+        mut store: StoreContextMut<T>,
         memory: *mut VMMemoryDefinition,
         realloc: *mut VMFuncRef,
         string_encoding: u8,
@@ -2806,18 +2724,20 @@ impl ComponentInstance {
             }
 
             ReadState::HostReady { accept } => {
-                let instance = self as *mut _;
-                let types = self.component_types();
-                // SAFETY: `instance` is derived from `self` and thus known to
-                // be valid.
-                let lift = unsafe {
-                    &mut LiftContext::new(store.0.store_opaque_mut(), &options, types, instance)
-                };
-                accept(Writer::Guest {
-                    lift,
-                    ty: payload(ty, types),
-                    address,
-                    count,
+                let types = self.component_types().clone();
+                store.with_attached_instance(self, |store, instance| {
+                    let lift = &mut LiftContext::new(
+                        store.0.store_opaque_mut(),
+                        &options,
+                        &types,
+                        instance,
+                    );
+                    accept(Writer::Guest {
+                        lift,
+                        ty: payload(ty, &types),
+                        address,
+                        count,
+                    })
                 })?
             }
 
@@ -3158,7 +3078,7 @@ impl ComponentInstance {
     /// respective guest entities.
     pub(crate) unsafe fn error_context_new(
         &mut self,
-        store: &mut dyn VMStore,
+        store: &mut StoreOpaque,
         memory: *mut VMMemoryDefinition,
         realloc: *mut VMFuncRef,
         string_encoding: u8,
@@ -3170,7 +3090,7 @@ impl ComponentInstance {
         // valid.
         let options = unsafe {
             Options::new(
-                store.store_opaque().id(),
+                store.id(),
                 NonNull::new(memory),
                 NonNull::new(realloc),
                 StringEncoding::from_u8(string_encoding).ok_or_else(|| {
@@ -3180,18 +3100,10 @@ impl ComponentInstance {
                 None,
             )
         };
-        let interface = self as *mut _;
-        // SAFETY: `instance` is derived from `self` and thus known to be valid.
-        let lift_ctx = unsafe {
-            &mut LiftContext::new(
-                store.store_opaque_mut(),
-                &options,
-                self.component_types(),
-                interface,
-            )
-        };
-        //  Read string from guest memory
-        let s = {
+        let types = self.component_types().clone();
+        let message = store.with_attached_instance(self, |store, instance| {
+            let lift_ctx = &mut LiftContext::new(store, &options, &types, instance);
+            //  Read string from guest memory
             let address = usize::try_from(debug_msg_address)?;
             let len = usize::try_from(debug_msg_len)?;
             WasmStr::load(
@@ -3207,13 +3119,13 @@ impl ComponentInstance {
                     .ok_or_else(|| {
                         anyhow::anyhow!("invalid debug message pointer: out of bounds")
                     })?,
-            )?
-        };
+            )
+        })?;
 
         // Create a new ErrorContext that is tracked along with other concurrent state
         let err_ctx = ErrorContextState {
-            debug_msg: s
-                .to_str_from_memory(options.memory(store.store_opaque()))?
+            debug_msg: message
+                .to_str_from_memory(options.memory(store))?
                 .to_string(),
         };
         let table_id = self.push(err_ctx)?;
@@ -3284,11 +3196,9 @@ impl ComponentInstance {
                 None,
             )
         };
-        let interface = self as *mut _;
         let types = self.component_types().clone();
-        store.with_attached_instance(self, |store, _| {
-            // SAFETY: `instance` is derived from `self` and thus known to be valid.
-            let lower_cx = unsafe { &mut LowerContext::new(store, &options, &types, interface) };
+        store.with_attached_instance(self, |store, instance| {
+            let lower_cx = &mut LowerContext::new(store, &options, &types, instance);
             let debug_msg_address = usize::try_from(debug_msg_address)?;
             // Lower the string into the component's memory
             let offset = lower_cx

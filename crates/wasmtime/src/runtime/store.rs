@@ -410,9 +410,6 @@ pub struct StoreOpaque {
     #[cfg(feature = "component-model-async")]
     concurrent_async_state: concurrent::AsyncState,
 
-    #[cfg(feature = "component-model")]
-    hidden_instances: Vec<Option<Box<crate::component::InstanceData>>>,
-
     /// State related to the executor of wasm code.
     ///
     /// For example if Pulley is enabled and configured then this will store a
@@ -590,8 +587,6 @@ impl<T: 'static> Store<T> {
             component_calls: Default::default(),
             #[cfg(feature = "component-model")]
             host_resource_data: Default::default(),
-            #[cfg(feature = "component-model")]
-            hidden_instances: Default::default(),
             #[cfg(feature = "component-model-async")]
             concurrent_async_state: Default::default(),
             #[cfg(has_host_compiler_backend)]
@@ -1189,26 +1184,19 @@ impl StoreOpaque {
     }
 
     #[cfg(feature = "component-model")]
-    pub(crate) fn hide_instance(
+    pub(crate) fn component_instance_mut(
         &mut self,
         handle: crate::component::Instance,
-    ) -> *mut crate::vm::component::ComponentInstance {
-        if self.hidden_instances.len() <= handle.0.index() {
-            self.hidden_instances
-                .resize_with(handle.0.index() + 1, || None);
-        }
-        let data = self[handle.0].take().unwrap();
-        let ptr = data.instance_ptr();
-        self.hidden_instances[handle.0.index()] = Some(data);
-        ptr
+    ) -> &mut crate::vm::component::ComponentInstance {
+        unsafe { &mut *self[handle.0].as_mut().unwrap().instance_ptr() }
     }
 
     #[cfg(feature = "component-model")]
-    pub(crate) fn unhide_instance(&mut self, handle: crate::component::Instance) {
-        if let Some(data) = self.hidden_instances[handle.0.index()].take() {
-            assert!(self[handle.0].is_none());
-            self[handle.0] = Some(data);
-        }
+    pub(crate) fn component_instance(
+        &self,
+        handle: crate::component::Instance,
+    ) -> &crate::vm::component::ComponentInstance {
+        unsafe { &*self[handle.0].as_ref().unwrap().instance_ptr() }
     }
 
     pub fn bump_resource_counts(&mut self, module: &Module) -> Result<()> {
@@ -1979,6 +1967,26 @@ at https://bytecodealliance.org/security.
             &mut self.component_calls,
             &mut self.component_host_table,
             &mut self.host_resource_data,
+        )
+    }
+
+    #[inline]
+    #[cfg(feature = "component-model")]
+    pub(crate) fn component_resource_state_with_instance(
+        &mut self,
+        instance: crate::component::Instance,
+    ) -> (
+        &mut crate::runtime::vm::component::CallContexts,
+        &mut crate::runtime::vm::component::ResourceTable,
+        &mut crate::component::HostResourceData,
+        &mut crate::vm::component::ComponentInstance,
+    ) {
+        let instance = unsafe { &mut *self[instance.0].as_mut().unwrap().instance_ptr() };
+        (
+            &mut self.component_calls,
+            &mut self.component_host_table,
+            &mut self.host_resource_data,
+            instance,
         )
     }
 

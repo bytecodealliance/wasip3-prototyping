@@ -76,7 +76,7 @@ pub struct ComponentInstance {
     /// Self-pointer back to `Store<T>` and its functions.
     store: Option<VMStoreRawPtr>,
 
-    pub(crate) instance: Option<Instance>,
+    pub(crate) instance: Instance,
 
     /// A zero-sized field which represents the end of the struct for the actual
     /// `VMComponentContext` to be allocated behind.
@@ -181,21 +181,17 @@ impl ComponentInstance {
         vmctx: NonNull<VMComponentContext>,
         f: impl FnOnce(&mut dyn VMStore, &mut ComponentInstance) -> R,
     ) -> R {
+        // TODO: Calling a function that takes both a `&mut dyn VMStore` and a
+        // `&mut ComponentInstance` is extremely hazardous since the former can
+        // be used to alias the latter.  The signature of `f` should be changed
+        // to be `impl FnOnce(&mut dyn VMStore, Instance) -> R`, and any code
+        // that uses it updated.
         let mut ptr = vmctx
             .byte_sub(mem::size_of::<ComponentInstance>())
             .cast::<ComponentInstance>();
         let reference = ptr.as_mut();
         let store = &mut *reference.store();
-        if let Some(instance) = reference.instance {
-            store.hide_instance(instance);
-        }
-        reference.set_store(None);
-        let result = f(store, reference);
-        reference.set_store(Some(VMStoreRawPtr(store.traitobj())));
-        if let Some(instance) = reference.instance {
-            store.unhide_instance(instance);
-        }
-        result
+        f(store, reference)
     }
 
     /// Returns the layout corresponding to what would be an allocation of a
@@ -225,6 +221,7 @@ impl ComponentInstance {
         runtime_info: Arc<dyn ComponentRuntimeInfo>,
         resource_types: Arc<PrimaryMap<ResourceIndex, ResourceType>>,
         store: NonNull<dyn VMStore>,
+        instance: Instance,
     ) {
         assert!(alloc_size >= Self::alloc_layout(&offsets).size());
 
@@ -260,7 +257,7 @@ impl ComponentInstance {
                 vmctx: VMComponentContext {
                     _marker: marker::PhantomPinned,
                 },
-                instance: None,
+                instance,
                 #[cfg(feature = "component-model-async")]
                 concurrent_state,
             },
@@ -306,10 +303,6 @@ impl ComponentInstance {
     /// This will panic if this instance has been removed from its store.
     pub fn store(&self) -> *mut dyn VMStore {
         self.store.unwrap().0.as_ptr()
-    }
-
-    pub(crate) fn set_store(&mut self, store: Option<VMStoreRawPtr>) {
-        self.store = store;
     }
 
     /// Returns the runtime memory definition corresponding to the index of the
@@ -812,6 +805,7 @@ impl OwnedComponentInstance {
         runtime_info: Arc<dyn ComponentRuntimeInfo>,
         resource_types: Arc<PrimaryMap<ResourceIndex, ResourceType>>,
         store: NonNull<dyn VMStore>,
+        instance: Instance,
     ) -> OwnedComponentInstance {
         let component = runtime_info.component();
         let offsets = VMComponentOffsets::new(HostPtr, component);
@@ -835,6 +829,7 @@ impl OwnedComponentInstance {
                 runtime_info,
                 resource_types,
                 store,
+                instance,
             );
 
             let ptr = SendSyncPtr::new(ptr);

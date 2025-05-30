@@ -132,7 +132,6 @@ pub use self::resources::{Resource, ResourceAny};
 pub use self::types::{ResourceType, Type};
 pub use self::values::Val;
 
-pub(crate) use self::instance::InstanceData;
 pub(crate) use self::resources::HostResourceData;
 
 // Re-export wasm_wave crate so the compatible version of this dep doesn't have to be
