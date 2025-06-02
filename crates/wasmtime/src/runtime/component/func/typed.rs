@@ -3,7 +3,6 @@ use crate::component::func::{Func, LiftContext, LowerContext, Options};
 use crate::component::matching::InstanceType;
 use crate::component::storage::{storage_as_slice, storage_as_slice_mut};
 use crate::prelude::*;
-use crate::runtime::vm::component::ComponentInstance;
 use crate::{AsContextMut, StoreContext, StoreContextMut, ValRaw};
 use alloc::borrow::Cow;
 use alloc::sync::Arc;
@@ -19,6 +18,8 @@ use wasmtime_environ::component::{
 
 #[cfg(feature = "component-model-async")]
 use crate::component::concurrent::{self, PreparedCall, ResetPtr};
+#[cfg(feature = "component-model-async")]
+use crate::runtime::vm::component::ComponentInstance;
 #[cfg(feature = "component-model-async")]
 use core::any::Any;
 #[cfg(feature = "component-model-async")]

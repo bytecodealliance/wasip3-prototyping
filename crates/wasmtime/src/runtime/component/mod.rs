@@ -724,7 +724,7 @@ pub(crate) mod concurrent {
         pub(crate) fn with_attached_instance<R>(
             &mut self,
             instance: &mut ComponentInstance,
-            fun: impl FnOnce(StoreContextMut<'_, T>, Option<Instance>) -> R,
+            fun: impl FnOnce(StoreContextMut<'_, T>, Instance) -> R,
         ) -> R {
             fun(self.as_context_mut(), instance.instance)
         }
