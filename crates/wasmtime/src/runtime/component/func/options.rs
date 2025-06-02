@@ -207,10 +207,7 @@ pub struct LowerContext<'a, T: 'static> {
     /// lifting/lowering process.
     pub types: &'a ComponentTypes,
 
-    /// A raw unsafe pointer to the component instance that's being lowered
-    /// into.
-    ///
-    /// This pointer is required to be owned by the `store` provided.
+    /// Index of the component instance that's being lowered into.
     pub(crate) instance: Instance,
 }
 
