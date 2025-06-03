@@ -702,12 +702,11 @@ pub mod bindgen_examples {}
 pub(crate) mod concurrent {
     use {
         crate::{
-            AsContextMut, StoreContextMut, VMStore,
+            VMStore,
             component::{
                 Instance, Val,
                 func::{ComponentType, LiftContext, LowerContext},
             },
-            vm::component::ComponentInstance,
         },
         alloc::{sync::Arc, task::Wake},
         anyhow::Result,
@@ -720,16 +719,6 @@ pub(crate) mod concurrent {
         wasmtime_environ::component::{InterfaceType, RuntimeComponentInstanceIndex},
     };
 
-    impl<T> StoreContextMut<'_, T> {
-        pub(crate) fn with_attached_instance<R>(
-            &mut self,
-            instance: &mut ComponentInstance,
-            fun: impl FnOnce(StoreContextMut<'_, T>, Instance) -> R,
-        ) -> R {
-            fun(self.as_context_mut(), instance.instance)
-        }
-    }
-
     fn dummy_waker() -> Waker {
         struct DummyWaker;
 
@@ -740,9 +729,9 @@ pub(crate) mod concurrent {
         Arc::new(DummyWaker).into()
     }
 
-    impl ComponentInstance {
+    impl Instance {
         pub(crate) fn poll_and_block<R: Send + Sync + 'static>(
-            &mut self,
+            self,
             _store: &mut dyn VMStore,
             future: impl Future<Output = Result<R>> + Send + 'static,
             _caller_instance: RuntimeComponentInstanceIndex,

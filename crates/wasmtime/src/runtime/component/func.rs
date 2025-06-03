@@ -18,8 +18,6 @@ use wasmtime_environ::component::{
 #[cfg(feature = "component-model-async")]
 use crate::component::concurrent::{self, PreparedCall};
 #[cfg(feature = "component-model-async")]
-use crate::runtime::vm::component::ComponentInstance;
-#[cfg(feature = "component-model-async")]
 use core::any::Any;
 #[cfg(feature = "component-model-async")]
 use core::future::{self, Future};
@@ -786,7 +784,7 @@ impl Func {
     unsafe fn lower_args_fn<T>(
         func: Func,
         store: StoreContextMut<T>,
-        instance: &mut ComponentInstance,
+        instance: Instance,
         params_in: *mut u8,
         params_out: &mut [MaybeUninit<ValRaw>],
     ) -> Result<()> {
@@ -835,7 +833,7 @@ impl Func {
     fn lift_results_sync_fn<T>(
         func: Func,
         store: StoreContextMut<T>,
-        instance: &mut ComponentInstance,
+        instance: Instance,
         results: &[ValRaw],
     ) -> Result<Box<dyn Any + Send + Sync>> {
         lift_results(store, instance, results, func, Self::lift_results_sync)
@@ -856,7 +854,7 @@ impl Func {
     fn lift_results_async_fn<T>(
         func: Func,
         store: StoreContextMut<T>,
-        instance: &mut ComponentInstance,
+        instance: Instance,
         results: &[ValRaw],
     ) -> Result<Box<dyn Any + Send + Sync>> {
         lift_results(store, instance, results, func, Self::lift_results_async)
@@ -935,7 +933,7 @@ fn lower_params<
         + Sync,
 >(
     mut store: StoreContextMut<T>,
-    instance: &mut ComponentInstance,
+    instance: Instance,
     lowered: &mut [MaybeUninit<ValRaw>],
     me: Func,
     params: &Params,
@@ -950,34 +948,33 @@ fn lower_params<
         ..
     } = store.0[me.0];
 
-    let types = instance.component_types().clone();
-    let mut flags = instance.instance_flags(component_instance);
+    let reference = instance.instance(store.0);
+    let types = reference.component_types().clone();
+    let mut flags = reference.instance_flags(component_instance);
 
-    store.with_attached_instance(instance, |mut store, instance| {
-        if unsafe { !flags.may_enter() } {
-            bail!(crate::Trap::CannotEnterComponent);
+    if unsafe { !flags.may_enter() } {
+        bail!(crate::Trap::CannotEnterComponent);
+    }
+
+    unsafe { flags.set_may_leave(false) };
+    let mut cx = LowerContext::new(store.as_context_mut(), &options, &types, instance);
+    let result = lower(
+        &mut cx,
+        params,
+        InterfaceType::Tuple(types[ty].params),
+        unsafe { slice_to_storage_mut(lowered) },
+    );
+    unsafe { flags.set_may_leave(true) };
+    result?;
+
+    if !options.async_() {
+        unsafe {
+            flags.set_may_enter(false);
+            flags.set_needs_post_return(true);
         }
+    }
 
-        unsafe { flags.set_may_leave(false) };
-        let mut cx = LowerContext::new(store.as_context_mut(), &options, &types, instance);
-        let result = lower(
-            &mut cx,
-            params,
-            InterfaceType::Tuple(types[ty].params),
-            unsafe { slice_to_storage_mut(lowered) },
-        );
-        unsafe { flags.set_may_leave(true) };
-        result?;
-
-        if !options.async_() {
-            unsafe {
-                flags.set_may_enter(false);
-                flags.set_needs_post_return(true);
-            }
-        }
-
-        Ok(())
-    })
+    Ok(())
 }
 
 /// Lift results of the specified type using the specified function.
@@ -987,19 +984,17 @@ fn lift_results<
     T,
     F: FnOnce(&mut LiftContext, InterfaceType, &[ValRaw]) -> Result<Return> + Send + Sync,
 >(
-    mut store: StoreContextMut<T>,
-    instance: &mut ComponentInstance,
+    store: StoreContextMut<T>,
+    instance: Instance,
     lowered: &[ValRaw],
     me: Func,
     lift: F,
 ) -> Result<Box<dyn std::any::Any + Send + Sync>> {
     let FuncData { options, ty, .. } = store.0[me.0];
-    let types = instance.component_types().clone();
-    store.with_attached_instance(instance, |store, instance| {
-        Ok(Box::new(lift(
-            &mut LiftContext::new(store.0, &options, &types, instance),
-            InterfaceType::Tuple(types[ty].results),
-            lowered,
-        )?) as Box<dyn std::any::Any + Send + Sync>)
-    })
+    let types = instance.instance(store.0).component_types().clone();
+    Ok(Box::new(lift(
+        &mut LiftContext::new(store.0, &options, &types, instance),
+        InterfaceType::Tuple(types[ty].results),
+        lowered,
+    )?) as Box<dyn std::any::Any + Send + Sync>)
 }
