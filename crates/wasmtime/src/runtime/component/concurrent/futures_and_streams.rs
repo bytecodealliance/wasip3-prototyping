@@ -3143,9 +3143,7 @@ impl ComponentInstance {
         // Here we reflect the newly created global concurrent error context state into the
         // component instance's locally tracked count, along with the appropriate key into the global
         // ref tracking data structures to enable later lookup
-        let local_tbl = self
-            .error_context_tables()
-            .get_mut_or_insert_with(ty, || StateTable::default());
+        let local_tbl = &mut self.error_context_tables()[ty];
 
         assert!(
             !local_tbl.has_handle(table_id.rep()),
