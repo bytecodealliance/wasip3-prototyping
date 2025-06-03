@@ -296,20 +296,20 @@ where
 
             // Lift the parameters, either from flat storage or from linear
             // memory.
-            let params = {
+            let params = store.with_attached_instance(instance, |store, instance| {
                 let lift =
                     &mut LiftContext::new(store.0.store_opaque_mut(), &options, types, instance);
                 lift.enter_call();
-                storage.lift_params(lift, param_tys)?
-            };
+                storage.lift_params(lift, param_tys)
+            })?;
 
             // Load the return pointer, if present.
             let retptr = match storage.async_retptr() {
-                Some(ptr) => {
+                Some(ptr) => store.with_attached_instance(instance, |mut store, instance| {
                     let mut lower =
                         LowerContext::new(store.as_context_mut(), &options, &types, instance);
-                    validate_inbounds::<Return>(lower.as_slice_mut(), ptr)?
-                }
+                    validate_inbounds::<Return>(lower.as_slice_mut(), ptr)
+                })?,
                 // If there's no return pointer then `Return` should have an
                 // empty flat representation. In this situation pretend the
                 // return pointer was 0 so we have something to shepherd along
@@ -321,16 +321,14 @@ where
             };
 
             let future = closure(store.as_context_mut(), instance, params);
-            let instance_ptr = SendSyncPtr::new(NonNull::new(instance).unwrap());
             let task = instance.first_poll(store.as_context_mut(), future, caller_instance, {
                 let types = types.clone();
                 move |mut store: StoreContextMut<T>,
                       instance: &mut ComponentInstance,
                       ret: Return| {
-                    store.with_attached_instance(instance, |store, _| unsafe {
+                    store.with_attached_instance(instance, |store, instance| {
                         flags.set_may_leave(false);
-                        let mut lower =
-                            LowerContext::new(store, &options, &types, instance_ptr.as_ptr());
+                        let mut lower = LowerContext::new(store, &options, &types, instance);
                         ret.store(&mut lower, result_tys, retptr)?;
                         flags.set_may_leave(true);
                         lower.exit_call()?;
@@ -345,8 +343,10 @@ where
                 Status::Returned.pack(None)
             };
 
-            let mut lower = LowerContext::new(store, &options, &types, instance_ptr.as_ptr());
-            storage.lower_results(&mut lower, InterfaceType::U32, status)?;
+            store.with_attached_instance(instance, |store, instance| {
+                let mut lower = LowerContext::new(store, &options, &types, instance);
+                storage.lower_results(&mut lower, InterfaceType::U32, status)
+            })?;
         }
         #[cfg(not(feature = "component-model-async"))]
         {
@@ -357,18 +357,19 @@ where
         }
     } else {
         let mut storage = Storage::<'_, Params, Return>::new_sync(storage);
-        let mut lift = LiftContext::new(store.0.store_opaque_mut(), &options, types, instance);
-        lift.enter_call();
-        let params = storage.lift_params(&mut lift, param_tys)?;
+        let params = store.with_attached_instance(instance, |store, instance| {
+            let mut lift = LiftContext::new(store.0.store_opaque_mut(), &options, types, instance);
+            lift.enter_call();
+            storage.lift_params(&mut lift, param_tys)
+        })?;
 
         let future = closure(store.as_context_mut(), instance, params);
 
         let ret = instance.poll_and_block(store.0.traitobj_mut(), future, caller_instance)?;
 
-        let instance_ptr = instance as *mut _;
-        store.with_attached_instance(instance, |store, _| unsafe {
+        store.with_attached_instance(instance, |store, instance| {
             flags.set_may_leave(false);
-            let mut lower = LowerContext::new(store, &options, types, instance_ptr);
+            let mut lower = LowerContext::new(store, &options, types, instance);
             storage.lower_results(&mut lower, result_tys, ret)?;
             flags.set_may_leave(true);
             lower.exit_call()
@@ -759,7 +760,7 @@ where
         #[cfg(feature = "component-model-async")]
         {
             let mut params = Vec::new();
-            let ret_index = {
+            let ret_index = store.with_attached_instance(instance, |store, instance| {
                 let mut lift =
                     &mut LiftContext::new(store.0.store_opaque_mut(), &options, types, instance);
                 lift.enter_call();
@@ -771,15 +772,17 @@ where
                     param_tys,
                     &mut params,
                     wasmtime_environ::component::MAX_FLAT_ASYNC_PARAMS,
-                )?
-            };
+                )
+            })?;
             let retptr = if result_tys.types.len() == 0 {
                 0
             } else {
                 let retptr = storage[ret_index].assume_init();
-                let mut lower =
-                    LowerContext::new(store.as_context_mut(), &options, &types, instance);
-                validate_inbounds_dynamic(&result_tys.abi, lower.as_slice_mut(), &retptr)?
+                store.with_attached_instance(instance, |mut store, instance| {
+                    let mut lower =
+                        LowerContext::new(store.as_context_mut(), &options, &types, instance);
+                    validate_inbounds_dynamic(&result_tys.abi, lower.as_slice_mut(), &retptr)
+                })?
             };
 
             let future = closure(
@@ -789,7 +792,6 @@ where
                 result_tys.types.len(),
             );
 
-            let instance_ptr = SendSyncPtr::new(NonNull::new(instance).unwrap());
             let task = instance.first_poll(store, future, caller_instance, {
                 let types = types.clone();
                 let result_tys = func_ty.results;
@@ -801,11 +803,10 @@ where
                         bail!("result length mismatch");
                     }
 
-                    store.with_attached_instance(instance, |store, _| unsafe {
+                    store.with_attached_instance(instance, |store, instance| {
                         flags.set_may_leave(false);
 
-                        let mut lower =
-                            LowerContext::new(store, &options, &types, instance_ptr.as_ptr());
+                        let mut lower = LowerContext::new(store, &options, &types, instance);
                         let mut ptr = retptr;
                         for (val, ty) in result_vals.iter().zip(result_tys.types.iter()) {
                             let offset = types.canonical_abi(ty).next_field32_size(&mut ptr);
@@ -837,17 +838,19 @@ where
             );
         }
     } else {
-        let mut cx = LiftContext::new(store.0.store_opaque_mut(), &options, types, instance);
-        cx.enter_call();
         let mut args = Vec::new();
-        let ret_index = dynamic_params_load(
-            &mut cx,
-            types,
-            storage,
-            param_tys,
-            &mut args,
-            MAX_FLAT_PARAMS,
-        )?;
+        let ret_index = store.with_attached_instance(instance, |store, instance| {
+            let mut cx = LiftContext::new(store.0.store_opaque_mut(), &options, types, instance);
+            cx.enter_call();
+            dynamic_params_load(
+                &mut cx,
+                types,
+                storage,
+                param_tys,
+                &mut args,
+                MAX_FLAT_PARAMS,
+            )
+        })?;
 
         let future = closure(
             store.as_context_mut(),
@@ -858,11 +861,10 @@ where
         let result_vals =
             (*instance).poll_and_block(store.0.traitobj_mut(), future, caller_instance)?;
 
-        let instance_ptr = instance as *mut _;
-        store.with_attached_instance(instance, |store, _| unsafe {
+        store.with_attached_instance(instance, |store, instance| {
             flags.set_may_leave(false);
 
-            let mut cx = LowerContext::new(store, &options, types, instance_ptr);
+            let mut cx = LowerContext::new(store, &options, types, instance);
             if let Some(cnt) = result_tys.abi.flat_count(MAX_FLAT_RESULTS) {
                 let mut dst = storage[..cnt].iter_mut();
                 for (val, ty) in result_vals.iter().zip(result_tys.types.iter()) {

@@ -531,6 +531,7 @@ impl Func {
         assert!(mem::align_of_val(map_maybe_uninit!(space.params)) == val_align);
         assert!(mem::align_of_val(map_maybe_uninit!(space.ret)) == val_align);
 
+        let instance_handle = instance;
         let instance = store.0[instance.0].as_ref().unwrap();
         let types = instance.component_types().clone();
         let mut flags = instance.instance().instance_flags(component_instance);
@@ -550,8 +551,8 @@ impl Func {
 
             debug_assert!(flags.may_leave());
             flags.set_may_leave(false);
-            let instance_ptr = instance.instance_ptr();
-            let mut cx = LowerContext::new(store.as_context_mut(), &options, &types, instance_ptr);
+            let mut cx =
+                LowerContext::new(store.as_context_mut(), &options, &types, instance_handle);
             cx.enter_call();
             let result = lower(
                 &mut cx,
@@ -598,7 +599,7 @@ impl Func {
             // later get used in post-return.
             flags.set_needs_post_return(true);
             let val = lift(
-                &mut LiftContext::new(store.0, &options, &types, instance_ptr),
+                &mut LiftContext::new(store.0, &options, &types, instance_handle),
                 InterfaceType::Tuple(types[ty].results),
                 ret,
             )?;
@@ -950,30 +951,29 @@ fn lower_params<
     } = store.0[me.0];
 
     let types = instance.component_types().clone();
-    let instance_ptr = instance as *mut _;
     let mut flags = instance.instance_flags(component_instance);
 
-    // SAFETY: `instance_ptr` is derived from `instance` and thus known to be
-    // valid.
-    store.with_attached_instance(instance, |mut store, _| unsafe {
-        if !flags.may_enter() {
+    store.with_attached_instance(instance, |mut store, instance| {
+        if unsafe { !flags.may_enter() } {
             bail!(crate::Trap::CannotEnterComponent);
         }
 
-        flags.set_may_leave(false);
-        let mut cx = LowerContext::new(store.as_context_mut(), &options, &types, instance_ptr);
+        unsafe { flags.set_may_leave(false) };
+        let mut cx = LowerContext::new(store.as_context_mut(), &options, &types, instance);
         let result = lower(
             &mut cx,
             params,
             InterfaceType::Tuple(types[ty].params),
-            slice_to_storage_mut(lowered),
+            unsafe { slice_to_storage_mut(lowered) },
         );
-        flags.set_may_leave(true);
+        unsafe { flags.set_may_leave(true) };
         result?;
 
         if !options.async_() {
-            flags.set_may_enter(false);
-            flags.set_needs_post_return(true);
+            unsafe {
+                flags.set_may_enter(false);
+                flags.set_needs_post_return(true);
+            }
         }
 
         Ok(())
@@ -987,24 +987,19 @@ fn lift_results<
     T,
     F: FnOnce(&mut LiftContext, InterfaceType, &[ValRaw]) -> Result<Return> + Send + Sync,
 >(
-    store: StoreContextMut<T>,
+    mut store: StoreContextMut<T>,
     instance: &mut ComponentInstance,
     lowered: &[ValRaw],
     me: Func,
     lift: F,
 ) -> Result<Box<dyn std::any::Any + Send + Sync>> {
     let FuncData { options, ty, .. } = store.0[me.0];
-
     let types = instance.component_types().clone();
-    let instance_ptr = instance as *mut _;
-
-    // SAFETY: `instance_ptr` is derived from `instance` and thus known to be
-    // valid.
-    unsafe {
+    store.with_attached_instance(instance, |store, instance| {
         Ok(Box::new(lift(
-            &mut LiftContext::new(store.0, &options, &types, instance_ptr),
+            &mut LiftContext::new(store.0, &options, &types, instance),
             InterfaceType::Tuple(types[ty].results),
             lowered,
         )?) as Box<dyn std::any::Any + Send + Sync>)
-    }
+    })
 }

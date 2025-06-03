@@ -1,6 +1,6 @@
-use crate::component::ResourceType;
 use crate::component::matching::InstanceType;
 use crate::component::resources::{HostResourceData, HostResourceIndex, HostResourceTables};
+use crate::component::{Instance, ResourceType};
 use crate::prelude::*;
 use crate::runtime::vm::component::{
     CallContexts, ComponentInstance, InstanceFlags, ResourceTable, ResourceTables,
@@ -22,7 +22,7 @@ use wasmtime_environ::component::{ComponentTypes, StringEncoding, TypeResourceTa
 /// reference to actually use the pointers.
 #[derive(Copy, Clone)]
 pub struct Options {
-    /// The store from which this options originated from.
+    /// The store from which this options originated.
     store_id: StoreId,
 
     /// An optional pointer for the memory that this set of options is referring
@@ -207,27 +207,18 @@ pub struct LowerContext<'a, T: 'static> {
     /// lifting/lowering process.
     pub types: &'a ComponentTypes,
 
-    /// A raw unsafe pointer to the component instance that's being lowered
-    /// into.
-    ///
-    /// This pointer is required to be owned by the `store` provided.
-    pub(crate) instance: *mut ComponentInstance,
+    /// Index of the component instance that's being lowered into.
+    pub(crate) instance: Instance,
 }
 
 #[doc(hidden)]
 impl<'a, T: 'static> LowerContext<'a, T> {
     /// Creates a new lowering context from the specified parameters.
-    ///
-    /// # Unsafety
-    ///
-    /// This function is unsafe as it needs to be guaranteed by the caller that
-    /// the `instance` here is valid within `store` and is a valid component
-    /// instance.
-    pub unsafe fn new(
+    pub fn new(
         store: StoreContextMut<'a, T>,
         options: &'a Options,
         types: &'a ComponentTypes,
-        instance: *mut ComponentInstance,
+        instance: Instance,
     ) -> LowerContext<'a, T> {
         LowerContext {
             store,
@@ -235,6 +226,14 @@ impl<'a, T: 'static> LowerContext<'a, T> {
             types,
             instance,
         }
+    }
+
+    pub fn instance(&self) -> &ComponentInstance {
+        self.store.0.component_instance(self.instance)
+    }
+
+    pub fn instance_mut(&mut self) -> &mut ComponentInstance {
+        self.store.0.component_instance_mut(self.instance)
     }
 
     /// Returns a view into memory as a mutable slice of bytes.
@@ -261,7 +260,7 @@ impl<'a, T: 'static> LowerContext<'a, T> {
         old_align: u32,
         new_size: usize,
     ) -> Result<usize> {
-        let realloc_func_ty = Arc::clone(unsafe { (*self.instance).realloc_func_ty() });
+        let realloc_func_ty = Arc::clone(self.instance().realloc_func_ty());
         let realloc_func_ty = realloc_func_ty.downcast_ref::<FuncType>().unwrap();
         self.options
             .realloc(
@@ -326,10 +325,7 @@ impl<'a, T: 'static> LowerContext<'a, T> {
         // This check is performed by comparing the owning instance of `ty`
         // against the owning instance of the resource that `ty` is working
         // with.
-        //
-        // Note that the unsafety here should be valid given the contract of
-        // `LowerContext::new`.
-        if unsafe { (*self.instance).resource_owned_by_own_instance(ty) } {
+        if self.instance().resource_owned_by_own_instance(ty) {
             return Ok(rep);
         }
         self.resource_tables().guest_resource_lower_borrow(rep, ty)
@@ -370,20 +366,20 @@ impl<'a, T: 'static> LowerContext<'a, T> {
     /// Returns the instance type information corresponding to the instance that
     /// this context is lowering into.
     pub fn instance_type(&self) -> InstanceType<'_> {
-        // Note that the unsafety here should be valid given the contract of
-        // `LowerContext::new`.
-        InstanceType::new(unsafe { &*self.instance })
+        InstanceType::new(self.instance())
     }
 
     fn resource_tables(&mut self) -> HostResourceTables<'_> {
-        let (calls, host_table, host_resource_data) = self.store.0.component_resource_state();
+        let instance = self.instance().instance;
+        let (calls, host_table, host_resource_data, instance) = self
+            .store
+            .0
+            .component_resource_state_with_instance(instance);
         HostResourceTables::from_parts(
             ResourceTables {
                 host_table: Some(host_table),
                 calls,
-                // Note that the unsafety here should be valid given the contract of
-                // `LowerContext::new`.
-                guest: Some(unsafe { (*self.instance).guest_tables() }),
+                guest: Some(instance.guest_tables()),
             },
             host_resource_data,
         )
@@ -417,7 +413,7 @@ pub struct LiftContext<'a> {
 
     memory: Option<&'a [u8]>,
 
-    pub(crate) instance: *mut ComponentInstance,
+    pub(crate) instance: &'a mut ComponentInstance,
 
     host_table: &'a mut ResourceTable,
     host_resource_data: &'a mut HostResourceData,
@@ -428,17 +424,12 @@ pub struct LiftContext<'a> {
 #[doc(hidden)]
 impl<'a> LiftContext<'a> {
     /// Creates a new lifting context given the provided context.
-    ///
-    /// # Unsafety
-    ///
-    /// This is unsafe for the same reasons as `LowerContext::new` where the
-    /// validity of `instance` is required to be upheld by the caller.
     #[inline]
-    pub unsafe fn new(
+    pub fn new(
         store: &'a mut StoreOpaque,
         options: &'a Options,
         types: &'a Arc<ComponentTypes>,
-        instance: *mut ComponentInstance,
+        instance: Instance,
     ) -> LiftContext<'a> {
         // From `&mut StoreOpaque` provided the goal here is to project out
         // three different disjoint fields owned by the store: memory,
@@ -446,8 +437,9 @@ impl<'a> LiftContext<'a> {
         // so it's hacked around a bit. This unsafe pointer cast could be fixed
         // with more methods in more places, but it doesn't seem worth doing it
         // at this time.
-        let (calls, host_table, host_resource_data) =
-            (&mut *(store as *mut StoreOpaque)).component_resource_state();
+        let (calls, host_table, host_resource_data, instance) = unsafe {
+            (&mut *(store as *mut StoreOpaque)).component_resource_state_with_instance(instance)
+        };
         let memory = options.memory.map(|_| options.memory(store));
 
         LiftContext {
@@ -478,8 +470,8 @@ impl<'a> LiftContext<'a> {
         self.options.store_id
     }
 
-    /// Returns the component instance raw pointer that is being lifted from.
-    pub fn instance_ptr(&self) -> *mut ComponentInstance {
+    /// Returns the component instance that is being lifted from.
+    pub fn instance_mut(&mut self) -> &mut ComponentInstance {
         self.instance
     }
 
@@ -494,9 +486,7 @@ impl<'a> LiftContext<'a> {
         idx: u32,
     ) -> Result<(u32, Option<NonNull<VMFuncRef>>, Option<InstanceFlags>)> {
         let idx = self.resource_tables().guest_resource_lift_own(idx, ty)?;
-        // Note that the unsafety here should be valid given the contract of
-        // `LiftContext::new`.
-        let (dtor, flags) = unsafe { (*self.instance).dtor_and_flags(ty) };
+        let (dtor, flags) = self.instance.dtor_and_flags(ty);
         Ok((idx, dtor, flags))
     }
 
@@ -535,9 +525,7 @@ impl<'a> LiftContext<'a> {
     /// Returns instance type information for the component instance that is
     /// being lifted from.
     pub fn instance_type(&self) -> InstanceType<'_> {
-        // Note that the unsafety here should be valid given the contract of
-        // `LiftContext::new`.
-        InstanceType::new(unsafe { &*self.instance })
+        InstanceType::new(self.instance)
     }
 
     fn resource_tables(&mut self) -> HostResourceTables<'_> {
@@ -547,7 +535,7 @@ impl<'a> LiftContext<'a> {
                 calls: self.calls,
                 // Note that the unsafety here should be valid given the contract of
                 // `LiftContext::new`.
-                guest: Some(unsafe { (*self.instance).guest_tables() }),
+                guest: Some(self.instance.guest_tables()),
             },
             self.host_resource_data,
         )

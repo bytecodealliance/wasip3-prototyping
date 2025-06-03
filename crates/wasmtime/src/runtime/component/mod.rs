@@ -132,7 +132,6 @@ pub use self::resources::{Resource, ResourceAny};
 pub use self::types::{ResourceType, Type};
 pub use self::values::Val;
 
-pub(crate) use self::instance::InstanceData;
 pub(crate) use self::resources::HostResourceData;
 
 // Re-export wasm_wave crate so the compatible version of this dep doesn't have to be
@@ -725,7 +724,7 @@ pub(crate) mod concurrent {
         pub(crate) fn with_attached_instance<R>(
             &mut self,
             instance: &mut ComponentInstance,
-            fun: impl FnOnce(StoreContextMut<'_, T>, Option<Instance>) -> R,
+            fun: impl FnOnce(StoreContextMut<'_, T>, Instance) -> R,
         ) -> R {
             fun(self.as_context_mut(), instance.instance)
         }
