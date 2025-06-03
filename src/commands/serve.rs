@@ -1,8 +1,10 @@
 use crate::common::{Profile, RunCommon, RunTarget};
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
+use bytes::Bytes;
 use clap::Parser;
 use http::{Response, StatusCode};
 use http_body_util::BodyExt as _;
+use http_body_util::combinators::BoxBody;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -11,13 +13,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{stderr, stdin, stdout};
 use tokio::sync::Notify;
-use wasmtime::component::{Component, Linker};
+use wasmtime::component::{Component, Instance, InstancePre, Linker};
 use wasmtime::{AsContextMut, Engine, Store, StoreLimits, UpdateDeadline};
 use wasmtime_wasi::p2::{IoView, StreamError, StreamResult, WasiCtx, WasiCtxBuilder, WasiView};
-use wasmtime_wasi_http::bindings::ProxyPre;
-use wasmtime_wasi_http::bindings::http::types::{ErrorCode, Scheme};
-use wasmtime_wasi_http::body::HyperOutgoingBody;
+use wasmtime_wasi_http::bindings as p2;
 use wasmtime_wasi_http::io::TokioIo;
+use wasmtime_wasi_http::p3::bindings as p3;
 use wasmtime_wasi_http::{
     DEFAULT_OUTGOING_BODY_BUFFER_CHUNKS, DEFAULT_OUTGOING_BODY_CHUNK_SIZE, WasiHttpCtx,
     WasiHttpView,
@@ -516,7 +517,12 @@ impl ServeCommand {
             RunTarget::Core(_) => bail!("The serve command currently requires a component"),
             RunTarget::Component(c) => c,
         };
+
         let instance = linker.instantiate_pre(&component)?;
+        let instance = match p3::ProxyIndices::new(&instance) {
+            Ok(indices) => ProxyPre::P3(indices, instance),
+            Err(_) => ProxyPre::P2(p2::ProxyPre::new(instance)?),
+        };
 
         // Spawn background task(s) waiting for graceful shutdown signals. This
         // always listens for ctrl-c but additionally can listen for a TCP
@@ -562,122 +568,68 @@ impl ServeCommand {
 
         log::info!("Listening on {}", self.addr);
 
-        if let Ok(..) = wasmtime_wasi_http::p3::bindings::ProxyPre::new(instance.clone()) {
-            let next_id = Arc::new(AtomicU64::default());
-            let cmd = Arc::new(self);
-            loop {
-                // Wait for a socket, but also "race" against shutdown to break out
-                // of this loop. Once the graceful shutdown signal is received then
-                // this loop exits immediately.
-                let (stream, _) = tokio::select! {
-                    _ = shutdown.requested.notified() => break,
-                    v = listener.accept() => v?,
-                };
-                let engine = engine.clone();
-                let cmd = Arc::clone(&cmd);
-                let next_id = Arc::clone(&next_id);
-                let instance = instance.clone();
-                tokio::task::spawn(async {
-                    let service = hyper::service::service_fn(
-                        move |req: hyper::Request<hyper::body::Incoming>| {
-                            let req_id = next_id.fetch_add(1, Ordering::Relaxed);
-                            let engine = engine.clone();
-                            let cmd = Arc::clone(&cmd);
-                            let instance = instance.clone();
-                            async move {
-                                let mut store = cmd
-                                    .new_store(&engine, req_id)
-                                    .context("failed to create new store")?;
-                                let instance = instance.instantiate_async(&mut store).await?;
-                                let proxy = wasmtime_wasi_http::p3::bindings::Proxy::new(
-                                    &mut store, &instance,
-                                )?;
-                                let (req, body) = req.into_parts();
-                                let body = body.map_err(wasmtime_wasi_http::p3::bindings::http::types::ErrorCode::from_hyper_request_error);
-                                let handle = proxy
-                                    .handle(&mut store, http::Request::from_parts(req, body))?;
-                                let res = instance.run(&mut store, handle).await???;
-                                let (res, tx, io) =
-                                    wasmtime_wasi_http::p3::Response::resource_into_http(
-                                        &mut store, res,
-                                    )?;
-                                tokio::task::spawn(async move {
-                                    if let Some(io) = io {
-                                        let closure = instance.run(&mut store, io).await?;
-                                        closure(store.as_context_mut())?;
-                                    }
-                                    // TODO: Report transmit errors
-                                    if let Some(tx) = tx {
-                                        instance.run(&mut store, tx.write(Ok(()))).await?;
-                                    }
-                                    anyhow::Ok(())
-                                });
-                                anyhow::Ok(res.map(|body| body.map_err(|err| err.unwrap_or(wasmtime_wasi_http::p3::bindings::http::types::ErrorCode::InternalError(None)))))
-                            }
-                        },
-                    );
-                    if let Err(e) = http1::Builder::new()
-                        .keep_alive(true)
-                        .serve_connection(TokioIo::new(stream), service)
-                        .await
-                    {
-                        eprintln!("error: {e:?}");
-                    }
-                });
-            }
-        } else {
-            let instance = wasmtime_wasi_http::bindings::ProxyPre::new(instance)?;
+        let handler = ProxyHandler::new(self, engine, instance);
 
-            let handler = ProxyHandler::new(self, engine, instance);
-            loop {
-                // Wait for a socket, but also "race" against shutdown to break out
-                // of this loop. Once the graceful shutdown signal is received then
-                // this loop exits immediately.
-                let (stream, _) = tokio::select! {
-                    _ = shutdown.requested.notified() => break,
-                    v = listener.accept() => v?,
-                };
-                let comp = component.clone();
-                let stream = TokioIo::new(stream);
-                let h = handler.clone();
-                let shutdown_guard = shutdown.clone().increment();
-                tokio::task::spawn(async move {
-                    if let Err(e) = http1::Builder::new()
-                        .keep_alive(true)
-                        .serve_connection(
-                            stream,
-                            hyper::service::service_fn(move |req| {
-                                let comp = comp.clone();
-                                let h = h.clone();
-                                async move {
-                                    use http_body_util::{BodyExt, Full};
-                                    fn to_errorcode(_: Infallible) -> ErrorCode {
-                                        unreachable!()
-                                    }
-                                    match handle_request(h, req, comp).await {
-                                        Ok(r) => Ok::<_, Infallible>(r),
-                                        Err(e) => {
-                                            eprintln!("error: {e:?}");
-                                            Ok(Response::builder()
-                                                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                                .body(
-                                                    Full::new(bytes::Bytes::new())
-                                                        .map_err(to_errorcode)
-                                                        .boxed(),
-                                                )
-                                                .unwrap())
-                                        }
+        loop {
+            // Wait for a socket, but also "race" against shutdown to break out
+            // of this loop. Once the graceful shutdown signal is received then
+            // this loop exits immediately.
+            let (stream, _) = tokio::select! {
+                _ = shutdown.requested.notified() => break,
+                v = listener.accept() => v?,
+            };
+            let comp = component.clone();
+            let stream = TokioIo::new(stream);
+            let h = handler.clone();
+            let shutdown_guard = shutdown.clone().increment();
+            tokio::task::spawn(async move {
+                if let Err(e) = http1::Builder::new()
+                    .keep_alive(true)
+                    .serve_connection(
+                        stream,
+                        hyper::service::service_fn(move |req| {
+                            let comp = comp.clone();
+                            let h = h.clone();
+                            async move {
+                                use http_body_util::{BodyExt, Full};
+                                match handle_request(h, req, comp).await {
+                                    Ok(r) => Ok::<_, Infallible>(r),
+                                    Err(e) => {
+                                        eprintln!("error: {e:?}");
+                                        let error_html = "\
+<!doctype html>
+<html>
+<head>
+    <title>500 Internal Server Error</title>
+</head>
+<body>
+    <center>
+        <h1>500 Internal Server Error</h1>
+        <hr>
+        wasmtime
+    </center>
+</body>
+</html>";
+                                        Ok(Response::builder()
+                                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                            .header("Content-Type", "text/html; charset=UTF-8")
+                                            .body(
+                                                Full::new(bytes::Bytes::from(error_html))
+                                                    .map_err(|_| unreachable!())
+                                                    .boxed(),
+                                            )
+                                            .unwrap())
                                     }
                                 }
-                            }),
-                        )
-                        .await
-                    {
-                        eprintln!("error: {e:?}");
-                    }
-                    drop(shutdown_guard);
-                });
-            }
+                            }
+                        }),
+                    )
+                    .await
+                {
+                    eprintln!("error: {e:?}");
+                }
+                drop(shutdown_guard);
+            });
         }
 
         // Upon exiting the loop we'll no longer process any more incoming
@@ -903,8 +855,31 @@ fn setup_guest_profiler(
 struct ProxyHandlerInner {
     cmd: ServeCommand,
     engine: Engine,
-    instance_pre: ProxyPre<Host>,
+    instance_pre: ProxyPre,
     next_id: AtomicU64,
+}
+
+enum ProxyPre {
+    P2(p2::ProxyPre<Host>),
+    P3(p3::ProxyIndices, InstancePre<Host>),
+}
+
+impl ProxyPre {
+    async fn instantiate(&self, store: &mut Store<Host>) -> Result<Proxy> {
+        Ok(match self {
+            ProxyPre::P2(pre) => Proxy::P2(pre.instantiate_async(store).await?),
+            ProxyPre::P3(indices, pre) => {
+                let instance = pre.instantiate_async(&mut *store).await?;
+                let proxy = indices.load(&mut *store, &instance)?;
+                Proxy::P3(proxy, instance)
+            }
+        })
+    }
+}
+
+enum Proxy {
+    P2(p2::Proxy),
+    P3(p3::Proxy, Instance),
 }
 
 impl ProxyHandlerInner {
@@ -917,7 +892,7 @@ impl ProxyHandlerInner {
 struct ProxyHandler(Arc<ProxyHandlerInner>);
 
 impl ProxyHandler {
-    fn new(cmd: ServeCommand, engine: Engine, instance_pre: ProxyPre<Host>) -> Self {
+    fn new(cmd: ServeCommand, engine: Engine, instance_pre: ProxyPre) -> Self {
         Self(Arc::new(ProxyHandlerInner {
             cmd,
             engine,
@@ -933,7 +908,7 @@ async fn handle_request(
     ProxyHandler(inner): ProxyHandler,
     req: Request,
     component: Component,
-) -> Result<hyper::Response<HyperOutgoingBody>> {
+) -> Result<hyper::Response<BoxBody<Bytes, anyhow::Error>>> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
 
     let req_id = inner.next_req_id();
@@ -946,52 +921,84 @@ async fn handle_request(
 
     let mut store = inner.cmd.new_store(&inner.engine, req_id)?;
 
-    let req = store.data_mut().new_incoming_request(Scheme::Http, req)?;
-    let out = store.data_mut().new_response_outparam(sender)?;
-    let proxy = inner.instance_pre.instantiate_async(&mut store).await?;
+    let (write_profile, epoch_thread) =
+        setup_epoch_handler(&inner.cmd, &mut store, component.clone())?;
 
-    let comp = component.clone();
-    let task = tokio::task::spawn(async move {
-        let (write_profile, epoch_thread) = setup_epoch_handler(&inner.cmd, &mut store, comp)?;
-
-        if let Err(e) = proxy
-            .wasi_http_incoming_handler()
-            .call_handle(&mut store, req, out)
-            .await
-        {
-            log::error!("[{req_id}] :: {:?}", e);
-            return Err(e);
-        }
-
-        write_profile(&mut store);
-        drop(epoch_thread);
-
-        Ok(())
-    });
-
-    let result = match receiver.await {
-        Ok(Ok(resp)) => Ok(resp),
-        Ok(Err(e)) => Err(e.into()),
-        Err(_) => {
-            // An error in the receiver (`RecvError`) only indicates that the
-            // task exited before a response was sent (i.e., the sender was
-            // dropped); it does not describe the underlying cause of failure.
-            // Instead we retrieve and propagate the error from inside the task
-            // which should more clearly tell the user what went wrong. Note
-            // that we assume the task has already exited at this point so the
-            // `await` should resolve immediately.
-            let e = match task.await {
-                Ok(Ok(())) => {
-                    bail!("guest never invoked `response-outparam::set` method")
+    match inner.instance_pre.instantiate(&mut store).await? {
+        Proxy::P2(proxy) => {
+            let req = store
+                .data_mut()
+                .new_incoming_request(p2::http::types::Scheme::Http, req)?;
+            let out = store.data_mut().new_response_outparam(sender)?;
+            let task = tokio::task::spawn(async move {
+                if let Err(e) = proxy
+                    .wasi_http_incoming_handler()
+                    .call_handle(&mut store, req, out)
+                    .await
+                {
+                    log::error!("[{req_id}] :: {:?}", e);
+                    return Err(e);
                 }
-                Ok(Err(e)) => e,
-                Err(e) => e.into(),
-            };
-            Err(e.context("guest never invoked `response-outparam::set` method"))
-        }
-    };
 
-    result
+                write_profile(&mut store);
+                drop(epoch_thread);
+
+                Ok(())
+            });
+
+            let result = match receiver.await {
+                Ok(Ok(resp)) => resp,
+                Ok(Err(e)) => bail!(e),
+                Err(_) => {
+                    // An error in the receiver (`RecvError`) only indicates that the
+                    // task exited before a response was sent (i.e., the sender was
+                    // dropped); it does not describe the underlying cause of failure.
+                    // Instead we retrieve and propagate the error from inside the task
+                    // which should more clearly tell the user what went wrong. Note
+                    // that we assume the task has already exited at this point so the
+                    // `await` should resolve immediately.
+                    let e = match task.await {
+                        Ok(Ok(())) => {
+                            bail!("guest never invoked `response-outparam::set` method")
+                        }
+                        Ok(Err(e)) => e,
+                        Err(e) => e.into(),
+                    };
+                    bail!(e.context("guest never invoked `response-outparam::set` method"))
+                }
+            };
+
+            Ok(result.map(|body| body.map_err(|e| e.into()).boxed()))
+        }
+        Proxy::P3(proxy, instance) => {
+            let (req, body) = req.into_parts();
+            let body = body.map_err(p3::http::types::ErrorCode::from_hyper_request_error);
+            let handle = proxy.handle(&mut store, http::Request::from_parts(req, body))?;
+            let res = instance.run(&mut store, handle).await???;
+            let (res, tx, io) =
+                wasmtime_wasi_http::p3::Response::resource_into_http(&mut store, res)?;
+            tokio::task::spawn(async move {
+                if let Some(io) = io {
+                    let closure = instance.run(&mut store, io).await?;
+                    closure(store.as_context_mut())?;
+                }
+                // TODO: Report transmit errors
+                if let Some(tx) = tx {
+                    instance.run(&mut store, tx.write(Ok(()))).await?;
+                }
+
+                write_profile(&mut store);
+                drop(epoch_thread);
+
+                anyhow::Ok(())
+            });
+            Ok(res.map(|body| {
+                body.map_err(|err| err.unwrap_or(p3::http::types::ErrorCode::InternalError(None)))
+                    .map_err(|err| err.into())
+                    .boxed()
+            }))
+        }
+    }
 }
 
 #[derive(Clone)]

@@ -8,7 +8,7 @@ use anyhow::{Context as _, bail};
 use bytes::Bytes;
 use futures::{FutureExt as _, StreamExt as _};
 use http::{HeaderMap, StatusCode};
-use http_body_util::combinators::UnsyncBoxBody;
+use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, BodyStream, StreamBody};
 use tokio::sync::{mpsc, oneshot};
 use wasmtime::component::{AbortOnDropHandle, FutureWriter, Resource};
@@ -99,7 +99,7 @@ impl Response {
         mut store: impl AsContextMut<Data = T>,
         res: Resource<Response>,
     ) -> wasmtime::Result<(
-        http::Response<UnsyncBoxBody<Bytes, Option<ErrorCode>>>,
+        http::Response<BoxBody<Bytes, Option<ErrorCode>>>,
         Option<FutureWriter<Result<(), ErrorCode>>>,
         Option<Pin<Box<dyn Future<Output = ResponsePromiseClosure<T>> + Send + 'static>>>,
     )>
@@ -124,7 +124,7 @@ impl Response {
         self,
         mut store: impl AsContextMut<Data = T>,
     ) -> anyhow::Result<(
-        http::Response<UnsyncBoxBody<Bytes, Option<ErrorCode>>>,
+        http::Response<BoxBody<Bytes, Option<ErrorCode>>>,
         Option<FutureWriter<Result<(), ErrorCode>>>,
         Option<Pin<Box<dyn Future<Output = ResponsePromiseClosure<T>> + Send + 'static>>>,
     )> {
@@ -145,7 +145,7 @@ impl Response {
                 buffer: Some(BodyFrame::Trailers(Ok(None))),
                 tx,
                 ..
-            } => (empty_body().boxed_unsync(), Some(tx), None),
+            } => (empty_body().boxed(), Some(tx), None),
             Body::Guest {
                 contents: None,
                 trailers: None,
@@ -162,7 +162,7 @@ impl Response {
                 (
                     empty_body()
                         .with_trailers(async move { Some(Ok(trailers)) })
-                        .boxed_unsync(),
+                        .boxed(),
                     Some(tx),
                     None,
                 )
@@ -176,7 +176,7 @@ impl Response {
             } => (
                 empty_body()
                     .with_trailers(async move { Some(Err(Some(err))) })
-                    .boxed_unsync(),
+                    .boxed(),
                 Some(tx),
                 None,
             ),
@@ -190,7 +190,7 @@ impl Response {
                 let (trailers_tx, trailers_rx) = oneshot::channel();
                 let body = empty_body()
                     .with_trailers(receive_trailers(trailers_rx))
-                    .boxed_unsync();
+                    .boxed();
                 let fut = handle_guest_trailers(trailers, trailers_tx).boxed();
                 (body, Some(tx), Some(fut))
             }
@@ -210,7 +210,7 @@ impl Response {
                 };
                 let body = OutgoingResponseBody::new(contents_rx, buffer, content_length)
                     .with_trailers(receive_trailers(trailers_rx))
-                    .boxed_unsync();
+                    .boxed();
                 let fut = async move {
                     loop {
                         let (tail, mut rx_buffer) = contents.await;
@@ -239,7 +239,7 @@ impl Response {
             | Body::Host {
                 stream: None,
                 buffer: Some(BodyFrame::Trailers(Ok(None))),
-            } => (empty_body().boxed_unsync(), None, None),
+            } => (empty_body().boxed(), None, None),
             Body::Host {
                 stream: None,
                 buffer: Some(BodyFrame::Trailers(Ok(Some(trailers)))),
@@ -253,7 +253,7 @@ impl Response {
                 (
                     empty_body()
                         .with_trailers(async move { Some(Ok(trailers)) })
-                        .boxed_unsync(),
+                        .boxed(),
                     None,
                     None,
                 )
@@ -264,19 +264,19 @@ impl Response {
             } => (
                 empty_body()
                     .with_trailers(async move { Some(Err(Some(err))) })
-                    .boxed_unsync(),
+                    .boxed(),
                 None,
                 None,
             ),
             Body::Host {
                 stream: Some(stream),
                 buffer: None,
-            } => (stream.map_err(Some).boxed_unsync(), None, None),
+            } => (stream.map_err(Some).boxed(), None, None),
             Body::Host {
                 stream: Some(stream),
                 buffer: Some(BodyFrame::Data(buffer)),
             } => (
-                BodyExt::boxed_unsync(StreamBody::new(
+                BodyExt::boxed(StreamBody::new(
                     futures::stream::iter(iter::once(Ok(http_body::Frame::data(buffer))))
                         .chain(BodyStream::new(stream.map_err(Some))),
                 )),

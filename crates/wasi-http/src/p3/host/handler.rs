@@ -155,9 +155,7 @@ where
                             Ok(())
                         }));
                         match response.await {
-                            Ok(response) => {
-                                response.map(|body| body.map_err(Into::into).boxed_unsync())
-                            }
+                            Ok(response) => response.map(|body| body.map_err(Into::into).boxed()),
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -185,9 +183,7 @@ where
                             Ok(())
                         }));
                         match response.await {
-                            Ok(response) => {
-                                response.map(|body| body.map_err(Into::into).boxed_unsync())
-                            }
+                            Ok(response) => response.map(|body| body.map_err(Into::into).boxed()),
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -235,9 +231,7 @@ where
                             Ok(())
                         }));
                         match response.await {
-                            Ok(response) => {
-                                response.map(|body| body.map_err(Into::into).boxed_unsync())
-                            }
+                            Ok(response) => response.map(|body| body.map_err(Into::into).boxed()),
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -275,9 +269,7 @@ where
                             Ok(())
                         }));
                         match response.await {
-                            Ok(response) => {
-                                response.map(|body| body.map_err(Into::into).boxed_unsync())
-                            }
+                            Ok(response) => response.map(|body| body.map_err(Into::into).boxed()),
 
                             Err(err) => return Ok(Err(err)),
                         }
@@ -299,9 +291,7 @@ where
                             Ok(())
                         }));
                         match response.await {
-                            Ok(response) => {
-                                response.map(|body| body.map_err(Into::into).boxed_unsync())
-                            }
+                            Ok(response) => response.map(|body| body.map_err(Into::into).boxed()),
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -322,9 +312,7 @@ where
                             Ok(())
                         }));
                         match response.await {
-                            Ok(response) => {
-                                response.map(|body| body.map_err(Into::into).boxed_unsync())
-                            }
+                            Ok(response) => response.map(|body| body.map_err(Into::into).boxed()),
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -348,9 +336,7 @@ where
                             Ok(())
                         }));
                         match response.await {
-                            Ok(response) => {
-                                response.map(|body| body.map_err(Into::into).boxed_unsync())
-                            }
+                            Ok(response) => response.map(|body| body.map_err(Into::into).boxed()),
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -370,9 +356,7 @@ where
                             Ok(())
                         }));
                         match response.await {
-                            Ok(response) => {
-                                response.map(|body| body.map_err(Into::into).boxed_unsync())
-                            }
+                            Ok(response) => response.map(|body| body.map_err(Into::into).boxed()),
                             Err(err) => return Ok(Err(err)),
                         }
                     }
@@ -394,9 +378,7 @@ where
                             Ok(())
                         }));
                         match response.await {
-                            Ok(response) => {
-                                response.map(|body| body.map_err(Into::into).boxed_unsync())
-                            }
+                            Ok(response) => response.map(|body| body.map_err(Into::into).boxed()),
                             Err(err) => return Ok(Err(err)),
                         }
                     }
