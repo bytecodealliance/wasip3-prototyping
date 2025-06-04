@@ -608,27 +608,32 @@ fn get_store() -> *mut dyn VMStore {
 /// Note that this uses `with_local_instance` to access the thread-local store
 /// and instance stored in `INSTANCE_STATE`.  See that function's documentation
 /// for details.
-fn poll_with_state<T: 'static, F: Future + Send + ?Sized>(
-    token: StoreToken<T>,
+fn poll_with_state<F: Future + Send + ?Sized>(
     cx: &mut Context,
     mut future: Pin<&mut F>,
 ) -> Poll<F::Output> {
     with_local_instance(|store, instance| {
-        let store_ptr = store.traitobj();
-        let store_cx = token.as_context_mut(store);
-
         let result = {
             let old_state = STATE.with(|v| {
                 v.replace(Some(State {
-                    store: store_ptr.as_ptr(),
+                    store: store.traitobj().as_ptr(),
                 }))
             });
             let _reset_state = ResetState(old_state);
-            poll_with_local_instance(store_cx.0.traitobj_mut(), instance, &mut future, cx)
+            // SAFETY: `get_store` will retrieve the store we just stored in
+            // `STATE` above.  Note that we avoid using the `store` parameter
+            // here since that would invalidate the pointer stored in `STATE`
+            // according to stacked borrow rules.
+            poll_with_local_instance(unsafe { &mut *get_store() }, instance, &mut future, cx)
         };
 
-        let spawned_tasks = mem::take(&mut store_cx.0.concurrent_async_state().spawned_tasks);
-        let instance = instance.instance(store_cx.0);
+        let spawned_tasks = mem::take(
+            &mut store
+                .store_opaque_mut()
+                .concurrent_async_state()
+                .spawned_tasks,
+        );
+        let instance = instance.instance(store.store_opaque_mut());
         for spawned in spawned_tasks {
             instance.push_future(spawned);
         }
@@ -1497,7 +1502,7 @@ impl Instance {
         let mut accessor = Accessor::new(token, self);
         let mut future = Box::pin(async move { fun(&mut accessor).await });
         Box::pin(future::poll_fn(move |cx| {
-            poll_with_state(token, cx, future.as_mut())
+            poll_with_state(cx, future.as_mut())
         }))
     }
 
@@ -1532,7 +1537,7 @@ impl Instance {
         T: 'static,
         D: HasData,
     {
-        let mut store = store.as_context_mut();
+        let store = store.as_context_mut();
 
         // Here a `future` is created with a connection to the `handle` being
         // returned such that if the `handle` is dropped then the future will be
@@ -1546,7 +1551,6 @@ impl Instance {
             task.run(&mut accessor).await
         }))));
         let handle = AbortHandle::new(future.clone());
-        let token = StoreToken::new(store.as_context_mut());
         let spawned = future.clone();
         let future = Box::pin(future::poll_fn({
             move |cx| {
@@ -1557,7 +1561,7 @@ impl Instance {
                 if let AbortWrapper::Unpolled(mut future)
                 | AbortWrapper::Polled { mut future, .. } = inner
                 {
-                    let result = poll_with_state(token, cx, future.as_mut());
+                    let result = poll_with_state(cx, future.as_mut());
                     *spawned = AbortWrapper::Polled {
                         future,
                         waker: cx.waker().clone(),
@@ -2683,7 +2687,7 @@ impl Instance {
         let mut accessor = Accessor::new(token, self);
         let mut future = Box::pin(async move { closure(&mut accessor, params).await });
         Box::pin(future::poll_fn(move |cx| {
-            poll_with_state(token, cx, future.as_mut())
+            poll_with_state(cx, future.as_mut())
         }))
     }
 
