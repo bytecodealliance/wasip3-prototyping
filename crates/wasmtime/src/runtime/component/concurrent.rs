@@ -549,7 +549,7 @@ fn with_local_instance<R>(fun: impl FnOnce(&mut dyn VMStore, Instance) -> R) -> 
 ///
 /// The store and instance may be retrieved by (transitive) child calls using
 /// `with_local_instance`.
-fn poll_with_local_instance<F: Future + Send + ?Sized>(
+fn poll_with_local_instance<F: Future + ?Sized>(
     store: &mut dyn VMStore,
     instance: Instance,
     future: &mut Pin<&mut F>,
@@ -1372,14 +1372,9 @@ impl Instance {
     /// the future presumably does not depend on any guest task making further
     /// progress (since no futher progress can be made) and thus is not an
     /// appropriate future to poll using this function.
-    pub async fn run<F>(
-        &self,
-        mut store: impl AsContextMut<Data: Send>,
-        fut: F,
-    ) -> Result<F::Output>
+    pub async fn run<F>(&self, mut store: impl AsContextMut, fut: F) -> Result<F::Output>
     where
-        F: Future + Send,
-        F::Output: Send + Sync + 'static,
+        F: Future,
     {
         check_recursive_run();
         self.poll_until(store.as_context_mut(), fut).await
@@ -1471,7 +1466,7 @@ impl Instance {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn run_with<U: Send + 'static, V: Send + Sync + 'static, F>(
+    pub async fn run_with<U, V, F>(
         &self,
         mut store: impl AsContextMut<Data = U>,
         fun: F,
@@ -1487,7 +1482,7 @@ impl Instance {
         self.run(store, future).await
     }
 
-    fn run_with_raw<U: Send + 'static, V: Send + Sync + 'static, F>(
+    fn run_with_raw<U, V, F>(
         self,
         mut store: impl AsContextMut<Data = U>,
         fun: F,
@@ -1582,10 +1577,10 @@ impl Instance {
     /// The returned future will resolve when either the specified future
     /// completes (in which case we return its result) or no further progress
     /// can be made (in which case we trap with `Trap::AsyncDeadlock`).
-    async fn poll_until<T, R: Send + Sync + 'static>(
+    async fn poll_until<T, R>(
         self,
         mut store: StoreContextMut<'_, T>,
-        future: impl Future<Output = R> + Send,
+        future: impl Future<Output = R>,
     ) -> Result<R> {
         let mut future = pin!(future);
 
