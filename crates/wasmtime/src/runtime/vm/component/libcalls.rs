@@ -594,14 +594,10 @@ unsafe fn backpressure_set(
     enabled: u32,
 ) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance
-            .instance(store.store_opaque_mut())
-            .backpressure_set(
-                wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(
-                    caller_instance,
-                ),
-                enabled,
-            )
+        store[instance.id()].backpressure_set(
+            wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
+            enabled,
+        )
     })
 }
 
@@ -642,13 +638,9 @@ unsafe fn waitable_set_new(
     caller_instance: u32,
 ) -> Result<u32> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance
-            .instance(store.store_opaque_mut())
-            .waitable_set_new(
-                wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(
-                    caller_instance,
-                ),
-            )
+        store[instance.id()].waitable_set_new(
+            wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
+        )
     })
 }
 
@@ -701,14 +693,10 @@ unsafe fn waitable_set_drop(
     set: u32,
 ) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance
-            .instance(store.store_opaque_mut())
-            .waitable_set_drop(
-                wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(
-                    caller_instance,
-                ),
-                set,
-            )
+        store[instance.id()].waitable_set_drop(
+            wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
+            set,
+        )
     })
 }
 
@@ -720,7 +708,7 @@ unsafe fn waitable_join(
     set: u32,
 ) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance.instance(store.store_opaque_mut()).waitable_join(
+        store[instance.id()].waitable_join(
             wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
             waitable,
             set,
@@ -740,7 +728,7 @@ unsafe fn subtask_drop(
     task_id: u32,
 ) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance.instance(store.store_opaque_mut()).subtask_drop(
+        store[instance.id()].subtask_drop(
             wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
             task_id,
         )
@@ -847,7 +835,7 @@ unsafe fn future_transfer(
     dst_table: u32,
 ) -> Result<u32> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance.instance(store.store_opaque_mut()).future_transfer(
+        store[instance.id()].future_transfer(
             src_idx,
             wasmtime_environ::component::TypeFutureTableIndex::from_u32(src_table),
             wasmtime_environ::component::TypeFutureTableIndex::from_u32(dst_table),
@@ -863,7 +851,7 @@ unsafe fn stream_transfer(
     dst_table: u32,
 ) -> Result<u32> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance.instance(store.store_opaque_mut()).stream_transfer(
+        store[instance.id()].stream_transfer(
             src_idx,
             wasmtime_environ::component::TypeStreamTableIndex::from_u32(src_table),
             wasmtime_environ::component::TypeStreamTableIndex::from_u32(dst_table),
@@ -883,9 +871,7 @@ unsafe fn error_context_transfer(
     let dst_table =
         wasmtime_environ::component::TypeComponentLocalErrorContextTableIndex::from_u32(dst_table);
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance
-            .instance(store.store_opaque_mut())
-            .error_context_transfer(src_idx, src_table, dst_table)
+        store[instance.id()].error_context_transfer(src_idx, src_table, dst_table)
     })
 }
 
@@ -903,7 +889,7 @@ unsafe impl HostResultHasUnwindSentinel for ResourcePair {
 #[cfg(feature = "component-model-async")]
 unsafe fn future_new(vmctx: NonNull<VMComponentContext>, ty: u32) -> Result<ResourcePair> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance.instance(store.store_opaque_mut()).future_new(
+        store[instance.id()].future_new(
             wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
         )
     })
@@ -967,13 +953,11 @@ unsafe fn future_cancel_write(
     writer: u32,
 ) -> Result<u32> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance
-            .instance(store.store_opaque_mut())
-            .future_cancel_write(
-                wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
-                async_ != 0,
-                writer,
-            )
+        store[instance.id()].future_cancel_write(
+            wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
+            async_ != 0,
+            writer,
+        )
     })
 }
 
@@ -985,13 +969,11 @@ unsafe fn future_cancel_read(
     reader: u32,
 ) -> Result<u32> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance
-            .instance(store.store_opaque_mut())
-            .future_cancel_read(
-                wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
-                async_ != 0,
-                reader,
-            )
+        store[instance.id()].future_cancel_read(
+            wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
+            async_ != 0,
+            reader,
+        )
     })
 }
 
@@ -1002,12 +984,10 @@ unsafe fn future_close_writable(
     writer: u32,
 ) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance
-            .instance(store.store_opaque_mut())
-            .future_close_writable(
-                wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
-                writer,
-            )
+        store[instance.id()].future_close_writable(
+            wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
+            writer,
+        )
     })
 }
 
@@ -1029,7 +1009,7 @@ unsafe fn future_close_readable(
 #[cfg(feature = "component-model-async")]
 unsafe fn stream_new(vmctx: NonNull<VMComponentContext>, ty: u32) -> Result<ResourcePair> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance.instance(store.store_opaque_mut()).stream_new(
+        store[instance.id()].stream_new(
             wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
         )
     })
@@ -1097,13 +1077,11 @@ unsafe fn stream_cancel_write(
     writer: u32,
 ) -> Result<u32> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance
-            .instance(store.store_opaque_mut())
-            .stream_cancel_write(
-                wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
-                async_ != 0,
-                writer,
-            )
+        store[instance.id()].stream_cancel_write(
+            wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
+            async_ != 0,
+            writer,
+        )
     })
 }
 
@@ -1115,13 +1093,11 @@ unsafe fn stream_cancel_read(
     reader: u32,
 ) -> Result<u32> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance
-            .instance(store.store_opaque_mut())
-            .stream_cancel_read(
-                wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
-                async_ != 0,
-                reader,
-            )
+        store[instance.id()].stream_cancel_read(
+            wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
+            async_ != 0,
+            reader,
+        )
     })
 }
 
@@ -1132,12 +1108,10 @@ unsafe fn stream_close_writable(
     writer: u32,
 ) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance
-            .instance(store.store_opaque_mut())
-            .stream_close_writable(
-                wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
-                writer,
-            )
+        store[instance.id()].stream_close_writable(
+            wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
+            writer,
+        )
     })
 }
 
@@ -1267,29 +1241,23 @@ unsafe fn error_context_drop(
     err_ctx_handle: u32,
 ) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance
-            .instance(store.store_opaque_mut())
-            .error_context_drop(
-                wasmtime_environ::component::TypeComponentLocalErrorContextTableIndex::from_u32(ty),
-                err_ctx_handle,
-            )
+        store[instance.id()].error_context_drop(
+            wasmtime_environ::component::TypeComponentLocalErrorContextTableIndex::from_u32(ty),
+            err_ctx_handle,
+        )
     })
 }
 
 #[cfg(feature = "component-model-async")]
 unsafe fn context_get(vmctx: NonNull<VMComponentContext>, slot: u32) -> Result<u32> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance
-            .instance(store.store_opaque_mut())
-            .context_get(slot)
+        store[instance.id()].context_get(slot)
     })
 }
 
 #[cfg(feature = "component-model-async")]
 unsafe fn context_set(vmctx: NonNull<VMComponentContext>, slot: u32, val: u32) -> Result<()> {
     ComponentInstance::from_vmctx(vmctx, |store, instance| {
-        instance
-            .instance(store.store_opaque_mut())
-            .context_set(slot, val)
+        store[instance.id()].context_set(slot, val)
     })
 }

@@ -216,11 +216,7 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>
                 count,
             } => {
                 let mut store = token.as_context_mut(store);
-                let types = store
-                    .0
-                    .component_instance(instance)
-                    .component_types()
-                    .clone();
+                let types = store[instance.id()].component().types().clone();
                 let count = buffer.remaining().len().min(count);
 
                 let lower =
@@ -631,10 +627,7 @@ impl<T> HostFuture<T> {
             bail!("expected `future`; got `{}`", value.desc());
         };
         let store = store.as_context_mut();
-        store
-            .0
-            .component_instance(instance)
-            .get(TableId::<TransmitHandle>::new(*rep))?; // Just make sure it's present
+        store[instance.id()].get(TableId::<TransmitHandle>::new(*rep))?; // Just make sure it's present
         Ok(Self::new(*rep, instance))
     }
 
@@ -642,7 +635,7 @@ impl<T> HostFuture<T> {
     fn lift_from_index(cx: &mut LiftContext<'_>, ty: InterfaceType, index: u32) -> Result<Self> {
         match ty {
             InterfaceType::Future(src) => {
-                let state_table = cx.instance.state_table(TableIndex::Future(src));
+                let state_table = cx.instance_mut().state_table(TableIndex::Future(src));
                 let (rep, state) =
                     get_mut_by_index_from(state_table, TableIndex::Future(src), index)?;
 
@@ -654,7 +647,7 @@ impl<T> HostFuture<T> {
                     StreamFutureState::Busy => bail!("cannot transfer busy future"),
                 }
 
-                Ok(Self::new(rep, cx.instance.instance))
+                Ok(Self::new(rep, cx.instance_handle()))
             }
             _ => func::bad_type_info(),
         }
@@ -998,10 +991,7 @@ impl<T> HostStream<T> {
             bail!("expected `stream`; got `{}`", value.desc());
         };
         let store = store.as_context_mut();
-        store
-            .0
-            .component_instance(instance)
-            .get(TableId::<TransmitHandle>::new(*rep))?; // Just make sure it's present
+        store[instance.id()].get(TableId::<TransmitHandle>::new(*rep))?; // Just make sure it's present
         Ok(Self::new(*rep, instance))
     }
 
@@ -1009,7 +999,7 @@ impl<T> HostStream<T> {
     fn lift_from_index(cx: &mut LiftContext<'_>, ty: InterfaceType, index: u32) -> Result<Self> {
         match ty {
             InterfaceType::Stream(src) => {
-                let state_table = cx.instance.state_table(TableIndex::Stream(src));
+                let state_table = cx.instance_mut().state_table(TableIndex::Stream(src));
                 let (rep, state) =
                     get_mut_by_index_from(state_table, TableIndex::Stream(src), index)?;
 
@@ -1021,7 +1011,7 @@ impl<T> HostStream<T> {
                     StreamFutureState::Busy => bail!("cannot transfer busy stream"),
                 }
 
-                Ok(Self::new(rep, cx.instance.instance))
+                Ok(Self::new(rep, cx.instance_handle()))
             }
             _ => func::bad_type_info(),
         }
@@ -1215,7 +1205,7 @@ impl ErrorContext {
         match ty {
             InterfaceType::ErrorContext(src) => {
                 let (rep, _) = cx
-                    .instance
+                    .instance_mut()
                     .error_context_tables()
                     .get_mut(src)
                     .expect("error context table index present in (sub)component table during lift")
@@ -1472,9 +1462,7 @@ impl Instance {
         default: fn() -> T,
         mut store: S,
     ) -> Result<(FutureWriter<T>, FutureReader<T>)> {
-        let (write, read) = self
-            .instance(store.as_context_mut().0)
-            .new_transmit(TransmitKind::Future)?;
+        let (write, read) = store.as_context_mut()[self.id()].new_transmit(TransmitKind::Future)?;
 
         Ok((
             FutureWriter::new(
@@ -1510,9 +1498,7 @@ impl Instance {
         self,
         mut store: S,
     ) -> Result<(StreamWriter<W>, StreamReader<R>)> {
-        let (write, read) = self
-            .instance(store.as_context_mut().0)
-            .new_transmit(TransmitKind::Stream)?;
+        let (write, read) = store.as_context_mut()[self.id()].new_transmit(TransmitKind::Stream)?;
 
         Ok((
             StreamWriter::new(
@@ -1593,15 +1579,12 @@ impl Instance {
                                         kind,
                                     )?;
                                 }
-                                instance
-                                    .instance(store.store_opaque_mut())
-                                    .host_close_writer(rep, kind)
+                                store[instance.id()].host_close_writer(rep, kind)
                             })?
                         }
                         WriteEvent::Watch { tx } => {
                             super::with_local_instance(|store, instance| {
-                                let state = instance
-                                    .instance(store.store_opaque_mut())
+                                let state = store[instance.id()]
                                     .get_mut(TableId::<TransmitState>::new(rep))?;
                                 if !matches!(&state.read, ReadState::Closed) {
                                     state.reader_watcher = Some(tx);
@@ -1619,7 +1602,7 @@ impl Instance {
                 HostTaskOutput::Result(v)
             }),
         );
-        self.instance(store.0).push_future(task);
+        store[self.id()].push_future(task);
         tx
     }
 
@@ -1665,8 +1648,7 @@ impl Instance {
                         })?,
                         ReadEvent::Watch { tx } => {
                             super::with_local_instance(|store, instance| {
-                                let state = instance
-                                    .instance(store.store_opaque_mut())
+                                let state = store[instance.id()]
                                     .get_mut(TableId::<TransmitState>::new(rep))?;
                                 if !matches!(
                                     &state.write,
@@ -1695,7 +1677,7 @@ impl Instance {
                 HostTaskOutput::Result(v)
             }),
         );
-        self.instance(store.0).push_future(task);
+        store[self.id()].push_future(task);
         tx
     }
 
@@ -1719,8 +1701,7 @@ impl Instance {
         kind: TransmitKind,
     ) -> Result<()> {
         let transmit_id = TableId::<TransmitState>::new(transmit_rep);
-        let transmit = self
-            .instance(store.0)
+        let transmit = store[self.id()]
             .get_mut(transmit_id)
             .with_context(|| format!("retrieving state for transmit [{transmit_rep}]"))?;
         transmit.may_close_writer = true;
@@ -1744,7 +1725,7 @@ impl Instance {
                     )),
                     post_write,
                 };
-                self.instance(store.0).get_mut(transmit_id)?.write = state;
+                store[self.id()].get_mut(transmit_id)?.write = state;
                 post_write = PostWrite::Continue;
             }
 
@@ -1769,7 +1750,7 @@ impl Instance {
                     },
                 )?;
 
-                self.instance(store.0).set_event(
+                store[self.id()].set_event(
                     read_handle.rep(),
                     match ty {
                         TableIndex::Future(ty) => Event::FutureRead {
@@ -1809,8 +1790,7 @@ impl Instance {
         }
 
         if let PostWrite::Close = post_write {
-            self.instance(store.0)
-                .host_close_writer(transmit_rep, kind)?;
+            store[self.id()].host_close_writer(transmit_rep, kind)?;
         }
 
         Ok(())
@@ -1827,15 +1807,14 @@ impl Instance {
     /// * `kind` - whether this is a stream or a future
     fn host_read<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U: 'static>(
         self,
-        store: StoreContextMut<U>,
+        mut store: StoreContextMut<U>,
         rep: u32,
         mut buffer: B,
         tx: oneshot::Sender<HostResult<B>>,
         kind: TransmitKind,
     ) -> Result<()> {
         let transmit_id = TableId::<TransmitState>::new(rep);
-        let transmit = self
-            .instance(store.0)
+        let transmit = store[self.id()]
             .get_mut(transmit_id)
             .with_context(|| rep.to_string())?;
 
@@ -1865,7 +1844,7 @@ impl Instance {
                 ..
             } => {
                 let write_handle = transmit.write_handle;
-                let types = self.instance(store.0).component_types().clone();
+                let types = store[self.id()].component().types().clone();
                 let lift =
                     &mut LiftContext::new(store.0.store_opaque_mut(), &options, &types, self);
                 let code = accept_writer::<T, B, U>(buffer, tx, kind)(Writer::Guest {
@@ -1875,7 +1854,7 @@ impl Instance {
                     count,
                 })?;
 
-                let instance = self.instance(store.0);
+                let instance = &mut store[self.id()];
                 let pending = if let PostWrite::Close = post_write {
                     instance.get_mut(transmit_id)?.write = WriteState::Closed;
                     false
@@ -1916,7 +1895,7 @@ impl Instance {
                 )?;
 
                 if let PostWrite::Close = post_write {
-                    self.instance(store.0).get_mut(transmit_id)?.write = WriteState::Closed;
+                    store[self.id()].get_mut(transmit_id)?.write = WriteState::Closed;
                 }
             }
 
@@ -1944,7 +1923,7 @@ impl Instance {
         kind: TransmitKind,
     ) -> Result<()> {
         let transmit_id = TableId::<TransmitState>::new(transmit_rep);
-        let instance = self.instance(store.store_opaque_mut());
+        let instance = &mut store[self.id()];
         let transmit = instance
             .get_mut(transmit_id)
             .with_context(|| format!("error closing reader {transmit_rep}"))?;
@@ -2033,7 +2012,7 @@ impl Instance {
         count: usize,
         rep: u32,
     ) -> Result<()> {
-        let types = self.instance(store.0).component_types().clone();
+        let types = store[self.id()].component().types().clone();
         match (write_ty, read_ty) {
             (TableIndex::Future(write_ty), TableIndex::Future(read_ty)) => {
                 assert_eq!(count, 1);
@@ -2196,7 +2175,7 @@ impl Instance {
                 None,
             )
         };
-        let instance = self.instance(store.0);
+        let instance = &mut store[self.id()];
         let (rep, state) = instance.get_mut_by_index(ty, handle)?;
         let StreamFutureState::Write = *state else {
             bail!(
@@ -2285,7 +2264,7 @@ impl Instance {
                     rep,
                 )?;
 
-                let instance = self.instance(store.0);
+                let instance = &mut store[self.id()];
                 if read_complete {
                     let count = u32::try_from(count).unwrap();
                     let total = if let Some(Event::StreamRead {
@@ -2316,7 +2295,7 @@ impl Instance {
                 }
 
                 if read_buffer_remaining {
-                    let types = instance.component_types();
+                    let types = instance.component().types();
                     let item_size = payload(ty, types)
                         .map(|ty| usize::try_from(types.canonical_abi(&ty).size32).unwrap())
                         .unwrap_or(0);
@@ -2340,7 +2319,7 @@ impl Instance {
             }
 
             ReadState::HostReady { accept } => {
-                let types = instance.component_types().clone();
+                let types = instance.component().types().clone();
                 let lift =
                     &mut LiftContext::new(store.0.store_opaque_mut(), &options, &types, self);
                 accept(Writer::Guest {
@@ -2360,7 +2339,7 @@ impl Instance {
         };
 
         if result != ReturnCode::Blocked {
-            *self.instance(store.0).get_mut_by_index(ty, handle)?.1 = StreamFutureState::Write;
+            *store[self.id()].get_mut_by_index(ty, handle)?.1 = StreamFutureState::Write;
         }
 
         Ok(result)
@@ -2400,7 +2379,7 @@ impl Instance {
                 None,
             )
         };
-        let instance = self.instance(store.0);
+        let instance = &mut store[self.id()];
         let (rep, state) = instance.get_mut_by_index(ty, handle)?;
         let StreamFutureState::Read = *state else {
             bail!(
@@ -2473,7 +2452,7 @@ impl Instance {
                     rep,
                 )?;
 
-                let instance = self.instance(store.0);
+                let instance = &mut store[self.id()];
                 let pending = if let PostWrite::Close = post_write {
                     instance.get_mut(transmit_id)?.write = WriteState::Closed;
                     false
@@ -2511,7 +2490,7 @@ impl Instance {
                 }
 
                 if write_buffer_remaining {
-                    let types = instance.component_types();
+                    let types = instance.component().types();
                     let item_size = payload(ty, types)
                         .map(|ty| usize::try_from(types.canonical_abi(&ty).size32).unwrap())
                         .unwrap_or(0);
@@ -2548,7 +2527,7 @@ impl Instance {
                 )?;
 
                 if let PostWrite::Close = post_write {
-                    self.instance(store.0).get_mut(transmit_id)?.write = WriteState::Closed;
+                    store[self.id()].get_mut(transmit_id)?.write = WriteState::Closed;
                 }
 
                 code
@@ -2563,7 +2542,7 @@ impl Instance {
         };
 
         if result != ReturnCode::Blocked {
-            *self.instance(store.0).get_mut_by_index(ty, handle)?.1 = StreamFutureState::Read;
+            *store[self.id()].get_mut_by_index(ty, handle)?.1 = StreamFutureState::Read;
         }
 
         Ok(result)
@@ -2576,7 +2555,7 @@ impl Instance {
         ty: TableIndex,
         reader: u32,
     ) -> Result<()> {
-        let instance = self.instance(store.store_opaque_mut());
+        let instance = &mut store[self.id()];
         let (rep, state) = instance.state_table(ty).remove_by_index(reader)?;
         let (state, kind) = match state {
             WaitableState::Stream(_, state) => (state, TransmitKind::Stream),
@@ -2626,7 +2605,7 @@ impl Instance {
                 None,
             )
         };
-        let types = self.instance(store).component_types().clone();
+        let types = store[self.id()].component().types().clone();
         let lift_ctx = &mut LiftContext::new(store, &options, &types, self);
         //  Read string from guest memory
         let address = usize::try_from(debug_msg_address)?;
@@ -2648,7 +2627,7 @@ impl Instance {
                 .to_str_from_memory(options.memory(store))?
                 .to_string(),
         };
-        let instance = self.instance(store);
+        let instance = &mut store[self.id()];
         let table_id = instance.push(err_ctx)?;
         let global_ref_count_idx =
             TypeComponentGlobalErrorContextTableIndex::from_u32(table_id.rep());
@@ -2681,7 +2660,7 @@ impl Instance {
     /// respective guest entities.
     pub(super) unsafe fn error_context_debug_message<T: 'static>(
         self,
-        store: StoreContextMut<T>,
+        mut store: StoreContextMut<T>,
         memory: *mut VMMemoryDefinition,
         realloc: *mut VMFuncRef,
         string_encoding: u8,
@@ -2691,7 +2670,7 @@ impl Instance {
     ) -> Result<()> {
         // Retrieve the error context and internal debug message
         let id = store.0.store_opaque().id();
-        let instance = self.instance(store.0);
+        let instance = &mut store[self.id()];
         let (state_table_id_rep, _) = instance
             .error_context_tables()
             .get_mut(ty)
@@ -2717,7 +2696,7 @@ impl Instance {
                 None,
             )
         };
-        let types = instance.component_types().clone();
+        let types = instance.component().types().clone();
         let lower_cx = &mut LowerContext::new(store, &options, &types, self);
         let debug_msg_address = usize::try_from(debug_msg_address)?;
         // Lower the string into the component's memory
@@ -2759,8 +2738,7 @@ impl Instance {
 fn get_state_rep(rep: u32) -> Result<u32> {
     super::with_local_instance(|store, instance| {
         let transmit_handle = TableId::<TransmitHandle>::new(rep);
-        Ok(instance
-            .instance(store.store_opaque_mut())
+        Ok(store[instance.id()]
             .get(transmit_handle)
             .with_context(|| format!("stream or future {transmit_handle:?} not found"))?
             .state
@@ -2923,8 +2901,8 @@ impl ComponentInstance {
 
     fn state_table(&mut self, ty: TableIndex) -> &mut StateTable<WaitableState> {
         let runtime_instance = match ty {
-            TableIndex::Stream(ty) => self.component_types()[ty].instance,
-            TableIndex::Future(ty) => self.component_types()[ty].instance,
+            TableIndex::Stream(ty) => self.component().types()[ty].instance,
+            TableIndex::Future(ty) => self.component().types()[ty].instance,
         };
         &mut self.waitable_tables()[runtime_instance]
     }
@@ -3381,9 +3359,9 @@ impl ComponentInstance {
         self.guest_transfer(
             src_idx,
             src,
-            self.component_types()[src].instance,
+            self.component().types()[src].instance,
             dst,
-            self.component_types()[dst].instance,
+            self.component().types()[dst].instance,
             |state| {
                 if let WaitableState::Future(ty, state) = state {
                     Ok((*ty, state))
@@ -3406,9 +3384,9 @@ impl ComponentInstance {
         self.guest_transfer(
             src_idx,
             src,
-            self.component_types()[src].instance,
+            self.component().types()[src].instance,
             dst,
-            self.component_types()[dst].instance,
+            self.component().types()[dst].instance,
             |state| {
                 if let WaitableState::Stream(ty, state) = state {
                     Ok((*ty, state))

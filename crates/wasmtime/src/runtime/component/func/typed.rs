@@ -201,7 +201,7 @@ where
         {
             let mut params = params;
             let mut store = store;
-            let instance = store.0[self.func.0].instance;
+            let instance = self.func.instance();
             // SAFETY: We uphold the contract documented in
             // `concurrent::prepare_call` by only setting `PreparedCall::params`
             // to a valid pointer while polling the event loop and resetting it
@@ -294,7 +294,7 @@ where
         Return: Send + Sync + 'static,
     {
         let param_count = mem::size_of::<Params::Lower>() / mem::size_of::<ValRaw>();
-        if store.0[self.func.0].options.async_() {
+        if self.func.abi_async(store.0) {
             if Params::flatten_count() <= MAX_FLAT_PARAMS {
                 if Return::flatten_count() <= MAX_FLAT_PARAMS {
                     concurrent::prepare_call(
@@ -385,7 +385,7 @@ where
     {
         let store = store.as_context_mut();
 
-        if store.0[self.func.0].options.async_() {
+        if self.func.abi_async(store.0) {
             bail!("must enable the `component-model-async` feature to call async-lifted exports")
         } else {
             // Note that this is in theory simpler than it might read at this time.
@@ -1917,7 +1917,7 @@ impl<T: Lift> WasmList<T> {
             options: *cx.options,
             elem,
             types: cx.types.clone(),
-            instance: cx.instance.instance,
+            instance: cx.instance_handle(),
             _marker: marker::PhantomData,
         })
     }

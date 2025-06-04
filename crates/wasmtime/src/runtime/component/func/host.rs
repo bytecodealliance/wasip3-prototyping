@@ -685,11 +685,7 @@ where
         crate::runtime::vm::catch_unwind_and_record_trap(|| {
             let mut store = StoreContextMut::<T>(&mut *(store as *mut dyn VMStore).cast());
             store.0.call_hook(CallHook::CallingHost)?;
-            let types = store
-                .0
-                .component_instance_mut(instance)
-                .component_types()
-                .clone();
+            let types = store[instance.id()].component().types().clone();
             let res = func(store.as_context_mut(), instance, &types);
             store.0.call_hook(CallHook::ReturningFromHost)?;
             res
