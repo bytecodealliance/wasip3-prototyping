@@ -729,61 +729,6 @@ impl PrettyPrint for RegMem {
     }
 }
 
-pub use crate::isa::x64::lower::isle::generated_code::AluRmROpcode;
-
-impl AluRmROpcode {
-    pub(crate) fn available_from(&self) -> SmallVec<[InstructionSet; 2]> {
-        match self {
-            AluRmROpcode::Andn => smallvec![InstructionSet::BMI1],
-            AluRmROpcode::Sarx | AluRmROpcode::Shrx | AluRmROpcode::Shlx | AluRmROpcode::Bzhi => {
-                smallvec![InstructionSet::BMI2]
-            }
-        }
-    }
-}
-
-impl fmt::Display for AluRmROpcode {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(&format!("{self:?}").to_lowercase())
-    }
-}
-
-pub use crate::isa::x64::lower::isle::generated_code::UnaryRmRVexOpcode;
-
-impl UnaryRmRVexOpcode {
-    pub(crate) fn available_from(&self) -> SmallVec<[InstructionSet; 2]> {
-        match self {
-            UnaryRmRVexOpcode::Blsi | UnaryRmRVexOpcode::Blsmsk | UnaryRmRVexOpcode::Blsr => {
-                smallvec![InstructionSet::BMI1]
-            }
-        }
-    }
-}
-
-impl fmt::Display for UnaryRmRVexOpcode {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(&format!("{self:?}").to_lowercase())
-    }
-}
-
-pub use crate::isa::x64::lower::isle::generated_code::UnaryRmRImmVexOpcode;
-
-impl UnaryRmRImmVexOpcode {
-    pub(crate) fn available_from(&self) -> SmallVec<[InstructionSet; 2]> {
-        match self {
-            UnaryRmRImmVexOpcode::Rorx => {
-                smallvec![InstructionSet::BMI2]
-            }
-        }
-    }
-}
-
-impl fmt::Display for UnaryRmRImmVexOpcode {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(&format!("{self:?}").to_lowercase())
-    }
-}
-
 #[derive(Clone, Copy, PartialEq)]
 /// Comparison operations.
 pub enum CmpOpcode {
@@ -829,20 +774,8 @@ pub enum SseOpcode {
     Cmppd,
     Cmpss,
     Cmpsd,
-    Divps,
-    Divpd,
-    Divss,
-    Divsd,
     Insertps,
-    Movaps,
-    Movapd,
-    Movdqa,
-    Movdqu,
     Movlhps,
-    Movss,
-    Movsd,
-    Movups,
-    Movupd,
     Pabsb,
     Pabsw,
     Pabsd,
@@ -864,25 +797,6 @@ pub enum SseOpcode {
     Pcmpgtq,
     Pmaddubsw,
     Pmaddwd,
-    Pmovsxbd,
-    Pmovsxbw,
-    Pmovsxbq,
-    Pmovsxwd,
-    Pmovsxwq,
-    Pmovsxdq,
-    Pmovzxbd,
-    Pmovzxbw,
-    Pmovzxbq,
-    Pmovzxwd,
-    Pmovzxwq,
-    Pmovzxdq,
-    Pmuldq,
-    Pmulhw,
-    Pmulhuw,
-    Pmulhrsw,
-    Pmulld,
-    Pmullw,
-    Pmuludq,
     Pshufb,
     Pshufd,
     Ptest,
@@ -909,12 +823,7 @@ impl SseOpcode {
             SseOpcode::Comiss
             | SseOpcode::Cmpps
             | SseOpcode::Cmpss
-            | SseOpcode::Divps
-            | SseOpcode::Divss
-            | SseOpcode::Movaps
             | SseOpcode::Movlhps
-            | SseOpcode::Movss
-            | SseOpcode::Movups
             | SseOpcode::Rcpss
             | SseOpcode::Rsqrtss
             | SseOpcode::Shufps
@@ -923,13 +832,6 @@ impl SseOpcode {
             SseOpcode::Cmppd
             | SseOpcode::Cmpsd
             | SseOpcode::Comisd
-            | SseOpcode::Divpd
-            | SseOpcode::Divsd
-            | SseOpcode::Movapd
-            | SseOpcode::Movsd
-            | SseOpcode::Movupd
-            | SseOpcode::Movdqa
-            | SseOpcode::Movdqu
             | SseOpcode::Packssdw
             | SseOpcode::Packsswb
             | SseOpcode::Packuswb
@@ -942,10 +844,6 @@ impl SseOpcode {
             | SseOpcode::Pcmpgtw
             | SseOpcode::Pcmpgtd
             | SseOpcode::Pmaddwd
-            | SseOpcode::Pmulhw
-            | SseOpcode::Pmulhuw
-            | SseOpcode::Pmullw
-            | SseOpcode::Pmuludq
             | SseOpcode::Pshufd
             | SseOpcode::Ucomisd
             | SseOpcode::Pshuflw
@@ -955,7 +853,6 @@ impl SseOpcode {
             | SseOpcode::Pabsw
             | SseOpcode::Pabsd
             | SseOpcode::Palignr
-            | SseOpcode::Pmulhrsw
             | SseOpcode::Pshufb
             | SseOpcode::Pmaddubsw
             | SseOpcode::Movddup => SSSE3,
@@ -966,20 +863,6 @@ impl SseOpcode {
             | SseOpcode::Packusdw
             | SseOpcode::Pblendvb
             | SseOpcode::Pcmpeqq
-            | SseOpcode::Pmovsxbd
-            | SseOpcode::Pmovsxbw
-            | SseOpcode::Pmovsxbq
-            | SseOpcode::Pmovsxwd
-            | SseOpcode::Pmovsxwq
-            | SseOpcode::Pmovsxdq
-            | SseOpcode::Pmovzxbd
-            | SseOpcode::Pmovzxbw
-            | SseOpcode::Pmovzxbq
-            | SseOpcode::Pmovzxwd
-            | SseOpcode::Pmovzxwq
-            | SseOpcode::Pmovzxdq
-            | SseOpcode::Pmuldq
-            | SseOpcode::Pmulld
             | SseOpcode::Ptest
             | SseOpcode::Roundps
             | SseOpcode::Roundpd
@@ -1000,21 +883,7 @@ impl SseOpcode {
 
     /// Is `src2` with this opcode a scalar, as for lane insertions?
     pub(crate) fn has_scalar_src2(self) -> bool {
-        match self {
-            SseOpcode::Pmovsxbw
-            | SseOpcode::Pmovsxbd
-            | SseOpcode::Pmovsxbq
-            | SseOpcode::Pmovsxwd
-            | SseOpcode::Pmovsxwq
-            | SseOpcode::Pmovsxdq => true,
-            SseOpcode::Pmovzxbw
-            | SseOpcode::Pmovzxbd
-            | SseOpcode::Pmovzxbq
-            | SseOpcode::Pmovzxwd
-            | SseOpcode::Pmovzxwq
-            | SseOpcode::Pmovzxdq => true,
-            _ => false,
-        }
+        false
     }
 }
 
@@ -1029,20 +898,8 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Cmpsd => "cmpsd",
             SseOpcode::Comiss => "comiss",
             SseOpcode::Comisd => "comisd",
-            SseOpcode::Divps => "divps",
-            SseOpcode::Divpd => "divpd",
-            SseOpcode::Divss => "divss",
-            SseOpcode::Divsd => "divsd",
             SseOpcode::Insertps => "insertps",
-            SseOpcode::Movaps => "movaps",
-            SseOpcode::Movapd => "movapd",
-            SseOpcode::Movdqa => "movdqa",
-            SseOpcode::Movdqu => "movdqu",
             SseOpcode::Movlhps => "movlhps",
-            SseOpcode::Movss => "movss",
-            SseOpcode::Movsd => "movsd",
-            SseOpcode::Movups => "movups",
-            SseOpcode::Movupd => "movupd",
             SseOpcode::Pabsb => "pabsb",
             SseOpcode::Pabsw => "pabsw",
             SseOpcode::Pabsd => "pabsd",
@@ -1064,26 +921,6 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Pcmpgtq => "pcmpgtq",
             SseOpcode::Pmaddubsw => "pmaddubsw",
             SseOpcode::Pmaddwd => "pmaddwd",
-
-            SseOpcode::Pmovsxbd => "pmovsxbd",
-            SseOpcode::Pmovsxbw => "pmovsxbw",
-            SseOpcode::Pmovsxbq => "pmovsxbq",
-            SseOpcode::Pmovsxwd => "pmovsxwd",
-            SseOpcode::Pmovsxwq => "pmovsxwq",
-            SseOpcode::Pmovsxdq => "pmovsxdq",
-            SseOpcode::Pmovzxbd => "pmovzxbd",
-            SseOpcode::Pmovzxbw => "pmovzxbw",
-            SseOpcode::Pmovzxbq => "pmovzxbq",
-            SseOpcode::Pmovzxwd => "pmovzxwd",
-            SseOpcode::Pmovzxwq => "pmovzxwq",
-            SseOpcode::Pmovzxdq => "pmovzxdq",
-            SseOpcode::Pmuldq => "pmuldq",
-            SseOpcode::Pmulhw => "pmulhw",
-            SseOpcode::Pmulhuw => "pmulhuw",
-            SseOpcode::Pmulhrsw => "pmulhrsw",
-            SseOpcode::Pmulld => "pmulld",
-            SseOpcode::Pmullw => "pmullw",
-            SseOpcode::Pmuludq => "pmuludq",
             SseOpcode::Pshufb => "pshufb",
             SseOpcode::Pshufd => "pshufd",
             SseOpcode::Ptest => "ptest",
@@ -1474,32 +1311,6 @@ impl ExtMode {
             (16, 64) => Some(ExtMode::WQ),
             (32, 64) => Some(ExtMode::LQ),
             _ => None,
-        }
-    }
-
-    /// Return the source register size in bytes.
-    pub(crate) fn src_size(&self) -> u8 {
-        match self {
-            ExtMode::BL | ExtMode::BQ => 1,
-            ExtMode::WL | ExtMode::WQ => 2,
-            ExtMode::LQ => 4,
-        }
-    }
-
-    /// Return the destination register size in bytes.
-    pub(crate) fn dst_size(&self) -> u8 {
-        match self {
-            ExtMode::BL | ExtMode::WL => 4,
-            ExtMode::BQ | ExtMode::WQ | ExtMode::LQ => 8,
-        }
-    }
-
-    /// Source size, as an integer type.
-    pub(crate) fn src_type(&self) -> Type {
-        match self {
-            ExtMode::BL | ExtMode::BQ => I8,
-            ExtMode::WL | ExtMode::WQ => I16,
-            ExtMode::LQ => I32,
         }
     }
 }

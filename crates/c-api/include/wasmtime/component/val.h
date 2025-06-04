@@ -65,6 +65,18 @@ typedef uint8_t wasmtime_component_valkind_t;
 /// \brief Value of #wasmtime_component_valkind_t meaning that
 /// #wasmtime_component_val_t is a variant
 #define WASMTIME_COMPONENT_VARIANT 16
+/// \brief Value of #wasmtime_component_valkind_t meaning that
+/// #wasmtime_component_val_t is a enum
+#define WASMTIME_COMPONENT_ENUM 17
+/// \brief Value of #wasmtime_component_valkind_t meaning that
+/// #wasmtime_component_val_t is a option
+#define WASMTIME_COMPONENT_OPTION 18
+/// \brief Value of #wasmtime_component_valkind_t meaning that
+/// #wasmtime_component_val_t is a result
+#define WASMTIME_COMPONENT_RESULT 19
+/// \brief Value of #wasmtime_component_valkind_t meaning that
+/// #wasmtime_component_val_t is flags
+#define WASMTIME_COMPONENT_FLAGS 20
 
 struct wasmtime_component_val;
 struct wasmtime_component_valrecord_entry;
@@ -93,6 +105,7 @@ DECLARE_VEC(wasmtime_component_vallist, struct wasmtime_component_val)
 DECLARE_VEC(wasmtime_component_valrecord,
             struct wasmtime_component_valrecord_entry)
 DECLARE_VEC(wasmtime_component_valtuple, struct wasmtime_component_val)
+DECLARE_VEC(wasmtime_component_valflags, wasm_name_t)
 
 #undef DECLARE_VEC
 
@@ -103,6 +116,15 @@ typedef struct {
   /// The payload of the variant
   struct wasmtime_component_val *val;
 } wasmtime_component_valvariant_t;
+
+/// Represents a result type
+typedef struct {
+  /// The discriminant of the result
+  bool is_ok;
+  /// The 'ok' value if #wasmtime_component_valresult_t::is_ok is `true`, else
+  /// the 'err' value
+  struct wasmtime_component_val *val;
+} wasmtime_component_valresult_t;
 
 /// \brief Represents possible runtime values which a component function can
 /// either consume or produce
@@ -144,6 +166,16 @@ typedef union {
   /// Field used if #wasmtime_component_val_t::kind is
   /// #WASMTIME_COMPONENT_VARIANT
   wasmtime_component_valvariant_t variant;
+  /// Field used if #wasmtime_component_val_t::kind is #WASMTIME_COMPONENT_ENUM
+  wasm_name_t enumeration;
+  /// Field used if #wasmtime_component_val_t::kind is
+  /// #WASMTIME_COMPONENT_OPTION
+  struct wasmtime_component_val *option;
+  /// Field used if #wasmtime_component_val_t::kind is
+  /// #WASMTIME_COMPONENT_RESULT
+  wasmtime_component_valresult_t result;
+  /// Field used if #wasmtime_component_val_t::kind is #WASMTIME_COMPONENT_FLAGS
+  wasmtime_component_valflags_t flags;
 } wasmtime_component_valunion_t;
 
 /// \brief Represents possible runtime values which a component function can

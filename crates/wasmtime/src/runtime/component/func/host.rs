@@ -687,8 +687,9 @@ where
             store.0.call_hook(CallHook::CallingHost)?;
             let types = store
                 .0
-                .component_instance_mut(instance)
-                .component_types()
+                .component_instance(instance)
+                .component()
+                .types()
                 .clone();
             let res = func(store.as_context_mut(), instance, &types);
             store.0.call_hook(CallHook::ReturningFromHost)?;

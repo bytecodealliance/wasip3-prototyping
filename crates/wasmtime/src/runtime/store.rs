@@ -79,17 +79,15 @@
 use crate::RootSet;
 #[cfg(feature = "component-model-async")]
 use crate::component::concurrent;
-use crate::instance::InstanceData;
-use crate::linker::Definition;
 use crate::module::RegisteredModuleId;
 use crate::prelude::*;
 #[cfg(feature = "gc")]
 use crate::runtime::vm::GcRootsList;
 use crate::runtime::vm::mpk::ProtectionKey;
 use crate::runtime::vm::{
-    ExportGlobal, GcStore, InstanceAllocationRequest, InstanceAllocator, InstanceHandle,
-    Interpreter, InterpreterRef, ModuleRuntimeInfo, OnDemandInstanceAllocator, SignalHandler,
-    StoreBox, StorePtr, Unwind, VMContext, VMFuncRef, VMGcRef, VMStoreContext,
+    self, GcStore, Imports, InstanceAllocationRequest, InstanceAllocator, InstanceHandle,
+    Interpreter, InterpreterRef, ModuleRuntimeInfo, OnDemandInstanceAllocator, SendSyncPtr,
+    SignalHandler, StoreBox, StorePtr, Unwind, VMContext, VMFuncRef, VMGcRef, VMStoreContext,
 };
 use crate::trampoline::VMHostGlobalContext;
 use crate::{Engine, Module, Trap, Val, ValRaw, module::ModuleRegistry};
@@ -101,7 +99,7 @@ use core::mem::{self, ManuallyDrop};
 use core::num::NonZeroU64;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
-use wasmtime_environ::TripleExt;
+use wasmtime_environ::{DefinedGlobalIndex, DefinedTableIndex, EntityRef, PrimaryMap, TripleExt};
 
 mod context;
 pub use self::context::*;
@@ -327,14 +325,13 @@ pub struct StoreOpaque {
 
     engine: Engine,
     vm_store_context: VMStoreContext,
-    instances: Vec<StoreInstance>,
+    instances: PrimaryMap<InstanceId, StoreInstance>,
     #[cfg(feature = "component-model")]
     num_component_instances: usize,
     signal_handler: Option<SignalHandler>,
     modules: ModuleRegistry,
     func_refs: FuncRefs,
-    host_globals: Vec<StoreBox<VMHostGlobalContext>>,
-
+    host_globals: PrimaryMap<DefinedGlobalIndex, StoreBox<VMHostGlobalContext>>,
     // GC-related fields.
     gc_store: Option<GcStore>,
     gc_roots: RootSet,
@@ -362,13 +359,9 @@ pub struct StoreOpaque {
     fuel_yield_interval: Option<NonZeroU64>,
     /// Indexed data within this `Store`, used to store information about
     /// globals, functions, memories, etc.
-    ///
-    /// Note that this is `ManuallyDrop` because it needs to be dropped before
-    /// `rooted_host_funcs` below. This structure contains pointers which are
-    /// otherwise kept alive by the `Arc` references in `rooted_host_funcs`.
-    store_data: ManuallyDrop<StoreData>,
+    store_data: StoreData,
     traitobj: StorePtr,
-    default_caller: InstanceHandle,
+    default_caller_vmctx: SendSyncPtr<VMContext>,
 
     /// Used to optimized wasm->host calls when the host function is defined with
     /// `Func::new` to avoid allocating a new vector each time a function is
@@ -377,20 +370,6 @@ pub struct StoreOpaque {
     /// Same as `hostcall_val_storage`, but for the direction of the host
     /// calling wasm.
     wasm_val_raw_storage: Vec<ValRaw>,
-
-    /// A list of lists of definitions which have been used to instantiate
-    /// within this `Store`.
-    ///
-    /// Note that not all instantiations end up pushing to this list. At the
-    /// time of this writing only the `InstancePre<T>` type will push to this
-    /// list. Pushes to this list are typically accompanied with
-    /// `HostFunc::to_func_store_rooted` to clone an `Arc` here once which
-    /// preserves a strong reference to the `Arc` for each `HostFunc` stored
-    /// within the list of `Definition`s.
-    ///
-    /// Note that this is `ManuallyDrop` as it must be dropped after
-    /// `store_data` above, where the function pointers are stored.
-    rooted_host_funcs: ManuallyDrop<Vec<Arc<[Definition]>>>,
 
     /// Keep track of what protection key is being used during allocation so
     /// that the right memory pages can be enabled when entering WebAssembly
@@ -401,9 +380,9 @@ pub struct StoreOpaque {
     /// and calls. These also interact with the `ResourceAny` type and its
     /// internal representation.
     #[cfg(feature = "component-model")]
-    component_host_table: crate::runtime::vm::component::ResourceTable,
+    component_host_table: vm::component::ResourceTable,
     #[cfg(feature = "component-model")]
-    component_calls: crate::runtime::vm::component::CallContexts,
+    component_calls: vm::component::CallContexts,
     #[cfg(feature = "component-model")]
     host_resource_data: crate::component::HostResourceData,
 
@@ -551,7 +530,7 @@ impl<T: 'static> Store<T> {
             _marker: marker::PhantomPinned,
             engine: engine.clone(),
             vm_store_context: Default::default(),
-            instances: Vec::new(),
+            instances: PrimaryMap::new(),
             #[cfg(feature = "component-model")]
             num_component_instances: 0,
             signal_handler: None,
@@ -563,7 +542,7 @@ impl<T: 'static> Store<T> {
             gc_host_alloc_types: Default::default(),
             modules: ModuleRegistry::default(),
             func_refs: FuncRefs::default(),
-            host_globals: Vec::new(),
+            host_globals: PrimaryMap::new(),
             instance_count: 0,
             instance_limit: crate::DEFAULT_INSTANCE_LIMIT,
             memory_count: 0,
@@ -574,12 +553,11 @@ impl<T: 'static> Store<T> {
             async_state: AsyncState::default(),
             fuel_reserve: 0,
             fuel_yield_interval: None,
-            store_data: ManuallyDrop::new(store_data),
+            store_data,
             traitobj: StorePtr::empty(),
-            default_caller: InstanceHandle::null(),
+            default_caller_vmctx: SendSyncPtr::new(NonNull::dangling()),
             hostcall_val_storage: Vec::new(),
             wasm_val_raw_storage: Vec::new(),
-            rooted_host_funcs: ManuallyDrop::new(Vec::new()),
             pkey,
             #[cfg(feature = "component-model")]
             component_host_table: Default::default(),
@@ -619,33 +597,27 @@ impl<T: 'static> Store<T> {
         // single "default callee" for the entire `Store`. This is then used as
         // part of `Func::call` to guarantee that the `callee: *mut VMContext`
         // is never null.
-        inner.default_caller = {
-            let module = Arc::new(wasmtime_environ::Module::default());
-            let shim = ModuleRuntimeInfo::bare(module);
-            let allocator = OnDemandInstanceAllocator::default();
+        let module = Arc::new(wasmtime_environ::Module::default());
+        let shim = ModuleRuntimeInfo::bare(module);
+        let allocator = OnDemandInstanceAllocator::default();
 
-            allocator
-                .validate_module(shim.env_module(), shim.offsets())
-                .unwrap();
+        allocator
+            .validate_module(shim.env_module(), shim.offsets())
+            .unwrap();
 
-            let mut instance = unsafe {
-                allocator
-                    .allocate_module(InstanceAllocationRequest {
-                        host_state: Box::new(()),
-                        imports: Default::default(),
-                        store: StorePtr::empty(),
-                        runtime_info: &shim,
-                        wmemcheck: engine.config().wmemcheck,
-                        pkey: None,
-                        tunables: engine.tunables(),
-                    })
-                    .expect("failed to allocate default callee")
-            };
-            unsafe {
-                instance.set_store(Some(inner.traitobj()));
-            }
-            instance
-        };
+        unsafe {
+            let id = inner
+                .allocate_instance(
+                    AllocateInstanceKind::Dummy {
+                        allocator: &allocator,
+                    },
+                    &shim,
+                    Default::default(),
+                )
+                .expect("failed to allocate default callee");
+            let default_caller_vmctx = inner.instance(id).vmctx();
+            inner.default_caller_vmctx = default_caller_vmctx.into();
+        }
 
         Self {
             inner: ManuallyDrop::new(inner),
@@ -1259,24 +1231,25 @@ impl StoreOpaque {
         &mut self.modules
     }
 
-    pub(crate) fn func_refs(&mut self) -> &mut FuncRefs {
-        &mut self.func_refs
+    pub(crate) fn func_refs_and_modules(&mut self) -> (&mut FuncRefs, &ModuleRegistry) {
+        (&mut self.func_refs, &self.modules)
     }
 
-    pub(crate) fn fill_func_refs(&mut self) {
-        self.func_refs.fill(&self.modules);
+    pub(crate) fn host_globals(
+        &self,
+    ) -> &PrimaryMap<DefinedGlobalIndex, StoreBox<VMHostGlobalContext>> {
+        &self.host_globals
     }
 
-    pub(crate) fn push_instance_pre_func_refs(&mut self, func_refs: Arc<[VMFuncRef]>) {
-        self.func_refs.push_instance_pre_func_refs(func_refs);
-    }
-
-    pub(crate) fn host_globals(&mut self) -> &mut Vec<StoreBox<VMHostGlobalContext>> {
+    pub(crate) fn host_globals_mut(
+        &mut self,
+    ) -> &mut PrimaryMap<DefinedGlobalIndex, StoreBox<VMHostGlobalContext>> {
         &mut self.host_globals
     }
 
-    pub fn module_for_instance(&self, instance: InstanceId) -> Option<&'_ Module> {
-        match self.instances[instance.0].kind {
+    pub fn module_for_instance(&self, instance: StoreInstanceId) -> Option<&'_ Module> {
+        instance.store_id().assert_belongs_to(self.id());
+        match self.instances[instance.instance()].kind {
             StoreInstanceKind::Dummy => None,
             StoreInstanceKind::Real { module_id } => {
                 let module = self
@@ -1288,47 +1261,12 @@ impl StoreOpaque {
         }
     }
 
-    pub unsafe fn add_instance(
-        &mut self,
-        handle: InstanceHandle,
-        module_id: RegisteredModuleId,
-    ) -> InstanceId {
-        let id = InstanceId(self.instances.len());
-        log::trace!(
-            "Adding instance to store: store={:?}, module={module_id:?}, instance={id:?}",
-            self.id()
-        );
-        self.instances.push(StoreInstance {
-            handle: handle.clone(),
-            kind: StoreInstanceKind::Real { module_id },
-        });
-        id
-    }
-
-    /// Add a dummy instance that to the store.
-    ///
-    /// These are instances that are just implementation details of something
-    /// else (e.g. host-created memories that are not actually defined in any
-    /// Wasm module) and therefore shouldn't show up in things like core dumps.
-    pub unsafe fn add_dummy_instance(&mut self, handle: InstanceHandle) -> InstanceId {
-        let id = InstanceId(self.instances.len());
-        log::trace!(
-            "Adding dummy instance to store: store={:?}, instance={id:?}",
-            self.id()
-        );
-        self.instances.push(StoreInstance {
-            handle: handle.clone(),
-            kind: StoreInstanceKind::Dummy,
-        });
-        id
-    }
-
     pub fn instance(&self, id: InstanceId) -> &InstanceHandle {
-        &self.instances[id.0].handle
+        &self.instances[id].handle
     }
 
     pub fn instance_mut(&mut self, id: InstanceId) -> &mut InstanceHandle {
-        &mut self.instances[id.0].handle
+        &mut self.instances[id].handle
     }
 
     /// Get all instances (ignoring dummy instances) within this store.
@@ -1336,13 +1274,11 @@ impl StoreOpaque {
         let instances = self
             .instances
             .iter()
-            .enumerate()
-            .filter_map(|(idx, inst)| {
-                let id = InstanceId::from_index(idx);
+            .filter_map(|(id, inst)| {
                 if let StoreInstanceKind::Dummy = inst.kind {
                     None
                 } else {
-                    Some(InstanceData::from_id(id))
+                    Some(id)
                 }
             })
             .collect::<Vec<_>>();
@@ -1359,7 +1295,7 @@ impl StoreOpaque {
         let mems = self
             .instances
             .iter_mut()
-            .flat_map(|instance| instance.handle.defined_memories())
+            .flat_map(|(_, instance)| instance.handle.instance().defined_memories())
             .collect::<Vec<_>>();
         mems.into_iter()
             .map(|memory| unsafe { Memory::from_wasmtime_memory(memory, self) })
@@ -1368,85 +1304,31 @@ impl StoreOpaque {
     /// Iterate over all tables (host- or Wasm-defined) within this store.
     pub fn for_each_table(&mut self, mut f: impl FnMut(&mut Self, Table)) {
         // NB: Host-created tables have dummy instances. Therefore, we can get
-        // all memories in the store by iterating over all instances (including
+        // all tables in the store by iterating over all instances (including
         // dummy instances) and getting each of their defined memories.
-
-        struct TempTakeInstances<'a> {
-            instances: Vec<StoreInstance>,
-            store: &'a mut StoreOpaque,
-        }
-
-        impl<'a> TempTakeInstances<'a> {
-            fn new(store: &'a mut StoreOpaque) -> Self {
-                let instances = mem::take(&mut store.instances);
-                Self { instances, store }
-            }
-        }
-
-        impl Drop for TempTakeInstances<'_> {
-            fn drop(&mut self) {
-                assert!(self.store.instances.is_empty());
-                self.store.instances = mem::take(&mut self.instances);
-            }
-        }
-
-        let mut temp = TempTakeInstances::new(self);
-        for instance in temp.instances.iter_mut() {
-            for table in instance.handle.defined_tables() {
-                let table = unsafe { Table::from_wasmtime_table(table, temp.store) };
-                f(temp.store, table);
+        for id in self.instances.keys() {
+            let instance = StoreInstanceId::new(self.id(), id);
+            for table in 0..self.instance(id).module().num_defined_tables() {
+                let table = DefinedTableIndex::new(table);
+                f(self, Table::from_raw(instance, table));
             }
         }
     }
 
     /// Iterate over all globals (host- or Wasm-defined) within this store.
     pub fn for_each_global(&mut self, mut f: impl FnMut(&mut Self, Global)) {
-        struct TempTakeHostGlobalsAndInstances<'a> {
-            host_globals: Vec<StoreBox<VMHostGlobalContext>>,
-            instances: Vec<StoreInstance>,
-            store: &'a mut StoreOpaque,
+        // First enumerate all the host-created globals.
+        for global in self.host_globals.keys() {
+            let global = Global::new_host(self, global);
+            f(self, global);
         }
 
-        impl<'a> TempTakeHostGlobalsAndInstances<'a> {
-            fn new(store: &'a mut StoreOpaque) -> Self {
-                let host_globals = mem::take(&mut store.host_globals);
-                let instances = mem::take(&mut store.instances);
-                Self {
-                    host_globals,
-                    instances,
-                    store,
-                }
-            }
-        }
-
-        impl Drop for TempTakeHostGlobalsAndInstances<'_> {
-            fn drop(&mut self) {
-                assert!(self.store.host_globals.is_empty());
-                self.store.host_globals = mem::take(&mut self.host_globals);
-                assert!(self.store.instances.is_empty());
-                self.store.instances = mem::take(&mut self.instances);
-            }
-        }
-
-        let mut temp = TempTakeHostGlobalsAndInstances::new(self);
-        unsafe {
-            // First enumerate all the host-created globals.
-            for global in temp.host_globals.iter() {
-                let export = ExportGlobal {
-                    definition: NonNull::from(&mut global.get().as_mut().global),
-                    vmctx: None,
-                    global: global.get().as_ref().ty.to_wasm_type(),
-                };
-                let global = Global::from_wasmtime_global(export, temp.store);
-                f(temp.store, global);
-            }
-
-            // Then enumerate all instances' defined globals.
-            for instance in temp.instances.iter_mut() {
-                for (_, export) in instance.handle.defined_globals() {
-                    let global = Global::from_wasmtime_global(export, temp.store);
-                    f(temp.store, global);
-                }
+        // Then enumerate all instances' defined globals.
+        for id in self.instances.keys() {
+            for index in 0..self.instance(id).module().num_defined_globals() {
+                let index = DefinedGlobalIndex::new(index);
+                let global = Global::new_instance(self, id, index);
+                f(self, global);
             }
         }
     }
@@ -1481,9 +1363,11 @@ impl StoreOpaque {
         #[cfg(feature = "gc")]
         fn allocate_gc_store(
             engine: &Engine,
-            vmstore: NonNull<dyn crate::vm::VMStore>,
+            vmstore: NonNull<dyn vm::VMStore>,
             pkey: Option<ProtectionKey>,
         ) -> Result<GcStore> {
+            use wasmtime_environ::packed_option::ReservedValue;
+
             ensure!(
                 engine.features().gc_types(),
                 "cannot allocate a GC store when GC is disabled at configuration time"
@@ -1491,11 +1375,11 @@ impl StoreOpaque {
 
             // First, allocate the memory that will be our GC heap's storage.
             let mut request = InstanceAllocationRequest {
+                id: InstanceId::reserved_value(),
                 runtime_info: &ModuleRuntimeInfo::bare(Arc::new(
                     wasmtime_environ::Module::default(),
                 )),
-                imports: crate::vm::Imports::default(),
-                host_state: Box::new(()),
+                imports: vm::Imports::default(),
                 store: StorePtr::new(vmstore),
                 wmemcheck: false,
                 pkey,
@@ -1526,7 +1410,7 @@ impl StoreOpaque {
         #[cfg(not(feature = "gc"))]
         fn allocate_gc_store(
             _engine: &Engine,
-            _vmstore: NonNull<dyn crate::vm::VMStore>,
+            _vmstore: NonNull<dyn vm::VMStore>,
             _pkey: Option<ProtectionKey>,
         ) -> Result<GcStore> {
             bail!("cannot allocate a GC store: the `gc` feature was disabled at compile time")
@@ -1794,16 +1678,16 @@ impl StoreOpaque {
 
     #[inline]
     pub fn default_caller(&self) -> NonNull<VMContext> {
-        self.default_caller.vmctx()
+        self.default_caller_vmctx.as_non_null()
     }
 
     #[inline]
-    pub fn traitobj(&self) -> NonNull<dyn crate::runtime::vm::VMStore> {
+    pub fn traitobj(&self) -> NonNull<dyn vm::VMStore> {
         self.traitobj.as_raw().unwrap()
     }
 
     #[inline]
-    pub fn traitobj_mut(&mut self) -> &mut dyn crate::runtime::vm::VMStore {
+    pub fn traitobj_mut(&mut self) -> &mut dyn vm::VMStore {
         unsafe { self.traitobj().as_mut() }
     }
 
@@ -1840,10 +1724,6 @@ impl StoreOpaque {
         }
     }
 
-    pub(crate) fn push_rooted_funcs(&mut self, funcs: Arc<[Definition]>) {
-        self.rooted_host_funcs.push(funcs);
-    }
-
     /// Translates a WebAssembly fault at the native `pc` and native `addr` to a
     /// WebAssembly-relative fault.
     ///
@@ -1856,11 +1736,7 @@ impl StoreOpaque {
     /// with spectre mitigations enabled since the hardware fault address is
     /// always zero in these situations which means that the trapping context
     /// doesn't have enough information to report the fault address.
-    pub(crate) fn wasm_fault(
-        &self,
-        pc: usize,
-        addr: usize,
-    ) -> Option<crate::runtime::vm::WasmFault> {
+    pub(crate) fn wasm_fault(&self, pc: usize, addr: usize) -> Option<vm::WasmFault> {
         // There are a few instances where a "close to zero" pointer is loaded
         // and we expect that to happen:
         //
@@ -1893,7 +1769,7 @@ impl StoreOpaque {
         // possible to precompute maps about linear memories in a store and have
         // a quicker lookup.
         let mut fault = None;
-        for instance in self.instances.iter() {
+        for (_, instance) in self.instances.iter() {
             if let Some(f) = instance.handle.wasm_fault(addr) {
                 assert!(fault.is_none());
                 fault = Some(f);
@@ -1959,8 +1835,8 @@ at https://bytecodealliance.org/security.
     pub(crate) fn component_resource_state(
         &mut self,
     ) -> (
-        &mut crate::runtime::vm::component::CallContexts,
-        &mut crate::runtime::vm::component::ResourceTable,
+        &mut vm::component::CallContexts,
+        &mut vm::component::ResourceTable,
         &mut crate::component::HostResourceData,
     ) {
         (
@@ -2026,14 +1902,118 @@ at https://bytecodealliance.org/security.
 
     pub(crate) fn unwinder(&self) -> &'static dyn Unwind {
         match &self.executor {
-            Executor::Interpreter(_) => &crate::runtime::vm::UnwindPulley,
+            Executor::Interpreter(_) => &vm::UnwindPulley,
             #[cfg(has_host_compiler_backend)]
-            Executor::Native => &crate::runtime::vm::UnwindHost,
+            Executor::Native => &vm::UnwindHost,
         }
+    }
+
+    /// Constructs and executes an `InstanceAllocationRequest` and pushes the
+    /// returned instance into the store.
+    ///
+    /// This is a helper method for invoking
+    /// `InstanceAllocator::allocate_module` with the appropriate parameters
+    /// from this store's own configuration. The `kind` provided is used to
+    /// distinguish between "real" modules and dummy ones that are synthesized
+    /// for embedder-created memories, globals, tables, etc. The `kind` will
+    /// also use a different instance allocator by default, the one passed in,
+    /// rather than the engine's default allocator.
+    ///
+    /// This method will push the instance within `StoreOpaque` onto the
+    /// `instances` array and return the `InstanceId` which can be use to look
+    /// it up within the store.
+    ///
+    /// # Safety
+    ///
+    /// The request's associated module, memories, tables, and vmctx must have
+    /// already have been validated by `validate_module` for the allocator
+    /// configured. This is typically done during module construction for
+    /// example.
+    pub(crate) unsafe fn allocate_instance(
+        &mut self,
+        kind: AllocateInstanceKind<'_>,
+        runtime_info: &ModuleRuntimeInfo,
+        imports: Imports<'_>,
+    ) -> Result<InstanceId> {
+        let id = self.instances.next_key();
+
+        let allocator = match kind {
+            AllocateInstanceKind::Module(_) => self.engine().allocator(),
+            AllocateInstanceKind::Dummy { allocator } => allocator,
+        };
+        let handle = allocator.allocate_module(InstanceAllocationRequest {
+            id,
+            runtime_info,
+            imports,
+            store: StorePtr::new(self.traitobj()),
+            wmemcheck: self.engine().config().wmemcheck,
+            pkey: self.get_pkey(),
+            tunables: self.engine().tunables(),
+        })?;
+
+        let actual = match kind {
+            AllocateInstanceKind::Module(module_id) => {
+                log::trace!(
+                    "Adding instance to store: store={:?}, module={module_id:?}, instance={id:?}",
+                    self.id()
+                );
+                self.instances.push(StoreInstance {
+                    handle,
+                    kind: StoreInstanceKind::Real { module_id },
+                })
+            }
+            AllocateInstanceKind::Dummy { .. } => {
+                log::trace!(
+                    "Adding dummy instance to store: store={:?}, instance={id:?}",
+                    self.id()
+                );
+                self.instances.push(StoreInstance {
+                    handle,
+                    kind: StoreInstanceKind::Dummy,
+                })
+            }
+        };
+
+        // double-check we didn't accidentally allocate two instances and our
+        // prediction of what the id would be is indeed the id it should be.
+        assert_eq!(id, actual);
+
+        Ok(id)
+    }
+
+    /// Returns the `StoreInstanceId` that can be used to re-acquire access to
+    /// `vmctx` from a store later on.
+    ///
+    /// # Safety
+    ///
+    /// This method is unsafe as it cannot validate that `vmctx` is a valid
+    /// allocation that lives within this store.
+    pub(crate) unsafe fn vmctx_id(&self, vmctx: NonNull<VMContext>) -> StoreInstanceId {
+        let instance_id = vm::Instance::from_vmctx(vmctx, |i| i.id());
+        StoreInstanceId::new(self.id(), instance_id)
     }
 }
 
-unsafe impl<T: 'static> crate::runtime::vm::VMStore for StoreInner<T> {
+/// Helper parameter to [`StoreOpaque::allocate_instance`].
+pub(crate) enum AllocateInstanceKind<'a> {
+    /// An embedder-provided module is being allocated meaning that the default
+    /// engine's allocator will be used.
+    Module(RegisteredModuleId),
+
+    /// Add a dummy instance that to the store.
+    ///
+    /// These are instances that are just implementation details of something
+    /// else (e.g. host-created memories that are not actually defined in any
+    /// Wasm module) and therefore shouldn't show up in things like core dumps.
+    ///
+    /// A custom, typically OnDemand-flavored, allocator is provided to execute
+    /// the allocation.
+    Dummy {
+        allocator: &'a dyn InstanceAllocator,
+    },
+}
+
+unsafe impl<T> vm::VMStore for StoreInner<T> {
     #[cfg(feature = "component-model-async")]
     fn component_async_store(
         &mut self,
@@ -2205,7 +2185,7 @@ unsafe impl<T: 'static> crate::runtime::vm::VMStore for StoreInner<T> {
     }
 
     #[cfg(feature = "component-model")]
-    fn component_calls(&mut self) -> &mut crate::runtime::vm::component::CallContexts {
+    fn component_calls(&mut self) -> &mut vm::component::CallContexts {
         &mut self.component_calls
     }
 }
@@ -2319,8 +2299,7 @@ impl Drop for StoreOpaque {
                 allocator.deallocate_memory(None, mem_alloc_index, mem);
             }
 
-            for (idx, instance) in self.instances.iter_mut().enumerate() {
-                let id = InstanceId::from_index(idx);
+            for (id, instance) in self.instances.iter_mut() {
                 log::trace!("store {store_id:?} is deallocating {id:?}");
                 if let StoreInstanceKind::Dummy = instance.kind {
                     ondemand.deallocate_module(&mut instance.handle);
@@ -2329,20 +2308,12 @@ impl Drop for StoreOpaque {
                 }
             }
 
-            log::trace!("store {store_id:?} is deallocating its default caller instance");
-            ondemand.deallocate_module(&mut self.default_caller);
-
             #[cfg(feature = "component-model")]
             {
                 for _ in 0..self.num_component_instances {
                     allocator.decrement_component_instance_count();
                 }
             }
-
-            // See documentation for these fields on `StoreOpaque` for why they
-            // must be dropped in this order.
-            ManuallyDrop::drop(&mut self.store_data);
-            ManuallyDrop::drop(&mut self.rooted_host_funcs);
         }
     }
 }

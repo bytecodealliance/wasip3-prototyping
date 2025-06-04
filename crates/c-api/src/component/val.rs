@@ -35,6 +35,15 @@ crate::declare_vecs! {
         copy: wasmtime_component_valtuple_copy,
         delete: wasmtime_component_valtuple_delete,
     )
+    (
+        name: wasmtime_component_valflags_t,
+        ty: wasm_name_t,
+        new: wasmtime_component_valflags_new,
+        empty: wasmtime_component_valflags_new_empty,
+        uninit: wasmtime_component_valflags_new_uninit,
+        copy: wasmtime_component_valflags_copy,
+        delete: wasmtime_component_valflags_delete,
+    )
 }
 
 impl From<&wasmtime_component_vallist_t> for Vec<Val> {
@@ -119,6 +128,28 @@ impl From<&[Val]> for wasmtime_component_valtuple_t {
     }
 }
 
+impl From<&wasmtime_component_valflags_t> for Vec<String> {
+    fn from(value: &wasmtime_component_valflags_t) -> Self {
+        value
+            .clone()
+            .take()
+            .into_iter()
+            .map(|mut x| String::from_utf8(x.take()))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+}
+
+impl From<&[String]> for wasmtime_component_valflags_t {
+    fn from(value: &[String]) -> Self {
+        value
+            .iter()
+            .map(|x| wasm_name_t::from_name(x.clone()))
+            .collect::<Vec<_>>()
+            .into()
+    }
+}
+
 #[repr(C)]
 #[derive(Clone)]
 pub struct wasmtime_component_valvariant_t {
@@ -146,6 +177,37 @@ impl From<&wasmtime_component_valvariant_t> for (String, Option<Box<Val>>) {
     }
 }
 
+#[repr(C)]
+#[derive(Clone)]
+pub struct wasmtime_component_valresult_t {
+    is_ok: bool,
+    val: Option<Box<wasmtime_component_val_t>>,
+}
+
+impl From<&wasmtime_component_valresult_t> for Result<Option<Box<Val>>, Option<Box<Val>>> {
+    fn from(value: &wasmtime_component_valresult_t) -> Self {
+        let val = value.val.as_ref().map(|x| Box::new(Val::from(x.as_ref())));
+
+        match value.is_ok {
+            true => Ok(val),
+            false => Err(val),
+        }
+    }
+}
+
+impl From<&Result<Option<Box<Val>>, Option<Box<Val>>>> for wasmtime_component_valresult_t {
+    fn from(value: &Result<Option<Box<Val>>, Option<Box<Val>>>) -> Self {
+        let (Ok(x) | Err(x)) = value;
+
+        Self {
+            is_ok: value.is_ok(),
+            val: x
+                .as_ref()
+                .map(|x| Box::new(wasmtime_component_val_t::from(x.as_ref()))),
+        }
+    }
+}
+
 #[repr(C, u8)]
 #[derive(Clone)]
 pub enum wasmtime_component_val_t {
@@ -166,6 +228,10 @@ pub enum wasmtime_component_val_t {
     Record(wasmtime_component_valrecord_t),
     Tuple(wasmtime_component_valtuple_t),
     Variant(wasmtime_component_valvariant_t),
+    Enum(wasm_name_t),
+    Option(Option<Box<Self>>),
+    Result(wasmtime_component_valresult_t),
+    Flags(wasmtime_component_valflags_t),
 }
 
 impl Default for wasmtime_component_val_t {
@@ -199,6 +265,14 @@ impl From<&wasmtime_component_val_t> for Val {
                 let (a, b) = x.into();
                 Val::Variant(a, b)
             }
+            wasmtime_component_val_t::Enum(x) => {
+                Val::Enum(String::from_utf8(x.clone().take()).unwrap())
+            }
+            wasmtime_component_val_t::Option(x) => {
+                Val::Option(x.as_ref().map(|x| Box::new(Val::from(x.as_ref()))))
+            }
+            wasmtime_component_val_t::Result(x) => Val::Result(x.into()),
+            wasmtime_component_val_t::Flags(x) => Val::Flags(x.into()),
         }
     }
 }
@@ -225,10 +299,13 @@ impl From<&Val> for wasmtime_component_val_t {
             Val::Variant(discriminant, val) => {
                 wasmtime_component_val_t::Variant((discriminant, val).into())
             }
-            Val::Enum(_) => todo!(),
-            Val::Option(_val) => todo!(),
-            Val::Result(_val) => todo!(),
-            Val::Flags(_items) => todo!(),
+            Val::Enum(x) => wasmtime_component_val_t::Enum(wasm_name_t::from_name(x.clone())),
+            Val::Option(x) => wasmtime_component_val_t::Option(
+                x.as_ref()
+                    .map(|x| Box::new(wasmtime_component_val_t::from(x.as_ref()))),
+            ),
+            Val::Result(x) => wasmtime_component_val_t::Result(x.into()),
+            Val::Flags(x) => wasmtime_component_val_t::Flags(x.as_slice().into()),
             Val::Resource(_resource_any) => todo!(),
             Val::Future(_) => todo!(),
             Val::Stream(_) => todo!(),
