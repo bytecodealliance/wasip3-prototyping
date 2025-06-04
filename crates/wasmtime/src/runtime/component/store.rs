@@ -30,6 +30,7 @@ impl ComponentStoreData {
         self.instances.next_key()
     }
 
+    #[cfg(feature = "component-model-async")]
     pub(crate) unsafe fn drop_fibers(&mut self) {
         for (_, instance) in self.instances.iter_mut() {
             let Some(instance) = instance.as_mut() else {

@@ -920,6 +920,7 @@ impl Func {
             .collect()
     }
 
+    #[cfg(feature = "component-model-async")]
     pub(crate) fn instance(&self) -> Instance {
         self.instance
     }
