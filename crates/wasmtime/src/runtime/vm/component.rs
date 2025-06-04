@@ -179,19 +179,14 @@ impl ComponentInstance {
     /// mutable reference at this time to the instance from `vmctx`.
     pub unsafe fn from_vmctx<R>(
         vmctx: NonNull<VMComponentContext>,
-        f: impl FnOnce(&mut dyn VMStore, &mut ComponentInstance) -> R,
+        f: impl FnOnce(&mut dyn VMStore, Instance) -> R,
     ) -> R {
-        // TODO: Calling a function that takes both a `&mut dyn VMStore` and a
-        // `&mut ComponentInstance` is extremely hazardous since the former can
-        // be used to alias the latter.  The signature of `f` should be changed
-        // to be `impl FnOnce(&mut dyn VMStore, Instance) -> R`, and any code
-        // that uses it updated.
         let mut ptr = vmctx
             .byte_sub(mem::size_of::<ComponentInstance>())
             .cast::<ComponentInstance>();
         let reference = ptr.as_mut();
         let store = &mut *reference.store();
-        f(store, reference)
+        f(store, reference.instance)
     }
 
     /// Returns the layout corresponding to what would be an allocation of a
@@ -730,50 +725,6 @@ impl ComponentInstance {
             self.instance_flags(instance)
         });
         (dtor, flags)
-    }
-
-    pub(crate) fn resource_transfer_own(
-        &mut self,
-        store: &mut dyn VMStore,
-        index: u32,
-        src: TypeResourceTableIndex,
-        dst: TypeResourceTableIndex,
-    ) -> Result<u32> {
-        let mut tables = self.resource_tables(store);
-        let rep = tables.resource_lift_own(TypedResourceIndex::Component { ty: src, index })?;
-        tables.resource_lower_own(TypedResource::Component { ty: dst, rep })
-    }
-
-    pub(crate) fn resource_transfer_borrow(
-        &mut self,
-        store: &mut dyn VMStore,
-        index: u32,
-        src: TypeResourceTableIndex,
-        dst: TypeResourceTableIndex,
-    ) -> Result<u32> {
-        let dst_owns_resource = self.resource_owned_by_own_instance(dst);
-        let mut tables = self.resource_tables(store);
-        let rep = tables.resource_lift_borrow(TypedResourceIndex::Component { ty: src, index })?;
-        // Implement `lower_borrow`'s special case here where if a borrow's
-        // resource type is owned by `dst` then the destination receives the
-        // representation directly rather than a handle to the representation.
-        //
-        // This can perhaps become a different libcall in the future to avoid
-        // this check at runtime since we know at compile time whether the
-        // destination type owns the resource, but that's left as a future
-        // refactoring if truly necessary.
-        if dst_owns_resource {
-            return Ok(rep);
-        }
-        tables.resource_lower_borrow(TypedResource::Component { ty: dst, rep })
-    }
-
-    pub(crate) fn resource_enter_call(&mut self, store: &mut dyn VMStore) {
-        self.resource_tables(store).enter_call()
-    }
-
-    pub(crate) fn resource_exit_call(&mut self, store: &mut dyn VMStore) -> Result<()> {
-        self.resource_tables(store).exit_call()
     }
 }
 

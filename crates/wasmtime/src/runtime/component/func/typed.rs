@@ -19,8 +19,6 @@ use wasmtime_environ::component::{
 #[cfg(feature = "component-model-async")]
 use crate::component::concurrent::{self, PreparedCall, ResetPtr};
 #[cfg(feature = "component-model-async")]
-use crate::runtime::vm::component::ComponentInstance;
-#[cfg(feature = "component-model-async")]
 use core::any::Any;
 #[cfg(feature = "component-model-async")]
 use core::future::{self, Future};
@@ -461,7 +459,7 @@ where
     unsafe fn lower_stack_args_fn<T>(
         func: Func,
         store: StoreContextMut<T>,
-        instance: &mut ComponentInstance,
+        instance: Instance,
         params_in: *mut u8,
         params_out: &mut [MaybeUninit<ValRaw>],
     ) -> Result<()> {
@@ -522,7 +520,7 @@ where
     unsafe fn lower_heap_args_fn<T>(
         func: Func,
         store: StoreContextMut<T>,
-        instance: &mut ComponentInstance,
+        instance: Instance,
         params_in: *mut u8,
         params_out: &mut [MaybeUninit<ValRaw>],
     ) -> Result<()> {
@@ -582,7 +580,7 @@ where
     fn lift_stack_result_fn<T>(
         func: Func,
         store: StoreContextMut<T>,
-        instance: &mut ComponentInstance,
+        instance: Instance,
         results: &[ValRaw],
     ) -> Result<Box<dyn Any + Send + Sync>>
     where
@@ -630,7 +628,7 @@ where
     fn lift_heap_result_fn<T>(
         func: Func,
         store: StoreContextMut<T>,
-        instance: &mut ComponentInstance,
+        instance: Instance,
         results: &[ValRaw],
     ) -> Result<Box<dyn Any + Send + Sync>>
     where
