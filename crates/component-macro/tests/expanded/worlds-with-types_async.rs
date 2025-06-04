@@ -171,7 +171,7 @@ const _: () = {
     impl Foo {
         /// Convenience wrapper around [`FooPre::new`] and
         /// [`FooPre::instantiate_async`].
-        pub async fn instantiate_async<_T: 'static>(
+        pub async fn instantiate_async<_T>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,
@@ -208,7 +208,7 @@ const _: () = {
             mut store: S,
         ) -> wasmtime::Result<(T, U, R)>
         where
-            <S as wasmtime::AsContext>::Data: Send + 'static,
+            <S as wasmtime::AsContext>::Data: Send,
         {
             let callee = unsafe {
                 wasmtime::component::TypedFunc::<(), ((T, U, R),)>::new_unchecked(self.f)

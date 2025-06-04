@@ -132,7 +132,7 @@ const _: () = {
     impl Example {
         /// Convenience wrapper around [`ExamplePre::new`] and
         /// [`ExamplePre::instantiate_async`].
-        pub async fn instantiate_async<_T: 'static>(
+        pub async fn instantiate_async<_T>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,

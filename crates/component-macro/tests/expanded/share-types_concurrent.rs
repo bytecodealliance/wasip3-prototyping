@@ -130,7 +130,7 @@ const _: () = {
     impl HttpInterface {
         /// Convenience wrapper around [`HttpInterfacePre::new`] and
         /// [`HttpInterfacePre::instantiate_async`].
-        pub async fn instantiate_async<_T: 'static>(
+        pub async fn instantiate_async<_T>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,
@@ -360,7 +360,7 @@ pub mod exports {
                 Output = wasmtime::Result<Response>,
             > + Send + 'static + use<S>
             where
-                <S as wasmtime::AsContext>::Data: Send + 'static,
+                <S as wasmtime::AsContext>::Data: Send,
             {
                 let callee = unsafe {
                     wasmtime::component::TypedFunc::<

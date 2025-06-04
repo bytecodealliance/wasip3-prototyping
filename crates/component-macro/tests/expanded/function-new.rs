@@ -141,7 +141,7 @@ const _: () = {
     impl Foo {
         /// Convenience wrapper around [`FooPre::new`] and
         /// [`FooPre::instantiate`].
-        pub fn instantiate<_T: 'static>(
+        pub fn instantiate<_T>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,

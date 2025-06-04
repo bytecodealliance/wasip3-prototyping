@@ -124,7 +124,7 @@ const _: () = {
     impl Wasi {
         /// Convenience wrapper around [`WasiPre::new`] and
         /// [`WasiPre::instantiate_async`].
-        pub async fn instantiate_async<_T: 'static>(
+        pub async fn instantiate_async<_T>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,
