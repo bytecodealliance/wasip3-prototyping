@@ -1250,8 +1250,9 @@ impl<'a, 'data> Translator<'a, 'data> {
                     let idx = FuncIndex::from_u32(*idx);
                     ret.callback = Some(idx);
                 }
-                wasmparser::CanonicalOption::CoreType(_) => todo!(),
-                wasmparser::CanonicalOption::Gc => todo!(),
+                wasmparser::CanonicalOption::CoreType(_) | wasmparser::CanonicalOption::Gc => {
+                    todo!("component model and GC support")
+                }
             }
         }
         return ret;
