@@ -1155,22 +1155,6 @@ impl StoreOpaque {
         self.store_data.id()
     }
 
-    #[cfg(feature = "component-model")]
-    pub(crate) fn component_instance_mut(
-        &mut self,
-        handle: crate::component::Instance,
-    ) -> &mut crate::vm::component::ComponentInstance {
-        unsafe { &mut *self[handle.0].as_mut().unwrap().instance_ptr() }
-    }
-
-    #[cfg(feature = "component-model")]
-    pub(crate) fn component_instance(
-        &self,
-        handle: crate::component::Instance,
-    ) -> &crate::vm::component::ComponentInstance {
-        unsafe { &*self[handle.0].as_ref().unwrap().instance_ptr() }
-    }
-
     pub fn bump_resource_counts(&mut self, module: &Module) -> Result<()> {
         fn bump(slot: &mut usize, max: usize, amt: usize, desc: &str) -> Result<()> {
             let new = slot.saturating_add(amt);
@@ -1857,18 +1841,11 @@ at https://bytecodealliance.org/security.
         &mut crate::component::HostResourceData,
         &mut crate::vm::component::ComponentInstance,
     ) {
-        // TODO: Ideally, this `unsafe` code would be wrapped in a safe method
-        // such as `Self::component_instance_mut`, but that would require a way
-        // to express partial borrows in method signatures (e.g. [view
-        // types](https://smallcultfollowing.com/babysteps//blog/2021/11/05/view-types/)),
-        // which doesn't exist in Rust as of this writing.  Still, there may be
-        // a way to scope or eliminate this `unsafe`ty.
-        let instance = unsafe { &mut *self[instance.0].as_mut().unwrap().instance_ptr() };
         (
             &mut self.component_calls,
             &mut self.component_host_table,
             &mut self.host_resource_data,
-            instance,
+            &mut self.store_data[instance.id()],
         )
     }
 
@@ -2265,13 +2242,7 @@ impl<T> Drop for Store<T> {
             // need to be resumed and allowed to exit cleanly before we yank the
             // state out from under them.
             #[cfg(feature = "component-model-async")]
-            for instance in self.inner.store_data.components.instances.iter_mut() {
-                let Some(instance) = instance.as_mut() else {
-                    continue;
-                };
-
-                instance.state.drop_fibers();
-            }
+            self.inner.store_data.components.drop_fibers();
 
             ManuallyDrop::drop(&mut self.inner.data);
             ManuallyDrop::drop(&mut self.inner);

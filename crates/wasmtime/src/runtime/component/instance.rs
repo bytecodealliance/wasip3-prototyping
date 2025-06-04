@@ -8,12 +8,12 @@ use crate::component::{
 use crate::instance::OwnedImports;
 use crate::linker::DefinitionType;
 use crate::prelude::*;
+use crate::runtime::vm::VMFuncRef;
 use crate::runtime::vm::component::{
     CallContexts, ComponentInstance, OwnedComponentInstance, ResourceTables, TypedResource,
     TypedResourceIndex,
 };
-use crate::runtime::vm::{CompiledModuleId, VMFuncRef};
-use crate::store::{StoreOpaque, Stored};
+use crate::store::StoreOpaque;
 use crate::{AsContext, AsContextMut, Engine, Module, StoreContextMut, VMStore};
 use alloc::sync::Arc;
 use core::marker;
@@ -307,7 +307,7 @@ impl Instance {
         instance: Option<&ComponentExportIndex>,
         name: &str,
     ) -> Option<(ComponentItem, ComponentExportIndex)> {
-        let data = self.instance(store);
+        let data = &store[self.id()];
         let component = data.component();
         let index = component.lookup_export_index(instance, name)?;
         let item = ComponentItem::from_export(
@@ -343,7 +343,7 @@ impl Instance {
         instance: Option<&ComponentExportIndex>,
         name: &str,
     ) -> Option<ComponentExportIndex> {
-        let data = self.instance(store.as_context_mut().0);
+        let data = &store.as_context_mut()[self.id()];
         let index = data.component().lookup_export_index(instance, name)?;
         Some(ComponentExportIndex {
             id: data.component().id(),
@@ -356,7 +356,7 @@ impl Instance {
         store: &'a StoreOpaque,
         name: impl InstanceExportLookup,
     ) -> Option<(&'a ComponentInstance, &'a Export)> {
-        let data = self.instance(store);
+        let data = &store[self.id()];
         let index = name.lookup(data.component())?;
         Some((data, &data.component().env_component().export_items[index]))
     }
@@ -365,19 +365,13 @@ impl Instance {
     pub fn instance_pre<T>(&self, store: impl AsContext<Data = T>) -> InstancePre<T> {
         // This indexing operation asserts the Store owns the Instance.
         // Therefore, the InstancePre<T> must match the Store<T>.
-        let data = self.instance(store.as_context().0);
+        let data = &store.as_context()[self.id()];
 
         // SAFETY: calling this method safely here relies on matching the `T`
         // in `InstancePre<T>` to the store itself, which is happening in the
         // type signature just above by ensuring the store's data is `T` which
         // matches the return value.
         unsafe { data.instance_pre() }
-    }
-
-    /// Returns the VM/runtime state for this instance as belonging to the
-    /// store provided.
-    pub(crate) fn instance<'a>(&self, store: &'a StoreOpaque) -> &'a ComponentInstance {
-        &store[self.id]
     }
 
     /// Returns the VM/runtime state for this instance as belonging to the
@@ -454,10 +448,7 @@ impl Instance {
         src: TypeResourceTableIndex,
         dst: TypeResourceTableIndex,
     ) -> Result<u32> {
-        let dst_owns_resource = store
-            .store_opaque()
-            .component_instance(self)
-            .resource_owned_by_own_instance(dst);
+        let dst_owns_resource = store[self.id()].resource_owned_by_own_instance(dst);
         let (calls, _, _, instance) = store
             .store_opaque_mut()
             .component_resource_state_with_instance(self);
@@ -587,18 +578,6 @@ impl<'a> Instantiator<'a> {
         store.modules_mut().register_component(component);
         let imported_resources: ImportedResources =
             PrimaryMap::with_capacity(env_component.imported_resources.len());
-        let instance = Instance(store.store_data_mut().insert(None));
-        store[instance.0] = Some(Box::new(InstanceData {
-            instances: PrimaryMap::with_capacity(env_component.num_runtime_instances as usize),
-            component: component.clone(),
-            state: OwnedComponentInstance::new(
-                component.runtime_info(),
-                Arc::new(imported_resources),
-                store.traitobj(),
-                instance,
-            ),
-            imports: imports.clone(),
-        }));
 
         Instantiator {
             component,
@@ -612,21 +591,6 @@ impl<'a> Instantiator<'a> {
                 store.traitobj(),
             ),
         }
-    }
-
-    fn data<'b>(&self, store: &'b mut StoreOpaque) -> &'b mut InstanceData {
-        store[self.instance.0].as_mut().unwrap()
-    }
-
-    fn with_data<R>(
-        &self,
-        store: &mut StoreOpaque,
-        fun: impl FnOnce(&mut StoreOpaque, &mut InstanceData) -> R,
-    ) -> R {
-        let mut data = store[self.instance.0].take().unwrap();
-        let result = fun(store, &mut data);
-        store[self.instance.0] = Some(data);
-        result
     }
 
     fn run<T>(&mut self, store: &mut StoreContextMut<'_, T>) -> Result<()> {

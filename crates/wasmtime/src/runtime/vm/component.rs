@@ -111,8 +111,6 @@ pub struct ComponentInstance {
     /// Self-pointer back to `Store<T>` and its functions.
     store: Option<VMStoreRawPtr>,
 
-    pub(crate) instance: Instance,
-
     /// Cached ABI return value from the last-invoked function call along with
     /// the function index that was invoked.
     ///
@@ -227,7 +225,8 @@ impl ComponentInstance {
             .cast::<ComponentInstance>();
         let reference = ptr.as_mut();
         let store = &mut *reference.store();
-        f(store, reference.instance)
+        let instance = Instance::from_wasmtime(store, reference.id);
+        f(store, instance)
     }
 
     /// Returns the layout corresponding to what would be an allocation of a
@@ -259,7 +258,6 @@ impl ComponentInstance {
         resource_types: Arc<PrimaryMap<ResourceIndex, ResourceType>>,
         imports: &Arc<PrimaryMap<RuntimeImportIndex, RuntimeImport>>,
         store: NonNull<dyn VMStore>,
-        instance: Instance,
     ) {
         assert!(alloc_size >= Self::alloc_layout(&offsets).size());
 
@@ -272,8 +270,8 @@ impl ComponentInstance {
 
         #[cfg(feature = "component-model-async")]
         let concurrent_state = concurrent::ConcurrentState::new(
-            runtime_info.component().num_runtime_component_instances,
-            runtime_info.component().num_error_context_tables,
+            component.env_component().num_runtime_component_instances,
+            component.env_component().num_error_context_tables,
         );
 
         ptr::write(
@@ -305,7 +303,6 @@ impl ComponentInstance {
                 vmctx: VMComponentContext {
                     _marker: marker::PhantomPinned,
                 },
-                instance,
                 #[cfg(feature = "component-model-async")]
                 concurrent_state,
             },
@@ -921,7 +918,6 @@ impl OwnedComponentInstance {
         resource_types: Arc<PrimaryMap<ResourceIndex, ResourceType>>,
         imports: &Arc<PrimaryMap<RuntimeImportIndex, RuntimeImport>>,
         store: NonNull<dyn VMStore>,
-        instance: Instance,
     ) -> OwnedComponentInstance {
         let offsets = VMComponentOffsets::new(HostPtr, component.env_component());
         let layout = ComponentInstance::alloc_layout(&offsets);
@@ -946,7 +942,6 @@ impl OwnedComponentInstance {
                 resource_types,
                 imports,
                 store,
-                instance,
             );
 
             let ptr = SendSyncPtr::new(ptr);

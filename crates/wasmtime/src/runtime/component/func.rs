@@ -4,14 +4,15 @@ use crate::component::storage::storage_as_slice;
 use crate::component::types::Type;
 use crate::component::values::Val;
 use crate::prelude::*;
-use crate::runtime::vm::component::{ComponentInstance, ResourceTables};
-use crate::runtime::vm::{Export, ExportFunction};
+use crate::runtime::vm::component::{ComponentInstance, InstanceFlags, ResourceTables};
+use crate::runtime::vm::{Export, VMFuncRef};
 use crate::store::StoreOpaque;
 use crate::{AsContext, AsContextMut, StoreContextMut, ValRaw};
 use core::mem::{self, MaybeUninit};
 use core::ptr::NonNull;
 use wasmtime_environ::component::{
-    ExportIndex, InterfaceType, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS, TypeFuncIndex, TypeTuple,
+    CanonicalOptions, ExportIndex, InterfaceType, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS, TypeFuncIndex,
+    TypeTuple,
 };
 
 #[cfg(feature = "component-model-async")]
@@ -296,10 +297,9 @@ impl Func {
         #[cfg(feature = "component-model-async")]
         {
             let mut store = store;
-            let instance = store.0[self.0].instance;
             let call =
                 self.call_concurrent(store.as_context_mut(), params.iter().cloned().collect());
-            let result_vec = instance.run(store, call).await??;
+            let result_vec = self.instance.run(store, call).await??;
             for (result, slot) in result_vec.into_iter().zip(results) {
                 *slot = result;
             }
@@ -386,7 +386,7 @@ impl Func {
         let store = store.as_context_mut();
 
         let lower = Self::lower_args_fn::<T>;
-        let lift = if store.0[self.0].options.async_() {
+        let lift = if self.abi_async(store.0) {
             Self::lift_results_async_fn::<T>
         } else {
             Self::lift_results_sync_fn::<T>
@@ -421,7 +421,7 @@ impl Func {
             );
         }
 
-        if store.0[self.0].options.async_() {
+        if self.abi_async(store.0) {
             unreachable!(
                 "async-lifted exports should have failed validation \
                  when `component-model-async` feature disabled"
@@ -442,6 +442,52 @@ impl Func {
                 Ok(())
             },
         )
+    }
+
+    pub(crate) fn lifted_core_func(&self, store: &StoreOpaque) -> NonNull<VMFuncRef> {
+        let instance = &store[self.instance.id()];
+        let (_ty, def, _options) = instance.component().export_lifted_function(self.index);
+        match instance.lookup_def(store, def) {
+            Export::Function(f) => f.func_ref,
+            _ => unreachable!(),
+        }
+    }
+
+    pub(crate) fn post_return_core_func(&self, store: &StoreOpaque) -> Option<NonNull<VMFuncRef>> {
+        let instance = &store[self.instance.id()];
+        let (_ty, _def, options) = instance.component().export_lifted_function(self.index);
+        options.post_return.map(|i| instance.runtime_post_return(i))
+    }
+
+    pub(crate) fn abi_async(&self, store: &StoreOpaque) -> bool {
+        let instance = &store[self.instance.id()];
+        let (_ty, _def, options) = instance.component().export_lifted_function(self.index);
+        options.async_
+    }
+
+    pub(crate) fn abi_info<'a>(
+        &self,
+        store: &'a StoreOpaque,
+    ) -> (Options, InstanceFlags, TypeFuncIndex, &'a CanonicalOptions) {
+        let vminstance = &store[self.instance.id()];
+        let (ty, _def, raw_options) = vminstance.component().export_lifted_function(self.index);
+        let memory = raw_options
+            .memory
+            .map(|i| NonNull::new(vminstance.runtime_memory(i)).unwrap());
+        let realloc = raw_options.realloc.map(|i| vminstance.runtime_realloc(i));
+        let flags = vminstance.instance_flags(raw_options.instance);
+        let callback = raw_options.callback.map(|i| vminstance.runtime_callback(i));
+        let options = unsafe {
+            Options::new(
+                store.id(),
+                memory,
+                realloc,
+                raw_options.string_encoding,
+                raw_options.async_,
+                callback,
+            )
+        };
+        (options, flags, ty, raw_options)
     }
 
     /// Invokes the underlying wasm function, lowering arguments and lifting the
@@ -468,19 +514,9 @@ impl Func {
         LowerParams: Copy,
         LowerReturn: Copy,
     {
-        let vminstance = self.instance.instance(store.0);
-        let (ty, def, options) = vminstance.component().export_lifted_function(self.index);
-        let export = match vminstance.lookup_def(store.0, def) {
-            Export::Function(f) => f,
-            _ => unreachable!(),
-        };
-        let component_instance = options.instance;
-        let memory = options
-            .memory
-            .map(|i| NonNull::new(vminstance.runtime_memory(i)).unwrap());
-        let realloc = options.realloc.map(|i| vminstance.runtime_realloc(i));
-        let options =
-            unsafe { Options::new(store.0.id(), memory, realloc, options.string_encoding) };
+        let vminstance = &store[self.instance.id()];
+        let export = self.lifted_core_func(store.0);
+        let (options, mut flags, ty, _) = self.abi_info(store.0);
 
         let space = &mut MaybeUninit::<ParamsAndResults<LowerParams, LowerReturn>>::uninit();
 
@@ -500,7 +536,6 @@ impl Func {
         assert!(mem::align_of_val(map_maybe_uninit!(space.ret)) == val_align);
 
         let types = vminstance.component().types().clone();
-        let mut flags = vminstance.instance_flags(component_instance);
 
         unsafe {
             // Test the "may enter" flag which is a "lock" on this instance.
@@ -518,7 +553,7 @@ impl Func {
             debug_assert!(flags.may_leave());
             flags.set_may_leave(false);
             let instance_ptr = self.instance.instance_ptr(store.0).as_ptr();
-            let mut cx = LowerContext::new(store.as_context_mut(), &options, &types, instance_ptr);
+            let mut cx = LowerContext::new(store.as_context_mut(), &options, &types, self.instance);
             cx.enter_call();
             let result = lower(
                 &mut cx,
@@ -538,7 +573,7 @@ impl Func {
             // implementations, hence `ComponentType` being an `unsafe` trait.
             crate::Func::call_unchecked_raw(
                 &mut store,
-                export.func_ref,
+                export,
                 NonNull::new(core::ptr::slice_from_raw_parts_mut(
                     space.as_mut_ptr().cast(),
                     mem::size_of_val(space) / mem::size_of::<ValRaw>(),
@@ -565,7 +600,7 @@ impl Func {
             // later get used in post-return.
             flags.set_needs_post_return(true);
             let val = lift(
-                &mut LiftContext::new(store.0, &options, &types, instance_handle),
+                &mut LiftContext::new(store.0, &options, &types, self.instance),
                 InterfaceType::Tuple(types[ty].results),
                 ret,
             )?;
@@ -640,13 +675,18 @@ impl Func {
 
     fn post_return_impl(&self, mut store: impl AsContextMut) -> Result<()> {
         let mut store = store.as_context_mut();
+
+        #[cfg(feature = "component-model-async")]
+        if store.0.async_support() {
+            // In this case, the post-return function will already have been
+            // called.
+            return Ok(());
+        }
+
         let index = self.index;
         let vminstance = &store.0[self.instance.id()];
         let (_ty, _def, options) = vminstance.component().export_lifted_function(index);
-        let post_return = options.post_return.map(|i| {
-            let func_ref = vminstance.runtime_post_return(i);
-            ExportFunction { func_ref }
-        });
+        let post_return = self.post_return_core_func(store.0);
         let instance = self.instance.instance_ptr(store.0).as_ptr();
 
         unsafe {
@@ -692,7 +732,7 @@ impl Func {
             if let Some(func) = post_return {
                 crate::Func::call_unchecked_raw(
                     &mut store,
-                    func.func_ref,
+                    func,
                     NonNull::new(core::ptr::slice_from_raw_parts(&post_return_arg, 1).cast_mut())
                         .unwrap(),
                 )?;
@@ -879,6 +919,10 @@ impl Func {
             })
             .collect()
     }
+
+    pub(crate) fn instance(&self) -> Instance {
+        self.instance
+    }
 }
 
 /// Lower parameters of the specified type using the specified function.
@@ -905,16 +949,9 @@ fn lower_params<
 ) -> Result<()> {
     use crate::component::storage::slice_to_storage_mut;
 
-    let FuncData {
-        options,
-        component_instance,
-        ty,
-        ..
-    } = store.0[me.0];
-
-    let reference = instance.instance(store.0);
-    let types = reference.component_types().clone();
-    let mut flags = reference.instance_flags(component_instance);
+    let reference = &store[instance.id()];
+    let types = reference.component().types().clone();
+    let (options, mut flags, ty, _) = me.abi_info(store.0);
 
     if unsafe { !flags.may_enter() } {
         bail!(crate::Trap::CannotEnterComponent);
@@ -954,8 +991,8 @@ fn lift_results<
     me: Func,
     lift: F,
 ) -> Result<Box<dyn std::any::Any + Send + Sync>> {
-    let FuncData { options, ty, .. } = store.0[me.0];
-    let types = instance.instance(store.0).component_types().clone();
+    let (options, _flags, ty, _) = me.abi_info(store.0);
+    let types = store[instance.id()].component().types().clone();
     Ok(Box::new(lift(
         &mut LiftContext::new(store.0, &options, &types, instance),
         InterfaceType::Tuple(types[ty].results),

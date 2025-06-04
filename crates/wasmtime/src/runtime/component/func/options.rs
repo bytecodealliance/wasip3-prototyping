@@ -31,7 +31,7 @@ pub struct Options {
     ///
     /// Note that this pointer cannot be safely dereferenced unless a store,
     /// verified with `self.store_id`, has the appropriate borrow available.
-    pub(crate) memory: Option<NonNull<VMMemoryDefinition>>,
+    memory: Option<NonNull<VMMemoryDefinition>>,
 
     /// Similar to `memory` but corresponds to the `canonical_abi_realloc`
     /// function.
@@ -47,7 +47,7 @@ pub struct Options {
     async_: bool,
 
     #[cfg_attr(not(feature = "component-model-async"), allow(unused))]
-    pub(crate) callback: Option<NonNull<VMFuncRef>>,
+    callback: Option<NonNull<VMFuncRef>>,
 }
 
 // The `Options` structure stores raw pointers but they're never used unless a
@@ -178,6 +178,16 @@ impl Options {
     pub fn async_(&self) -> bool {
         self.async_
     }
+
+    #[cfg(feature = "component-model-async")]
+    pub(crate) fn callback(&self) -> Option<NonNull<VMFuncRef>> {
+        self.callback
+    }
+
+    #[cfg(feature = "component-model-async")]
+    pub(crate) fn memory_raw(&self) -> Option<NonNull<VMMemoryDefinition>> {
+        self.memory
+    }
 }
 
 /// A helper structure which is a "package" of the context used during lowering
@@ -229,11 +239,11 @@ impl<'a, T: 'static> LowerContext<'a, T> {
     }
 
     pub fn instance(&self) -> &ComponentInstance {
-        self.store.0.component_instance(self.instance)
+        &self.store[self.instance.id()]
     }
 
     pub fn instance_mut(&mut self) -> &mut ComponentInstance {
-        self.store.0.component_instance_mut(self.instance)
+        &mut self.store[self.instance.id()]
     }
 
     /// Returns a view into memory as a mutable slice of bytes.
@@ -369,11 +379,10 @@ impl<'a, T: 'static> LowerContext<'a, T> {
     }
 
     fn resource_tables(&mut self) -> HostResourceTables<'_> {
-        let instance = self.instance().instance;
         let (calls, host_table, host_resource_data, instance) = self
             .store
             .0
-            .component_resource_state_with_instance(instance);
+            .component_resource_state_with_instance(self.instance);
         HostResourceTables::from_parts(
             ResourceTables {
                 host_table: Some(host_table),
@@ -412,7 +421,8 @@ pub struct LiftContext<'a> {
 
     memory: Option<&'a [u8]>,
 
-    pub(crate) instance: &'a mut ComponentInstance,
+    instance: &'a mut ComponentInstance,
+    instance_handle: Instance,
 
     host_table: &'a mut ResourceTable,
     host_resource_data: &'a mut HostResourceData,
@@ -428,7 +438,7 @@ impl<'a> LiftContext<'a> {
         store: &'a mut StoreOpaque,
         options: &'a Options,
         types: &'a Arc<ComponentTypes>,
-        instance: Instance,
+        instance_handle: Instance,
     ) -> LiftContext<'a> {
         // From `&mut StoreOpaque` provided the goal here is to project out
         // three different disjoint fields owned by the store: memory,
@@ -437,7 +447,8 @@ impl<'a> LiftContext<'a> {
         // with more methods in more places, but it doesn't seem worth doing it
         // at this time.
         let (calls, host_table, host_resource_data, instance) = unsafe {
-            (&mut *(store as *mut StoreOpaque)).component_resource_state_with_instance(instance)
+            (&mut *(store as *mut StoreOpaque))
+                .component_resource_state_with_instance(instance_handle)
         };
         let memory = options.memory.map(|_| options.memory(store));
 
@@ -446,6 +457,7 @@ impl<'a> LiftContext<'a> {
             options,
             types,
             instance,
+            instance_handle,
             calls,
             host_table,
             host_resource_data,
@@ -472,6 +484,10 @@ impl<'a> LiftContext<'a> {
     /// Returns the component instance that is being lifted from.
     pub fn instance_mut(&mut self) -> &mut ComponentInstance {
         self.instance
+    }
+    /// Returns the component instance that is being lifted from.
+    pub fn instance_handle(&self) -> Instance {
+        self.instance_handle
     }
 
     /// Lifts an `own` resource from the guest at the `idx` specified into its
