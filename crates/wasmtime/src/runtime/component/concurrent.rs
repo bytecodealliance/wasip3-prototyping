@@ -558,7 +558,7 @@ fn poll_with_local_instance<F: Future + Send + ?Sized>(
     let state = ResetInstanceThreadLocalState(INSTANCE_STATE.with(|v| {
         v.replace(InstanceThreadLocalState::PollingWith {
             instance,
-            store: VMStoreRawPtr(store.into()),
+            store: VMStoreRawPtr(store.traitobj()),
         })
     }));
 
@@ -614,11 +614,15 @@ fn poll_with_state<T: 'static, F: Future + Send + ?Sized>(
     mut future: Pin<&mut F>,
 ) -> Poll<F::Output> {
     with_local_instance(|store, instance| {
-        let store_ptr = store as *mut dyn VMStore;
+        let store_ptr = store.traitobj();
         let store_cx = token.as_context_mut(store);
 
         let result = {
-            let old_state = STATE.with(|v| v.replace(Some(State { store: store_ptr })));
+            let old_state = STATE.with(|v| {
+                v.replace(Some(State {
+                    store: store_ptr.as_ptr(),
+                }))
+            });
             let _reset_state = ResetState(old_state);
             poll_with_local_instance(store_cx.0.traitobj_mut(), instance, &mut future, cx)
         };
@@ -1958,7 +1962,7 @@ impl Instance {
         // SAFETY: This is only ever called from a fiber that belongs to this
         // store (and would in any case panic if called from outside any fiber).
         unsafe {
-            async_cx.suspend(Some(store))?;
+            async_cx.suspend(Some(store.traitobj().as_ptr()))?;
         }
 
         if let Some(task) = task {
@@ -2904,7 +2908,7 @@ impl Instance {
         // automatically from the event loop if it doesn't complete immediately
         // here.
         let poll = poll_with_local_instance(
-            store.traitobj_mut(),
+            store,
             self,
             &mut future.as_mut(),
             &mut Context::from_waker(&dummy_waker()),

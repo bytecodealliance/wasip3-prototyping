@@ -172,7 +172,7 @@ cfg_if::cfg_if! {
 /// be respected by embedders (e.g. the `wasmtime::Store` structure). The theory
 /// is that `wasmtime::Store` handles all this correctly.
 #[doc(hidden)]
-pub unsafe trait VMStore: 'static {
+pub unsafe trait VMStore {
     /// Get a shared borrow of this store's `StoreOpaque`.
     fn store_opaque(&self) -> &StoreOpaque;
 
