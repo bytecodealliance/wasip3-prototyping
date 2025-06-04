@@ -9,8 +9,10 @@ use crate::runtime::vm::SendSyncPtr;
 use crate::runtime::vm::component::{
     ComponentInstance, InstanceFlags, VMComponentContext, VMLowering, VMLoweringCallee,
 };
-use crate::runtime::vm::{VMFuncRef, VMGlobalDefinition, VMMemoryDefinition, VMOpaqueContext};
-use crate::{AsContextMut, CallHook, StoreContextMut, VMStore, ValRaw};
+use crate::runtime::vm::{
+    VMFuncRef, VMGlobalDefinition, VMMemoryDefinition, VMOpaqueContext, VMStore,
+};
+use crate::{AsContextMut, CallHook, StoreContextMut, ValRaw};
 use alloc::sync::Arc;
 use core::any::Any;
 use core::future::Future;
