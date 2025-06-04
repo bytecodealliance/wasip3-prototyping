@@ -6,7 +6,7 @@ use core::task::{Context, Poll, ready};
 use bytes::{Bytes, BytesMut};
 use http::HeaderMap;
 use http_body_util::BodyExt as _;
-use http_body_util::combinators::UnsyncBoxBody;
+use http_body_util::combinators::BoxBody;
 use tokio::sync::{mpsc, oneshot};
 use wasmtime::component::{AbortOnDropHandle, FutureWriter, Resource, StreamReader};
 use wasmtime_wasi::p3::WithChildren;
@@ -74,7 +74,7 @@ pub enum Body {
     /// Body constructed by the host
     Host {
         /// Underlying body stream
-        stream: Option<UnsyncBoxBody<Bytes, ErrorCode>>,
+        stream: Option<BoxBody<Bytes, ErrorCode>>,
         /// Buffered frame, if any
         buffer: Option<BodyFrame>,
     },
@@ -86,11 +86,11 @@ impl Body {
     /// Construct a new [Body]
     pub fn new<T>(body: T) -> Self
     where
-        T: http_body::Body<Data = Bytes> + Send + 'static,
+        T: http_body::Body<Data = Bytes> + Send + Sync + 'static,
         T::Error: Into<ErrorCode>,
     {
         Self::Host {
-            stream: Some(body.map_err(Into::into).boxed_unsync()),
+            stream: Some(body.map_err(Into::into).boxed()),
             buffer: None,
         }
     }
@@ -98,11 +98,7 @@ impl Body {
     /// Construct a new empty [Body]
     pub fn empty() -> Self {
         Self::Host {
-            stream: Some(
-                http_body_util::Empty::new()
-                    .map_err(Into::into)
-                    .boxed_unsync(),
-            ),
+            stream: Some(http_body_util::Empty::new().map_err(Into::into).boxed()),
             buffer: None,
         }
     }

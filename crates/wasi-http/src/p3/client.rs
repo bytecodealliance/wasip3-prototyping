@@ -57,7 +57,10 @@ pub trait Client: Clone + Send + Sync {
                     impl Future<
                         Output = Result<
                             http::Response<
-                                impl http_body::Body<Data = Bytes, Error = Self::Error> + Send + 'static,
+                                impl http_body::Body<Data = Bytes, Error = Self::Error>
+                                + Send
+                                + Sync
+                                + 'static,
                             >,
                             ErrorCode,
                         >,
