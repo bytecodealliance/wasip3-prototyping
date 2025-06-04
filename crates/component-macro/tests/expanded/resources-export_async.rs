@@ -160,7 +160,7 @@ const _: () = {
     impl W {
         /// Convenience wrapper around [`WPre::new`] and
         /// [`WPre::instantiate_async`].
-        pub async fn instantiate_async<_T: 'static>(
+        pub async fn instantiate_async<_T>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,
@@ -372,7 +372,7 @@ pub mod exports {
                         mut store: S,
                     ) -> wasmtime::Result<wasmtime::component::ResourceAny>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -391,7 +391,7 @@ pub mod exports {
                         mut store: S,
                     ) -> wasmtime::Result<u32>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -411,7 +411,7 @@ pub mod exports {
                         arg0: wasmtime::component::ResourceAny,
                     ) -> wasmtime::Result<u32>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -536,7 +536,7 @@ pub mod exports {
                         arg0: wasmtime::component::Resource<Y>,
                     ) -> wasmtime::Result<wasmtime::component::ResourceAny>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -555,7 +555,7 @@ pub mod exports {
                         mut store: S,
                     ) -> wasmtime::Result<wasmtime::component::Resource<Y>>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -576,7 +576,7 @@ pub mod exports {
                         arg1: wasmtime::component::Resource<Y>,
                     ) -> wasmtime::Result<wasmtime::component::Resource<Y>>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -675,7 +675,7 @@ pub mod exports {
                         mut store: S,
                     ) -> wasmtime::Result<wasmtime::component::ResourceAny>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -773,7 +773,7 @@ pub mod exports {
                         arg0: wasmtime::component::ResourceAny,
                     ) -> wasmtime::Result<wasmtime::component::ResourceAny>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<

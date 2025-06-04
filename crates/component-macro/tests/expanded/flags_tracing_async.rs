@@ -130,7 +130,7 @@ const _: () = {
     impl TheFlags {
         /// Convenience wrapper around [`TheFlagsPre::new`] and
         /// [`TheFlagsPre::instantiate_async`].
-        pub async fn instantiate_async<_T: 'static>(
+        pub async fn instantiate_async<_T>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,
@@ -830,7 +830,7 @@ pub mod exports {
                         arg0: Flag1,
                     ) -> wasmtime::Result<Flag1>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         use tracing::Instrument;
                         let span = tracing::span!(
@@ -859,7 +859,7 @@ pub mod exports {
                         arg0: Flag2,
                     ) -> wasmtime::Result<Flag2>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         use tracing::Instrument;
                         let span = tracing::span!(
@@ -888,7 +888,7 @@ pub mod exports {
                         arg0: Flag4,
                     ) -> wasmtime::Result<Flag4>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         use tracing::Instrument;
                         let span = tracing::span!(
@@ -917,7 +917,7 @@ pub mod exports {
                         arg0: Flag8,
                     ) -> wasmtime::Result<Flag8>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         use tracing::Instrument;
                         let span = tracing::span!(
@@ -946,7 +946,7 @@ pub mod exports {
                         arg0: Flag16,
                     ) -> wasmtime::Result<Flag16>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         use tracing::Instrument;
                         let span = tracing::span!(
@@ -975,7 +975,7 @@ pub mod exports {
                         arg0: Flag32,
                     ) -> wasmtime::Result<Flag32>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         use tracing::Instrument;
                         let span = tracing::span!(
@@ -1004,7 +1004,7 @@ pub mod exports {
                         arg0: Flag64,
                     ) -> wasmtime::Result<Flag64>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         use tracing::Instrument;
                         let span = tracing::span!(

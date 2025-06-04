@@ -1028,7 +1028,7 @@ impl<_T: 'static> {camel}Pre<_T> {{
             "impl {camel} {{
                 /// Convenience wrapper around [`{camel}Pre::new`] and
                 /// [`{camel}Pre::instantiate{async__}`].
-                pub {async_} fn instantiate{async__}<_T: 'static>(
+                pub {async_} fn instantiate{async__}<_T>(
                     store: impl {wt}::AsContextMut<Data = _T>,
                     component: &{wt}::component::Component,
                     linker: &{wt}::component::Linker<_T>,
@@ -2766,17 +2766,8 @@ impl<'a> InterfaceGenerator<'a> {
         }
 
         match style {
-            CallStyle::Concurrent => {
-                uwrite!(
-                    self.src,
-                    " where <S as {wt}::AsContext>::Data: Send + 'static",
-                );
-            }
-            CallStyle::Async => {
-                uwrite!(
-                    self.src,
-                    " where <S as {wt}::AsContext>::Data: Send + 'static"
-                );
+            CallStyle::Concurrent | CallStyle::Async => {
+                uwrite!(self.src, " where <S as {wt}::AsContext>::Data: Send");
             }
             CallStyle::Sync => {
                 // TODO: should not require `Send` or 'static here.

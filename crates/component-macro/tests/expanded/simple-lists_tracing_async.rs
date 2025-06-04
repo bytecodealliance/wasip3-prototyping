@@ -132,7 +132,7 @@ const _: () = {
     impl MyWorld {
         /// Convenience wrapper around [`MyWorldPre::new`] and
         /// [`MyWorldPre::instantiate_async`].
-        pub async fn instantiate_async<_T: 'static>(
+        pub async fn instantiate_async<_T>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,
@@ -490,7 +490,7 @@ pub mod exports {
                         arg0: &[u32],
                     ) -> wasmtime::Result<()>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         use tracing::Instrument;
                         let span = tracing::span!(
@@ -518,7 +518,7 @@ pub mod exports {
                         mut store: S,
                     ) -> wasmtime::Result<wasmtime::component::__internal::Vec<u32>>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         use tracing::Instrument;
                         let span = tracing::span!(
@@ -553,7 +553,7 @@ pub mod exports {
                         ),
                     >
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         use tracing::Instrument;
                         let span = tracing::span!(
@@ -591,7 +591,7 @@ pub mod exports {
                         >,
                     >
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         use tracing::Instrument;
                         let span = tracing::span!(

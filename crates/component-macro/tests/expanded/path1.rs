@@ -121,7 +121,7 @@ const _: () = {
     impl Path1 {
         /// Convenience wrapper around [`Path1Pre::new`] and
         /// [`Path1Pre::instantiate`].
-        pub fn instantiate<_T: 'static>(
+        pub fn instantiate<_T>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,

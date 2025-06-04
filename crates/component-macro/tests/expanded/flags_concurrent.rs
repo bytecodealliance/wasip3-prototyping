@@ -130,7 +130,7 @@ const _: () = {
     impl TheFlags {
         /// Convenience wrapper around [`TheFlagsPre::new`] and
         /// [`TheFlagsPre::instantiate_async`].
-        pub async fn instantiate_async<_T: 'static>(
+        pub async fn instantiate_async<_T>(
             store: impl wasmtime::AsContextMut<Data = _T>,
             component: &wasmtime::component::Component,
             linker: &wasmtime::component::Linker<_T>,
@@ -763,7 +763,7 @@ pub mod exports {
                         Output = wasmtime::Result<Flag1>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -784,7 +784,7 @@ pub mod exports {
                         Output = wasmtime::Result<Flag2>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -805,7 +805,7 @@ pub mod exports {
                         Output = wasmtime::Result<Flag4>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -826,7 +826,7 @@ pub mod exports {
                         Output = wasmtime::Result<Flag8>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -847,7 +847,7 @@ pub mod exports {
                         Output = wasmtime::Result<Flag16>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -868,7 +868,7 @@ pub mod exports {
                         Output = wasmtime::Result<Flag32>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -889,7 +889,7 @@ pub mod exports {
                         Output = wasmtime::Result<Flag64>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send + 'static,
+                        <S as wasmtime::AsContext>::Data: Send,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
