@@ -5,7 +5,7 @@ use {
         table::{TableDebug, TableId},
     },
     crate::{
-        AsContextMut, StoreContextMut, VMStore, ValRaw,
+        AsContextMut, StoreContextMut, ValRaw,
         component::{
             Instance, Lower, Val, WasmList, WasmStr,
             func::{self, Lift, LiftContext, LowerContext, Options},
@@ -13,7 +13,7 @@ use {
             values::{ErrorContextAny, FutureAny, StreamAny},
         },
         store::{StoreOpaque, StoreToken},
-        vm::{VMFuncRef, VMMemoryDefinition, component::ComponentInstance},
+        vm::{VMFuncRef, VMMemoryDefinition, VMStore, component::ComponentInstance},
     },
     anyhow::{Context, Result, anyhow, bail},
     buffers::Extender,

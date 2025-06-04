@@ -1,6 +1,6 @@
-use crate::runtime::vm;
+use crate::runtime::vm::{self, VMStore};
 use crate::store::StoreOpaque;
-use crate::{StoreContext, StoreContextMut, VMStore};
+use crate::{StoreContext, StoreContextMut};
 use core::num::NonZeroU64;
 use core::ops::{Index, IndexMut};
 

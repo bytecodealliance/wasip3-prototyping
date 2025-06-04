@@ -8,13 +8,13 @@ use crate::component::{
 use crate::instance::OwnedImports;
 use crate::linker::DefinitionType;
 use crate::prelude::*;
-use crate::runtime::vm::VMFuncRef;
 use crate::runtime::vm::component::{
     CallContexts, ComponentInstance, OwnedComponentInstance, ResourceTables, TypedResource,
     TypedResourceIndex,
 };
+use crate::runtime::vm::{VMFuncRef, VMStore};
 use crate::store::StoreOpaque;
-use crate::{AsContext, AsContextMut, Engine, Module, StoreContextMut, VMStore};
+use crate::{AsContext, AsContextMut, Engine, Module, StoreContextMut};
 use alloc::sync::Arc;
 use core::marker;
 use core::ptr::NonNull;

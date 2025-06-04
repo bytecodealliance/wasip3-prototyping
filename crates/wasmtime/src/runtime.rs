@@ -90,8 +90,6 @@ pub use values::*;
 
 pub(crate) use uninhabited::*;
 
-pub use vm::{VMStore, VMStoreRawPtr};
-
 #[cfg(feature = "pooling-allocator")]
 pub use vm::PoolConcurrencyLimitError;
 
