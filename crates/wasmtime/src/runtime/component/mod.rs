@@ -704,11 +704,11 @@ pub mod bindgen_examples {}
 pub(crate) mod concurrent {
     use {
         crate::{
-            VMStore,
             component::{
                 Instance, Val,
                 func::{ComponentType, LiftContext, LowerContext},
             },
+            runtime::vm::VMStore,
         },
         alloc::{sync::Arc, task::Wake},
         anyhow::Result,
