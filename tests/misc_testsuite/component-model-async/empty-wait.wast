@@ -23,8 +23,8 @@
       (import "" "future.new" (func $future.new (result i64)))
       (import "" "future.read" (func $future.read (param i32 i32) (result i32)))
       (import "" "future.write" (func $future.write (param i32 i32) (result i32)))
-      (import "" "future.close-readable" (func $future.close-readable (param i32)))
-      (import "" "future.close-writable" (func $future.close-writable (param i32)))
+      (import "" "future.drop-readable" (func $future.drop-readable (param i32)))
+      (import "" "future.drop-writable" (func $future.drop-writable (param i32)))
 
       ;; $ws is waited on by 'blocker' and added to by 'unblocker'
       (global $ws (mut i32) (i32.const 0))
@@ -44,10 +44,10 @@
           (then unreachable))
         (if (i32.ne (global.get $futr) (local.get $index))
           (then unreachable))
-        (if (i32.ne (i32.const 0x11) (local.get $payload))
+        (if (i32.ne (i32.const 0) (local.get $payload))
           (then unreachable))
 
-        (call $future.close-readable (global.get $futr))
+        (call $future.drop-readable (global.get $futr))
 
         ;; return 42 to $D.run
         (call $task.return (i32.const 42))
@@ -69,17 +69,17 @@
 
         ;; perform a future.read which will block, and add this future to the waitable-set
         ;; being waited on by 'blocker'
-        (local.set $ret (call $future.read (global.get $futr) (i32.const 0xdeadbeef)))
+        (local.set $ret (call $future.read (global.get $futr) (i32.const 0)))
         (if (i32.ne (i32.const -1 (; BLOCKED ;)) (local.get $ret))
           (then unreachable))
         (call $waitable.join (global.get $futr) (global.get $ws))
 
         ;; perform a future.write which will rendezvous with the write and complete
-        (local.set $ret (call $future.write (local.get $futw) (i32.const 0xdeadbeef)))
-        (if (i32.ne (i32.const 0x11) (local.get $ret))
+        (local.set $ret (call $future.write (local.get $futw) (i32.const 0)))
+        (if (i32.ne (i32.const 0) (local.get $ret))
           (then unreachable))
 
-        (call $future.close-writable (local.get $futw))
+        (call $future.drop-writable (local.get $futw))
 
         ;; return 43 to $D.run
         (call $task.return (i32.const 43))
@@ -98,8 +98,8 @@
     (canon future.new $FT (core func $future.new))
     (canon future.read $FT async (memory $memory "mem") (core func $future.read))
     (canon future.write $FT async (memory $memory "mem") (core func $future.write))
-    (canon future.close-readable $FT (core func $future.close-readable))
-    (canon future.close-writable $FT (core func $future.close-writable))
+    (canon future.drop-readable $FT (core func $future.drop-readable))
+    (canon future.drop-writable $FT (core func $future.drop-writable))
     (core instance $cm (instantiate $CM (with "" (instance
       (export "mem" (memory $memory "mem"))
       (export "task.return" (func $task.return))
@@ -109,8 +109,8 @@
       (export "future.new" (func $future.new))
       (export "future.read" (func $future.read))
       (export "future.write" (func $future.write))
-      (export "future.close-readable" (func $future.close-readable))
-      (export "future.close-writable" (func $future.close-writable))
+      (export "future.drop-readable" (func $future.drop-readable))
+      (export "future.drop-writable" (func $future.drop-writable))
     ))))
     (func (export "blocker") (result u32) (canon lift
       (core func $cm "blocker")

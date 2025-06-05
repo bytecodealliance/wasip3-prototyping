@@ -107,7 +107,7 @@ impl Guest for Component {
                 Err(mut send) => {
                     caller_future_tx1 = match send.as_mut().cancel() {
                         FutureWriteCancel::AlreadySent => unreachable!(),
-                        FutureWriteCancel::Closed(_) => unreachable!(),
+                        FutureWriteCancel::Dropped(_) => unreachable!(),
                         FutureWriteCancel::Cancelled(_, writer) => writer,
                     }
                 }

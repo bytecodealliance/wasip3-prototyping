@@ -1,6 +1,6 @@
 ;;! component_model_async = true
 
-;; Create a future, start a read, close the write end, and cancel the read.
+;; Create a future, start a read, drop the write end, and cancel the read.
 (component
   (type $f (future))
   (core func $new (canon future.new $f))
@@ -9,13 +9,13 @@
   (core func $read (canon future.read $f async (memory $libc "mem")))
   (core func $cancel (canon future.cancel-read $f))
   (core func $write (canon future.write $f async (memory $libc "mem")))
-  (core func $close-write (canon future.close-writable $f))
+  (core func $drop-write (canon future.drop-writable $f))
   (core module $m
     (import "" "new" (func $new (result i64)))
     (import "" "read" (func $read (param i32 i32) (result i32)))
     (import "" "cancel" (func $cancel (param i32) (result i32)))
     (import "" "write" (func $write (param i32 i32) (result i32)))
-    (import "" "close-write" (func $close-write (param i32)))
+    (import "" "drop-write" (func $drop-write (param i32)))
 
     (func (export "f") (result i32)
       (local $read i32)
@@ -34,13 +34,13 @@
       i32.ne
       if unreachable end
 
-      ;; close the write end
+      ;; drop the write end
       local.get $write
       i32.const 0
       call $write
       drop
       local.get $write
-      call $close-write
+      call $drop-write
 
       ;; cancel the read, returning the result
       local.get $read
@@ -54,11 +54,13 @@
       (export "read" (func $read))
       (export "cancel" (func $cancel))
       (export "write" (func $write))
-      (export "close-write" (func $close-write))
+      (export "drop-write" (func $drop-write))
     ))
   ))
 
   (func (export "f") (result u32) (canon lift (core func $i "f")))
 )
 
-(assert_return (invoke "f") (u32.const 0x11)) ;; expect CLOSED status (not CANCELLED)
+;; Note that there's no way for `future.read` to return DROPPED since the write
+;; end can't be dropped without writing first, so we expect COMPLETED here.
+(assert_return (invoke "f") (u32.const 0)) ;; expect COMPLETED status (not CANCELLED)
