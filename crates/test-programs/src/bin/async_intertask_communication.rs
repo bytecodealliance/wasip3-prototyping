@@ -8,7 +8,7 @@ mod bindings {
 use {
     std::sync::atomic::{AtomicU32, Ordering::Relaxed},
     test_programs::async_::{
-        BLOCKED, CALLBACK_CODE_EXIT, CALLBACK_CODE_WAIT, CLOSED, EVENT_FUTURE_WRITE, EVENT_NONE,
+        BLOCKED, CALLBACK_CODE_EXIT, CALLBACK_CODE_WAIT, DROPPED, EVENT_FUTURE_WRITE, EVENT_NONE,
         context_get, context_set, waitable_join, waitable_set_drop, waitable_set_new,
     },
 };
@@ -48,14 +48,14 @@ fn future_write(writer: u32) -> u32 {
     #[link(wasm_import_module = "local:local/intertask")]
     unsafe extern "C" {
         #[link_name = "[async-lower][future-write-0]foo"]
-        fn future_write(_: u32, _: u32) -> u32;
+        fn future_write(_: u32) -> u32;
     }
     #[cfg(not(target_arch = "wasm32"))]
-    unsafe extern "C" fn future_write(_: u32, _: u32) -> u32 {
+    unsafe extern "C" fn future_write(_: u32) -> u32 {
         unreachable!()
     }
 
-    unsafe { future_write(writer, 0) }
+    unsafe { future_write(writer) }
 }
 
 fn future_read(reader: u32) -> u32 {
@@ -63,44 +63,44 @@ fn future_read(reader: u32) -> u32 {
     #[link(wasm_import_module = "local:local/intertask")]
     unsafe extern "C" {
         #[link_name = "[async-lower][future-read-0]foo"]
-        fn future_read(_: u32, _: u32) -> u32;
+        fn future_read(_: u32) -> u32;
     }
     #[cfg(not(target_arch = "wasm32"))]
-    unsafe extern "C" fn future_read(_: u32, _: u32) -> u32 {
+    unsafe extern "C" fn future_read(_: u32) -> u32 {
         unreachable!()
     }
 
-    unsafe { future_read(reader, 0) }
+    unsafe { future_read(reader) }
 }
 
-fn future_close_readable(reader: u32) {
+fn future_drop_readable(reader: u32) {
     #[cfg(target_arch = "wasm32")]
     #[link(wasm_import_module = "local:local/intertask")]
     unsafe extern "C" {
-        #[link_name = "[future-close-readable-0]foo"]
-        fn future_close_readable(_: u32);
+        #[link_name = "[future-drop-readable-0]foo"]
+        fn future_drop_readable(_: u32);
     }
     #[cfg(not(target_arch = "wasm32"))]
-    unsafe extern "C" fn future_close_readable(_: u32) {
+    unsafe extern "C" fn future_drop_readable(_: u32) {
         unreachable!()
     }
 
-    unsafe { future_close_readable(reader) }
+    unsafe { future_drop_readable(reader) }
 }
 
-fn future_close_writable(writer: u32) {
+fn future_drop_writable(writer: u32) {
     #[cfg(target_arch = "wasm32")]
     #[link(wasm_import_module = "local:local/intertask")]
     unsafe extern "C" {
-        #[link_name = "[future-close-writable-0]foo"]
-        fn future_close_writable(_: u32);
+        #[link_name = "[future-drop-writable-0]foo"]
+        fn future_drop_writable(_: u32);
     }
     #[cfg(not(target_arch = "wasm32"))]
-    unsafe extern "C" fn future_close_writable(_: u32) {
+    unsafe extern "C" fn future_drop_writable(_: u32) {
         unreachable!()
     }
 
-    unsafe { future_close_writable(writer) }
+    unsafe { future_drop_writable(writer) }
 }
 
 static TASK_NUMBER: AtomicU32 = AtomicU32::new(0);
@@ -165,9 +165,9 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
                         waitable_join(tx, set);
 
                         let status = future_read(rx);
-                        assert_eq!(status, 1 << 4 | CLOSED); // i.e. one element was read
+                        assert_eq!(status, 1 << 4 | DROPPED); // i.e. one element was read
 
-                        future_close_readable(rx);
+                        future_drop_readable(rx);
 
                         task_return_run();
                         CALLBACK_CODE_EXIT
@@ -180,11 +180,11 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
 
             State::S1 { set } => {
                 assert_eq!(event0, EVENT_FUTURE_WRITE);
-                assert_eq!(event2, 1 << 4 | CLOSED); // i.e. one element was written
+                assert_eq!(event2, 1 << 4 | DROPPED); // i.e. one element was written
 
                 waitable_join(event1, 0);
                 waitable_set_drop(*set);
-                future_close_writable(event1);
+                future_drop_writable(event1);
 
                 TASK_NUMBER.store(0, Relaxed);
 

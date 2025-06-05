@@ -70,9 +70,7 @@ unsafe impl<T: Send + Sync + 'static> TakeBuffer for Option<T> {
 impl<T: Send + Sync + 'static> WriteBuffer<T> for Option<T> {
     fn remaining(&self) -> &[T] {
         if let Some(me) = self {
-            // SAFETY: This effectively transmutes a `&T` to a `&[T; 1]`, which
-            // should be sound.
-            unsafe { slice::from_raw_parts(me, 1) }
+            slice::from_ref(me)
         } else {
             &[]
         }

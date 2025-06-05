@@ -13,10 +13,10 @@
     (core func $read (canon future.read $future (memory $libc "memory")))
 
     (core module $m
-      (import "" "read" (func $read (param i32 i32) (result i32)))
+      (import "" "read" (func $read (param i32) (result i32)))
 
       (func (export "run") (param $future i32)
-        (call $read (local.get $future) (i32.const 0))
+        (call $read (local.get $future))
         drop
       )
     )
@@ -65,10 +65,10 @@
     (core func $read (canon future.read $future (memory $libc "memory") async))
 
     (core module $m
-      (import "" "read" (func $read (param i32 i32) (result i32)))
+      (import "" "read" (func $read (param i32) (result i32)))
 
       (func (export "run") (param $future i32)
-        (call $read (local.get $future) (i32.const 0))
+        (call $read (local.get $future))
         drop
       )
     )
@@ -117,10 +117,10 @@
     (core func $read (canon future.read $future (memory $libc "memory")))
 
     (core module $m
-      (import "" "read" (func $read (param i32 i32) (result i32)))
+      (import "" "read" (func $read (param i32) (result i32)))
 
       (func (export "run") (param $future i32) (result i32)
-        (call $read (local.get $future) (i32.const 0))
+        (call $read (local.get $future))
         drop
         i32.const 0 ;; TODO
       )
@@ -174,11 +174,11 @@
     (core func $return (canon task.return))
 
     (core module $m
-      (import "" "read" (func $read (param i32 i32) (result i32)))
+      (import "" "read" (func $read (param i32) (result i32)))
       (import "" "return" (func $return))
 
       (func (export "run") (param $future i32) (result i32)
-        (call $read (local.get $future) (i32.const 0))
+        (call $read (local.get $future))
         drop
         call $return
         i32.const 0

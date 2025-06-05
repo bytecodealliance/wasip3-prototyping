@@ -175,16 +175,16 @@ impl<'a> TrampolineCompiler<'a> {
             Trampoline::StreamCancelWrite { ty, async_ } => {
                 self.translate_cancel_call(ty.as_u32(), *async_, host::stream_cancel_write)
             }
-            Trampoline::StreamCloseReadable { ty } => self.translate_future_or_stream_call(
+            Trampoline::StreamDropReadable { ty } => self.translate_future_or_stream_call(
                 &[ty.as_u32()],
                 None,
-                host::stream_close_readable,
+                host::stream_drop_readable,
                 TrapSentinel::Falsy,
             ),
-            Trampoline::StreamCloseWritable { ty } => self.translate_future_or_stream_call(
+            Trampoline::StreamDropWritable { ty } => self.translate_future_or_stream_call(
                 &[ty.as_u32()],
                 None,
-                host::stream_close_writable,
+                host::stream_drop_writable,
                 TrapSentinel::Falsy,
             ),
             Trampoline::FutureNew { ty } => self.translate_future_or_stream_call(
@@ -193,34 +193,26 @@ impl<'a> TrampolineCompiler<'a> {
                 host::future_new,
                 TrapSentinel::NegativeOne,
             ),
-            Trampoline::FutureRead { ty, options } => self.translate_future_or_stream_call(
-                &[ty.as_u32()],
-                Some(&options),
-                host::future_read,
-                TrapSentinel::NegativeOne,
-            ),
-            Trampoline::FutureWrite { ty, options } => self.translate_future_or_stream_call(
-                &[ty.as_u32()],
-                Some(options),
-                host::future_write,
-                TrapSentinel::NegativeOne,
-            ),
+            Trampoline::FutureRead { ty, options } => self.translate_future_read_call(*ty, options),
+            Trampoline::FutureWrite { ty, options } => {
+                self.translate_future_write_call(*ty, options)
+            }
             Trampoline::FutureCancelRead { ty, async_ } => {
                 self.translate_cancel_call(ty.as_u32(), *async_, host::future_cancel_read)
             }
             Trampoline::FutureCancelWrite { ty, async_ } => {
                 self.translate_cancel_call(ty.as_u32(), *async_, host::future_cancel_write)
             }
-            Trampoline::FutureCloseReadable { ty } => self.translate_future_or_stream_call(
+            Trampoline::FutureDropReadable { ty } => self.translate_future_or_stream_call(
                 &[ty.as_u32()],
                 None,
-                host::future_close_readable,
+                host::future_drop_readable,
                 TrapSentinel::Falsy,
             ),
-            Trampoline::FutureCloseWritable { ty } => self.translate_future_or_stream_call(
+            Trampoline::FutureDropWritable { ty } => self.translate_future_or_stream_call(
                 &[ty.as_u32()],
                 None,
-                host::future_close_writable,
+                host::future_drop_writable,
                 TrapSentinel::Falsy,
             ),
             Trampoline::ErrorContextNew { ty, options } => self.translate_error_context_call(
@@ -1286,6 +1278,26 @@ impl<'a> TrampolineCompiler<'a> {
             .iconst(ir::types::I8, i64::from(string_encoding as u8))
     }
 
+    fn push_future_or_stream_options(
+        &mut self,
+        vmctx: ir::Value,
+        args: &mut Vec<ir::Value>,
+        options: &CanonicalOptions,
+    ) {
+        // memory: *mut VMMemoryDefinition
+        args.push(self.load_optional_memory(vmctx, options.memory));
+        // realloc: *mut VMFuncRef
+        args.push(self.load_realloc(vmctx, options.realloc));
+        // string_encoding: StringEncoding
+        args.push(self.string_encoding(options.string_encoding));
+        // async: bool
+        args.push(
+            self.builder
+                .ins()
+                .iconst(ir::types::I8, if options.async_ { 1 } else { 0 }),
+        );
+    }
+
     fn translate_future_or_stream_call(
         &mut self,
         tys: &[u32],
@@ -1298,18 +1310,7 @@ impl<'a> TrampolineCompiler<'a> {
         let mut callee_args = vec![vmctx];
 
         if let Some(options) = options {
-            // memory: *mut VMMemoryDefinition
-            callee_args.push(self.load_memory(vmctx, options.memory.unwrap()));
-            // realloc: *mut VMFuncRef
-            callee_args.push(self.load_realloc(vmctx, options.realloc));
-            // string_encoding: StringEncoding
-            callee_args.push(self.string_encoding(options.string_encoding));
-            // async: bool
-            callee_args.push(
-                self.builder
-                    .ins()
-                    .iconst(ir::types::I8, if options.async_ { 1 } else { 0 }),
-            );
+            self.push_future_or_stream_options(vmctx, &mut callee_args, options);
         }
 
         for ty in tys {
@@ -1319,6 +1320,89 @@ impl<'a> TrampolineCompiler<'a> {
         callee_args.extend(args[2..].iter().copied());
 
         self.translate_intrinsic_libcall(vmctx, get_libcall, &callee_args, sentinel);
+    }
+
+    fn translate_future_read_call(&mut self, ty: TypeFutureTableIndex, options: &CanonicalOptions) {
+        let args = self.builder.func.dfg.block_params(self.block0).to_vec();
+        let vmctx = args[0];
+        let mut callee_args = vec![vmctx];
+
+        self.push_future_or_stream_options(vmctx, &mut callee_args, options);
+
+        callee_args.push(
+            self.builder
+                .ins()
+                .iconst(ir::types::I32, i64::from(ty.as_u32())),
+        );
+
+        callee_args.extend(args[2..].iter().copied());
+
+        if self.types[self.types[ty].ty].payload.is_none() {
+            callee_args.push(self.builder.ins().iconst(ir::types::I32, 0));
+        }
+
+        self.translate_intrinsic_libcall(
+            vmctx,
+            host::future_read,
+            &callee_args,
+            TrapSentinel::NegativeOne,
+        );
+    }
+
+    fn translate_future_write_call(
+        &mut self,
+        ty: TypeFutureTableIndex,
+        options: &CanonicalOptions,
+    ) {
+        match self.abi {
+            Abi::Wasm => {}
+
+            Abi::Array => {
+                // TODO: A guest could hypothetically export the same intrinsic
+                // it imported, allowing the host to call it directly.  We need
+                // to support that here.
+                //
+                // https://github.com/bytecodealliance/wasmtime/issues/10143
+                self.builder.ins().trap(TRAP_INTERNAL_ASSERT);
+                return;
+            }
+        }
+
+        let args = self.builder.func.dfg.block_params(self.block0).to_vec();
+        let vmctx = args[0];
+        let pointer_type = self.isa.pointer_type();
+        let wasm_func_ty = &self.types[self.signature].unwrap_func();
+
+        let (values_vec_ptr, len) = self.compiler.allocate_stack_array_and_spill_args(
+            &WasmFuncType::new(
+                wasm_func_ty.params().iter().skip(1).copied().collect(),
+                Box::new([]),
+            ),
+            &mut self.builder,
+            &args[3..],
+        );
+        let values_vec_len = self.builder.ins().iconst(pointer_type, i64::from(len));
+
+        let mut callee_args = vec![vmctx];
+
+        self.push_future_or_stream_options(vmctx, &mut callee_args, options);
+
+        callee_args.push(
+            self.builder
+                .ins()
+                .iconst(ir::types::I32, i64::from(ty.as_u32())),
+        );
+
+        callee_args.push(args[2]);
+        callee_args.push(values_vec_ptr);
+        callee_args.push(values_vec_len);
+
+        self.translate_intrinsic_libcall(
+            vmctx,
+            host::future_write,
+            &callee_args,
+            TrapSentinel::NegativeOne,
+        );
     }
 
     fn translate_flat_stream_call(

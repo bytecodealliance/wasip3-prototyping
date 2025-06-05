@@ -940,7 +940,8 @@ unsafe fn future_write(
     async_: u8,
     ty: u32,
     future: u32,
-    address: u32,
+    storage: *mut u8,
+    storage_len: usize,
 ) -> Result<u32> {
     store.component_async_store().future_write(
         instance,
@@ -950,7 +951,8 @@ unsafe fn future_write(
         async_ != 0,
         wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
         future,
-        address,
+        storage.cast::<crate::ValRaw>(),
+        storage_len,
     )
 }
 
@@ -1009,26 +1011,26 @@ fn future_cancel_read(
 }
 
 #[cfg(feature = "component-model-async")]
-fn future_close_writable(
+fn future_drop_writable(
     store: &mut dyn VMStore,
     instance: Instance,
     ty: u32,
     writer: u32,
 ) -> Result<()> {
-    store[instance.id()].future_close_writable(
+    store[instance.id()].future_drop_writable(
         wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
         writer,
     )
 }
 
 #[cfg(feature = "component-model-async")]
-fn future_close_readable(
+fn future_drop_readable(
     store: &mut dyn VMStore,
     instance: Instance,
     ty: u32,
     reader: u32,
 ) -> Result<()> {
-    instance.future_close_readable(
+    instance.future_drop_readable(
         store,
         wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
         reader,
@@ -1125,26 +1127,26 @@ fn stream_cancel_read(
 }
 
 #[cfg(feature = "component-model-async")]
-fn stream_close_writable(
+fn stream_drop_writable(
     store: &mut dyn VMStore,
     instance: Instance,
     ty: u32,
     writer: u32,
 ) -> Result<()> {
-    store[instance.id()].stream_close_writable(
+    store[instance.id()].stream_drop_writable(
         wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
         writer,
     )
 }
 
 #[cfg(feature = "component-model-async")]
-fn stream_close_readable(
+fn stream_drop_readable(
     store: &mut dyn VMStore,
     instance: Instance,
     ty: u32,
     reader: u32,
 ) -> Result<()> {
-    instance.stream_close_readable(
+    instance.stream_drop_readable(
         store,
         wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
         reader,

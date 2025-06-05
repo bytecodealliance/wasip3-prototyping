@@ -69,7 +69,9 @@ use {
         future::{self, Either, FutureExt},
         stream::{FuturesUnordered, StreamExt},
     },
-    futures_and_streams::{FlatAbi, ReturnCode, StreamFutureState, TableIndex, TransmitHandle},
+    futures_and_streams::{
+        FlatAbi, ReturnCode, StreamFutureState, TableIndex, TransmitHandle, WriteSource,
+    },
     once_cell::sync::Lazy,
     states::StateTable,
     std::{
@@ -96,8 +98,8 @@ use {
     wasmtime_environ::{
         PrimaryMap,
         component::{
-            MAX_FLAT_PARAMS, MAX_FLAT_RESULTS, PREPARE_ASYNC_NO_RESULT, PREPARE_ASYNC_WITH_RESULT,
-            RuntimeComponentInstanceIndex, StringEncoding,
+            MAX_FLAT_ASYNC_PARAMS, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS, PREPARE_ASYNC_NO_RESULT,
+            PREPARE_ASYNC_WITH_RESULT, RuntimeComponentInstanceIndex, StringEncoding,
             TypeComponentGlobalErrorContextTableIndex, TypeComponentLocalErrorContextTableIndex,
             TypeFutureTableIndex, TypeStreamTableIndex, TypeTupleIndex,
         },
@@ -3372,7 +3374,8 @@ pub trait VMComponentAsyncStore {
         async_: bool,
         ty: TypeFutureTableIndex,
         future: u32,
-        address: u32,
+        storage: *mut ValRaw,
+        storage_len: usize,
     ) -> Result<u32>;
 
     /// The `future.read` intrinsic.
@@ -3565,8 +3568,34 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
         async_: bool,
         ty: TypeFutureTableIndex,
         future: u32,
-        address: u32,
+        storage: *mut ValRaw,
+        storage_len: usize,
     ) -> Result<u32> {
+        // SAFETY: The `wasmtime_cranelift`-generated code that calls
+        // this method will have ensured that `storage` is a valid
+        // pointer containing at least `storage_len` items.
+        let source = unsafe { std::slice::from_raw_parts(storage, storage_len) };
+        // TODO: Determine whether the payload was lowered flat or indirect at
+        // compile time rather than at runtime:
+        let flat = {
+            let types = self[instance.id()].component().types();
+            types[types[ty].ty]
+                .payload
+                .map(|ty| {
+                    types
+                        .canonical_abi(&ty)
+                        .flat_count
+                        .map(|v| usize::from(v) <= MAX_FLAT_ASYNC_PARAMS)
+                        .unwrap_or(false)
+                })
+                .unwrap_or(true)
+        };
+        let source = if flat {
+            WriteSource::Flat(source.to_vec())
+        } else {
+            WriteSource::Indirect(usize::try_from(source[0].get_u32()).unwrap())
+        };
+
         // SAFETY: Per the trait-level documentation for
         // `VMComponentAsyncStore`, all raw pointers passed to this function
         // must be valid.
@@ -3581,7 +3610,7 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
                     TableIndex::Future(ty),
                     None,
                     future,
-                    address,
+                    source,
                     1,
                 )
                 .map(|result| result.encode())
@@ -3642,7 +3671,7 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
                     TableIndex::Stream(ty),
                     None,
                     stream,
-                    address,
+                    WriteSource::Indirect(usize::try_from(address).unwrap()),
                     count,
                 )
                 .map(|result| result.encode())
@@ -3708,7 +3737,7 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
                         align: payload_align,
                     }),
                     stream,
-                    address,
+                    WriteSource::Indirect(usize::try_from(address).unwrap()),
                     count,
                 )
                 .map(|result| result.encode())

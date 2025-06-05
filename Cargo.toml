@@ -597,21 +597,21 @@ lto = true
 
 # TODO: remove this once we've switched to a wasm-tools/wit-bindgen release:
 [patch.crates-io]
-# wasmparser = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wat = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wast = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wasmprinter = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wasm-encoder = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wasm-smith = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wasm-mutate = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wit-parser = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wit-component = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wasm-wave = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wasm-compose = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wasm-metadata = { git = "https://github.com/bytecodealliance/wasm-tools" }
-wit-bindgen = { git = "https://github.com/bytecodealliance/wit-bindgen" }
-wit-bindgen-rt = { git = "https://github.com/bytecodealliance/wit-bindgen" }
-wit-bindgen-rust-macro = { git = "https://github.com/bytecodealliance/wit-bindgen" }
+wasmparser = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wat = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wast = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasmprinter = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasm-encoder = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasm-smith = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasm-mutate = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wit-parser = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wit-component = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasm-wave = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasm-compose = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasm-metadata = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wit-bindgen = { git = "https://github.com/dicej/wit-bindgen", branch = "new-future-abi" }
+wit-bindgen-rt = { git = "https://github.com/dicej/wit-bindgen", branch = "new-future-abi" }
+wit-bindgen-rust-macro = { git = "https://github.com/dicej/wit-bindgen", branch = "new-future-abi" }
 
 # wasmparser = { path = '../wasm-tools/crates/wasmparser' }
 # wat = { path = '../wasm-tools/crates/wat' }

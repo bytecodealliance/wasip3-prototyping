@@ -11,30 +11,29 @@
     (core module $libc (memory (export "mem") 1))
     (core instance $libc (instantiate $libc))
     (core func $read (canon future.read $f async (memory $libc "mem")))
-    (core func $close-read (canon future.close-readable $f))
+    (core func $drop-read (canon future.drop-readable $f))
     (core module $inner
-      (import "" "read" (func $read (param i32 i32) (result i32)))
-      (import "" "close-read" (func $close-read (param i32)))
+      (import "" "read" (func $read (param i32) (result i32)))
+      (import "" "drop-read" (func $drop-read (param i32)))
 
       (func (export "f") (param i32)
         ;; start a read, asserting it completes with one item
         local.get 0
-        i32.const 0
         call $read
         i32.const 0x11
         i32.ne
         if unreachable end
 
-        ;; close the read end
+        ;; drop the read end
         local.get 0
-        call $close-read
+        call $drop-read
       )
     )
 
     (core instance $i (instantiate $inner
       (with "" (instance
         (export "read" (func $read))
-        (export "close-read" (func $close-read))
+        (export "drop-read" (func $drop-read))
       ))
     ))
 
@@ -50,7 +49,7 @@
   (core func $drain (canon lower (func $c "f")))
   (core module $m
     (import "" "new" (func $new (result i64)))
-    (import "" "write" (func $write (param i32 i32) (result i32)))
+    (import "" "write" (func $write (param i32) (result i32)))
     (import "" "cancel" (func $cancel (param i32) (result i32)))
     (import "" "drain" (func $drain (param i32)))
 
@@ -65,7 +64,6 @@
 
       ;; start a write
       local.get $write
-      i32.const 0
       call $write
       i32.const -1
       i32.ne
