@@ -121,7 +121,7 @@ impl HostFunc {
         let data = SendSyncPtr::new(NonNull::new(data.as_ptr() as *mut F).unwrap());
         unsafe {
             call_host_and_handle_result::<T>(cx, |store, instance, types| {
-                call_host::<T, _, _, _>(
+                call_host(
                     store,
                     instance,
                     types,
@@ -241,8 +241,8 @@ where
 /// This function is in general `unsafe` as the validity of all the parameters
 /// must be upheld. Generally that's done by ensuring this is only called from
 /// the select few places it's intended to be called from.
-unsafe fn call_host<T: 'static, Params, Return, F>(
-    mut store: StoreContextMut<T>,
+unsafe fn call_host<T, Params, Return, F>(
+    mut store: StoreContextMut<'_, T>,
     instance: Instance,
     types: &Arc<ComponentTypes>,
     ty: TypeFuncIndex,
@@ -678,7 +678,7 @@ pub(crate) fn validate_inbounds<T: ComponentType>(memory: &[u8], ptr: &ValRaw) -
 
 unsafe fn call_host_and_handle_result<T>(
     cx: NonNull<VMOpaqueContext>,
-    func: impl FnOnce(StoreContextMut<T>, Instance, &Arc<ComponentTypes>) -> Result<()>,
+    func: impl FnOnce(StoreContextMut<'_, T>, Instance, &Arc<ComponentTypes>) -> Result<()>,
 ) -> bool
 where
     T: 'static,
@@ -696,7 +696,7 @@ where
 }
 
 unsafe fn call_host_dynamic<T, F>(
-    mut store: StoreContextMut<T>,
+    mut store: StoreContextMut<'_, T>,
     instance: Instance,
     types: &Arc<ComponentTypes>,
     ty: TypeFuncIndex,
@@ -950,7 +950,7 @@ where
 {
     let data = SendSyncPtr::new(NonNull::new(data.as_ptr() as *mut F).unwrap());
     unsafe {
-        call_host_and_handle_result::<T>(cx, |store, instance, types| {
+        call_host_and_handle_result(cx, |store, instance, types| {
             call_host_dynamic::<T, _>(
                 store,
                 instance,

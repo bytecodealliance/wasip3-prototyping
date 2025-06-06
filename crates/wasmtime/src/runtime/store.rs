@@ -1929,6 +1929,11 @@ at https://bytecodealliance.org/security.
         self.pkey.is_some()
     }
 
+    #[cfg(not(feature = "async"))]
+    pub(crate) fn async_guard_range(&self) -> core::ops::Range<*mut u8> {
+        core::ptr::null_mut()..core::ptr::null_mut()
+    }
+
     pub(crate) fn executor(&mut self) -> ExecutorRef<'_> {
         match &mut self.executor {
             Executor::Interpreter(i) => ExecutorRef::Interpreter(i.as_interpreter_ref()),
@@ -1939,7 +1944,7 @@ at https://bytecodealliance.org/security.
 
     pub(crate) fn unwinder(&self) -> &'static dyn Unwind {
         match &self.executor {
-            Executor::Interpreter(_) => &vm::UnwindPulley,
+            Executor::Interpreter(i) => i.unwinder(),
             #[cfg(has_host_compiler_backend)]
             Executor::Native => &vm::UnwindHost,
         }
@@ -2361,13 +2366,6 @@ impl Drop for StoreOpaque {
                 }
             }
         }
-    }
-}
-
-impl StoreOpaque {
-    #[cfg(not(feature = "async"))]
-    pub(crate) fn async_guard_range(&self) -> core::ops::Range<*mut u8> {
-        core::ptr::null_mut()..core::ptr::null_mut()
     }
 }
 

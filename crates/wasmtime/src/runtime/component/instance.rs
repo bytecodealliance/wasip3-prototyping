@@ -857,10 +857,13 @@ impl<'a> Instantiator<'a> {
             .expect("unexpected typecheck failure");
     }
 
+    /// Convenience helper to return the `&ComponentInstance` that's being
+    /// instantiated.
     fn instance<'b>(&self, store: &'b StoreOpaque) -> &'b ComponentInstance {
         store.store_data().component_instance(self.id)
     }
 
+    /// Same as [`Self::instance`], but for mutability.
     fn instance_mut<'b>(&self, store: &'b mut StoreOpaque) -> &'b mut ComponentInstance {
         store.store_data_mut().component_instance_mut(self.id)
     }

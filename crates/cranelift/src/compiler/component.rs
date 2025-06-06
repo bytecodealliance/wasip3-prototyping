@@ -1556,6 +1556,7 @@ impl ComponentCompiler for Compiler {
         types: &ComponentTypesBuilder,
         index: TrampolineIndex,
         tunables: &Tunables,
+        symbol: &str,
     ) -> Result<AllCallFunc<CompiledFunctionBody>> {
         let compile = |abi: Abi| -> Result<_> {
             let mut compiler = self.function_compiler();
@@ -1599,11 +1600,12 @@ impl ComponentCompiler for Compiler {
 
             c.translate(&component.trampolines[index]);
             c.builder.finalize();
-
+            let symbol = match abi {
+                Abi::Wasm => format!("{symbol}_wasm_call"),
+                Abi::Array => format!("{symbol}_array_call"),
+            };
             Ok(CompiledFunctionBody {
-                code: Box::new(
-                    compiler.finish(&format!("component_trampoline_{}_{abi:?}", index.as_u32()))?,
-                ),
+                code: Box::new(compiler.finish(&symbol)?),
                 needs_gc_heap: false,
             })
         };
@@ -1649,6 +1651,7 @@ impl TrampolineCompiler<'_> {
         let to_base = self.load_runtime_memory_base(vmctx, to);
 
         let mut args = Vec::new();
+        args.push(vmctx);
 
         let uses_retptr = match op {
             Transcode::Utf16ToUtf8
