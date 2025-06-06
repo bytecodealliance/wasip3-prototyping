@@ -260,7 +260,7 @@ impl Func {
     /// panics if `store` does not own this function.
     pub fn call(
         &self,
-        mut store: impl AsContextMut<Data: Send>,
+        mut store: impl AsContextMut,
         params: &[Val],
         results: &mut [Val],
     ) -> Result<()> {
@@ -397,7 +397,7 @@ impl Func {
 
     fn call_impl(
         &self,
-        mut store: impl AsContextMut<Data: Send>,
+        mut store: impl AsContextMut,
         params: &[Val],
         results: &mut [Val],
     ) -> Result<()> {
