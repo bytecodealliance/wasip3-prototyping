@@ -99,10 +99,6 @@ pub enum Trap {
     /// Attempt to resume a continuation twice.
     ContinuationAlreadyConsumed,
 
-    /// FIXME(frank-emrich) Only used for stack switching debugging code, to be
-    /// removed from final upstreamed code.
-    DeleteMeDebugAssertion,
-
     /// A Pulley opcode was executed at runtime when the opcode was disabled at
     /// compile time.
     DisabledOpcode,
@@ -150,7 +146,6 @@ impl Trap {
             NoAsyncResult
             UnhandledTag
             ContinuationAlreadyConsumed
-            DeleteMeDebugAssertion
             DisabledOpcode
             AsyncDeadlock
         }
@@ -186,7 +181,6 @@ impl fmt::Display for Trap {
             NoAsyncResult => "async-lifted export failed to produce a result",
             UnhandledTag => "unhandled tag",
             ContinuationAlreadyConsumed => "continuation already consumed",
-            DeleteMeDebugAssertion => "triggered debug assertion",
             DisabledOpcode => "pulley opcode disabled at compile time was executed",
             AsyncDeadlock => "deadlock detected: event loop cannot make further progress",
         };
