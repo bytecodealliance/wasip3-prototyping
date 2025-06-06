@@ -184,7 +184,7 @@ where
     /// panics if `store` does not own this function.
     #[cfg(feature = "async")]
     pub async fn call_async(
-        self,
+        &self,
         mut store: impl AsContextMut<Data: Send>,
         params: Params,
     ) -> Result<Return>
