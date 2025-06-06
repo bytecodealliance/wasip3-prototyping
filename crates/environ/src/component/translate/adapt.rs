@@ -196,7 +196,6 @@ impl<'data> Translator<'_, 'data> {
                 names.push(name);
             }
             let wasm = module.encode();
-            wasmparser::Validator::new().validate_all(&wasm).unwrap();
             let imports = module.imports().to_vec();
 
             // Extend the lifetime of the owned `wasm: Vec<u8>` on the stack to

@@ -218,7 +218,7 @@ pub struct LowerContext<'a, T: 'static> {
     pub types: &'a ComponentTypes,
 
     /// Index of the component instance that's being lowered into.
-    pub(crate) instance: Instance,
+    instance: Instance,
 }
 
 #[doc(hidden)]

@@ -164,7 +164,7 @@ where
     /// Panics if this is called on a function in an asynchronous store. This
     /// only works with functions defined within a synchronous store. Also
     /// panics if `store` does not own this function.
-    pub fn call(&self, store: impl AsContextMut<Data: Send>, params: Params) -> Result<Return>
+    pub fn call(&self, store: impl AsContextMut, params: Params) -> Result<Return>
     where
         Return: Send + Sync + 'static,
     {
@@ -184,7 +184,7 @@ where
     /// panics if `store` does not own this function.
     #[cfg(feature = "async")]
     pub async fn call_async(
-        self,
+        &self,
         mut store: impl AsContextMut<Data: Send>,
         params: Params,
     ) -> Result<Return>
@@ -379,7 +379,7 @@ where
         }
     }
 
-    fn call_impl(&self, mut store: impl AsContextMut<Data: Send>, params: Params) -> Result<Return>
+    fn call_impl(&self, mut store: impl AsContextMut, params: Params) -> Result<Return>
     where
         Return: Send + Sync + 'static,
     {
