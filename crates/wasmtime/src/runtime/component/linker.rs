@@ -319,7 +319,7 @@ impl<T: 'static> Linker<T> {
         use wasmtime_environ::component::ComponentTypes;
         use wasmtime_environ::component::TypeDef;
         // Recursively stub out all imports of the component with a function that traps.
-        fn stub_item<T: 'static>(
+        fn stub_item<T>(
             linker: &mut LinkerInstance<T>,
             item_name: &str,
             item_def: &TypeDef,
