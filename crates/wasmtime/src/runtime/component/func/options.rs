@@ -238,10 +238,12 @@ impl<'a, T: 'static> LowerContext<'a, T> {
         }
     }
 
+    /// Returns the `&ComponentInstance` that's being lowered into.
     pub fn instance(&self) -> &ComponentInstance {
         &self.store[self.instance.id()]
     }
 
+    /// Returns the `&mut ComponentInstance` that's being lowered into.
     pub fn instance_mut(&mut self) -> &mut ComponentInstance {
         &mut self.store[self.instance.id()]
     }

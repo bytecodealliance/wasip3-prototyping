@@ -153,7 +153,6 @@ impl Inst {
             | Inst::XmmRmRVex3 { op, .. }
             | Inst::XmmRmRImmVex { op, .. }
             | Inst::XmmRmRBlendVex { op, .. }
-            | Inst::XmmVexPinsr { op, .. }
             | Inst::XmmUnaryRmRVex { op, .. }
             | Inst::XmmUnaryRmRImmVex { op, .. }
             | Inst::XmmMovRMVex { op, .. }
@@ -174,6 +173,7 @@ impl Inst {
                         sse2 => features.push(InstructionSet::SSE2),
                         ssse3 => features.push(InstructionSet::SSSE3),
                         sse41 => features.push(InstructionSet::SSE41),
+                        sse42 => features.push(InstructionSet::SSE42),
                         bmi1 => features.push(InstructionSet::BMI1),
                         bmi2 => features.push(InstructionSet::BMI2),
                         lzcnt => features.push(InstructionSet::Lzcnt),
@@ -751,21 +751,6 @@ impl PrettyPrint for Inst {
             }
 
             Inst::XmmRmRImmVex {
-                op,
-                src1,
-                src2,
-                dst,
-                imm,
-                ..
-            } => {
-                let dst = pretty_print_reg(dst.to_reg().to_reg(), 8);
-                let src1 = pretty_print_reg(src1.to_reg(), 8);
-                let src2 = src2.pretty_print(8);
-                let op = ljustify(op.to_string());
-                format!("{op} ${imm}, {src1}, {src2}, {dst}")
-            }
-
-            Inst::XmmVexPinsr {
                 op,
                 src1,
                 src2,
@@ -1627,13 +1612,6 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
             src2.get_operands(collector);
         }
         Inst::XmmRmRImmVex {
-            src1, src2, dst, ..
-        } => {
-            collector.reg_def(dst);
-            collector.reg_use(src1);
-            src2.get_operands(collector);
-        }
-        Inst::XmmVexPinsr {
             src1, src2, dst, ..
         } => {
             collector.reg_def(dst);

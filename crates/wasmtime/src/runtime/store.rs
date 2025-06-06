@@ -1929,6 +1929,29 @@ at https://bytecodealliance.org/security.
         self.pkey.is_some()
     }
 
+    #[cfg(feature = "component-model")]
+    pub(crate) fn component_resource_state_with_instance(
+        &mut self,
+        instance: crate::component::Instance,
+    ) -> (
+        &mut vm::component::CallContexts,
+        &mut vm::component::ResourceTable,
+        &mut crate::component::HostResourceData,
+        &mut vm::component::ComponentInstance,
+    ) {
+        (
+            &mut self.component_calls,
+            &mut self.component_host_table,
+            &mut self.host_resource_data,
+            &mut self.store_data[instance.id()],
+        )
+    }
+
+    #[cfg(not(feature = "async"))]
+    pub(crate) fn async_guard_range(&self) -> core::ops::Range<*mut u8> {
+        core::ptr::null_mut()..core::ptr::null_mut()
+    }
+
     pub(crate) fn executor(&mut self) -> ExecutorRef<'_> {
         match &mut self.executor {
             Executor::Interpreter(i) => ExecutorRef::Interpreter(i.as_interpreter_ref()),
@@ -1939,7 +1962,7 @@ at https://bytecodealliance.org/security.
 
     pub(crate) fn unwinder(&self) -> &'static dyn Unwind {
         match &self.executor {
-            Executor::Interpreter(_) => &vm::UnwindPulley,
+            Executor::Interpreter(i) => i.unwinder(),
             #[cfg(has_host_compiler_backend)]
             Executor::Native => &vm::UnwindHost,
         }
