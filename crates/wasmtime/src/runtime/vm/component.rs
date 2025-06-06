@@ -223,7 +223,7 @@ impl ComponentInstance {
             .byte_sub(mem::size_of::<ComponentInstance>())
             .cast::<ComponentInstance>();
         let reference = ptr.as_mut();
-        let store = &mut *reference.store();
+        let store = &mut *reference.store.0.as_ptr();
         let instance = Instance::from_wasmtime(store, reference.id);
         f(store, instance)
     }
@@ -340,11 +340,6 @@ impl ComponentInstance {
                 .cast_mut();
             InstanceFlags(SendSyncPtr::new(NonNull::new(ptr).unwrap()))
         }
-    }
-
-    /// Returns the store that this component was created with.
-    pub fn store(&self) -> *mut dyn VMStore {
-        self.store.0.as_ptr()
     }
 
     /// Returns the runtime memory definition corresponding to the index of the
