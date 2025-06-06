@@ -261,7 +261,7 @@ where
 {
     type Data = T;
 
-    fn as_context(&self) -> StoreContext<T> {
+    fn as_context(&self) -> StoreContext<'_, T> {
         self.store.as_context()
     }
 }
@@ -271,7 +271,7 @@ where
     D: HasData,
     T: 'static,
 {
-    fn as_context_mut(&mut self) -> StoreContextMut<T> {
+    fn as_context_mut(&mut self) -> StoreContextMut<'_, T> {
         self.store.as_context_mut()
     }
 }
