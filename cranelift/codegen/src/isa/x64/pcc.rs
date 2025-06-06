@@ -232,9 +232,6 @@ pub(crate) fn check(
         | Inst::XmmUnaryRmRImmEvex {
             dst, src: ref src2, ..
         }
-        | Inst::XmmUnaryRmRUnaligned {
-            dst, src: ref src2, ..
-        }
         | Inst::XmmUnaryRmREvex {
             dst, src: ref src2, ..
         }
@@ -320,16 +317,6 @@ pub(crate) fn check(
         }
 
         Inst::XmmToGprVex { dst, .. } => undefined_result(ctx, vcode, dst, 64, 64),
-
-        Inst::CvtIntToFloatVex { dst, ref src2, .. } => {
-            match <&RegMem>::from(src2) {
-                RegMem::Mem { addr } => {
-                    check_load(ctx, None, addr, vcode, I64, 64)?;
-                }
-                RegMem::Reg { .. } => {}
-            }
-            ensure_no_fact(vcode, dst.to_writable_reg().to_reg())
-        }
 
         Inst::CvtUint64ToFloatSeq {
             dst,
