@@ -954,6 +954,15 @@ impl OwnedComponentInstance {
         }
     }
 
+    // Note that this is technically unsafe due to the fact that it enables
+    // `mem::swap`-ing two component instances which would get all the offsets
+    // mixed up and cause issues. This is scoped to just this module though as a
+    // convenience to forward to `&mut` methods on `ComponentInstance`.
+    #[cfg(feature = "component-model-async")]
+    unsafe fn instance_mut(&mut self) -> &mut ComponentInstance {
+        &mut *self.ptr.as_ptr()
+    }
+
     /// Returns the underlying component instance's raw pointer.
     pub fn instance_ptr(&self) -> NonNull<ComponentInstance> {
         self.ptr.as_non_null()

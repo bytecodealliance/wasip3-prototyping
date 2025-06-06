@@ -7,7 +7,7 @@ use crate::component::{ComponentNamedList, ComponentType, Instance, Lift, Lower,
 use crate::prelude::*;
 use crate::runtime::vm::SendSyncPtr;
 use crate::runtime::vm::component::{
-    InstanceFlags, VMComponentContext, VMLowering, VMLoweringCallee,
+    ComponentInstance, InstanceFlags, VMComponentContext, VMLowering, VMLoweringCallee,
 };
 use crate::runtime::vm::{
     VMFuncRef, VMGlobalDefinition, VMMemoryDefinition, VMOpaqueContext, VMStore,
@@ -242,7 +242,7 @@ where
 /// must be upheld. Generally that's done by ensuring this is only called from
 /// the select few places it's intended to be called from.
 unsafe fn call_host<T, Params, Return, F>(
-    mut cx: StoreContextMut<'_, T>,
+    mut store: StoreContextMut<'_, T>,
     instance: Instance,
     types: &Arc<ComponentTypes>,
     ty: TypeFuncIndex,

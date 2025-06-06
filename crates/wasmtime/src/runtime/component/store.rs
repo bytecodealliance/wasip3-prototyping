@@ -63,27 +63,6 @@ impl StoreData {
     }
 }
 
-impl StoreData {
-    pub(crate) fn component_instance(&self, id: ComponentInstanceId) -> &ComponentInstance {
-        self.components.instances[id].as_ref().unwrap()
-    }
-
-    pub(crate) fn component_instance_mut(
-        &mut self,
-        id: ComponentInstanceId,
-    ) -> &mut ComponentInstance {
-        // SAFETY: see below, `instance_ptr` will eventually go away
-        // and `OwnedComponentInstance` will directly implement `DerefMut`.
-        unsafe {
-            self.components.instances[id]
-                .as_mut()
-                .unwrap()
-                .instance_ptr()
-                .as_mut()
-        }
-    }
-}
-
 impl StoreOpaque {
     pub(crate) fn component_instance(&self, id: ComponentInstanceId) -> &ComponentInstance {
         self.store_data().component_instance(id)
