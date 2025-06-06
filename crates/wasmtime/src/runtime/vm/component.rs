@@ -109,7 +109,7 @@ pub struct ComponentInstance {
     imports: Arc<PrimaryMap<RuntimeImportIndex, RuntimeImport>>,
 
     /// Self-pointer back to `Store<T>` and its functions.
-    store: Option<VMStoreRawPtr>,
+    store: VMStoreRawPtr,
 
     /// Cached ABI return value from the last-invoked function call along with
     /// the function index that was invoked.
@@ -297,8 +297,8 @@ impl ComponentInstance {
                 ),
                 component: component.clone(),
                 resource_types,
-                store: Some(VMStoreRawPtr(store)),
                 imports: imports.clone(),
+                store: VMStoreRawPtr(store),
                 post_return_arg: None,
                 vmctx: VMComponentContext {
                     _marker: marker::PhantomPinned,
@@ -344,10 +344,8 @@ impl ComponentInstance {
     }
 
     /// Returns the store that this component was created with.
-    ///
-    /// This will panic if this instance has been removed from its store.
     pub fn store(&self) -> *mut dyn VMStore {
-        self.store.unwrap().0.as_ptr()
+        self.store.0.as_ptr()
     }
 
     /// Returns the runtime memory definition corresponding to the index of the
@@ -600,7 +598,7 @@ impl ComponentInstance {
         *self.vmctx_plus_offset_mut(self.offsets.builtins()) =
             VmPtr::from(NonNull::from(&libcalls::VMComponentBuiltins::INIT));
         *self.vmctx_plus_offset_mut(self.offsets.vm_store_context()) =
-            VmPtr::from(self.store.unwrap().0.as_ref().vm_store_context_ptr());
+            VmPtr::from(self.store.0.as_ref().vm_store_context_ptr());
 
         for i in 0..self.offsets.num_runtime_component_instances {
             let i = RuntimeComponentInstanceIndex::from_u32(i);
