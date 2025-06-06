@@ -7,7 +7,6 @@
 //! cranelift-compiled adapters, will use this `VMComponentContext` as well.
 
 use crate::component::{Component, Instance, InstancePre, ResourceType, RuntimeImport};
-use crate::prelude::*;
 use crate::runtime::component::ComponentInstanceId;
 use crate::runtime::vm::{
     Export, ExportFunction, ExportGlobal, ExportGlobalKind, SendSyncPtr, VMArrayCallFunction,
@@ -686,56 +685,6 @@ impl ComponentInstance {
             None => return false,
         };
         resource.instance == component.defined_resource_instances[idx]
-    }
-
-    /// Implementation of the `resource.new` intrinsic for `i32`
-    /// representations.
-    pub fn resource_new32(
-        &mut self,
-        store: &mut dyn VMStore,
-        ty: TypeResourceTableIndex,
-        rep: u32,
-    ) -> Result<u32> {
-        self.resource_tables(store)
-            .resource_new(TypedResource::Component { ty, rep })
-    }
-
-    /// Implementation of the `resource.rep` intrinsic for `i32`
-    /// representations.
-    pub fn resource_rep32(
-        &mut self,
-        store: &mut dyn VMStore,
-        ty: TypeResourceTableIndex,
-        index: u32,
-    ) -> Result<u32> {
-        self.resource_tables(store)
-            .resource_rep(TypedResourceIndex::Component { ty, index })
-    }
-
-    /// Implementation of the `resource.drop` intrinsic.
-    pub fn resource_drop(
-        &mut self,
-        store: &mut dyn VMStore,
-        ty: TypeResourceTableIndex,
-        index: u32,
-    ) -> Result<Option<u32>> {
-        self.resource_tables(store)
-            .resource_drop(TypedResourceIndex::Component { ty, index })
-    }
-
-    /// NB: this is intended to be a private method. This does not have
-    /// `host_table` information at this time meaning it's only suitable for
-    /// working with resources specified to this component which is currently
-    /// all that this is used for.
-    ///
-    /// If necessary though it's possible to enhance the `Store` trait to thread
-    /// through the relevant information and get `host_table` to be `Some` here.
-    fn resource_tables<'a>(&'a mut self, store: &'a mut dyn VMStore) -> ResourceTables<'a> {
-        ResourceTables {
-            host_table: None,
-            calls: store.component_calls(),
-            guest: Some((&mut self.instance_resource_tables, self.component.types())),
-        }
     }
 
     /// Returns the runtime state of resources associated with this component.
