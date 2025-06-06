@@ -5,12 +5,11 @@ use crate::component::matching::InstanceType;
 use crate::component::storage::slice_to_storage_mut;
 use crate::component::{ComponentNamedList, ComponentType, Instance, Lift, Lower, Val};
 use crate::prelude::*;
-use crate::runtime::vm::SendSyncPtr;
 use crate::runtime::vm::component::{
     ComponentInstance, InstanceFlags, VMComponentContext, VMLowering, VMLoweringCallee,
 };
 use crate::runtime::vm::{
-    VMFuncRef, VMGlobalDefinition, VMMemoryDefinition, VMOpaqueContext, VMStore,
+    SendSyncPtr, VMFuncRef, VMGlobalDefinition, VMMemoryDefinition, VMOpaqueContext, VMStore,
 };
 use crate::{AsContextMut, CallHook, StoreContextMut, ValRaw};
 use alloc::sync::Arc;
@@ -120,11 +119,10 @@ impl HostFunc {
     {
         let data = SendSyncPtr::new(NonNull::new(data.as_ptr() as *mut F).unwrap());
         unsafe {
-            call_host_and_handle_result::<T>(cx, |store, instance, types| {
+            call_host_and_handle_result::<T>(cx, |store, instance| {
                 call_host(
                     store,
                     instance,
-                    types,
                     TypeFuncIndex::from_u32(ty),
                     RuntimeComponentInstanceIndex::from_u32(caller_instance),
                     InstanceFlags::from_raw(flags),
@@ -244,7 +242,6 @@ where
 unsafe fn call_host<T, Params, Return, F>(
     mut store: StoreContextMut<'_, T>,
     instance: Instance,
-    types: &Arc<ComponentTypes>,
     ty: TypeFuncIndex,
     caller_instance: RuntimeComponentInstanceIndex,
     mut flags: InstanceFlags,
@@ -283,6 +280,7 @@ where
         bail!("cannot leave component instance");
     }
 
+    let types = store[instance.id()].component().types().clone();
     let ty = &types[ty];
     let param_tys = InterfaceType::Tuple(ty.params);
     let result_tys = InterfaceType::Tuple(ty.results);
@@ -294,7 +292,8 @@ where
 
             // Lift the parameters, either from flat storage or from linear
             // memory.
-            let lift = &mut LiftContext::new(store.0.store_opaque_mut(), &options, types, instance);
+            let lift =
+                &mut LiftContext::new(store.0.store_opaque_mut(), &options, &types, instance);
             lift.enter_call();
             let params = storage.lift_params(lift, param_tys)?;
 
@@ -346,7 +345,7 @@ where
         }
     } else {
         let mut storage = Storage::<'_, Params, Return>::new_sync(storage);
-        let mut lift = LiftContext::new(store.0.store_opaque_mut(), &options, types, instance);
+        let mut lift = LiftContext::new(store.0.store_opaque_mut(), &options, &types, instance);
         lift.enter_call();
         let params = storage.lift_params(&mut lift, param_tys)?;
 
@@ -355,7 +354,7 @@ where
         let ret = instance.poll_and_block(store.0.traitobj_mut(), future, caller_instance)?;
 
         flags.set_may_leave(false);
-        let mut lower = LowerContext::new(store, &options, types, instance);
+        let mut lower = LowerContext::new(store, &options, &types, instance);
         storage.lower_results(&mut lower, result_tys, ret)?;
         flags.set_may_leave(true);
         lower.exit_call()?;
@@ -678,17 +677,18 @@ pub(crate) fn validate_inbounds<T: ComponentType>(memory: &[u8], ptr: &ValRaw) -
 
 unsafe fn call_host_and_handle_result<T>(
     cx: NonNull<VMOpaqueContext>,
-    func: impl FnOnce(StoreContextMut<'_, T>, Instance, &Arc<ComponentTypes>) -> Result<()>,
+    func: impl FnOnce(StoreContextMut<'_, T>, Instance) -> Result<()>,
 ) -> bool
 where
     T: 'static,
 {
-    ComponentInstance::from_vmctx(VMComponentContext::from_opaque(cx), |store, instance| {
+    let cx = VMComponentContext::from_opaque(cx);
+    ComponentInstance::from_vmctx(cx, |store, instance| {
+        let mut store = store.unchecked_context_mut();
+
         crate::runtime::vm::catch_unwind_and_record_trap(|| {
-            let mut store = StoreContextMut::<T>(&mut *(store as *mut dyn VMStore).cast());
             store.0.call_hook(CallHook::CallingHost)?;
-            let types = store[instance.id()].component().types().clone();
-            let res = func(store.as_context_mut(), instance, &types);
+            let res = func(store.as_context_mut(), instance);
             store.0.call_hook(CallHook::ReturningFromHost)?;
             res
         })
@@ -698,7 +698,6 @@ where
 unsafe fn call_host_dynamic<T, F>(
     mut store: StoreContextMut<'_, T>,
     instance: Instance,
-    types: &Arc<ComponentTypes>,
     ty: TypeFuncIndex,
     caller_instance: RuntimeComponentInstanceIndex,
     mut flags: InstanceFlags,
@@ -737,6 +736,7 @@ where
         bail!("cannot leave component instance");
     }
 
+    let types = store[instance.id()].component().types().clone();
     let func_ty = &types[ty];
     let param_tys = &types[func_ty.params];
     let result_tys = &types[func_ty.results];
@@ -746,12 +746,12 @@ where
         {
             let mut params = Vec::new();
             let mut lift =
-                &mut LiftContext::new(store.0.store_opaque_mut(), &options, types, instance);
+                &mut LiftContext::new(store.0.store_opaque_mut(), &options, &types, instance);
             lift.enter_call();
 
             let ret_index = dynamic_params_load(
                 &mut lift,
-                types,
+                &types,
                 storage,
                 param_tys,
                 &mut params,
@@ -817,11 +817,11 @@ where
         }
     } else {
         let mut args = Vec::new();
-        let mut cx = LiftContext::new(store.0.store_opaque_mut(), &options, types, instance);
+        let mut cx = LiftContext::new(store.0.store_opaque_mut(), &options, &types, instance);
         cx.enter_call();
         let ret_index = dynamic_params_load(
             &mut cx,
-            types,
+            &types,
             storage,
             param_tys,
             &mut args,
@@ -839,7 +839,7 @@ where
 
         flags.set_may_leave(false);
 
-        let mut cx = LowerContext::new(store, &options, types, instance);
+        let mut cx = LowerContext::new(store, &options, &types, instance);
         if let Some(cnt) = result_tys.abi.flat_count(MAX_FLAT_RESULTS) {
             let mut dst = storage[..cnt].iter_mut();
             for (val, ty) in result_vals.iter().zip(result_tys.types.iter()) {
@@ -950,11 +950,10 @@ where
 {
     let data = SendSyncPtr::new(NonNull::new(data.as_ptr() as *mut F).unwrap());
     unsafe {
-        call_host_and_handle_result(cx, |store, instance, types| {
+        call_host_and_handle_result(cx, |store, instance| {
             call_host_dynamic::<T, _>(
                 store,
                 instance,
-                types,
                 TypeFuncIndex::from_u32(ty),
                 RuntimeComponentInstanceIndex::from_u32(caller_instance),
                 InstanceFlags::from_raw(flags),
