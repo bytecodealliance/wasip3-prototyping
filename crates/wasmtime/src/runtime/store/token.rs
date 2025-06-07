@@ -31,6 +31,6 @@ impl<T> StoreToken<T> {
         // We know the store with this ID has data type parameter `T` because
         // we witnessed that in `Self::new`, which is the only way `self` could
         // have been safely created:
-        unsafe { StoreContextMut::<T>(&mut *(store as *mut dyn VMStore).cast()) }
+        unsafe { store.unchecked_context_mut::<T>() }
     }
 }
