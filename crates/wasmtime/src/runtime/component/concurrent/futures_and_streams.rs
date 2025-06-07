@@ -8,6 +8,7 @@ use {
         AsContextMut, StoreContextMut, ValRaw,
         component::{
             Instance, Lower, Val, WasmList, WasmStr,
+            concurrent::tls,
             func::{self, Lift, LiftContext, LowerContext, Options},
             matching::InstanceType,
             values::{ErrorContextAny, FutureAny, StreamAny},
@@ -1551,47 +1552,41 @@ impl Instance {
                 let mut my_rep = None;
                 while let Some(event) = rx.next().await {
                     if my_rep.is_none() {
-                        my_rep = Some(get_state_rep(rep)?);
+                        my_rep = Some(self.get_state_rep(rep)?);
                     }
                     let rep = my_rep.unwrap();
                     match event {
-                        WriteEvent::Write { buffer, tx } => {
-                            super::with_local_instance(|store, instance| {
-                                instance.host_write::<_, _, U>(
+                        WriteEvent::Write { buffer, tx } => tls::get(|store| {
+                            self.host_write::<_, _, U>(
+                                token.as_context_mut(store),
+                                rep,
+                                buffer,
+                                PostWrite::Continue,
+                                tx,
+                                kind,
+                            )
+                        })?,
+                        WriteEvent::Close(default) => tls::get(|store| {
+                            if let Some(default) = default {
+                                self.host_write::<_, _, U>(
                                     token.as_context_mut(store),
                                     rep,
-                                    buffer,
+                                    default(),
                                     PostWrite::Continue,
-                                    tx,
+                                    oneshot::channel().0,
                                     kind,
-                                )
-                            })?
-                        }
-                        WriteEvent::Close(default) => {
-                            super::with_local_instance(|store, instance| {
-                                if let Some(default) = default {
-                                    instance.host_write::<_, _, U>(
-                                        token.as_context_mut(store),
-                                        rep,
-                                        default(),
-                                        PostWrite::Continue,
-                                        oneshot::channel().0,
-                                        kind,
-                                    )?;
-                                }
-                                store[instance.id()].host_close_writer(rep, kind)
-                            })?
-                        }
-                        WriteEvent::Watch { tx } => {
-                            super::with_local_instance(|store, instance| {
-                                let state = store[instance.id()]
-                                    .get_mut(TableId::<TransmitState>::new(rep))?;
-                                if !matches!(&state.read, ReadState::Closed) {
-                                    state.reader_watcher = Some(tx);
-                                }
-                                Ok::<_, anyhow::Error>(())
-                            })?
-                        }
+                                )?;
+                            }
+                            store[self.id()].host_close_writer(rep, kind)
+                        })?,
+                        WriteEvent::Watch { tx } => tls::get(|store| {
+                            let state =
+                                store[self.id()].get_mut(TableId::<TransmitState>::new(rep))?;
+                            if !matches!(&state.read, ReadState::Closed) {
+                                state.reader_watcher = Some(tx);
+                            }
+                            Ok::<_, anyhow::Error>(())
+                        })?,
                     }
                 }
                 Ok(())
@@ -1628,45 +1623,41 @@ impl Instance {
                 let mut my_rep = None;
                 while let Some(event) = rx.next().await {
                     if my_rep.is_none() {
-                        my_rep = Some(get_state_rep(rep)?);
+                        my_rep = Some(self.get_state_rep(rep)?);
                     }
                     let rep = my_rep.unwrap();
                     match event {
-                        ReadEvent::Read { buffer, tx } => {
-                            super::with_local_instance(|store, instance| {
-                                instance.host_read::<_, _, U>(
-                                    token.as_context_mut(store),
-                                    rep,
-                                    buffer,
-                                    tx,
-                                    kind,
-                                )
-                            })?
-                        }
-                        ReadEvent::Close => super::with_local_instance(|store, instance| {
-                            instance.host_close_reader(store, rep, kind)
+                        ReadEvent::Read { buffer, tx } => tls::get(|store| {
+                            self.host_read::<_, _, U>(
+                                token.as_context_mut(store),
+                                rep,
+                                buffer,
+                                tx,
+                                kind,
+                            )
                         })?,
-                        ReadEvent::Watch { tx } => {
-                            super::with_local_instance(|store, instance| {
-                                let state = store[instance.id()]
-                                    .get_mut(TableId::<TransmitState>::new(rep))?;
-                                if !matches!(
-                                    &state.write,
-                                    WriteState::Closed
-                                        | WriteState::GuestReady {
-                                            post_write: PostWrite::Close,
-                                            ..
-                                        }
-                                        | WriteState::HostReady {
-                                            post_write: PostWrite::Close,
-                                            ..
-                                        }
-                                ) {
-                                    state.writer_watcher = Some(tx);
-                                }
-                                Ok::<_, anyhow::Error>(())
-                            })?
+                        ReadEvent::Close => {
+                            tls::get(|store| self.host_close_reader(store, rep, kind))?
                         }
+                        ReadEvent::Watch { tx } => tls::get(|store| {
+                            let state =
+                                store[self.id()].get_mut(TableId::<TransmitState>::new(rep))?;
+                            if !matches!(
+                                &state.write,
+                                WriteState::Closed
+                                    | WriteState::GuestReady {
+                                        post_write: PostWrite::Close,
+                                        ..
+                                    }
+                                    | WriteState::HostReady {
+                                        post_write: PostWrite::Close,
+                                        ..
+                                    }
+                            ) {
+                                state.writer_watcher = Some(tx);
+                            }
+                            Ok::<_, anyhow::Error>(())
+                        })?,
                     }
                 }
                 Ok(())
@@ -2732,18 +2723,18 @@ impl Instance {
     ) -> Result<()> {
         self.guest_close_readable(store, TableIndex::Stream(ty), reader)
     }
-}
 
-/// Retrieve the `TransmitState` rep for the specified `TransmitHandle` rep.
-fn get_state_rep(rep: u32) -> Result<u32> {
-    super::with_local_instance(|store, instance| {
-        let transmit_handle = TableId::<TransmitHandle>::new(rep);
-        Ok(store[instance.id()]
-            .get(transmit_handle)
-            .with_context(|| format!("stream or future {transmit_handle:?} not found"))?
-            .state
-            .rep())
-    })
+    /// Retrieve the `TransmitState` rep for the specified `TransmitHandle` rep.
+    fn get_state_rep(&self, rep: u32) -> Result<u32> {
+        tls::get(|store| {
+            let transmit_handle = TableId::<TransmitHandle>::new(rep);
+            Ok(store[self.id()]
+                .get(transmit_handle)
+                .with_context(|| format!("stream or future {transmit_handle:?} not found"))?
+                .state
+                .rep())
+        })
+    }
 }
 
 /// Helper struct for running a closure on drop, e.g. for logging purposes.
