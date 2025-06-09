@@ -310,7 +310,7 @@ where
 // context that TLS variables are actually set. For example host functions are
 // given `&mut Accessor`, not `Accessor`, and this prevents them from persisting
 // the value outside of a future. Within the future the TLS variables are all
-// guaranteed to be set.
+// guaranteed to be set while the future is being polled.
 //
 // Finally though this is not an ironclad guarantee, but nor does it need to be.
 // The TLS APIs are designed to panic or otherwise model usage where they're
