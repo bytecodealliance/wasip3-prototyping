@@ -1317,7 +1317,7 @@ impl Instance {
         self,
         mut store: impl AsContextMut<Data = U>,
         fun: F,
-    ) -> Pin<Box<dyn Future<Output = V> + Send + 'static>>
+    ) -> impl Future<Output = V> + 'static
     where
         U: 'static,
         F: FnOnce(&mut Accessor<U>) -> Pin<Box<dyn Future<Output = V> + Send + '_>>
@@ -1325,11 +1325,11 @@ impl Instance {
             + 'static,
     {
         let token = StoreToken::new(store.as_context_mut());
-        let mut accessor = Accessor::new(token, self);
-        let mut future = Box::pin(async move { fun(&mut accessor).await });
-        Box::pin(future::poll_fn(move |cx| {
-            self.poll_then_spawn(cx, future.as_mut())
-        }))
+        async move {
+            let mut accessor = Accessor::new(token, self);
+            let mut future = pin!(fun(&mut accessor));
+            future::poll_fn(move |cx| self.poll_then_spawn(cx, future.as_mut())).await
+        }
     }
 
     /// Spawn a background task to run as part of this instance's event loop.
@@ -2458,7 +2458,7 @@ impl Instance {
         store: StoreContextMut<T>,
         closure: Arc<F>,
         params: P,
-    ) -> Pin<Box<dyn Future<Output = Result<R>> + Send + 'static>>
+    ) -> impl Future<Output = Result<R>> + 'static
     where
         T: 'static,
         F: Fn(&mut Accessor<T>, P) -> Pin<Box<dyn Future<Output = Result<R>> + Send + '_>>
@@ -2469,11 +2469,11 @@ impl Instance {
         R: Send + Sync + 'static,
     {
         let token = StoreToken::new(store);
-        let mut accessor = Accessor::new(token, self);
-        let mut future = Box::pin(async move { closure(&mut accessor, params).await });
-        Box::pin(future::poll_fn(move |cx| {
-            self.poll_then_spawn(cx, future.as_mut())
-        }))
+        async move {
+            let mut accessor = Accessor::new(token, self);
+            let mut future = pin!(closure(&mut accessor, params));
+            future::poll_fn(move |cx| self.poll_then_spawn(cx, future.as_mut())).await
+        }
     }
 
     /// Poll the specified future once on behalf of a guest->host call using an
@@ -4485,29 +4485,32 @@ fn checked<F: Future + Send + 'static>(
     instance: Instance,
     fut: F,
 ) -> impl Future<Output = F::Output> + Send + 'static {
-    let mut fut = Box::pin(fut);
-    future::poll_fn(move |cx| {
-        let message = "\
-            `Future`s which depend on asynchronous component tasks, streams, or \
-            futures to complete may only be polled from the event loop of the \
-            instance from which they originated.  Please use \
-            `Instance::{run,run_with,spawn}` to poll or await them.\
-        ";
-        tls::try_get(|store| {
-            let matched = match store {
-                tls::TryGet::Some(store) => {
-                    store.concurrent_async_state().current_instance
-                        == Some(instance.id().instance())
-                }
-                tls::TryGet::Taken | tls::TryGet::None => false,
-            };
+    async move {
+        let mut fut = pin!(fut);
+        future::poll_fn(move |cx| {
+            let message = "\
+                `Future`s which depend on asynchronous component tasks, streams, or \
+                futures to complete may only be polled from the event loop of the \
+                instance from which they originated.  Please use \
+                `Instance::{run,run_with,spawn}` to poll or await them.\
+            ";
+            tls::try_get(|store| {
+                let matched = match store {
+                    tls::TryGet::Some(store) => {
+                        store.concurrent_async_state().current_instance
+                            == Some(instance.id().instance())
+                    }
+                    tls::TryGet::Taken | tls::TryGet::None => false,
+                };
 
-            if !matched {
-                panic!("{message}")
-            }
-        });
-        fut.as_mut().poll(cx)
-    })
+                if !matched {
+                    panic!("{message}")
+                }
+            });
+            fut.as_mut().poll(cx)
+        })
+        .await
+    }
 }
 
 /// Assert that `Instance::run[_with]` has not been called from within an

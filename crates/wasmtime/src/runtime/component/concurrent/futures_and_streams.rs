@@ -888,7 +888,9 @@ impl<B> StreamWriter<B> {
             self.write(buffer).then(|(me, buffer)| async move {
                 if let Some(me) = me {
                     if buffer.remaining().len() > 0 {
-                        me.write_all(buffer).await
+                        // Note the use of `Box::pin` which is required due to
+                        // the recursive nature of this function.
+                        Box::pin(me.write_all(buffer)).await
                     } else {
                         (Some(me), buffer)
                     }
