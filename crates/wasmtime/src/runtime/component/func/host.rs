@@ -87,7 +87,7 @@ impl HostFunc {
     {
         let func = Arc::new(func);
         Self::from_canonical::<T, _, _, _>(move |store, instance, params| {
-            instance.wrap_call(store, func.clone(), params)
+            Box::pin(instance.wrap_call(store, func.clone(), params))
         })
     }
 
@@ -179,17 +179,17 @@ impl HostFunc {
     pub(crate) fn new_dynamic_concurrent<T: 'static, F>(func: F) -> Arc<HostFunc>
     where
         T: 'static,
-        F: for<'a> Fn(
-                &'a mut Accessor<T>,
+        F: Fn(
+                &mut Accessor<T>,
                 Vec<Val>,
-            ) -> Pin<Box<dyn Future<Output = Result<Vec<Val>>> + Send + 'a>>
+            ) -> Pin<Box<dyn Future<Output = Result<Vec<Val>>> + Send + '_>>
             + Send
             + Sync
             + 'static,
     {
         let func = Arc::new(func);
         Self::new_dynamic_canonical::<T, _>(move |store, instance, params, _| {
-            instance.wrap_call(store, func.clone(), params)
+            Box::pin(instance.wrap_call(store, func.clone(), params))
         })
     }
 
