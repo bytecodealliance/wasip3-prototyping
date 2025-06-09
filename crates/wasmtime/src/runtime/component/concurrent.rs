@@ -1304,7 +1304,7 @@ impl Instance {
     ) -> Result<V>
     where
         U: 'static,
-        F: for<'a> FnOnce(&'a mut Accessor<U>) -> Pin<Box<dyn Future<Output = V> + Send + 'a>>
+        F: FnOnce(&mut Accessor<U>) -> Pin<Box<dyn Future<Output = V> + Send + '_>>
             + Send
             + 'static,
     {
@@ -1320,7 +1320,7 @@ impl Instance {
     ) -> Pin<Box<dyn Future<Output = V> + Send + 'static>>
     where
         U: 'static,
-        F: for<'a> FnOnce(&'a mut Accessor<U>) -> Pin<Box<dyn Future<Output = V> + Send + 'a>>
+        F: FnOnce(&mut Accessor<U>) -> Pin<Box<dyn Future<Output = V> + Send + '_>>
             + Send
             + 'static,
     {
@@ -2461,10 +2461,7 @@ impl Instance {
     ) -> Pin<Box<dyn Future<Output = Result<R>> + Send + 'static>>
     where
         T: 'static,
-        F: for<'a> Fn(
-                &'a mut Accessor<T>,
-                P,
-            ) -> Pin<Box<dyn Future<Output = Result<R>> + Send + 'a>>
+        F: Fn(&mut Accessor<T>, P) -> Pin<Box<dyn Future<Output = Result<R>> + Send + '_>>
             + Send
             + Sync
             + 'static,

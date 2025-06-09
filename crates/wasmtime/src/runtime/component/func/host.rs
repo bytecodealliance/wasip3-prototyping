@@ -39,8 +39,8 @@ impl core::fmt::Debug for HostFunc {
 impl HostFunc {
     fn from_canonical<T: 'static, F, P, R>(func: F) -> Arc<HostFunc>
     where
-        F: for<'a> Fn(
-                StoreContextMut<'a, T>,
+        F: Fn(
+                StoreContextMut<'_, T>,
                 Instance,
                 P,
             ) -> Pin<Box<dyn Future<Output = Result<R>> + Send + 'static>>
@@ -75,10 +75,7 @@ impl HostFunc {
     pub(crate) fn from_concurrent<T: 'static, F, P, R>(func: F) -> Arc<HostFunc>
     where
         T: 'static,
-        F: for<'a> Fn(
-                &'a mut Accessor<T>,
-                P,
-            ) -> Pin<Box<dyn Future<Output = Result<R>> + Send + 'a>>
+        F: Fn(&mut Accessor<T>, P) -> Pin<Box<dyn Future<Output = Result<R>> + Send + '_>>
             + Send
             + Sync
             + 'static,
@@ -105,8 +102,8 @@ impl HostFunc {
         storage_len: usize,
     ) -> bool
     where
-        F: for<'a> Fn(
-                StoreContextMut<'a, T>,
+        F: Fn(
+                StoreContextMut<'_, T>,
                 Instance,
                 P,
             ) -> Pin<Box<dyn Future<Output = Result<R>> + Send + 'static>>
@@ -139,13 +136,12 @@ impl HostFunc {
 
     fn new_dynamic_canonical<T: 'static, F>(func: F) -> Arc<HostFunc>
     where
-        F: for<'a> Fn(
-                StoreContextMut<'a, T>,
+        F: Fn(
+                StoreContextMut<'_, T>,
                 Instance,
                 Vec<Val>,
                 usize,
-            )
-                -> Pin<Box<dyn Future<Output = Result<Vec<Val>>> + Send + 'static>>
+            ) -> Pin<Box<dyn Future<Output = Result<Vec<Val>>> + Send + 'static>>
             + Send
             + Sync
             + 'static,
@@ -253,8 +249,8 @@ unsafe fn call_host<T, Params, Return, F>(
     closure: F,
 ) -> Result<()>
 where
-    F: for<'a> Fn(
-            StoreContextMut<'a, T>,
+    F: Fn(
+            StoreContextMut<'_, T>,
             Instance,
             Params,
         ) -> Pin<Box<dyn Future<Output = Result<Return>> + Send + 'static>>
@@ -709,8 +705,8 @@ unsafe fn call_host_dynamic<T, F>(
     closure: F,
 ) -> Result<()>
 where
-    F: for<'a> Fn(
-            StoreContextMut<'a, T>,
+    F: Fn(
+            StoreContextMut<'_, T>,
             Instance,
             Vec<Val>,
             usize,
@@ -937,8 +933,8 @@ extern "C" fn dynamic_entrypoint<T: 'static, F>(
     storage_len: usize,
 ) -> bool
 where
-    F: for<'a> Fn(
-            StoreContextMut<'a, T>,
+    F: Fn(
+            StoreContextMut<'_, T>,
             Instance,
             Vec<Val>,
             usize,
