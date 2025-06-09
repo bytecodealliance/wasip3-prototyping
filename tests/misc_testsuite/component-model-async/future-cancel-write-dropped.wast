@@ -1,6 +1,6 @@
 ;;! component_model_async = true
 
-;; Create a future, start a write, close the read end, and cancel the write.
+;; Create a future, start a write, drop the read end, and cancel the write.
 (component
   (type $f (future))
   (core func $new (canon future.new $f))
@@ -8,12 +8,12 @@
   (core instance $libc (instantiate $libc))
   (core func $write (canon future.write $f async (memory $libc "mem")))
   (core func $cancel (canon future.cancel-write $f))
-  (core func $close-read (canon future.close-readable $f))
+  (core func $drop-read (canon future.drop-readable $f))
   (core module $m
     (import "" "new" (func $new (result i64)))
     (import "" "write" (func $write (param i32 i32) (result i32)))
     (import "" "cancel" (func $cancel (param i32) (result i32)))
-    (import "" "close-read" (func $close-read (param i32)))
+    (import "" "drop-read" (func $drop-read (param i32)))
 
     (func (export "f") (result i32)
       (local $read i32)
@@ -32,9 +32,9 @@
       i32.ne
       if unreachable end
 
-      ;; close the read end
+      ;; drop the read end
       local.get $read
-      call $close-read
+      call $drop-read
 
       ;; cancel the write, returning the result
       local.get $write
@@ -47,11 +47,11 @@
       (export "new" (func $new))
       (export "write" (func $write))
       (export "cancel" (func $cancel))
-      (export "close-read" (func $close-read))
+      (export "drop-read" (func $drop-read))
     ))
   ))
 
   (func (export "f") (result u32) (canon lift (core func $i "f")))
 )
 
-(assert_return (invoke "f") (u32.const 1)) ;; expect CLOSED status (not CANCELLED)
+(assert_return (invoke "f") (u32.const 1)) ;; expect DROPPED status (not CANCELLED)

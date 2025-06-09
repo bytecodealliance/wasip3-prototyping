@@ -145,4 +145,5 @@ pub const CALLBACK_CODE_WAIT: u32 = 2;
 pub const CALLBACK_CODE_POLL: u32 = 3;
 
 pub const BLOCKED: u32 = 0xffff_ffff;
-pub const CLOSED: u32 = 1;
+pub const DROPPED: u32 = 1;
+pub const COMPLETED: u32 = 0;

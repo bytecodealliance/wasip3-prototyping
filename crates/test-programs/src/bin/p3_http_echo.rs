@@ -39,7 +39,7 @@ impl Handler for Component {
                             chunk = pipe_tx.write_all(chunk).await;
                             assert!(chunk.is_empty());
                         }
-                        StreamResult::Closed => break,
+                        StreamResult::Dropped => break,
                         StreamResult::Cancelled => unreachable!(),
                     }
                 }

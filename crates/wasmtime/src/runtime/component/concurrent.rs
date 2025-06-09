@@ -1196,7 +1196,7 @@ impl Instance {
     /// - One or more guest tasks are still pending (i.e. have not yet returned,
     /// or, in the case of async-lifted exports with callbacks, have not yet
     /// returned `CALLBACK_CODE_EXIT`) even though all host tasks have completed
-    /// all host-owned stream and future handles have been closed, etc.
+    /// all host-owned stream and future handles have been dropped, etc.
     ///
     /// - Any and all guest tasks complete normally, but the future passed to
     /// this function continues to return `Pending` when polled.  In that case,
