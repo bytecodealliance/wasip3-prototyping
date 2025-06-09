@@ -295,6 +295,33 @@ where
     instance: Instance,
 }
 
+// Note that it is intentional at this time that `Accessor` does not actually
+// store `&mut T` or anything similar. This distinctly enables the `Accessor`
+// structure to be both `Send` and `Sync` regardless of what `T` is (or `D` for
+// that matter). This is used to ergonomically simplify bindings where the
+// majority of the time `Accessor` is closed over in a future which then needs
+// to be `Send` and `Sync`. To avoid needing to write `T: Send` everywhere (as
+// you already have to write `T: 'static`...) it helps to avoid this.
+//
+// Note as well that `Accessor` doesn't actually store its data at all. Instead
+// it's more of a "proof" of what can be accessed from TLS. API design around
+// `Accessor` and functions like `Linker::func_wrap_concurrent` are
+// intentionally made to ensure that `Accessor` is ideally only used in the
+// context that TLS variables are actually set. For example host functions are
+// given `&mut Accessor`, not `Accessor`, and this prevents them from persisting
+// the value outside of a future. Within the future the TLS variables are all
+// guaranteed to be set while the future is being polled.
+//
+// Finally though this is not an ironclad guarantee, but nor does it need to be.
+// The TLS APIs are designed to panic or otherwise model usage where they're
+// called recursively or similar. It's hoped that code cannot be constructed to
+// actually hit this at runtime but this is not a safety requirement at this
+// time.
+const _: () = {
+    const fn assert<T: Send + Sync>() {}
+    assert::<Accessor<UnsafeCell<u32>>>();
+};
+
 impl<T> Accessor<T> {
     /// Creates a new `Accessor` backed by the specified functions.
     ///
