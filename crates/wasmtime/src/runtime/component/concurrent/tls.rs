@@ -101,7 +101,7 @@ pub enum TryGet<'a> {
 /// called.
 pub fn try_get<R>(f: impl FnOnce(TryGet<'_>) -> R) -> R {
     // SAFETY: This is The Unsafe Block of this module on which everything
-    // hinges. The overall idea is that the poitner previously provided to
+    // hinges. The overall idea is that the pointer previously provided to
     // `set` is passed to the closure here but only at most once because it's
     // passed mutably. Thus there's a number of things that this takes care of:
     //
