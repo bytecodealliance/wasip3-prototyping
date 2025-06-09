@@ -51,7 +51,7 @@ use {
     crate::{
         AsContext, AsContextMut, Engine, StoreContext, StoreContextMut, ValRaw,
         component::{
-            HasData, HasSelf, Instance,
+            ComponentInstanceId, HasData, HasSelf, Instance,
             func::{self, Func, Options},
         },
         store::{StoreInner, StoreOpaque, StoreToken},
@@ -76,7 +76,7 @@ use {
         any::Any,
         borrow::ToOwned,
         boxed::Box,
-        cell::{Cell, RefCell, UnsafeCell},
+        cell::UnsafeCell,
         collections::{BTreeMap, BTreeSet, HashMap, HashSet},
         fmt,
         future::Future,
@@ -118,6 +118,7 @@ mod error_contexts;
 mod futures_and_streams;
 mod states;
 mod table;
+mod tls;
 
 /// Constant defined in the Component Model spec to indicate that the async
 /// intrinsic (e.g. `future.write`) has not yet completed.
@@ -245,7 +246,11 @@ where
     where
         T: 'static,
     {
-        self.accessor.spawn(task)
+        self.accessor.instance.spawn_with_accessor(
+            self.store.as_context_mut(),
+            self.accessor.clone_for_spawn(),
+            task,
+        )
     }
 
     /// Retrieve the component instance of the caller.
@@ -286,7 +291,6 @@ where
     D: HasData,
 {
     token: StoreToken<T>,
-    get: fn() -> *mut dyn VMStore,
     get_data: fn(&mut T) -> D::Data<'_>,
     instance: Instance,
 }
@@ -306,7 +310,6 @@ impl<T> Accessor<T> {
     fn new(token: StoreToken<T>, instance: Instance) -> Self {
         Self {
             token,
-            get: get_store,
             get_data: |x| x,
             instance,
         }
@@ -324,27 +327,21 @@ where
     /// access to something in the store data, it must be cloned (using
     /// e.g. `Arc::clone` if appropriate).
     pub fn with<R: 'static>(&mut self, fun: impl FnOnce(Access<'_, T, D>) -> R) -> R {
-        // SAFETY: Per `get_host`, this will either return exclusive access to
-        // the store or panic if it is somehow called outside its intended
-        // scope.
-        //
-        // Note that, per the design of `Accessor::with`, the borrow checker
-        // will ensure that the reference we return here cannot outlive the
-        // scope of the closure passed to `Accessor::with` and thus cannot be
-        // used beyond the current `Future::poll` call for the host task which
-        // received the backing `Accessor`.
-        //
-        // TODO: something needs to prevent two `Accessor`s from using `with` at
-        // the same time.
-        let vmstore = unsafe { &mut *(self.get)() };
-        fun(Access {
-            store: self.token.as_context_mut(vmstore),
-            accessor: self,
+        tls::get(|vmstore| {
+            fun(Access {
+                store: self.token.as_context_mut(vmstore),
+                accessor: self,
+            })
         })
     }
 
-    /// TODO: is this safe? unsafe? should there be a lifetime in the
-    /// returned value? no?
+    /// Changes this accessor to access `D2` instead of the current type
+    /// parameter `D`.
+    //
+    // TODO: this is technically no longer `unsafe` but still not great to
+    // call. This creates a second `Accessor` which makes it easy to call `with`
+    // twice which can easily lead to panics (safe panics though). Needs some
+    // thought about what exactly `Accessor` is represented as.
     #[doc(hidden)]
     pub unsafe fn with_data<D2: HasData>(
         &mut self,
@@ -352,7 +349,6 @@ where
     ) -> Accessor<T, D2> {
         Accessor {
             token: self.token,
-            get: self.get,
             get_data,
             instance: self.instance,
         }
@@ -372,12 +368,7 @@ where
         T: 'static,
     {
         let instance = self.instance;
-        let accessor = Self {
-            token: self.token,
-            get: self.get,
-            get_data: self.get_data,
-            instance: self.instance,
-        };
+        let accessor = self.clone_for_spawn();
         self.with(|mut access| {
             instance.spawn_with_accessor(access.as_context_mut(), accessor, task)
         })
@@ -386,6 +377,14 @@ where
     /// Retrieve the component instance of the caller.
     pub fn instance(&self) -> Instance {
         self.instance
+    }
+
+    fn clone_for_spawn(&self) -> Self {
+        Self {
+            token: self.token,
+            get_data: self.get_data,
+            instance: self.instance,
+        }
     }
 }
 
@@ -472,174 +471,6 @@ where
 {
     /// Run the task.
     fn run(self, accessor: &mut Accessor<T, D>) -> impl Future<Output = R> + Send;
-}
-
-/// Thread-local state for giving a host task future access to the store while
-/// that future is being polled, plus a list of background tasks spawned by that
-/// task, if any.
-struct State {
-    store: *mut dyn VMStore,
-}
-
-/// Thread-local state for making the store and component instance available to
-/// futures polled as part of that instance's event loop.
-///
-/// This allows us to safely give those futures access to the store and
-/// component instance between (but not across) `await` points, as well as
-/// assert that any future which _must_ be polled as part of a specific
-/// instance's event loop is indeed being polled that way.
-#[derive(Copy, Clone)]
-enum InstanceThreadLocalState {
-    /// No instance's event loop is currently polling a future.
-    None,
-    /// An instance's event loop is currently polling a future, but the store
-    /// and instance references have been temporarily taken out of the thread
-    /// local state.
-    Polling,
-    /// The specified instance's event loop is currently polling a future, and
-    /// the store and instance may be accessed using the `with_local_instance`
-    /// function.
-    PollingWith {
-        instance: Instance,
-        store: VMStoreRawPtr,
-    },
-}
-
-impl fmt::Debug for InstanceThreadLocalState {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct(match self {
-            Self::None => "None",
-            Self::Polling => "Polling",
-            Self::PollingWith { .. } => "PollingWith",
-        })
-        .finish()
-    }
-}
-
-thread_local! {
-    /// See the `State` documentation.
-    static STATE: RefCell<Option<State>> = RefCell::new(None);
-
-    /// See the `InstanceThreadLocalState` documentation.
-    static INSTANCE_STATE: Cell<InstanceThreadLocalState> = Cell::new(InstanceThreadLocalState::None);
-}
-
-/// Temporarily take exclusive access to the store and component instance state
-/// from the thread-local state set when the instance's event loop polls a
-/// future, passing them both to the specified function and returning the
-/// result.
-///
-/// This will panic if `INSTANCE_STATE` does not match
-/// `InstanceThreadLocalState::PollingWith { .. }` and thus should only be called
-/// as a (transitive) child of `poll_with_local_instance`.
-fn with_local_instance<R>(fun: impl FnOnce(&mut dyn VMStore, Instance) -> R) -> R {
-    let state = ResetInstanceThreadLocalState(
-        INSTANCE_STATE.with(|v| v.replace(InstanceThreadLocalState::Polling)),
-    );
-
-    let InstanceThreadLocalState::PollingWith { instance, store } = state.0 else {
-        unreachable!("expected `PollingWith`; got `{:?}`", state.0)
-    };
-    let store = unsafe { &mut *store.0.as_ptr() };
-    fun(store, instance)
-}
-
-/// Poll the specified future with the thread-local instance state pointing to
-/// the specified store and instance.
-///
-/// The store and instance may be retrieved by (transitive) child calls using
-/// `with_local_instance`.
-fn poll_with_local_instance<F: Future + ?Sized>(
-    store: &mut dyn VMStore,
-    instance: Instance,
-    future: &mut Pin<&mut F>,
-    cx: &mut Context,
-) -> Poll<F::Output> {
-    let state = ResetInstanceThreadLocalState(INSTANCE_STATE.with(|v| {
-        v.replace(InstanceThreadLocalState::PollingWith {
-            instance,
-            store: VMStoreRawPtr(store.traitobj()),
-        })
-    }));
-
-    assert!(matches!(
-        state.0,
-        InstanceThreadLocalState::None | InstanceThreadLocalState::Polling
-    ));
-
-    future.as_mut().poll(cx)
-}
-
-/// Helper struct to reset the value of `STATE` to its previous value on drop.
-struct ResetState(Option<State>);
-
-impl Drop for ResetState {
-    fn drop(&mut self) {
-        STATE.with(|v| {
-            *v.borrow_mut() = self.0.take();
-        })
-    }
-}
-
-/// Helper struct to reset the value of `INSTANCE_STATE` to its previous value on drop.
-struct ResetInstanceThreadLocalState(InstanceThreadLocalState);
-
-impl Drop for ResetInstanceThreadLocalState {
-    fn drop(&mut self) {
-        INSTANCE_STATE.with(|v| v.set(self.0))
-    }
-}
-
-/// Retrieves the `State::store` field from `STATE`.
-fn get_store() -> *mut dyn VMStore {
-    STATE
-        .with(|v| v.borrow().as_ref().map(|State { store, .. }| *store))
-        .unwrap()
-}
-
-/// Poll the specified future using the store and instance references borrowed
-/// using `with_local_instance`.
-///
-/// This will set the `STATE` thread-local variable to make the store available
-/// to any `Accessor`s referenced by the future.  Additionally, it will spawn
-/// any background tasks which may accumulate in `State::spawned` while the
-/// future is being polled.
-///
-/// Note that this uses `with_local_instance` to access the thread-local store
-/// and instance stored in `INSTANCE_STATE`.  See that function's documentation
-/// for details.
-fn poll_with_state<F: Future + Send + ?Sized>(
-    cx: &mut Context,
-    mut future: Pin<&mut F>,
-) -> Poll<F::Output> {
-    with_local_instance(|store, instance| {
-        let result = {
-            let old_state = STATE.with(|v| {
-                v.replace(Some(State {
-                    store: store.traitobj().as_ptr(),
-                }))
-            });
-            let _reset_state = ResetState(old_state);
-            // SAFETY: `get_store` will retrieve the store we just stored in
-            // `STATE` above.  Note that we avoid using the `store` parameter
-            // here since that would invalidate the pointer stored in `STATE`
-            // according to stacked borrow rules.
-            poll_with_local_instance(unsafe { &mut *get_store() }, instance, &mut future, cx)
-        };
-
-        let spawned_tasks = mem::take(
-            &mut store
-                .store_opaque_mut()
-                .concurrent_async_state()
-                .spawned_tasks,
-        );
-        let instance = &mut store[instance.id()];
-        for spawned in spawned_tasks {
-            instance.push_future(spawned);
-        }
-
-        result
-    })
 }
 
 /// Represents the state of a waitable handle.
@@ -1497,7 +1328,7 @@ impl Instance {
         let mut accessor = Accessor::new(token, self);
         let mut future = Box::pin(async move { fun(&mut accessor).await });
         Box::pin(future::poll_fn(move |cx| {
-            poll_with_state(cx, future.as_mut())
+            self.poll_then_spawn(cx, future.as_mut())
         }))
     }
 
@@ -1556,7 +1387,7 @@ impl Instance {
                 if let AbortWrapper::Unpolled(mut future)
                 | AbortWrapper::Polled { mut future, .. } = inner
                 {
-                    let result = poll_with_state(cx, future.as_mut());
+                    let result = self.poll_then_spawn(cx, future.as_mut());
                     *spawned = AbortWrapper::Polled {
                         future,
                         waker: cx.waker().clone(),
@@ -1600,26 +1431,23 @@ impl Instance {
             let result = future::poll_fn(|cx| {
                 // First, poll the future we were passed as an argument and
                 // return immediately if it's ready.
-                if let Poll::Ready(value) =
-                    poll_with_local_instance(store.0.traitobj_mut(), self, &mut future, cx)
-                {
+                if let Poll::Ready(value) = self.set_tls(store.0, || future.as_mut().poll(cx)) {
                     return Poll::Ready(Ok(Either::Left(value)));
                 }
 
                 // Next, poll `ConcurrentState::futures` (which includes any
                 // pending host tasks and/or background tasks), returning
                 // immediately if one of them fails.
-                let next =
-                    match poll_with_local_instance(store.0.traitobj_mut(), self, &mut next, cx) {
-                        Poll::Ready(Some(output)) => {
-                            if let Err(e) = output.consume(store.0.traitobj_mut(), self) {
-                                return Poll::Ready(Err(e));
-                            }
-                            Poll::Ready(true)
+                let next = match self.set_tls(store.0, || next.as_mut().poll(cx)) {
+                    Poll::Ready(Some(output)) => {
+                        if let Err(e) = output.consume(store.0.traitobj_mut(), self) {
+                            return Poll::Ready(Err(e));
                         }
-                        Poll::Ready(None) => Poll::Ready(false),
-                        Poll::Pending => Poll::Pending,
-                    };
+                        Poll::Ready(true)
+                    }
+                    Poll::Ready(None) => Poll::Ready(false),
+                    Poll::Pending => Poll::Pending,
+                };
 
                 let instance = &mut store[self.id()];
 
@@ -2647,7 +2475,7 @@ impl Instance {
         let mut accessor = Accessor::new(token, self);
         let mut future = Box::pin(async move { closure(&mut accessor, params).await });
         Box::pin(future::poll_fn(move |cx| {
-            poll_with_state(cx, future.as_mut())
+            self.poll_then_spawn(cx, future.as_mut())
         }))
     }
 
@@ -2697,7 +2525,7 @@ impl Instance {
                 {
                     // Push the call context for managing any resource borrows
                     // for the task.
-                    with_local_instance(|store, _| {
+                    tls::get(|store| {
                         if let Some(call_context) = call_context.take() {
                             log::trace!("push call context for {task:?}");
                             token
@@ -2721,7 +2549,7 @@ impl Instance {
                         Poll::Pending => {
                             // Pop the call context for managing any resource
                             // borrows for the task.
-                            with_local_instance(|store, _| {
+                            tls::get(|store| {
                                 log::trace!("pop call context for {task:?}");
                                 call_context = Some(
                                     token
@@ -2774,12 +2602,11 @@ impl Instance {
         // we'll add the future to `ConcurrentState::futures` and poll it
         // automatically from the event loop if it doesn't complete immediately
         // here.
-        let poll = poll_with_local_instance(
-            store.0.traitobj_mut(),
-            self,
-            &mut future.as_mut(),
-            &mut Context::from_waker(&dummy_waker()),
-        );
+        let poll = self.set_tls(store.0, || {
+            future
+                .as_mut()
+                .poll(&mut Context::from_waker(&dummy_waker()))
+        });
 
         Ok(match poll {
             Poll::Ready(output) => {
@@ -2871,12 +2698,11 @@ impl Instance {
         // we'll add the future to `ConcurrentState::futures` and poll it
         // automatically from the event loop if it doesn't complete immediately
         // here.
-        let poll = poll_with_local_instance(
-            store,
-            self,
-            &mut future.as_mut(),
-            &mut Context::from_waker(&dummy_waker()),
-        );
+        let poll = self.set_tls(store, || {
+            future
+                .as_mut()
+                .poll(&mut Context::from_waker(&dummy_waker()))
+        });
 
         match poll {
             Poll::Ready(output) => {
@@ -3306,6 +3132,62 @@ impl Instance {
         } else {
             bail!("`subtask.cancel` called after terminal status delivered");
         }
+    }
+
+    /// Configures TLS state so `store` will be available via `tls::get` within
+    /// the closure `f` provided.
+    ///
+    /// This is used to ensure that `Future::poll`, which doesn't take a `store`
+    /// parameter, is able to get access to the `store` during future poll
+    /// methods.
+    fn set_tls<R>(self, store: &mut dyn VMStore, f: impl FnOnce() -> R) -> R {
+        struct Reset<'a>(&'a mut dyn VMStore, Option<ComponentInstanceId>);
+
+        impl Drop for Reset<'_> {
+            fn drop(&mut self) {
+                self.0.concurrent_async_state().current_instance = self.1;
+            }
+        }
+        let prev = mem::replace(
+            &mut store.concurrent_async_state().current_instance,
+            Some(self.id().instance()),
+        );
+        let reset = Reset(store, prev);
+
+        tls::set(reset.0, f)
+    }
+
+    /// Poll the specified future and then handles any spawned tasks by spawning
+    /// them onto this instance.
+    ///
+    /// This will use `cx` to poll the `future` specified. Once that operation
+    /// is complete then the store's list of spawned tasks will be scraped and
+    /// placed onto this instance, if any are present.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this is called outside of a `self.set_tls(...)` block.
+    fn poll_then_spawn<F: Future + Send + ?Sized>(
+        &self,
+        cx: &mut Context,
+        future: Pin<&mut F>,
+    ) -> Poll<F::Output> {
+        let result = future.poll(cx);
+
+        tls::get(|store| {
+            let spawned_tasks = mem::take(
+                &mut store
+                    .store_opaque_mut()
+                    .concurrent_async_state()
+                    .spawned_tasks,
+            );
+            let instance = &mut store[self.id()];
+            for spawned in spawned_tasks {
+                instance.push_future(spawned);
+            }
+        });
+
+        result
     }
 }
 
@@ -4320,6 +4202,11 @@ pub(crate) struct AsyncState {
     /// List of spawned tasks built up during a polling operation. This is
     /// drained after the poll in `poll_with_state`.
     spawned_tasks: Vec<HostTaskFuture>,
+
+    /// The current instance being polled, if any, which is used to perform
+    /// checks to ensure that futures are always polled within the correct
+    /// instance.
+    current_instance: Option<ComponentInstanceId>,
 }
 
 impl Default for AsyncState {
@@ -4328,6 +4215,7 @@ impl Default for AsyncState {
             current_suspend: UnsafeCell::new(ptr::null_mut()),
             current_poll_cx: UnsafeCell::new(PollContext::default()),
             spawned_tasks: Vec::new(),
+            current_instance: None,
         }
     }
 }
@@ -4608,13 +4496,13 @@ fn checked<F: Future + Send + 'static>(
             instance from which they originated.  Please use \
             `Instance::{run,run_with,spawn}` to poll or await them.\
         ";
-        INSTANCE_STATE.with(|v| {
-            let matched = match v.get() {
-                InstanceThreadLocalState::PollingWith {
-                    instance: local, ..
-                } => local.id() == instance.id(),
-                InstanceThreadLocalState::None => false,
-                InstanceThreadLocalState::Polling => unreachable!(),
+        tls::try_get(|store| {
+            let matched = match store {
+                tls::TryGet::Some(store) => {
+                    store.concurrent_async_state().current_instance
+                        == Some(instance.id().instance())
+                }
+                tls::TryGet::Taken | tls::TryGet::None => false,
             };
 
             if !matched {
@@ -4628,8 +4516,8 @@ fn checked<F: Future + Send + 'static>(
 /// Assert that `Instance::run[_with]` has not been called from within an
 /// instance's event loop.
 fn check_recursive_run() {
-    INSTANCE_STATE.with(|v| {
-        if !matches!(v.get(), InstanceThreadLocalState::None) {
+    tls::try_get(|store| {
+        if !matches!(store, tls::TryGet::None) {
             panic!("Recursive `Instance::run[_with]` calls not supported")
         }
     });
