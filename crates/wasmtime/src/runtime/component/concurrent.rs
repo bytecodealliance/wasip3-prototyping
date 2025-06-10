@@ -294,7 +294,7 @@ where
 /// literally store these values. The basic problem is that when a concurrent
 /// host future is being polled it has access to `&mut T` (and the whole
 /// `Store`) but when it's not being polled it does not have access to these
-/// avlues. This reflects how the store is only ever polling one future at a
+/// values. This reflects how the store is only ever polling one future at a
 /// time so the store is effectively being passed between futures.
 ///
 /// Rust's `Future` trait, however, has no means of passing a `Store`
