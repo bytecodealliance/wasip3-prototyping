@@ -102,7 +102,9 @@ use core::num::NonZeroU64;
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
 use core::ptr::NonNull;
-use wasmtime_environ::{DefinedGlobalIndex, DefinedTableIndex, EntityRef, PrimaryMap, TripleExt};
+#[cfg(not(feature = "component-model-async"))]
+use wasmtime_environ::TripleExt;
+use wasmtime_environ::{DefinedGlobalIndex, DefinedTableIndex, EntityRef, PrimaryMap};
 
 mod context;
 pub use self::context::*;
@@ -403,6 +405,7 @@ pub struct StoreOpaque {
     ///
     /// For example if Pulley is enabled and configured then this will store a
     /// Pulley interpreter.
+    #[cfg(not(feature = "component-model-async"))]
     executor: Executor,
 }
 
@@ -410,7 +413,7 @@ pub struct StoreOpaque {
 ///
 /// Effectively stores Pulley interpreter state and handles conditional support
 /// for Cranelift at compile time.
-enum Executor {
+pub(crate) enum Executor {
     Interpreter(Interpreter),
     #[cfg(has_host_compiler_backend)]
     Native,
@@ -579,13 +582,13 @@ impl<T: 'static> Store<T> {
             host_resource_data: Default::default(),
             #[cfg(feature = "component-model-async")]
             concurrent_async_state: Default::default(),
-            #[cfg(has_host_compiler_backend)]
+            #[cfg(all(has_host_compiler_backend, not(feature = "component-model-async")))]
             executor: if cfg!(feature = "pulley") && engine.target().is_pulley() {
                 Executor::Interpreter(Interpreter::new(engine))
             } else {
                 Executor::Native
             },
-            #[cfg(not(has_host_compiler_backend))]
+            #[cfg(all(not(has_host_compiler_backend), not(feature = "component-model-async")))]
             executor: {
                 debug_assert!(engine.target().is_pulley());
                 Executor::Interpreter(Interpreter::new(engine))
@@ -1931,8 +1934,8 @@ at https://bytecodealliance.org/security.
     }
 
     #[cfg(feature = "component-model-async")]
-    pub(crate) fn concurrent_async_state(&mut self) -> &mut concurrent::AsyncState {
-        &mut self.concurrent_async_state
+    pub(crate) fn concurrent_async_state(&mut self) -> *mut concurrent::AsyncState {
+        &raw mut self.concurrent_async_state
     }
 
     #[cfg(feature = "component-model-async")]
@@ -1946,7 +1949,15 @@ at https://bytecodealliance.org/security.
     }
 
     pub(crate) fn executor(&mut self) -> ExecutorRef<'_> {
-        match &mut self.executor {
+        #[cfg(feature = "component-model-async")]
+        let executor = unsafe {
+            assert!(!self.concurrent_async_state.current_executor.is_null());
+            &mut *self.concurrent_async_state.current_executor
+        };
+        #[cfg(not(feature = "component-model-async"))]
+        let executor = &mut self.executor;
+
+        match executor {
             Executor::Interpreter(i) => ExecutorRef::Interpreter(i.as_interpreter_ref()),
             #[cfg(has_host_compiler_backend)]
             Executor::Native => ExecutorRef::Native,
@@ -1954,7 +1965,15 @@ at https://bytecodealliance.org/security.
     }
 
     pub(crate) fn unwinder(&self) -> &'static dyn Unwind {
-        match &self.executor {
+        #[cfg(feature = "component-model-async")]
+        let executor = unsafe {
+            assert!(!self.concurrent_async_state.current_executor.is_null());
+            &*self.concurrent_async_state.current_executor
+        };
+        #[cfg(not(feature = "component-model-async"))]
+        let executor = &self.executor;
+
+        match executor {
             Executor::Interpreter(i) => i.unwinder(),
             #[cfg(has_host_compiler_backend)]
             Executor::Native => &vm::UnwindHost,
