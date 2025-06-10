@@ -630,9 +630,9 @@ wit-component = { git = "https://github.com/bytecodealliance/wasm-tools" }
 wasm-wave = { git = "https://github.com/bytecodealliance/wasm-tools" }
 wasm-compose = { git = "https://github.com/bytecodealliance/wasm-tools" }
 wasm-metadata = { git = "https://github.com/bytecodealliance/wasm-tools" }
-wit-bindgen = { git = "https://github.com/dicej/wit-bindgen", branch = "future-and-stream-changes" }
-wit-bindgen-rt = { git = "https://github.com/dicej/wit-bindgen", branch = "future-and-stream-changes" }
-wit-bindgen-rust-macro = { git = "https://github.com/dicej/wit-bindgen", branch = "future-and-stream-changes" }
+wit-bindgen = { git = "https://github.com/bytecodealliance/wit-bindgen" }
+wit-bindgen-rt = { git = "https://github.com/bytecodealliance/wit-bindgen" }
+wit-bindgen-rust-macro = { git = "https://github.com/bytecodealliance/wit-bindgen" }
 
 # wasmparser = { path = '../wasm-tools/crates/wasmparser' }
 # wat = { path = '../wasm-tools/crates/wat' }

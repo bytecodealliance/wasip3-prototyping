@@ -1645,7 +1645,7 @@ impl Instance {
         //
         // By the time the future returned by `poll_fn` completes, we'll have
         // exclusive access to it again.
-        let fiber = poll_fn(store, guard_range, move |_, mut store| {
+        let fiber = poll_fn(store, guard_range, move |mut store| {
             // SAFETY: We confer exclusive access to the store to the fiber
             // here, only taking it back when the fiber yields it to us or
             // exits.
@@ -4600,7 +4600,7 @@ async fn on_fiber_raw<R: Send + 'static>(
     let (mut fiber, mut rx) = prepare_fiber(store.traitobj_mut(), func)?;
 
     let guard_range = fiber.guard_range();
-    poll_fn(store, guard_range, move |_, mut store| {
+    poll_fn(store, guard_range, move |mut store| {
         // SAFETY: We confer exclusive access to the store to the fiber here,
         // only taking it back when the fiber yields it to us or exits.
         match unsafe { resume_fiber(&mut fiber, store.take(), Ok(())) } {
@@ -5104,7 +5104,7 @@ fn queue_call0<T: 'static>(
 async fn poll_fn<R>(
     store: &mut StoreOpaque,
     guard_range: (Option<SendSyncPtr<u8>>, Option<SendSyncPtr<u8>>),
-    mut fun: impl FnMut(&mut Context, Option<*mut dyn VMStore>) -> Result<R, Option<*mut dyn VMStore>>,
+    mut fun: impl FnMut(Option<*mut dyn VMStore>) -> Result<R, Option<*mut dyn VMStore>>,
 ) -> R {
     #[derive(Clone, Copy)]
     struct PollCx(*mut PollContext);
@@ -5132,7 +5132,7 @@ async fn poll_fn<R>(
             #[allow(dropping_copy_types)]
             drop(poll_cx);
 
-            match fun(cx, store.take().map(|s| s.0.as_ptr())) {
+            match fun(store.take().map(|s| s.0.as_ptr())) {
                 Ok(v) => Poll::Ready(v),
                 Err(s) => {
                     store = s.map(|s| VMStoreRawPtr(NonNull::new(s).unwrap()));
