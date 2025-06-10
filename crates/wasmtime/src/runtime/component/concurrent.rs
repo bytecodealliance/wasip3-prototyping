@@ -286,6 +286,60 @@ where
 ///
 /// This allows multiple host task futures to execute concurrently and access
 /// the store between (but not across) `await` points.
+///
+/// # Rationale
+///
+/// This structure is sort of like `&mut T` plus a projection from `&mut T` to
+/// `D::Data<'_>`. The problem this is solving, however, is that it does not
+/// literally store these values. The basic problem is that when a concurrent
+/// host future is being polled it has access to `&mut T` (and the whole
+/// `Store`) but when it's not being polled it does not have access to these
+/// values. This reflects how the store is only ever polling one future at a
+/// time so the store is effectively being passed between futures.
+///
+/// Rust's `Future` trait, however, has no means of passing a `Store`
+/// temporarily between futures. The [`Context`](std::task::Context) type does
+/// not have the ability to attach arbitrary information to it at this time.
+/// This type, [`Accessor`], is used to bridge this expressivity gap.
+///
+/// The [`Accessor`] type here represents the ability to acquire, temporarily in
+/// a synchronous manner, the current store. The [`Accessor::with`] function
+/// yields an [`Access`] which can be used to access [`StoreContextMut`], `&mut
+/// T`, or `D::Data<'_>`. Note though that [`Accessor::with`] intentionally does
+/// not take an `async` closure as its argument, instead it's a synchronous
+/// closure which must complete during on run of `Future::poll`. This reflects
+/// how the store is temporarily made available while a host future is being
+/// polled.
+///
+/// # Implementation
+///
+/// This type does not actually store `&mut T` nor `StoreContextMut<T>`, and
+/// this type additionally doesn't even have a lifetime parameter. This is
+/// instead a representation of proof of the ability to acquire these while a
+/// future is being polled. Wasmtime will, when it polls a host future,
+/// configure ambient state such that the `Accessor` that a future closes over
+/// will work and be able to access the store.
+///
+/// This has a number of implications for users such as:
+///
+/// * It's intentional that `Accessor` cannot be cloned, it needs to stay within
+///   the lifetime of a single future.
+/// * A futures is expected to, however, close over an `Accessor` and keep it
+///   alive probably for the duration of the entire future.
+/// * Different host futures will be given different `Accessor`s, and that's
+///   intentional.
+/// * The `Accessor` type is `Send` and `Sync` irrespective of `T` which
+///   alleviates some otherwise required bounds to be written down.
+///
+/// # Using `Accessor` in `Drop`
+///
+/// The methods on `Accessor` are only expected to work in the context of
+/// `Future::poll` and are not guaranteed to work in `Drop`. This is because a
+/// host future can be dropped at any time throughout the system and Wasmtime
+/// store context is not necessarily available at that time. It's recommended to
+/// not use `Accessor` methods in anything connected to a `Drop` implementation
+/// as they will panic and have unintended results. If you run into this though
+/// feel free to file an issue on the Wasmtime repository.
 pub struct Accessor<T: 'static, D = HasSelf<T>>
 where
     D: HasData,
