@@ -87,16 +87,6 @@ impl Inst {
             size,
         }
     }
-
-    fn xmm_rm_r_blend(op: SseOpcode, src2: RegMem, dst: Writable<Reg>) -> Inst {
-        Inst::XmmRmRBlend {
-            op,
-            src1: Xmm::unwrap_new(dst.to_reg()),
-            src2: XmmMemAligned::unwrap_new(src2),
-            mask: Xmm::unwrap_new(regs::xmm0()),
-            dst: WritableXmm::from_writable_reg(dst).unwrap(),
-        }
-    }
 }
 
 #[test]
@@ -165,7 +155,6 @@ fn test_x64_emit() {
     let w_xmm10 = Writable::<Reg>::from_reg(xmm10);
     let w_xmm11 = Writable::<Reg>::from_reg(xmm11);
     let w_xmm12 = Writable::<Reg>::from_reg(xmm12);
-    let w_xmm13 = Writable::<Reg>::from_reg(xmm13);
 
     let mut insns = Vec::<(Inst, &str, &str)>::new();
 
@@ -1129,65 +1118,6 @@ fn test_x64_emit() {
     ));
 
     // ========================================================
-    // Push64
-    insns.push((Inst::push64(RegMemImm::reg(rdi)), "57", "pushq   %rdi"));
-    insns.push((Inst::push64(RegMemImm::reg(r8)), "4150", "pushq   %r8"));
-    insns.push((
-        Inst::push64(RegMemImm::mem(Amode::imm_reg_reg_shift(
-            321,
-            Gpr::unwrap_new(rsi),
-            Gpr::unwrap_new(rcx),
-            3,
-        ))),
-        "FFB4CE41010000",
-        "pushq   321(%rsi,%rcx,8)",
-    ));
-    insns.push((
-        Inst::push64(RegMemImm::mem(Amode::imm_reg_reg_shift(
-            321,
-            Gpr::unwrap_new(r9),
-            Gpr::unwrap_new(rbx),
-            2,
-        ))),
-        "41FFB49941010000",
-        "pushq   321(%r9,%rbx,4)",
-    ));
-    insns.push((Inst::push64(RegMemImm::imm(0)), "6A00", "pushq   $0"));
-    insns.push((Inst::push64(RegMemImm::imm(127)), "6A7F", "pushq   $127"));
-    insns.push((
-        Inst::push64(RegMemImm::imm(128)),
-        "6880000000",
-        "pushq   $128",
-    ));
-    insns.push((
-        Inst::push64(RegMemImm::imm(0x31415927)),
-        "6827594131",
-        "pushq   $826366247",
-    ));
-    insns.push((
-        Inst::push64(RegMemImm::imm(-128i32 as u32)),
-        "6A80",
-        "pushq   $-128",
-    ));
-    insns.push((
-        Inst::push64(RegMemImm::imm(-129i32 as u32)),
-        "687FFFFFFF",
-        "pushq   $-129",
-    ));
-    insns.push((
-        Inst::push64(RegMemImm::imm(-0x75c4e8a1i32 as u32)),
-        "685F173B8A",
-        "pushq   $-1975838881",
-    ));
-
-    // ========================================================
-    // Pop64
-    insns.push((Inst::pop64(w_rax), "58", "popq    %rax"));
-    insns.push((Inst::pop64(w_rdi), "5F", "popq    %rdi"));
-    insns.push((Inst::pop64(w_r8), "4158", "popq    %r8"));
-    insns.push((Inst::pop64(w_r15), "415F", "popq    %r15"));
-
-    // ========================================================
     // CallKnown
     insns.push((
         Inst::call_known(Box::new(CallInfo::empty(
@@ -1359,27 +1289,6 @@ fn test_x64_emit() {
         Inst::xmm_cmp_rm_r(SseOpcode::Ucomisd, xmm12, RegMem::reg(xmm11)),
         "66450F2EE3",
         "ucomisd %xmm11, %xmm12",
-    ));
-
-    // ========================================================
-    // XMM_RM_R: float binary ops
-
-    insns.push((
-        Inst::xmm_rm_r_blend(SseOpcode::Blendvpd, RegMem::reg(xmm15), w_xmm4),
-        "66410F3815E7",
-        "blendvpd %xmm4, %xmm15, %xmm4",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r_blend(SseOpcode::Blendvps, RegMem::reg(xmm2), w_xmm3),
-        "660F3814DA",
-        "blendvps %xmm3, %xmm2, %xmm3",
-    ));
-
-    insns.push((
-        Inst::xmm_rm_r_blend(SseOpcode::Pblendvb, RegMem::reg(xmm12), w_xmm13),
-        "66450F3810EC",
-        "pblendvb %xmm13, %xmm12, %xmm13",
     ));
 
     // ========================================================

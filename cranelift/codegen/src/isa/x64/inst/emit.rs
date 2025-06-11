@@ -3,8 +3,7 @@ use crate::ir::immediates::{Ieee32, Ieee64};
 use crate::isa::x64::encoding::evex::{EvexInstruction, EvexVectorLength, RegisterOrAmode};
 use crate::isa::x64::encoding::rex::{
     LegacyPrefixes, OpcodeMap, RexFlags, emit_simm, emit_std_enc_enc, emit_std_enc_mem,
-    emit_std_reg_mem, emit_std_reg_reg, int_reg_enc, low8_will_sign_extend_to_32,
-    low8_will_sign_extend_to_64, reg_enc,
+    emit_std_reg_mem, emit_std_reg_reg, int_reg_enc, low8_will_sign_extend_to_32, reg_enc,
 };
 use crate::isa::x64::encoding::vex::{VexInstruction, VexVectorLength};
 use crate::isa::x64::external::PairedGpr;
@@ -603,55 +602,6 @@ pub(crate) fn emit(
                 .emit(sink, info, state);
 
             sink.bind_label(next, state.ctrl_plane_mut());
-        }
-
-        Inst::Push64 { src } => {
-            let src = src.clone().to_reg_mem_imm().clone();
-
-            match src {
-                RegMemImm::Reg { reg } => {
-                    let enc_reg = int_reg_enc(reg);
-                    let rex = 0x40 | ((enc_reg >> 3) & 1);
-                    if rex != 0x40 {
-                        sink.put1(rex);
-                    }
-                    sink.put1(0x50 | (enc_reg & 7));
-                }
-
-                RegMemImm::Mem { addr } => {
-                    let addr = &addr.finalize(state.frame_layout(), sink);
-                    emit_std_enc_mem(
-                        sink,
-                        LegacyPrefixes::None,
-                        0xFF,
-                        1,
-                        6, /*subopcode*/
-                        addr,
-                        RexFlags::clear_w(),
-                        0,
-                    );
-                }
-
-                RegMemImm::Imm { simm32 } => {
-                    if low8_will_sign_extend_to_64(simm32) {
-                        sink.put1(0x6A);
-                        sink.put1(simm32 as u8);
-                    } else {
-                        sink.put1(0x68);
-                        sink.put4(simm32);
-                    }
-                }
-            }
-        }
-
-        Inst::Pop64 { dst } => {
-            let dst = dst.to_reg().to_reg();
-            let enc_dst = int_reg_enc(dst);
-            if enc_dst >= 8 {
-                // 0x41 == REX.{W=0, B=1}.  It seems that REX.W is irrelevant here.
-                sink.put1(0x41);
-            }
-            sink.put1(0x58 + (enc_dst & 7));
         }
 
         Inst::StackProbeLoop {
@@ -1304,34 +1254,6 @@ pub(crate) fn emit(
             };
         }
 
-        Inst::XmmUnaryRmRImm { op, src, dst, imm } => {
-            let dst = dst.to_reg().to_reg();
-            let src = src.clone().to_reg_mem().clone();
-            let rex = RexFlags::clear_w();
-
-            let (prefix, opcode, len) = match op {
-                SseOpcode::Roundps => (LegacyPrefixes::_66, 0x0F3A08, 3),
-                SseOpcode::Roundss => (LegacyPrefixes::_66, 0x0F3A0A, 3),
-                SseOpcode::Roundpd => (LegacyPrefixes::_66, 0x0F3A09, 3),
-                SseOpcode::Roundsd => (LegacyPrefixes::_66, 0x0F3A0B, 3),
-                SseOpcode::Pshufd => (LegacyPrefixes::_66, 0x0F70, 2),
-                SseOpcode::Pshuflw => (LegacyPrefixes::_F2, 0x0F70, 2),
-                SseOpcode::Pshufhw => (LegacyPrefixes::_F3, 0x0F70, 2),
-                _ => unimplemented!("Opcode {:?} not implemented", op),
-            };
-            match src {
-                RegMem::Reg { reg } => {
-                    emit_std_reg_reg(sink, prefix, opcode, len, dst, reg, rex);
-                }
-                RegMem::Mem { addr } => {
-                    let addr = &addr.finalize(state.frame_layout(), sink);
-                    // N.B.: bytes_at_end == 1, because of the `imm` byte below.
-                    emit_std_reg_mem(sink, prefix, opcode, len, dst, addr, rex, 1);
-                }
-            }
-            sink.put1(*imm);
-        }
-
         Inst::XmmUnaryRmREvex { op, src, dst } => {
             let dst = dst.to_reg().to_reg();
             let src = match src.clone().to_reg_mem().clone() {
@@ -1438,39 +1360,6 @@ pub(crate) fn emit(
                 SseOpcode::Pcmpgtq => (LegacyPrefixes::_66, 0x0F3837, 3),
                 SseOpcode::Pmaddwd => (LegacyPrefixes::_66, 0x0FF5, 2),
                 SseOpcode::Pshufb => (LegacyPrefixes::_66, 0x0F3800, 3),
-                _ => unimplemented!("Opcode {:?} not implemented", op),
-            };
-
-            match src_e {
-                RegMem::Reg { reg: reg_e } => {
-                    emit_std_reg_reg(sink, prefix, opcode, length, reg_g, reg_e, rex);
-                }
-                RegMem::Mem { addr } => {
-                    let addr = &addr.finalize(state.frame_layout(), sink);
-                    emit_std_reg_mem(sink, prefix, opcode, length, reg_g, addr, rex, 0);
-                }
-            }
-        }
-
-        Inst::XmmRmRBlend {
-            op,
-            src1,
-            src2,
-            dst,
-            mask,
-        } => {
-            let src1 = src1.to_reg();
-            let mask = mask.to_reg();
-            debug_assert_eq!(mask, regs::xmm0());
-            let reg_g = dst.to_reg().to_reg();
-            debug_assert_eq!(src1, reg_g);
-            let src_e = src2.clone().to_reg_mem().clone();
-
-            let rex = RexFlags::clear_w();
-            let (prefix, opcode, length) = match op {
-                SseOpcode::Blendvps => (LegacyPrefixes::_66, 0x0F3814, 3),
-                SseOpcode::Blendvpd => (LegacyPrefixes::_66, 0x0F3815, 3),
-                SseOpcode::Pblendvb => (LegacyPrefixes::_66, 0x0F3810, 3),
                 _ => unimplemented!("Opcode {:?} not implemented", op),
             };
 
@@ -1771,9 +1660,6 @@ pub(crate) fn emit(
                 AvxOpcode::Vfmsub213pd => (true, OpcodeMap::_0F38, 0xAA),
                 AvxOpcode::Vfnmsub132pd => (true, OpcodeMap::_0F38, 0x9E),
                 AvxOpcode::Vfnmsub213pd => (true, OpcodeMap::_0F38, 0xAE),
-                AvxOpcode::Vblendvps => (false, OpcodeMap::_0F3A, 0x4A),
-                AvxOpcode::Vblendvpd => (false, OpcodeMap::_0F3A, 0x4B),
-                AvxOpcode::Vpblendvb => (false, OpcodeMap::_0F3A, 0x4C),
                 _ => unreachable!(),
             };
 
@@ -1786,44 +1672,6 @@ pub(crate) fn emit(
                 .reg(dst.to_real_reg().unwrap().hw_enc())
                 .rm(src3)
                 .vvvv(src2.to_real_reg().unwrap().hw_enc())
-                .encode(sink);
-        }
-
-        Inst::XmmRmRBlendVex {
-            op,
-            src1,
-            src2,
-            mask,
-            dst,
-        } => {
-            let dst = dst.to_reg().to_reg();
-            let src1 = src1.to_reg();
-            let src2 = match src2.clone().to_reg_mem().clone() {
-                RegMem::Reg { reg } => {
-                    RegisterOrAmode::Register(reg.to_real_reg().unwrap().hw_enc().into())
-                }
-                RegMem::Mem { addr } => {
-                    RegisterOrAmode::Amode(addr.finalize(state.frame_layout(), sink))
-                }
-            };
-            let mask = mask.to_reg();
-
-            let opcode = match op {
-                AvxOpcode::Vblendvps => 0x4A,
-                AvxOpcode::Vblendvpd => 0x4B,
-                AvxOpcode::Vpblendvb => 0x4C,
-                _ => unreachable!(),
-            };
-
-            VexInstruction::new()
-                .length(VexVectorLength::V128)
-                .prefix(LegacyPrefixes::_66)
-                .map(OpcodeMap::_0F3A)
-                .opcode(opcode)
-                .reg(dst.to_real_reg().unwrap().hw_enc())
-                .vvvv(src1.to_real_reg().unwrap().hw_enc())
-                .rm(src2)
-                .imm(mask.to_real_reg().unwrap().hw_enc() << 4)
                 .encode(sink);
         }
 
@@ -1884,48 +1732,6 @@ pub(crate) fn emit(
                 .reg(dst.to_real_reg().unwrap().hw_enc())
                 .rm(src)
                 .encode(sink);
-        }
-
-        Inst::XmmUnaryRmRImmVex { op, src, dst, imm } => {
-            let dst = dst.to_reg().to_reg();
-            let src = match src.clone().to_reg_mem().clone() {
-                RegMem::Reg { reg } => {
-                    RegisterOrAmode::Register(reg.to_real_reg().unwrap().hw_enc().into())
-                }
-                RegMem::Mem { addr } => {
-                    RegisterOrAmode::Amode(addr.finalize(state.frame_layout(), sink))
-                }
-            };
-
-            let (prefix, map, opcode) = match op {
-                AvxOpcode::Vroundps => (LegacyPrefixes::_66, OpcodeMap::_0F3A, 0x08),
-                AvxOpcode::Vroundpd => (LegacyPrefixes::_66, OpcodeMap::_0F3A, 0x09),
-                AvxOpcode::Vpshuflw => (LegacyPrefixes::_F2, OpcodeMap::_0F, 0x70),
-                AvxOpcode::Vpshufhw => (LegacyPrefixes::_F3, OpcodeMap::_0F, 0x70),
-                AvxOpcode::Vpshufd => (LegacyPrefixes::_66, OpcodeMap::_0F, 0x70),
-                AvxOpcode::Vroundss => (LegacyPrefixes::_66, OpcodeMap::_0F3A, 0x0A),
-                AvxOpcode::Vroundsd => (LegacyPrefixes::_66, OpcodeMap::_0F3A, 0x0B),
-                _ => panic!("unexpected rmr_imm_vex opcode {op:?}"),
-            };
-
-            let vex = VexInstruction::new()
-                .length(VexVectorLength::V128)
-                .prefix(prefix)
-                .map(map)
-                .opcode(opcode)
-                .reg(dst.to_real_reg().unwrap().hw_enc())
-                .rm(src)
-                .imm(*imm);
-
-            // See comments in similar block above in `XmmUnaryRmRVex` for what
-            // this is doing.
-            let vex = match op {
-                AvxOpcode::Vroundss | AvxOpcode::Vroundsd => {
-                    vex.vvvv(dst.to_real_reg().unwrap().hw_enc())
-                }
-                _ => vex,
-            };
-            vex.encode(sink);
         }
 
         Inst::XmmMovRMVex { op, src, dst } => {

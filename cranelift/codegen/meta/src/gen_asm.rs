@@ -1,15 +1,25 @@
 //! Generate the Cranelift-specific integration of the x64 assembler.
 
 use cranelift_assembler_x64_meta::dsl::{
-    Format, Inst, Location, Mutability, Operand, OperandKind, RegClass,
+    Feature, Format, Inst, Location, Mutability, Operand, OperandKind, RegClass,
 };
 use cranelift_srcgen::{Formatter, fmtln};
 
 /// This factors out use of the assembler crate name.
 const ASM: &str = "cranelift_assembler_x64";
 
+fn include_inst(inst: &Inst) -> bool {
+    // No need to worry about this instruction shape in ISLE as it's generated
+    // in ABI code, not ISLE.
+    if inst.mnemonic.starts_with("push") {
+        return false;
+    }
+
+    true
+}
+
 /// Returns the Rust type used for the `IsleConstructorRaw` variants.
-pub fn rust_param_raw(op: &Operand) -> String {
+fn rust_param_raw(op: &Operand) -> String {
     match op.location.kind() {
         OperandKind::Imm(loc) => {
             let bits = loc.bits();
@@ -34,7 +44,7 @@ pub fn rust_param_raw(op: &Operand) -> String {
 /// Returns the conversion function, if any, when converting the ISLE type for
 /// this parameter to the assembler type for this parameter. Effectively
 /// converts `self.rust_param_raw()` to the assembler type.
-pub fn rust_convert_isle_to_assembler(op: &Operand) -> String {
+fn rust_convert_isle_to_assembler(op: &Operand) -> String {
     match op.location.kind() {
         OperandKind::Imm(loc) => {
             let bits = loc.bits();
@@ -87,7 +97,7 @@ pub fn rust_convert_isle_to_assembler(op: &Operand) -> String {
 /// # Panics
 ///
 /// This function panics if the instruction has no operands.
-pub fn generate_macro_inst_fn(f: &mut Formatter, inst: &Inst) {
+fn generate_macro_inst_fn(f: &mut Formatter, inst: &Inst) {
     use OperandKind::*;
 
     let struct_name = inst.name();
@@ -202,7 +212,9 @@ pub fn generate_rust_macro(f: &mut Formatter, insts: &[Inst]) {
         fmtln!(f, "() => {{");
         f.indent(|f| {
             for inst in insts {
-                generate_macro_inst_fn(f, inst);
+                if include_inst(inst) {
+                    generate_macro_inst_fn(f, inst);
+                }
             }
         });
         fmtln!(f, "}};");
@@ -212,7 +224,7 @@ pub fn generate_rust_macro(f: &mut Formatter, insts: &[Inst]) {
 
 /// Returns the type of this operand in ISLE as a part of the ISLE "raw"
 /// constructors.
-pub fn isle_param_raw(op: &Operand) -> String {
+fn isle_param_raw(op: &Operand) -> String {
     match op.location.kind() {
         OperandKind::Imm(loc) => {
             let bits = loc.bits();
@@ -246,7 +258,7 @@ pub fn isle_param_raw(op: &Operand) -> String {
 /// read/write operand is `GprMem` will generate two constructors though, one
 /// for memory and one for in registers.
 #[derive(Copy, Clone, Debug)]
-pub enum IsleConstructor {
+enum IsleConstructor {
     /// This constructor only produces a side effect, meaning that the
     /// instruction does not produce results in registers. This may produce
     /// a result in memory, however.
@@ -266,7 +278,7 @@ pub enum IsleConstructor {
 
 impl IsleConstructor {
     /// Returns the result type, in ISLE, that this constructor generates.
-    pub fn result_ty(&self) -> &'static str {
+    fn result_ty(&self) -> &'static str {
         match self {
             IsleConstructor::RetMemorySideEffect => "SideEffectNoResult",
             IsleConstructor::RetGpr => "Gpr",
@@ -277,7 +289,7 @@ impl IsleConstructor {
 
     /// Returns the constructor used to convert an `AssemblerOutput` into the
     /// type returned by [`Self::result_ty`].
-    pub fn conversion_constructor(&self) -> &'static str {
+    fn conversion_constructor(&self) -> &'static str {
         match self {
             IsleConstructor::RetMemorySideEffect => "defer_side_effect",
             IsleConstructor::RetGpr => "emit_ret_gpr",
@@ -287,7 +299,7 @@ impl IsleConstructor {
     }
 
     /// Returns the suffix used in the ISLE constructor name.
-    pub fn suffix(&self) -> &'static str {
+    fn suffix(&self) -> &'static str {
         match self {
             IsleConstructor::RetMemorySideEffect => "_mem",
             IsleConstructor::RetGpr | IsleConstructor::RetXmm | IsleConstructor::RetValueRegs => "",
@@ -299,7 +311,7 @@ impl IsleConstructor {
     ///
     /// Memory-based ctors take an `Amode`, but register-based ctors don't take
     /// the result as an argument and instead manufacture it internally.
-    pub fn includes_write_only_reg_mem(&self) -> bool {
+    fn includes_write_only_reg_mem(&self) -> bool {
         match self {
             IsleConstructor::RetMemorySideEffect => true,
             IsleConstructor::RetGpr | IsleConstructor::RetXmm | IsleConstructor::RetValueRegs => {
@@ -311,7 +323,7 @@ impl IsleConstructor {
 
 /// Returns the parameter type used for the `IsleConstructor` variant
 /// provided.
-pub fn isle_param_for_ctor(op: &Operand, ctor: IsleConstructor) -> String {
+fn isle_param_for_ctor(op: &Operand, ctor: IsleConstructor) -> String {
     match op.location.kind() {
         // Writable `RegMem` operands are special here: in one constructor
         // it's operating on memory so the argument is `Amode` and in the
@@ -334,7 +346,7 @@ pub fn isle_param_for_ctor(op: &Operand, ctor: IsleConstructor) -> String {
 ///
 /// Note that one instruction might need multiple constructors, such as one
 /// for operating on memory and one for operating on registers.
-pub fn isle_constructors(format: &Format) -> Vec<IsleConstructor> {
+fn isle_constructors(format: &Format) -> Vec<IsleConstructor> {
     use Mutability::*;
     use OperandKind::*;
 
@@ -413,7 +425,7 @@ pub fn isle_constructors(format: &Format) -> Vec<IsleConstructor> {
 /// # Panics
 ///
 /// This function panics if the instruction has no operands.
-pub fn generate_isle_inst_decls(f: &mut Formatter, inst: &Inst) {
+fn generate_isle_inst_decls(f: &mut Formatter, inst: &Inst) {
     let (trap_type, trap_name) = if inst.has_trap {
         (Some("TrapCode".to_string()), Some("trap".to_string()))
     } else {
@@ -504,6 +516,36 @@ pub fn generate_isle_inst_decls(f: &mut Formatter, inst: &Inst) {
             f,
             "(rule ({rule_name} {param_names}) ({convert} ({raw_name} {implicit_params} {param_names})))"
         );
+
+        if let Some(alternate) = &inst.alternate {
+            // We currently plan to use alternate instructions for SSE/AVX
+            // pairs, so we expect the destination register to be an XMM
+            // register. In the future we could relax this, but would need to
+            // handle more cases below.
+            assert!(matches!(
+                inst.format.operands.first().unwrap().location.reg_class(),
+                Some(RegClass::Xmm)
+            ));
+            let param_tys = if alternate.feature == Feature::avx {
+                param_tys.replace("Aligned", "")
+            } else {
+                param_tys
+            };
+            let name = inst.name();
+            let alt_feature = alternate.feature.to_string();
+            let alt_name = &alternate.name;
+            let rule_name = format!("x64_{name}_or_{alt_feature}");
+            fmtln!(f, "(decl {rule_name} ({param_tys}) {result_ty})");
+            fmtln!(f, "(rule 1 ({rule_name} {param_names})");
+            f.indent(|f| {
+                fmtln!(f, "(if-let true (use_{alt_feature}))");
+                fmtln!(f, "(x64_{alt_name} {param_names}))");
+            });
+            fmtln!(
+                f,
+                "(rule 0 ({rule_name} {param_names}) (x64_{name} {param_names}))"
+            );
+        }
     }
 }
 
@@ -568,8 +610,10 @@ pub fn generate_isle(f: &mut Formatter, insts: &[Inst]) {
     f.empty_line();
 
     for inst in insts {
-        generate_isle_inst_decls(f, inst);
-        f.empty_line();
+        if include_inst(inst) {
+            generate_isle_inst_decls(f, inst);
+            f.empty_line();
+        }
     }
 }
 
