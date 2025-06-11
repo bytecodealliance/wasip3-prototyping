@@ -587,8 +587,8 @@ mod call_thread_state {
 
         #[cfg(feature = "async")]
         pub(crate) unsafe fn swap(&self) {
-            unsafe fn swap(a: &core::cell::UnsafeCell<usize>, b: &mut usize) {
-                *a.get() = core::mem::replace(b, *a.get());
+            unsafe fn swap<T: Clone>(a: &core::cell::UnsafeCell<T>, b: &mut T) {
+                *a.get() = core::mem::replace(b, (*a.get()).clone());
             }
 
             let cx = self.vm_store_context.as_ref();
@@ -604,6 +604,7 @@ mod call_thread_state {
                 &cx.last_wasm_entry_fp,
                 &mut (*self.old_state).last_wasm_entry_fp,
             );
+            swap(&cx.stack_chain, &mut (*self.old_state).stack_chain);
         }
     }
 }
