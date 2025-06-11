@@ -214,14 +214,14 @@ impl Response {
                 let fut = async move {
                     loop {
                         let (tail, mut rx_buffer) = contents.await;
-                        if let Some(tail) = tail {
-                            let buffer = rx_buffer.split();
-                            if !buffer.is_empty() {
-                                if let Err(..) = contents_tx.send(buffer.freeze()).await {
-                                    break;
-                                }
-                                rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
+                        let buffer = rx_buffer.split();
+                        if !buffer.is_empty() {
+                            if let Err(..) = contents_tx.send(buffer.freeze()).await {
+                                break;
                             }
+                            rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
+                        }
+                        if let Some(tail) = tail {
                             contents = tail.read(rx_buffer).boxed();
                         } else {
                             debug_assert!(rx_buffer.is_empty());

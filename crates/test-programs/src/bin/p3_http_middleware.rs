@@ -66,6 +66,7 @@ impl Handler for Component {
                         let remaining = pipe_tx.write_all(mem::take(decoder.get_mut())).await;
                         assert!(remaining.is_empty());
                         *decoder.get_mut() = remaining;
+                        chunk.clear();
                         (status, chunk) = body.read(chunk).await;
                     }
 

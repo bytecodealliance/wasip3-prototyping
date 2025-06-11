@@ -9,6 +9,8 @@ foreach_p3_http!(assert_test_exists);
 use super::proxy::{p3_http_echo, p3_http_middleware, p3_http_middleware_with_chain};
 
 async fn run(path: &str, server: &Server) -> anyhow::Result<()> {
+    _ = env_logger::try_init();
+
     let engine = test_programs_artifacts::engine(|config| {
         config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
         config.async_support(true);

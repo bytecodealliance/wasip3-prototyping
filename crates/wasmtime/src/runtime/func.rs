@@ -1706,7 +1706,7 @@ impl EntryStoreContext {
     /// This function restores the values stored in this struct. We invoke this
     /// function through this type's `Drop` implementation. This ensures that we
     /// even restore the values if we unwind the stack (e.g., because we are
-    /// panicing out of a Wasm execution).
+    /// panicking out of a Wasm execution).
     #[inline]
     fn exit_wasm(&mut self) {
         unsafe {

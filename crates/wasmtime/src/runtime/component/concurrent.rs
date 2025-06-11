@@ -4115,18 +4115,18 @@ impl Waitable {
                 assert_eq!(rep, self.rep());
                 assert_eq!(*state, StreamFutureState::Busy);
                 *state = match event {
-                    Event::FutureRead { .. } => StreamFutureState::Read,
-                    Event::FutureWrite { .. } => StreamFutureState::Write,
+                    Event::FutureRead { .. } => StreamFutureState::Read { done: false },
+                    Event::FutureWrite { .. } => StreamFutureState::Write { done: false },
                     _ => unreachable!(),
                 };
             }
             Event::StreamRead {
                 pending: Some((ty, handle)),
-                ..
+                code,
             }
             | Event::StreamWrite {
                 pending: Some((ty, handle)),
-                ..
+                code,
             } => {
                 let runtime_instance = instance.component().types()[ty].instance;
                 let (rep, WaitableState::Stream(actual_ty, state)) = instance.waitable_tables()
@@ -4139,9 +4139,10 @@ impl Waitable {
                 assert_eq!(*actual_ty, ty);
                 assert_eq!(rep, self.rep());
                 assert_eq!(*state, StreamFutureState::Busy);
+                let done = matches!(code, ReturnCode::Dropped(_));
                 *state = match event {
-                    Event::StreamRead { .. } => StreamFutureState::Read,
-                    Event::StreamWrite { .. } => StreamFutureState::Write,
+                    Event::StreamRead { .. } => StreamFutureState::Read { done },
+                    Event::StreamWrite { .. } => StreamFutureState::Write { done },
                     _ => unreachable!(),
                 };
             }
