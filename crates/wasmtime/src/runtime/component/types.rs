@@ -392,7 +392,7 @@ impl Variant {
             .cases
             .iter()
             .map(|(name, ty)| Case {
-                name: name,
+                name,
                 ty: ty.as_ref().map(|ty| Type::from(ty, &self.0.instance())),
             })
     }

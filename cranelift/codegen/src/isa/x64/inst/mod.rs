@@ -108,8 +108,6 @@ impl Inst {
             | Inst::MovFromPReg { .. }
             | Inst::MovToPReg { .. }
             | Inst::Nop { .. }
-            | Inst::Pop64 { .. }
-            | Inst::Push64 { .. }
             | Inst::StackProbeLoop { .. }
             | Inst::Args { .. }
             | Inst::Rets { .. }
@@ -138,9 +136,7 @@ impl Inst {
             // These use dynamic SSE opcodes.
             Inst::XmmRmR { op, .. }
             | Inst::XmmRmRUnaligned { op, .. }
-            | Inst::XmmRmRBlend { op, .. }
             | Inst::XmmRmRImm { op, .. }
-            | Inst::XmmUnaryRmRImm { op, .. }
             | Inst::XmmUnaryRmR { op, .. } => smallvec![op.available_from()],
 
             Inst::XmmUnaryRmREvex { op, .. }
@@ -151,9 +147,7 @@ impl Inst {
             Inst::XmmRmiRVex { op, .. }
             | Inst::XmmRmRVex3 { op, .. }
             | Inst::XmmRmRImmVex { op, .. }
-            | Inst::XmmRmRBlendVex { op, .. }
             | Inst::XmmUnaryRmRVex { op, .. }
-            | Inst::XmmUnaryRmRImmVex { op, .. }
             | Inst::XmmMovRMVex { op, .. }
             | Inst::XmmMovRMImmVex { op, .. }
             | Inst::XmmToGprImmVex { op, .. }
@@ -399,18 +393,6 @@ impl Inst {
         }
     }
 
-    pub(crate) fn push64(src: RegMemImm) -> Inst {
-        src.assert_regclass_is(RegClass::Int);
-        let src = GprMemImm::unwrap_new(src);
-        Inst::Push64 { src }
-    }
-
-    pub(crate) fn pop64(dst: Writable<Reg>) -> Inst {
-        debug_assert!(dst.to_reg().class() == RegClass::Int);
-        let dst = WritableGpr::from_writable_reg(dst).unwrap();
-        Inst::Pop64 { dst }
-    }
-
     pub(crate) fn call_known(info: Box<CallInfo<ExternalName>>) -> Inst {
         Inst::CallKnown { info }
     }
@@ -620,29 +602,11 @@ impl PrettyPrint for Inst {
                 format!("{op} {src}, {dst}")
             }
 
-            Inst::XmmUnaryRmRImm {
-                op, src, dst, imm, ..
-            } => {
-                let dst = pretty_print_reg(dst.to_reg().to_reg(), op.src_size());
-                let src = src.pretty_print(op.src_size());
-                let op = ljustify(op.to_string());
-                format!("{op} ${imm}, {src}, {dst}")
-            }
-
             Inst::XmmUnaryRmRVex { op, src, dst, .. } => {
                 let dst = pretty_print_reg(dst.to_reg().to_reg(), 8);
                 let src = src.pretty_print(8);
                 let op = ljustify(op.to_string());
                 format!("{op} {src}, {dst}")
-            }
-
-            Inst::XmmUnaryRmRImmVex {
-                op, src, dst, imm, ..
-            } => {
-                let dst = pretty_print_reg(dst.to_reg().to_reg(), 8);
-                let src = src.pretty_print(8);
-                let op = ljustify(op.to_string());
-                format!("{op} ${imm}, {src}, {dst}")
             }
 
             Inst::XmmUnaryRmREvex { op, src, dst, .. } => {
@@ -705,27 +669,6 @@ impl PrettyPrint for Inst {
                 format!("{op} {src1}, {src2}, {dst}")
             }
 
-            Inst::XmmRmRBlend {
-                op,
-                src1,
-                src2,
-                mask,
-                dst,
-            } => {
-                let src1 = pretty_print_reg(src1.to_reg(), 8);
-                let mask = mask.to_reg();
-                let mask = if mask.is_virtual() {
-                    format!(" <{}>", show_ireg_sized(mask, 8))
-                } else {
-                    debug_assert_eq!(mask, regs::xmm0());
-                    String::new()
-                };
-                let dst = pretty_print_reg(dst.to_reg().to_reg(), 8);
-                let src2 = src2.pretty_print(8);
-                let op = ljustify(op.to_string());
-                format!("{op} {src1}, {src2}, {dst}{mask}")
-            }
-
             Inst::XmmRmiRVex {
                 op,
                 src1,
@@ -769,22 +712,6 @@ impl PrettyPrint for Inst {
                 let src3 = src3.pretty_print(8);
                 let op = ljustify(op.to_string());
                 format!("{op} {src1}, {src2}, {src3}, {dst}")
-            }
-
-            Inst::XmmRmRBlendVex {
-                op,
-                src1,
-                src2,
-                mask,
-                dst,
-                ..
-            } => {
-                let src1 = pretty_print_reg(src1.to_reg(), 8);
-                let dst = pretty_print_reg(dst.to_reg().to_reg(), 8);
-                let src2 = src2.pretty_print(8);
-                let mask = pretty_print_reg(mask.to_reg(), 8);
-                let op = ljustify(op.to_string());
-                format!("{op} {src1}, {src2}, {mask}, {dst}")
             }
 
             Inst::XmmRmREvex {
@@ -1095,12 +1022,6 @@ impl PrettyPrint for Inst {
                 )
             }
 
-            Inst::Push64 { src } => {
-                let src = src.pretty_print(8);
-                let op = ljustify("pushq".to_string());
-                format!("{op} {src}")
-            }
-
             Inst::StackProbeLoop {
                 tmp,
                 frame_size,
@@ -1109,12 +1030,6 @@ impl PrettyPrint for Inst {
                 let tmp = pretty_print_reg(tmp.to_reg(), 8);
                 let op = ljustify("stack_probe_loop".to_string());
                 format!("{op} {tmp}, frame_size={frame_size}, guard_size={guard_size}")
-            }
-
-            Inst::Pop64 { dst } => {
-                let dst = pretty_print_reg(dst.to_reg().to_reg(), 8);
-                let op = ljustify("popq".to_string());
-                format!("{op} {dst}")
             }
 
             Inst::CallKnown { info } => {
@@ -1513,14 +1428,13 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
             collector.reg_fixed_use(dividend, regs::rax());
             collector.reg_fixed_def(dst, regs::rax());
         }
-        Inst::XmmUnaryRmR { src, dst, .. } | Inst::XmmUnaryRmRImm { src, dst, .. } => {
+        Inst::XmmUnaryRmR { src, dst, .. } => {
             collector.reg_def(dst);
             src.get_operands(collector);
         }
         Inst::XmmUnaryRmREvex { src, dst, .. }
         | Inst::XmmUnaryRmRImmEvex { src, dst, .. }
-        | Inst::XmmUnaryRmRVex { src, dst, .. }
-        | Inst::XmmUnaryRmRImmVex { src, dst, .. } => {
+        | Inst::XmmUnaryRmRVex { src, dst, .. } => {
             collector.reg_def(dst);
             src.get_operands(collector);
         }
@@ -1535,22 +1449,6 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
             src1, src2, dst, ..
         } => {
             collector.reg_use(src1);
-            collector.reg_reuse_def(dst, 0);
-            src2.get_operands(collector);
-        }
-        Inst::XmmRmRBlend {
-            src1,
-            src2,
-            mask,
-            dst,
-            op,
-        } => {
-            assert!(matches!(
-                op,
-                SseOpcode::Blendvpd | SseOpcode::Blendvps | SseOpcode::Pblendvb
-            ));
-            collector.reg_use(src1);
-            collector.reg_fixed_use(mask, regs::xmm0());
             collector.reg_reuse_def(dst, 0);
             src2.get_operands(collector);
         }
@@ -1579,18 +1477,6 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
             collector.reg_reuse_def(dst, 0);
             collector.reg_use(src2);
             src3.get_operands(collector);
-        }
-        Inst::XmmRmRBlendVex {
-            src1,
-            src2,
-            mask,
-            dst,
-            ..
-        } => {
-            collector.reg_def(dst);
-            collector.reg_use(src1);
-            src2.get_operands(collector);
-            collector.reg_use(mask);
         }
         Inst::XmmRmREvex {
             op,
@@ -1741,12 +1627,6 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
             collector.reg_use(alternative);
             collector.reg_reuse_def(dst, 0);
             collector.reg_use(consequent);
-        }
-        Inst::Push64 { src } => {
-            src.get_operands(collector);
-        }
-        Inst::Pop64 { dst } => {
-            collector.reg_def(dst);
         }
         Inst::StackProbeLoop { tmp, .. } => {
             collector.reg_early_def(tmp);

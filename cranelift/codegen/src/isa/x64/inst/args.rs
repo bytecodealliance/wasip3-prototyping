@@ -1051,9 +1051,6 @@ impl AvxOpcode {
             | AvxOpcode::Vpcmpgtw
             | AvxOpcode::Vpcmpgtd
             | AvxOpcode::Vpcmpgtq
-            | AvxOpcode::Vblendvps
-            | AvxOpcode::Vblendvpd
-            | AvxOpcode::Vpblendvb
             | AvxOpcode::Vmovlhps
             | AvxOpcode::Vpminsb
             | AvxOpcode::Vpminsw
@@ -1107,17 +1104,12 @@ impl AvxOpcode {
             | AvxOpcode::Vmaxsd
             | AvxOpcode::Vsqrtps
             | AvxOpcode::Vsqrtpd
-            | AvxOpcode::Vroundpd
-            | AvxOpcode::Vroundps
             | AvxOpcode::Vphaddw
             | AvxOpcode::Vphaddd
             | AvxOpcode::Vpunpckldq
             | AvxOpcode::Vpunpckhdq
             | AvxOpcode::Vpunpcklqdq
             | AvxOpcode::Vpunpckhqdq
-            | AvxOpcode::Vpshuflw
-            | AvxOpcode::Vpshufhw
-            | AvxOpcode::Vpshufd
             | AvxOpcode::Vmovss
             | AvxOpcode::Vmovsd
             | AvxOpcode::Vmovups
@@ -1131,8 +1123,6 @@ impl AvxOpcode {
             | AvxOpcode::Vbroadcastss
             | AvxOpcode::Vsqrtss
             | AvxOpcode::Vsqrtsd
-            | AvxOpcode::Vroundss
-            | AvxOpcode::Vroundsd
             | AvxOpcode::Vunpcklpd
             | AvxOpcode::Vptest
             | AvxOpcode::Vucomiss

@@ -195,24 +195,10 @@ pub(crate) fn check(
 
         Inst::XmmCmove { dst, .. } => ensure_no_fact(vcode, dst.to_writable_reg().to_reg()),
 
-        Inst::Push64 { ref src } => match <&RegMemImm>::from(src) {
-            RegMemImm::Mem { addr } => {
-                check_load(ctx, None, addr, vcode, I64, 64)?;
-                Ok(())
-            }
-            RegMemImm::Reg { .. } | RegMemImm::Imm { .. } => Ok(()),
-        },
-
-        Inst::Pop64 { dst } => undefined_result(ctx, vcode, dst, 64, 64),
-
         Inst::StackProbeLoop { tmp, .. } => ensure_no_fact(vcode, tmp.to_reg()),
 
         Inst::XmmRmR { dst, ref src2, .. }
-        | Inst::XmmRmRBlend { dst, ref src2, .. }
         | Inst::XmmUnaryRmR {
-            dst, src: ref src2, ..
-        }
-        | Inst::XmmUnaryRmRImm {
             dst, src: ref src2, ..
         } => {
             match <&RegMem>::from(src2) {
@@ -258,16 +244,7 @@ pub(crate) fn check(
             src3: ref src2,
             ..
         }
-        | Inst::XmmRmRBlendVex {
-            op, dst, ref src2, ..
-        }
         | Inst::XmmUnaryRmRVex {
-            op,
-            dst,
-            src: ref src2,
-            ..
-        }
-        | Inst::XmmUnaryRmRImmVex {
             op,
             dst,
             src: ref src2,
