@@ -82,7 +82,6 @@ fn provenance_test_config() -> Config {
     config.memory_reservation(1 << 20);
     config.memory_guard_size(0);
     config.signals_based_traps(false);
-    config.async_support(true);
     config.wasm_component_model_async(true);
     config.wasm_component_model_async_stackful(true);
     config.wasm_component_model_async_builtins(true);
@@ -114,9 +113,9 @@ fn provenance_test_config() -> Config {
 /// and instructions. The goal is to kind of do a dry run of interesting
 /// shapes/sizes of what you can do with core wasm and ensure MIRI gives us a
 /// clean bill of health.
-#[tokio::test]
+#[test]
 #[cfg_attr(miri, ignore)]
-async fn pulley_provenance_test() -> Result<()> {
+fn pulley_provenance_test() -> Result<()> {
     let config = provenance_test_config();
     let engine = Engine::new(&config)?;
     let module = if cfg!(miri) {
@@ -137,8 +136,7 @@ async fn pulley_provenance_test() -> Result<()> {
         results[2] = Val::I32(3);
         Ok(())
     });
-    let instance =
-        Instance::new_async(&mut store, &module, &[host_wrap.into(), host_new.into()]).await?;
+    let instance = Instance::new(&mut store, &module, &[host_wrap.into(), host_new.into()])?;
 
     for func in [
         "call-wasm",
@@ -151,7 +149,7 @@ async fn pulley_provenance_test() -> Result<()> {
         let func = instance
             .get_typed_func::<(), (i32, i32, i32)>(&mut store, func)
             .unwrap();
-        let results = func.call_async(&mut store, ()).await?;
+        let results = func.call(&mut store, ())?;
         assert_eq!(results, (1, 2, 3));
     }
 
@@ -159,51 +157,45 @@ async fn pulley_provenance_test() -> Result<()> {
     for func in ["call_ref-wasm", "return_call_ref-wasm"] {
         println!("testing func {func:?}");
         let func = instance.get_typed_func::<Func, (i32, i32, i32)>(&mut store, func)?;
-        let results = func.call_async(&mut store, funcref).await?;
+        let results = func.call(&mut store, funcref)?;
         assert_eq!(results, (1, 2, 3));
     }
 
     let trap = instance
         .get_typed_func::<(), ()>(&mut store, "unreachable")?
-        .call_async(&mut store, ())
-        .await
+        .call(&mut store, ())
         .unwrap_err()
         .downcast::<Trap>()?;
     assert_eq!(trap, Trap::UnreachableCodeReached);
 
     let trap = instance
         .get_typed_func::<(), i32>(&mut store, "divide-by-zero")?
-        .call_async(&mut store, ())
-        .await
+        .call(&mut store, ())
         .unwrap_err()
         .downcast::<Trap>()?;
     assert_eq!(trap, Trap::IntegerDivisionByZero);
 
     instance
         .get_typed_func::<(), ()>(&mut store, "memory-intrinsics")?
-        .call_async(&mut store, ())
-        .await?;
+        .call(&mut store, ())?;
     instance
         .get_typed_func::<(), ()>(&mut store, "table-intrinsics")?
-        .call_async(&mut store, ())
-        .await?;
+        .call(&mut store, ())?;
 
-    let funcref = Func::wrap_async(&mut store, move |mut caller: Caller<'_, ()>, ()| {
-        Box::new(async move {
-            let func = instance.get_typed_func::<(), (i32, i32, i32)>(&mut caller, "call-wasm")?;
-            func.call_async(&mut caller, ()).await
-        })
+    let funcref = Func::wrap(&mut store, move |mut caller: Caller<'_, ()>| {
+        let func = instance.get_typed_func::<(), (i32, i32, i32)>(&mut caller, "call-wasm")?;
+        func.call(&mut caller, ())
     });
     let func = instance.get_typed_func::<Func, (i32, i32, i32)>(&mut store, "call_ref-wasm")?;
-    let results = func.call_async(&mut store, funcref).await?;
+    let results = func.call(&mut store, funcref)?;
     assert_eq!(results, (1, 2, 3));
 
     Ok(())
 }
 
-#[tokio::test]
+#[test]
 #[cfg_attr(miri, ignore)]
-async fn pulley_provenance_test_components() -> Result<()> {
+fn pulley_provenance_test_components() -> Result<()> {
     let config = provenance_test_config();
     let engine = Engine::new(&config)?;
     let component = if cfg!(miri) {
@@ -252,7 +244,7 @@ async fn pulley_provenance_test_components() -> Result<()> {
         linker
             .root()
             .func_wrap("host-list", |_, (value,): (Vec<String>,)| Ok((value,)))?;
-        let instance = linker.instantiate_async(&mut store, &component).await?;
+        let instance = linker.instantiate(&mut store, &component)?;
 
         let guest_u32 = instance.get_typed_func::<(u32,), (u32,)>(&mut store, "guest-u32")?;
         let guest_enum = instance.get_typed_func::<(E,), (E,)>(&mut store, "guest-enum")?;
@@ -267,50 +259,45 @@ async fn pulley_provenance_test_components() -> Result<()> {
         let guest_list =
             instance.get_typed_func::<(&[&str],), (Vec<String>,)>(&mut store, "guest-list")?;
 
-        let (result,) = guest_u32.call_async(&mut store, (42,)).await?;
+        let (result,) = guest_u32.call(&mut store, (42,))?;
         assert_eq!(result, 42);
-        guest_u32.post_return_async(&mut store).await?;
+        guest_u32.post_return(&mut store)?;
 
-        let (result,) = guest_enum.call_async(&mut store, (E::B,)).await?;
+        let (result,) = guest_enum.call(&mut store, (E::B,))?;
         assert_eq!(result, E::B);
-        guest_enum.post_return_async(&mut store).await?;
+        guest_enum.post_return(&mut store)?;
 
-        let (result,) = guest_option.call_async(&mut store, (None,)).await?;
+        let (result,) = guest_option.call(&mut store, (None,))?;
         assert_eq!(result, None);
-        guest_option.post_return_async(&mut store).await?;
-        let (result,) = guest_option.call_async(&mut store, (Some(200),)).await?;
+        guest_option.post_return(&mut store)?;
+        let (result,) = guest_option.call(&mut store, (Some(200),))?;
         assert_eq!(result, Some(200));
-        guest_option.post_return_async(&mut store).await?;
+        guest_option.post_return(&mut store)?;
 
-        let (result,) = guest_result.call_async(&mut store, (Ok(10),)).await?;
+        let (result,) = guest_result.call(&mut store, (Ok(10),))?;
         assert_eq!(result, Ok(10));
-        guest_result.post_return_async(&mut store).await?;
-        let (result,) = guest_result
-            .call_async(&mut store, (Err(i64::MIN),))
-            .await?;
+        guest_result.post_return(&mut store)?;
+        let (result,) = guest_result.call(&mut store, (Err(i64::MIN),))?;
         assert_eq!(result, Err(i64::MIN));
-        guest_result.post_return_async(&mut store).await?;
+        guest_result.post_return(&mut store)?;
 
-        let (result,) = guest_string.call_async(&mut store, ("",)).await?;
+        let (result,) = guest_string.call(&mut store, ("",))?;
         assert_eq!(result, "");
-        guest_string.post_return_async(&mut store).await?;
-        let (result,) = guest_string.call_async(&mut store, ("hello",)).await?;
+        guest_string.post_return(&mut store)?;
+        let (result,) = guest_string.call(&mut store, ("hello",))?;
         assert_eq!(result, "hello");
-        guest_string.post_return_async(&mut store).await?;
+        guest_string.post_return(&mut store)?;
 
-        let (result,) = guest_list.call_async(&mut store, (&[],)).await?;
+        let (result,) = guest_list.call(&mut store, (&[],))?;
         assert!(result.is_empty());
-        guest_list.post_return_async(&mut store).await?;
-        let (result,) = guest_list
-            .call_async(&mut store, (&["a", "", "b", "c"],))
-            .await?;
+        guest_list.post_return(&mut store)?;
+        let (result,) = guest_list.call(&mut store, (&["a", "", "b", "c"],))?;
         assert_eq!(result, ["a", "", "b", "c"]);
-        guest_list.post_return_async(&mut store).await?;
+        guest_list.post_return(&mut store)?;
 
         instance
             .get_typed_func::<(), ()>(&mut store, "resource-intrinsics")?
-            .call_async(&mut store, ())
-            .await?;
+            .call(&mut store, ())?;
     }
     {
         use wasmtime::component::Val;
@@ -340,7 +327,7 @@ async fn pulley_provenance_test_components() -> Result<()> {
             results[0] = args[0].clone();
             Ok(())
         })?;
-        let instance = linker.instantiate_async(&mut store, &component).await?;
+        let instance = linker.instantiate(&mut store, &component)?;
 
         let guest_u32 = instance.get_func(&mut store, "guest-u32").unwrap();
         let guest_enum = instance.get_func(&mut store, "guest-enum").unwrap();
@@ -350,71 +337,53 @@ async fn pulley_provenance_test_components() -> Result<()> {
         let guest_list = instance.get_func(&mut store, "guest-list").unwrap();
 
         let mut results = [Val::U32(0)];
-        guest_u32
-            .call_async(&mut store, &[Val::U32(42)], &mut results)
-            .await?;
+        guest_u32.call(&mut store, &[Val::U32(42)], &mut results)?;
         assert_eq!(results[0], Val::U32(42));
-        guest_u32.post_return_async(&mut store).await?;
+        guest_u32.post_return(&mut store)?;
 
-        guest_enum
-            .call_async(&mut store, &[Val::Enum("B".into())], &mut results)
-            .await?;
+        guest_enum.call(&mut store, &[Val::Enum("B".into())], &mut results)?;
         assert_eq!(results[0], Val::Enum("B".into()));
-        guest_enum.post_return_async(&mut store).await?;
+        guest_enum.post_return(&mut store)?;
 
-        guest_option
-            .call_async(&mut store, &[Val::Option(None)], &mut results)
-            .await?;
+        guest_option.call(&mut store, &[Val::Option(None)], &mut results)?;
         assert_eq!(results[0], Val::Option(None));
-        guest_option.post_return_async(&mut store).await?;
-        guest_option
-            .call_async(
-                &mut store,
-                &[Val::Option(Some(Box::new(Val::U8(201))))],
-                &mut results,
-            )
-            .await?;
+        guest_option.post_return(&mut store)?;
+        guest_option.call(
+            &mut store,
+            &[Val::Option(Some(Box::new(Val::U8(201))))],
+            &mut results,
+        )?;
         assert_eq!(results[0], Val::Option(Some(Box::new(Val::U8(201)))));
-        guest_option.post_return_async(&mut store).await?;
+        guest_option.post_return(&mut store)?;
 
-        guest_result
-            .call_async(
-                &mut store,
-                &[Val::Result(Ok(Some(Box::new(Val::U16(20)))))],
-                &mut results,
-            )
-            .await?;
+        guest_result.call(
+            &mut store,
+            &[Val::Result(Ok(Some(Box::new(Val::U16(20)))))],
+            &mut results,
+        )?;
         assert_eq!(results[0], Val::Result(Ok(Some(Box::new(Val::U16(20))))));
-        guest_result.post_return_async(&mut store).await?;
-        guest_result
-            .call_async(
-                &mut store,
-                &[Val::Result(Err(Some(Box::new(Val::S64(i64::MAX)))))],
-                &mut results,
-            )
-            .await?;
+        guest_result.post_return(&mut store)?;
+        guest_result.call(
+            &mut store,
+            &[Val::Result(Err(Some(Box::new(Val::S64(i64::MAX)))))],
+            &mut results,
+        )?;
         assert_eq!(
             results[0],
             Val::Result(Err(Some(Box::new(Val::S64(i64::MAX)))))
         );
-        guest_result.post_return_async(&mut store).await?;
+        guest_result.post_return(&mut store)?;
 
-        guest_string
-            .call_async(&mut store, &[Val::String("B".into())], &mut results)
-            .await?;
+        guest_string.call(&mut store, &[Val::String("B".into())], &mut results)?;
         assert_eq!(results[0], Val::String("B".into()));
-        guest_string.post_return_async(&mut store).await?;
-        guest_string
-            .call_async(&mut store, &[Val::String("".into())], &mut results)
-            .await?;
+        guest_string.post_return(&mut store)?;
+        guest_string.call(&mut store, &[Val::String("".into())], &mut results)?;
         assert_eq!(results[0], Val::String("".into()));
-        guest_string.post_return_async(&mut store).await?;
+        guest_string.post_return(&mut store)?;
 
-        guest_list
-            .call_async(&mut store, &[Val::List(Vec::new())], &mut results)
-            .await?;
+        guest_list.call(&mut store, &[Val::List(Vec::new())], &mut results)?;
         assert_eq!(results[0], Val::List(Vec::new()));
-        guest_list.post_return_async(&mut store).await?;
+        guest_list.post_return(&mut store)?;
     }
 
     Ok(())
@@ -467,7 +436,8 @@ async fn sleep(duration: std::time::Duration) {
 #[tokio::test]
 #[cfg_attr(miri, ignore)]
 async fn pulley_provenance_test_async_components() -> Result<()> {
-    let config = provenance_test_config();
+    let mut config = provenance_test_config();
+    config.async_support(true);
     let engine = Engine::new(&config)?;
     let component = if cfg!(miri) {
         unsafe {

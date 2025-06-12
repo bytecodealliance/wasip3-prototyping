@@ -102,9 +102,7 @@ use core::num::NonZeroU64;
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
 use core::ptr::NonNull;
-#[cfg(not(feature = "component-model-async"))]
-use wasmtime_environ::TripleExt;
-use wasmtime_environ::{DefinedGlobalIndex, DefinedTableIndex, EntityRef, PrimaryMap};
+use wasmtime_environ::{DefinedGlobalIndex, DefinedTableIndex, EntityRef, PrimaryMap, TripleExt};
 
 mod context;
 pub use self::context::*;
@@ -405,7 +403,6 @@ pub struct StoreOpaque {
     ///
     /// For example if Pulley is enabled and configured then this will store a
     /// Pulley interpreter.
-    #[cfg(not(feature = "component-model-async"))]
     executor: Executor,
 }
 
@@ -582,13 +579,13 @@ impl<T: 'static> Store<T> {
             host_resource_data: Default::default(),
             #[cfg(feature = "component-model-async")]
             concurrent_async_state: Default::default(),
-            #[cfg(all(has_host_compiler_backend, not(feature = "component-model-async")))]
+            #[cfg(has_host_compiler_backend)]
             executor: if cfg!(feature = "pulley") && engine.target().is_pulley() {
                 Executor::Interpreter(Interpreter::new(engine))
             } else {
                 Executor::Native
             },
-            #[cfg(all(not(has_host_compiler_backend), not(feature = "component-model-async")))]
+            #[cfg(not(has_host_compiler_backend))]
             executor: {
                 debug_assert!(engine.target().is_pulley());
                 Executor::Interpreter(Interpreter::new(engine))
@@ -602,6 +599,11 @@ impl<T: 'static> Store<T> {
             epoch_deadline_behavior: None,
             data: ManuallyDrop::new(data),
         });
+
+        #[cfg(feature = "component-model-async")]
+        {
+            inner.concurrent_async_state.current_executor = &raw mut inner.executor;
+        }
 
         inner.traitobj = StorePtr::new(NonNull::from(&mut *inner));
 
