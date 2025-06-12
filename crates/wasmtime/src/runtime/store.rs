@@ -410,7 +410,7 @@ pub struct StoreOpaque {
 ///
 /// Effectively stores Pulley interpreter state and handles conditional support
 /// for Cranelift at compile time.
-enum Executor {
+pub(crate) enum Executor {
     Interpreter(Interpreter),
     #[cfg(has_host_compiler_backend)]
     Native,
@@ -599,6 +599,11 @@ impl<T: 'static> Store<T> {
             epoch_deadline_behavior: None,
             data: ManuallyDrop::new(data),
         });
+
+        #[cfg(feature = "component-model-async")]
+        {
+            inner.concurrent_async_state.current_executor = &raw mut inner.executor;
+        }
 
         inner.traitobj = StorePtr::new(NonNull::from(&mut *inner));
 
@@ -1931,8 +1936,8 @@ at https://bytecodealliance.org/security.
     }
 
     #[cfg(feature = "component-model-async")]
-    pub(crate) fn concurrent_async_state(&mut self) -> &mut concurrent::AsyncState {
-        &mut self.concurrent_async_state
+    pub(crate) fn concurrent_async_state(&mut self) -> *mut concurrent::AsyncState {
+        &raw mut self.concurrent_async_state
     }
 
     #[cfg(feature = "component-model-async")]
@@ -1946,7 +1951,15 @@ at https://bytecodealliance.org/security.
     }
 
     pub(crate) fn executor(&mut self) -> ExecutorRef<'_> {
-        match &mut self.executor {
+        #[cfg(feature = "component-model-async")]
+        let executor = unsafe {
+            assert!(!self.concurrent_async_state.current_executor.is_null());
+            &mut *self.concurrent_async_state.current_executor
+        };
+        #[cfg(not(feature = "component-model-async"))]
+        let executor = &mut self.executor;
+
+        match executor {
             Executor::Interpreter(i) => ExecutorRef::Interpreter(i.as_interpreter_ref()),
             #[cfg(has_host_compiler_backend)]
             Executor::Native => ExecutorRef::Native,
@@ -1954,7 +1967,15 @@ at https://bytecodealliance.org/security.
     }
 
     pub(crate) fn unwinder(&self) -> &'static dyn Unwind {
-        match &self.executor {
+        #[cfg(feature = "component-model-async")]
+        let executor = unsafe {
+            assert!(!self.concurrent_async_state.current_executor.is_null());
+            &*self.concurrent_async_state.current_executor
+        };
+        #[cfg(not(feature = "component-model-async"))]
+        let executor = &self.executor;
+
+        match executor {
             Executor::Interpreter(i) => i.unwinder(),
             #[cfg(has_host_compiler_backend)]
             Executor::Native => &vm::UnwindHost,

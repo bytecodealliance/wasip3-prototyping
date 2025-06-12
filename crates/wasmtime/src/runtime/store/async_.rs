@@ -750,7 +750,7 @@ impl StoreOpaque {
     pub(crate) fn async_guard_range(&mut self) -> Range<*mut u8> {
         #[cfg(feature = "component-model-async")]
         {
-            self.concurrent_async_state().async_guard_range()
+            unsafe { (*self.concurrent_async_state()).async_guard_range() }
         }
         #[cfg(not(feature = "component-model-async"))]
         unsafe {

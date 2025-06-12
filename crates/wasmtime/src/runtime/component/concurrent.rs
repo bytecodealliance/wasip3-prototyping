@@ -54,9 +54,9 @@ use {
             ComponentInstanceId, HasData, HasSelf, Instance,
             func::{self, Func, Options},
         },
-        store::{StoreInner, StoreOpaque, StoreToken},
+        store::{Executor, StoreInner, StoreOpaque, StoreToken},
         vm::{
-            AsyncWasmCallState, PreviousAsyncWasmCallState, SendSyncPtr, VMFuncRef,
+            AsyncWasmCallState, Interpreter, PreviousAsyncWasmCallState, SendSyncPtr, VMFuncRef,
             VMMemoryDefinition, VMStore, VMStoreRawPtr,
             component::{CallContext, ComponentInstance, InstanceFlags, ResourceTables},
             mpk::{self, ProtectionMask},
@@ -94,7 +94,7 @@ use {
     },
     table::{Table, TableDebug, TableError, TableId},
     wasmtime_environ::{
-        PrimaryMap,
+        PrimaryMap, TripleExt,
         component::{
             MAX_FLAT_PARAMS, MAX_FLAT_RESULTS, PREPARE_ASYNC_NO_RESULT, PREPARE_ASYNC_WITH_RESULT,
             RuntimeComponentInstanceIndex, StringEncoding,
@@ -3223,11 +3223,13 @@ impl Instance {
 
         impl Drop for Reset<'_> {
             fn drop(&mut self) {
-                self.0.concurrent_async_state().current_instance = self.1;
+                unsafe {
+                    (*self.0.concurrent_async_state()).current_instance = self.1;
+                }
             }
         }
         let prev = mem::replace(
-            &mut store.concurrent_async_state().current_instance,
+            unsafe { &mut (*store.concurrent_async_state()).current_instance },
             Some(self.id().instance()),
         );
         let reset = Reset(store, prev);
@@ -3253,12 +3255,9 @@ impl Instance {
         let result = future.poll(cx);
 
         tls::get(|store| {
-            let spawned_tasks = mem::take(
-                &mut store
-                    .store_opaque_mut()
-                    .concurrent_async_state()
-                    .spawned_tasks,
-            );
+            let spawned_tasks = mem::take(unsafe {
+                &mut (*store.store_opaque_mut().concurrent_async_state()).spawned_tasks
+            });
             let instance = &mut store[self.id()];
             for spawned in spawned_tasks {
                 instance.push_future(spawned);
@@ -4267,15 +4266,16 @@ pub(crate) struct AsyncState {
     /// The `Suspend` for the current fiber (or null if no such fiber is running).
     ///
     /// See `StoreFiber` for an explanation of the signature types we use here.
-    current_suspend: UnsafeCell<
-        *mut Suspend<
-            (Option<*mut dyn VMStore>, Result<()>),
-            Option<*mut dyn VMStore>,
-            (Option<*mut dyn VMStore>, Result<()>),
-        >,
+    current_suspend: *mut Suspend<
+        (Option<*mut dyn VMStore>, Result<()>),
+        Option<*mut dyn VMStore>,
+        (Option<*mut dyn VMStore>, Result<()>),
     >,
+
+    pub(crate) current_executor: *mut Executor,
+
     /// See `PollContext`
-    current_poll_cx: UnsafeCell<PollContext>,
+    current_poll_cx: PollContext,
 
     /// List of spawned tasks built up during a polling operation. This is
     /// drained after the poll in `poll_with_state`.
@@ -4290,8 +4290,9 @@ pub(crate) struct AsyncState {
 impl Default for AsyncState {
     fn default() -> Self {
         Self {
-            current_suspend: UnsafeCell::new(ptr::null_mut()),
-            current_poll_cx: UnsafeCell::new(PollContext::default()),
+            current_suspend: ptr::null_mut(),
+            current_executor: ptr::null_mut(),
+            current_poll_cx: PollContext::default(),
             spawned_tasks: Vec::new(),
             current_instance: None,
         }
@@ -4300,7 +4301,7 @@ impl Default for AsyncState {
 
 impl AsyncState {
     pub(crate) fn async_guard_range(&self) -> Range<*mut u8> {
-        let context = unsafe { *self.current_poll_cx.get() };
+        let context = self.current_poll_cx;
         context.guard_range_start..context.guard_range_end
     }
 }
@@ -4335,12 +4336,14 @@ impl AsyncCx {
     /// This will return `None` if called outside the scope of a `self::poll_fn`
     /// call.
     pub(crate) fn try_new(store: &mut StoreOpaque) -> Option<Self> {
-        let current_poll_cx = store.concurrent_async_state().current_poll_cx.get();
+        let current_poll_cx = unsafe { &raw mut (*store.concurrent_async_state()).current_poll_cx };
         if unsafe { (*current_poll_cx).future_context.is_null() } {
             None
         } else {
             Some(Self {
-                current_suspend: store.concurrent_async_state().current_suspend.get(),
+                current_suspend: unsafe {
+                    &raw mut (*store.concurrent_async_state()).current_suspend
+                },
                 current_stack_limit: store.vm_store_context().stack_limit.get(),
                 current_poll_cx,
                 track_pkey_context_switch: store.has_pkey(),
@@ -4578,8 +4581,8 @@ fn checked<F: Future + Send + 'static>(
             tls::try_get(|store| {
                 let matched = match store {
                     tls::TryGet::Some(store) => {
-                        store.concurrent_async_state().current_instance
-                            == Some(instance.id().instance())
+                        let a = unsafe { (*store.concurrent_async_state()).current_instance };
+                        a == Some(instance.id().instance())
                     }
                     tls::TryGet::Taken | tls::TryGet::None => false,
                 };
@@ -4705,6 +4708,8 @@ struct StoreFiber<'a> {
     >,
     /// The stack limit used for handling traps from guest code.
     stack_limit: *mut usize,
+    executor_ptr: *mut *mut Executor,
+    executor: Executor,
 }
 
 impl StoreFiber<'_> {
@@ -4753,6 +4758,17 @@ fn make_fiber<'a>(
     fun: impl FnOnce(&mut dyn VMStore) -> Result<()> + 'a,
 ) -> Result<StoreFiber<'a>> {
     let engine = store.engine().clone();
+    #[cfg(has_host_compiler_backend)]
+    let executor = if cfg!(feature = "pulley") && engine.target().is_pulley() {
+        Executor::Interpreter(Interpreter::new(&engine))
+    } else {
+        Executor::Native
+    };
+    #[cfg(not(has_host_compiler_backend))]
+    let executor = {
+        debug_assert!(engine.target().is_pulley());
+        Executor::Interpreter(Interpreter::new(&engine))
+    };
     let stack = engine.allocator().allocate_fiber_stack()?;
     Ok(StoreFiber {
         fiber: Some(Fiber::new(
@@ -4765,11 +4781,10 @@ fn make_fiber<'a>(
                     // exclusive access to the store until we exit or yield it
                     // back to the resumer.
                     let store_ref = unsafe { &mut *store.unwrap() };
-                    let suspend_ptr = store_ref
-                        .store_opaque_mut()
-                        .concurrent_async_state()
-                        .current_suspend
-                        .get();
+                    let suspend_ptr = unsafe {
+                        &raw mut (*store_ref.store_opaque_mut().concurrent_async_state())
+                            .current_suspend
+                    };
                     // SAFETY: The resumer is responsible for setting
                     // `current_suspend` to a valid pointer.
                     let _reset = Reset(suspend_ptr, unsafe { *suspend_ptr });
@@ -4780,12 +4795,14 @@ fn make_fiber<'a>(
         )?),
         state: Some(AsyncWasmCallState::new()),
         engine,
-        suspend: store
-            .store_opaque_mut()
-            .concurrent_async_state()
-            .current_suspend
-            .get(),
+        suspend: unsafe {
+            &raw mut (*store.store_opaque_mut().concurrent_async_state()).current_suspend
+        },
         stack_limit: store.vm_store_context().stack_limit.get(),
+        executor_ptr: unsafe {
+            &raw mut (*store.store_opaque_mut().concurrent_async_state()).current_executor
+        },
+        executor,
     })
 }
 
@@ -4817,6 +4834,8 @@ unsafe fn resume_fiber_raw<'a>(
         }
     }
 
+    let _reset_executor = Reset((*fiber).executor_ptr, *(*fiber).executor_ptr);
+    *(*fiber).executor_ptr = &raw mut (*fiber).executor;
     let _reset_suspend = Reset((*fiber).suspend, *(*fiber).suspend);
     let _reset_stack_limit = Reset((*fiber).stack_limit, *(*fiber).stack_limit);
     let state = Some((*fiber).state.take().unwrap().push());
@@ -5165,7 +5184,7 @@ async fn poll_fn<R>(
 
     unsafe impl Send for PollCx {}
 
-    let poll_cx = PollCx(store.concurrent_async_state().current_poll_cx.get());
+    let poll_cx = PollCx(unsafe { &raw mut (*store.concurrent_async_state()).current_poll_cx });
     future::poll_fn({
         let mut store = Some(VMStoreRawPtr(store.traitobj()));
 
