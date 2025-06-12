@@ -23,4 +23,4 @@ compile ./tests/all/pulley_provenance_test_async_component.wat
 
 MIRIFLAGS="$MIRIFLAGS -Zmiri-disable-isolation -Zmiri-permissive-provenance" \
   cargo miri test --test all -- \
-    --ignored "$@"
+    --ignored pulley_provenance_test "$@"
