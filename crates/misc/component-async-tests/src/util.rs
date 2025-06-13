@@ -1,9 +1,14 @@
-use std::sync::{Arc, Mutex, Once};
+use std::collections::HashMap;
+use std::env;
+use std::ops::Deref;
+use std::path::Path;
+use std::sync::{Arc, LazyLock, Once};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow, bail};
 use futures::stream::{FuturesUnordered, TryStreamExt};
 use tokio::fs;
+use tokio::sync::Mutex;
 use wasm_compose::composer::ComponentComposer;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
@@ -20,7 +25,16 @@ pub fn config() -> Config {
     init_logger();
 
     let mut config = Config::new();
-    config.cranelift_debug_verifier(true);
+    if env::var_os("MIRI_TEST_CWASM_DIR").is_some() {
+        config.target("pulley64").unwrap();
+        config.memory_reservation(1 << 20);
+        config.memory_guard_size(0);
+        config.signals_based_traps(false);
+        config.debug_info(false);
+    } else {
+        config.cranelift_debug_verifier(true);
+        config.debug_info(true);
+    }
     config.wasm_component_model(true);
     config.wasm_component_model_async(true);
     config.wasm_component_model_async_builtins(true);
@@ -34,7 +48,7 @@ pub fn config() -> Config {
 ///
 /// a is the "root" component, and b is composed into it
 #[allow(unused)]
-pub async fn compose(a: &[u8], b: &[u8]) -> Result<Vec<u8>> {
+async fn compose(a: &[u8], b: &[u8]) -> Result<Vec<u8>> {
     let dir = tempfile::tempdir()?;
 
     let a_file = dir.path().join("a.wasm");
@@ -54,18 +68,111 @@ pub async fn compose(a: &[u8], b: &[u8]) -> Result<Vec<u8>> {
     .compose()
 }
 
-#[allow(unused)]
-pub async fn test_run(component: &[u8]) -> Result<()> {
-    test_run_with_count(component, 3).await
+pub async fn make_component(engine: &Engine, components: &[&str]) -> Result<Component> {
+    fn cwasm_name(components: &[&str]) -> Result<String> {
+        if components.is_empty() {
+            Err(anyhow!("expected at least one path"))
+        } else {
+            let names = components
+                .iter()
+                .map(|&path| {
+                    let path = Path::new(path);
+                    if let Some(name) = path.file_name() {
+                        Ok(name)
+                    } else {
+                        Err(anyhow!(
+                            "expected path with at least two components; got: {}",
+                            path.display()
+                        ))
+                    }
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            Ok(format!(
+                "{}.cwasm",
+                names
+                    .iter()
+                    .map(|name| { name.to_str().unwrap() })
+                    .collect::<Vec<_>>()
+                    .join("+")
+            ))
+        }
+    }
+
+    async fn compile(engine: &Engine, components: &[&str]) -> Result<Vec<u8>> {
+        match components {
+            [component] => engine.precompile_component(&fs::read(component).await?),
+            [a, b] => engine
+                .precompile_component(&compose(&fs::read(a).await?, &fs::read(b).await?).await?),
+            _ => Err(anyhow!("expected one or two paths")),
+        }
+    }
+
+    async fn load(engine: &Engine, components: &[&str]) -> Result<Vec<u8>> {
+        let cwasm_path = if let Some(cwasm_dir) = &env::var_os("MIRI_TEST_CWASM_DIR") {
+            Some(Path::new(cwasm_dir).join(cwasm_name(components)?))
+        } else {
+            None
+        };
+
+        if let Some(cwasm_path) = &cwasm_path {
+            if let Ok(compiled) = fs::read(cwasm_path).await {
+                return Ok(compiled);
+            }
+        }
+
+        if cfg!(miri) {
+            bail!(
+                "Running these tests with miri requires precompiled .cwasm files.\n\
+                 Please set the `MIRI_TEST_CWASM_DIR` environment variable to the\n\
+                 absolute path of a valid directory, then run the test(s)\n\
+                 _without_ miri, and finally run them again _with_ miri."
+            )
+        }
+
+        let compiled = compile(engine, components).await?;
+        if let Some(cwasm_path) = &cwasm_path {
+            fs::write(cwasm_path, &compiled).await?;
+        }
+        Ok(compiled)
+    }
+
+    static CACHE: LazyLock<Mutex<HashMap<Vec<String>, Arc<Mutex<Option<Arc<Vec<u8>>>>>>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    let compiled = {
+        let entry = CACHE
+            .lock()
+            .await
+            .entry(components.iter().map(|&s| s.to_owned()).collect())
+            .or_insert_with(|| Arc::new(Mutex::new(None)))
+            .clone();
+
+        let mut entry = entry.lock().await;
+        if let Some(component) = entry.deref() {
+            component.clone()
+        } else {
+            let component = Arc::new(load(engine, components).await?);
+            *entry = Some(component.clone());
+            component
+        }
+    };
+
+    Ok(unsafe { Component::deserialize(&engine, &*compiled)? })
 }
 
-pub async fn test_run_with_count(component: &[u8], count: usize) -> Result<()> {
+#[allow(unused)]
+pub async fn test_run(components: &[&str]) -> Result<()> {
+    test_run_with_count(components, 3).await
+}
+
+pub async fn test_run_with_count(components: &[&str], count: usize) -> Result<()> {
     let mut config = config();
     config.epoch_interruption(true);
 
     let engine = Engine::new(&config)?;
 
-    let component = Component::new(&engine, component)?;
+    let component = make_component(&engine, components).await?;
 
     let mut linker = Linker::new(&engine);
 
@@ -90,7 +197,7 @@ pub async fn test_run_with_count(component: &[u8], count: usize) -> Result<()> {
             wasi: WasiCtxBuilder::new().inherit_stdio().build(),
             table: ResourceTable::default(),
             continue_: false,
-            wakers: Arc::new(Mutex::new(None)),
+            wakers: Arc::new(std::sync::Mutex::new(None)),
         },
     );
     store.set_epoch_deadline(1);

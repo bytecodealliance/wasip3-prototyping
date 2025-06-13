@@ -1,7 +1,6 @@
 use anyhow::Result;
-use tokio::fs;
 
-use component_async_tests::util::{compose, test_run};
+use component_async_tests::util::test_run;
 
 // No-op function; we only test this by composing it in
 // `async_yield_callee_synchronous` and `async_yield_callee_stackful`
@@ -13,15 +12,18 @@ pub fn async_yield_caller() {}
 
 #[tokio::test]
 pub async fn async_yield_callee_synchronous() -> Result<()> {
-    let caller = &fs::read(test_programs_artifacts::ASYNC_YIELD_CALLER_COMPONENT).await?;
-    let callee =
-        &fs::read(test_programs_artifacts::ASYNC_YIELD_CALLEE_SYNCHRONOUS_COMPONENT).await?;
-    test_run(&compose(caller, callee).await?).await
+    test_run(&[
+        test_programs_artifacts::ASYNC_YIELD_CALLER_COMPONENT,
+        test_programs_artifacts::ASYNC_YIELD_CALLEE_SYNCHRONOUS_COMPONENT,
+    ])
+    .await
 }
 
 #[tokio::test]
 pub async fn async_yield_callee_stackless() -> Result<()> {
-    let caller = &fs::read(test_programs_artifacts::ASYNC_YIELD_CALLER_COMPONENT).await?;
-    let callee = &fs::read(test_programs_artifacts::ASYNC_YIELD_CALLEE_STACKLESS_COMPONENT).await?;
-    test_run(&compose(caller, callee).await?).await
+    test_run(&[
+        test_programs_artifacts::ASYNC_YIELD_CALLER_COMPONENT,
+        test_programs_artifacts::ASYNC_YIELD_CALLEE_STACKLESS_COMPONENT,
+    ])
+    .await
 }
