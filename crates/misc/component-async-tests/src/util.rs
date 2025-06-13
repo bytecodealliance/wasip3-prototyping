@@ -20,7 +20,6 @@ pub fn config() -> Config {
     init_logger();
 
     let mut config = Config::new();
-    config.debug_info(true);
     config.cranelift_debug_verifier(true);
     config.wasm_component_model(true);
     config.wasm_component_model_async(true);
