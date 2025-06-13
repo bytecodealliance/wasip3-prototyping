@@ -106,6 +106,8 @@ pub async fn p3_http_middleware_with_chain() -> Result<()> {
 }
 
 async fn test_http_echo(component: &str, use_compression: bool) -> Result<()> {
+    _ = env_logger::try_init();
+
     let body = b"And the mome raths outgrabe";
 
     // Prepare the raw body, optionally compressed if that's what we're

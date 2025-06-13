@@ -25,6 +25,7 @@ use {
     },
     std::{
         boxed::Box,
+        fmt,
         future::Future,
         iter,
         marker::PhantomData,
@@ -338,10 +339,20 @@ fn accept_writer<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
 /// given component instance.
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum StreamFutureState {
-    /// Only the write end is owned by this component instance.
-    Write,
-    /// Only the read end is owned by this component instance.
-    Read,
+    /// The write end of the stream or future.
+    Write {
+        /// Whether the component instance has been notified that the stream or
+        /// future is "done" (i.e. the other end has dropped, or, in the case of
+        /// a future, a value has been transmitted).
+        done: bool,
+    },
+    /// The read end of the stream or future.
+    Read {
+        /// Whether the component instance has been notified that the stream or
+        /// future is "done" (i.e. the other end has dropped, or, in the case of
+        /// a future, a value has been transmitted).
+        done: bool,
+    },
     /// A read or write is in progress.
     Busy,
 }
@@ -638,11 +649,20 @@ impl<T> HostFuture<T> {
                     get_mut_by_index_from(state_table, TableIndex::Future(src), index)?;
 
                 match state {
-                    StreamFutureState::Read => {
+                    StreamFutureState::Read { .. } => {
                         state_table.remove_by_index(index)?;
                     }
-                    StreamFutureState::Write => bail!("cannot transfer write end of future"),
+                    StreamFutureState::Write { .. } => bail!("cannot transfer write end of future"),
                     StreamFutureState::Busy => bail!("cannot transfer busy future"),
+                }
+
+                let state = cx
+                    .instance_mut()
+                    .get(TableId::<TransmitHandle>::new(rep))?
+                    .state;
+
+                if cx.instance_mut().get(state)?.done {
+                    bail!("cannot lift future after previous read succeeded");
                 }
 
                 Ok(Self::new(rep, cx.instance_handle()))
@@ -668,7 +688,10 @@ pub(crate) fn lower_future_to_index<U>(
 
             cx.instance_mut()
                 .state_table(TableIndex::Future(dst))
-                .insert(rep, WaitableState::Future(dst, StreamFutureState::Read))
+                .insert(
+                    rep,
+                    WaitableState::Future(dst, StreamFutureState::Read { done: false }),
+                )
         }
         _ => func::bad_type_info(),
     }
@@ -1004,10 +1027,13 @@ impl<T> HostStream<T> {
                     get_mut_by_index_from(state_table, TableIndex::Stream(src), index)?;
 
                 match state {
-                    StreamFutureState::Read => {
+                    StreamFutureState::Read { done: true } => bail!(
+                        "cannot lift stream after being notified that the writable end dropped"
+                    ),
+                    StreamFutureState::Read { done: false } => {
                         state_table.remove_by_index(index)?;
                     }
-                    StreamFutureState::Write => bail!("cannot transfer write end of stream"),
+                    StreamFutureState::Write { .. } => bail!("cannot transfer write end of stream"),
                     StreamFutureState::Busy => bail!("cannot transfer busy stream"),
                 }
 
@@ -1034,7 +1060,10 @@ pub(crate) fn lower_stream_to_index<U>(
 
             cx.instance_mut()
                 .state_table(TableIndex::Stream(dst))
-                .insert(rep, WaitableState::Stream(dst, StreamFutureState::Read))
+                .insert(
+                    rep,
+                    WaitableState::Stream(dst, StreamFutureState::Read { done: false }),
+                )
         }
         _ => func::bad_type_info(),
     }
@@ -1331,8 +1360,8 @@ struct TransmitState {
     writer_watcher: Option<oneshot::Sender<()>>,
     /// Like `writer_watcher`, but for the reverse direction.
     reader_watcher: Option<oneshot::Sender<()>>,
-    /// Whether the write end may be dropped or not.
-    may_drop_writer: bool,
+    /// Whether futher values may be transmitted via this stream or future.
+    done: bool,
 }
 
 impl Default for TransmitState {
@@ -1344,7 +1373,7 @@ impl Default for TransmitState {
             write: WriteState::Open,
             reader_watcher: None,
             writer_watcher: None,
-            may_drop_writer: true,
+            done: false,
         }
     }
 }
@@ -1379,6 +1408,17 @@ enum WriteState {
     Dropped,
 }
 
+impl fmt::Debug for WriteState {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Open => f.debug_tuple("Open").finish(),
+            Self::GuestReady { .. } => f.debug_tuple("GuestReady").finish(),
+            Self::HostReady { .. } => f.debug_tuple("HostReady").finish(),
+            Self::Dropped => f.debug_tuple("Dropped").finish(),
+        }
+    }
+}
+
 /// Represents the state of the read end of a stream or future.
 enum ReadState {
     /// The read end is open, but no read is pending.
@@ -1398,6 +1438,17 @@ enum ReadState {
     },
     /// The read end has been dropped.
     Dropped,
+}
+
+impl fmt::Debug for ReadState {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Open => f.debug_tuple("Open").finish(),
+            Self::GuestReady { .. } => f.debug_tuple("GuestReady").finish(),
+            Self::HostReady { .. } => f.debug_tuple("HostReady").finish(),
+            Self::Dropped => f.debug_tuple("Dropped").finish(),
+        }
+    }
 }
 
 /// Parameter type to pass to a `ReadState::HostReady` closure.
@@ -1462,7 +1513,7 @@ impl Instance {
         default: fn() -> T,
         mut store: S,
     ) -> Result<(FutureWriter<T>, FutureReader<T>)> {
-        let (write, read) = store.as_context_mut()[self.id()].new_transmit(TransmitKind::Future)?;
+        let (write, read) = store.as_context_mut()[self.id()].new_transmit()?;
 
         Ok((
             FutureWriter::new(
@@ -1498,7 +1549,7 @@ impl Instance {
         self,
         mut store: S,
     ) -> Result<(StreamWriter<W>, StreamReader<R>)> {
-        let (write, read) = store.as_context_mut()[self.id()].new_transmit(TransmitKind::Stream)?;
+        let (write, read) = store.as_context_mut()[self.id()].new_transmit()?;
 
         Ok((
             StreamWriter::new(
@@ -1694,7 +1745,7 @@ impl Instance {
         let transmit = store[self.id()]
             .get_mut(transmit_id)
             .with_context(|| format!("retrieving state for transmit [{transmit_rep}]"))?;
-        transmit.may_drop_writer = true;
+        log::trace!("host_write state {transmit_id:?}; {:?}", transmit.read);
 
         let new_state = if let ReadState::Dropped = &transmit.read {
             ReadState::Dropped
@@ -1728,6 +1779,10 @@ impl Instance {
                 handle,
                 ..
             } => {
+                if let TransmitKind::Future = kind {
+                    transmit.done = true;
+                }
+
                 let read_handle = transmit.read_handle;
                 let code = accept_reader::<T, B, U>(store.as_context_mut(), buffer, tx, kind)(
                     store.0.traitobj_mut(),
@@ -1807,6 +1862,7 @@ impl Instance {
         let transmit = store[self.id()]
             .get_mut(transmit_id)
             .with_context(|| rep.to_string())?;
+        log::trace!("host_read state {transmit_id:?}; {:?}", transmit.write);
 
         let new_state = if let WriteState::Dropped = &transmit.write {
             WriteState::Dropped
@@ -1833,6 +1889,10 @@ impl Instance {
                 post_write,
                 ..
             } => {
+                if let TableIndex::Future(_) = ty {
+                    transmit.done = true;
+                }
+
                 let write_handle = transmit.write_handle;
                 let types = store[self.id()].component().types().clone();
                 let lift =
@@ -1917,6 +1977,11 @@ impl Instance {
         let transmit = instance
             .get_mut(transmit_id)
             .with_context(|| format!("error closing reader {transmit_rep}"))?;
+        log::trace!(
+            "host_drop_reader state {transmit_id:?}; read state {:?} write state {:?}",
+            transmit.read,
+            transmit.write
+        );
 
         transmit.read = ReadState::Dropped;
         transmit.reader_watcher = None;
@@ -2167,19 +2232,30 @@ impl Instance {
         };
         let instance = &mut store[self.id()];
         let (rep, state) = instance.get_mut_by_index(ty, handle)?;
-        let StreamFutureState::Write = *state else {
+        let StreamFutureState::Write { done } = *state else {
             bail!(
-                "invalid handle {handle}; expected {:?}; got {:?}",
-                StreamFutureState::Write,
+                "invalid handle {handle}; expected `Write`; got {:?}",
                 *state
             );
         };
+
+        if done {
+            bail!("cannot write to stream after being notified that the readable end dropped");
+        }
+
         *state = StreamFutureState::Busy;
         let transmit_handle = TableId::<TransmitHandle>::new(rep);
         let transmit_id = instance.get(transmit_handle)?.state;
-        log::trace!("guest_write {transmit_handle:?} (handle {handle}; state {transmit_id:?})",);
         let transmit = instance.get_mut(transmit_id)?;
-        transmit.may_drop_writer = true;
+        log::trace!(
+            "guest_write {transmit_handle:?} (handle {handle}; state {transmit_id:?}); {:?}",
+            transmit.read
+        );
+
+        if transmit.done {
+            bail!("cannot write to future after previous write succeeded or readable end dropped");
+        }
+
         let new_state = if let ReadState::Dropped = &transmit.read {
             ReadState::Dropped
         } else {
@@ -2211,6 +2287,10 @@ impl Instance {
                 handle: read_handle,
             } => {
                 assert_eq!(flat_abi, read_flat_abi);
+
+                if let TableIndex::Future(_) = ty {
+                    transmit.done = true;
+                }
 
                 // Note that zero-length reads and writes are handling specially
                 // by the spec to allow each end to signal readiness to the
@@ -2309,6 +2389,10 @@ impl Instance {
             }
 
             ReadState::HostReady { accept } => {
+                if let TableIndex::Future(_) = ty {
+                    transmit.done = true;
+                }
+
                 let types = instance.component().types().clone();
                 let lift =
                     &mut LiftContext::new(store.0.store_opaque_mut(), &options, &types, self);
@@ -2325,11 +2409,22 @@ impl Instance {
                 ReturnCode::Blocked
             }
 
-            ReadState::Dropped => ReturnCode::Dropped(0),
+            ReadState::Dropped => {
+                if let TableIndex::Future(_) = ty {
+                    transmit.done = true;
+                }
+
+                ReturnCode::Dropped(0)
+            }
         };
 
         if result != ReturnCode::Blocked {
-            *store[self.id()].get_mut_by_index(ty, handle)?.1 = StreamFutureState::Write;
+            *store[self.id()].get_mut_by_index(ty, handle)?.1 = StreamFutureState::Write {
+                done: matches!(
+                    (result, ty),
+                    (ReturnCode::Dropped(_), TableIndex::Stream(_))
+                ),
+            };
         }
 
         Ok(result)
@@ -2371,18 +2466,27 @@ impl Instance {
         };
         let instance = &mut store[self.id()];
         let (rep, state) = instance.get_mut_by_index(ty, handle)?;
-        let StreamFutureState::Read = *state else {
-            bail!(
-                "invalid handle {handle}; expected {:?}; got {:?}",
-                StreamFutureState::Read,
-                *state
-            );
+        let StreamFutureState::Read { done } = *state else {
+            bail!("invalid handle {handle}; expected `Read`; got {:?}", *state);
         };
+
+        if done {
+            bail!("cannot read from stream after being notified that the writable end dropped");
+        }
+
         *state = StreamFutureState::Busy;
         let transmit_handle = TableId::<TransmitHandle>::new(rep);
         let transmit_id = instance.get(transmit_handle)?.state;
-        log::trace!("guest_read {transmit_handle:?} (handle {handle}; state {transmit_id:?})",);
         let transmit = instance.get_mut(transmit_id)?;
+        log::trace!(
+            "guest_read {transmit_handle:?} (handle {handle}; state {transmit_id:?}); {:?}",
+            transmit.write
+        );
+
+        if transmit.done {
+            bail!("cannot read from future after previous read succeeded");
+        }
+
         let new_state = if let WriteState::Dropped = &transmit.write {
             WriteState::Dropped
         } else {
@@ -2414,6 +2518,10 @@ impl Instance {
                 post_write,
             } => {
                 assert_eq!(flat_abi, write_flat_abi);
+
+                if let TableIndex::Future(_) = ty {
+                    transmit.done = true;
+                }
 
                 let write_handle_rep = transmit.write_handle.rep();
 
@@ -2505,6 +2613,10 @@ impl Instance {
             }
 
             WriteState::HostReady { accept, post_write } => {
+                if let TableIndex::Future(_) = ty {
+                    transmit.done = true;
+                }
+
                 let code = accept(
                     store.0.traitobj_mut(),
                     self,
@@ -2532,7 +2644,12 @@ impl Instance {
         };
 
         if result != ReturnCode::Blocked {
-            *store[self.id()].get_mut_by_index(ty, handle)?.1 = StreamFutureState::Read;
+            *store[self.id()].get_mut_by_index(ty, handle)?.1 = StreamFutureState::Read {
+                done: matches!(
+                    (result, ty),
+                    (ReturnCode::Dropped(_), TableIndex::Stream(_))
+                ),
+            };
         }
 
         Ok(result)
@@ -2555,8 +2672,8 @@ impl Instance {
             }
         };
         match state {
-            StreamFutureState::Read => {}
-            StreamFutureState::Write => {
+            StreamFutureState::Read { .. } => {}
+            StreamFutureState::Write { .. } => {
                 bail!("passed write end to `{{stream|future}}.drop-readable`")
             }
             StreamFutureState::Busy => bail!("cannot drop busy stream or future"),
@@ -2834,10 +2951,7 @@ impl ComponentInstance {
 
     /// Allocate a new future or stream, including the `TransmitState` and the
     /// `TransmitHandle`s corresponding to the read and write ends.
-    fn new_transmit(
-        &mut self,
-        kind: TransmitKind,
-    ) -> Result<(TableId<TransmitHandle>, TableId<TransmitHandle>)> {
+    fn new_transmit(&mut self) -> Result<(TableId<TransmitHandle>, TableId<TransmitHandle>)> {
         let state_id = self.push(TransmitState::default())?;
 
         let write = self.push(TransmitHandle::new(state_id))?;
@@ -2846,10 +2960,6 @@ impl ComponentInstance {
         let state = self.get_mut(state_id)?;
         state.write_handle = write;
         state.read_handle = read;
-
-        if let TransmitKind::Future = kind {
-            state.may_drop_writer = false;
-        }
 
         log::trace!("new transmit: state {state_id:?}; write {write:?}; read {read:?}",);
 
@@ -2883,16 +2993,15 @@ impl ComponentInstance {
     /// write ends to the (sub-)component instance to which the specified
     /// `TableIndex` belongs.
     fn guest_new(&mut self, ty: TableIndex) -> Result<ResourcePair> {
-        let (write, read) = self.new_transmit(match ty {
-            TableIndex::Future(_) => TransmitKind::Future,
-            TableIndex::Stream(_) => TransmitKind::Stream,
-        })?;
-        let read = self
-            .state_table(ty)
-            .insert(read.rep(), waitable_state(ty, StreamFutureState::Read))?;
-        let write = self
-            .state_table(ty)
-            .insert(write.rep(), waitable_state(ty, StreamFutureState::Write))?;
+        let (write, read) = self.new_transmit()?;
+        let read = self.state_table(ty).insert(
+            read.rep(),
+            waitable_state(ty, StreamFutureState::Read { done: false }),
+        )?;
+        let write = self.state_table(ty).insert(
+            write.rep(),
+            waitable_state(ty, StreamFutureState::Write { done: false }),
+        )?;
         Ok(ResourcePair { write, read })
     }
 
@@ -2901,10 +3010,14 @@ impl ComponentInstance {
     /// # Arguments
     ///
     /// * `rep` - The `TransmitState` rep for the stream or future.
-    /// * `kind` - Whether `rep` is for a stream or a future.
-    fn host_cancel_write(&mut self, rep: u32, kind: TransmitKind) -> Result<ReturnCode> {
+    fn host_cancel_write(&mut self, rep: u32) -> Result<ReturnCode> {
         let transmit_id = TableId::<TransmitState>::new(rep);
         let transmit = self.get_mut(transmit_id)?;
+        log::trace!(
+            "host_cancel_write state {transmit_id:?}; write state {:?} read state {:?}",
+            transmit.read,
+            transmit.write
+        );
 
         let code = if let Some(event) =
             Waitable::Transmit(transmit.write_handle).take_event(self)?
@@ -2935,10 +3048,6 @@ impl ComponentInstance {
 
         log::trace!("cancelled write {transmit_id:?}");
 
-        if let (TransmitKind::Future, ReturnCode::Cancelled(0)) = (kind, code) {
-            transmit.may_drop_writer = false;
-        }
-
         Ok(code)
     }
 
@@ -2950,6 +3059,11 @@ impl ComponentInstance {
     fn host_cancel_read(&mut self, rep: u32) -> Result<ReturnCode> {
         let transmit_id = TableId::<TransmitState>::new(rep);
         let transmit = self.get_mut(transmit_id)?;
+        log::trace!(
+            "host_cancel_read state {transmit_id:?}; read state {:?} write state {:?}",
+            transmit.read,
+            transmit.write
+        );
 
         let code = if let Some(event) = Waitable::Transmit(transmit.read_handle).take_event(self)? {
             let (Event::FutureRead { code, .. } | Event::StreamRead { code, .. }) = event else {
@@ -2991,10 +3105,11 @@ impl ComponentInstance {
         let transmit = self
             .get_mut(transmit_id)
             .with_context(|| format!("error closing writer {transmit_rep}"))?;
-
-        if !transmit.may_drop_writer {
-            bail!("cannot drop future write end without first writing a value")
-        }
+        log::trace!(
+            "host_drop_writer state {transmit_id:?}; write state {:?} read state {:?}",
+            transmit.read,
+            transmit.write
+        );
 
         transmit.writer_watcher = None;
 
@@ -3007,6 +3122,13 @@ impl ComponentInstance {
                 *post_write = PostWrite::Drop;
             }
             v @ WriteState::Open => {
+                if let (TransmitKind::Future, false) = (
+                    kind,
+                    transmit.done || matches!(transmit.read, ReadState::Dropped),
+                ) {
+                    bail!("cannot drop future write end without first writing a value")
+                }
+
                 *v = WriteState::Dropped;
             }
             WriteState::Dropped => unreachable!("write state is already dropped"),
@@ -3087,27 +3209,26 @@ impl ComponentInstance {
         writer: u32,
         _async_: bool,
     ) -> Result<ReturnCode> {
-        let (rep, state) = self.state_table(ty).get_mut_by_index(writer)?;
-        let (state, kind) = match state {
-            WaitableState::Stream(_, state) => (state, TransmitKind::Stream),
-            WaitableState::Future(_, state) => (state, TransmitKind::Future),
-            _ => bail!("invalid stream or future handle"),
+        let (rep, WaitableState::Stream(_, state) | WaitableState::Future(_, state)) =
+            self.state_table(ty).get_mut_by_index(writer)?
+        else {
+            bail!("invalid stream or future handle");
         };
         let id = TableId::<TransmitHandle>::new(rep);
         log::trace!("guest cancel write {id:?} (handle {writer})");
         match state {
-            StreamFutureState::Write => {
+            StreamFutureState::Write { .. } => {
                 bail!("stream or future write cancelled when no write is pending")
             }
-            StreamFutureState::Read => {
+            StreamFutureState::Read { .. } => {
                 bail!("passed read end to `{{stream|future}}.cancel-write`")
             }
             StreamFutureState::Busy => {
-                *state = StreamFutureState::Write;
+                *state = StreamFutureState::Write { done: false };
             }
         }
         let rep = self.get(id)?.state.rep();
-        self.host_cancel_write(rep, kind)
+        self.host_cancel_write(rep)
     }
 
     /// Cancel a pending read for the specified stream or future from the guest.
@@ -3125,14 +3246,14 @@ impl ComponentInstance {
         let id = TableId::<TransmitHandle>::new(rep);
         log::trace!("guest cancel read {id:?} (handle {reader})");
         match state {
-            StreamFutureState::Read => {
+            StreamFutureState::Read { .. } => {
                 bail!("stream or future read cancelled when no read is pending")
             }
-            StreamFutureState::Write => {
+            StreamFutureState::Write { .. } => {
                 bail!("passed write end to `{{stream|future}}.cancel-read`")
             }
             StreamFutureState::Busy => {
-                *state = StreamFutureState::Read;
+                *state = StreamFutureState::Read { done: false };
             }
         }
         let rep = self.get(id)?.state.rep();
@@ -3153,17 +3274,16 @@ impl ComponentInstance {
             }
         };
         match state {
-            StreamFutureState::Write => {}
-            StreamFutureState::Read => {
+            StreamFutureState::Write { .. } => {}
+            StreamFutureState::Read { .. } => {
                 bail!("passed read end to `{{stream|future}}.drop-writable`")
             }
             StreamFutureState::Busy => bail!("cannot drop busy stream or future"),
         }
 
-        let transmit_rep = self
-            .get(TableId::<TransmitHandle>::new(transmit_rep))?
-            .state
-            .rep();
+        let id = TableId::<TransmitHandle>::new(transmit_rep);
+        let transmit_rep = self.get(id)?.state.rep();
+        log::trace!("guest_drop_writable: drop writer {id:?}");
         self.host_drop_writer(transmit_rep, kind)
     }
 
@@ -3241,13 +3361,21 @@ impl ComponentInstance {
         let (_, src_state) = match_state(src_state)?;
 
         match src_state {
-            StreamFutureState::Read => {
+            StreamFutureState::Read { done: true } => {
+                bail!("cannot lift stream after being notified that the writable end dropped")
+            }
+            StreamFutureState::Read { done: false } => {
                 src_table.remove_by_index(src_idx)?;
 
                 let dst_table = &mut self.waitable_tables()[dst_instance];
-                dst_table.insert(rep, make_state(dst, StreamFutureState::Read))
+                dst_table.insert(
+                    rep,
+                    make_state(dst, StreamFutureState::Read { done: false }),
+                )
             }
-            StreamFutureState::Write => bail!("cannot transfer write end of stream or future"),
+            StreamFutureState::Write { .. } => {
+                bail!("cannot transfer write end of stream or future")
+            }
             StreamFutureState::Busy => bail!("cannot transfer busy stream or future"),
         }
     }
