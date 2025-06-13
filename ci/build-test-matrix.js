@@ -130,23 +130,22 @@ const FULL_MATRIX = [
     "filter": "linux-riscv64",
     "isa": "riscv64",
   },
-  // FIXME(#45) need to figure out what's going on here
-  // {
-  //   "name": "Tests on i686-unknown-linux-gnu",
-  //   "os": ubuntu,
-  //   "target": "i686-unknown-linux-gnu",
-  //   "gcc_package": "gcc-i686-linux-gnu",
-  //   "gcc": "i686-linux-gnu-gcc",
-  // },
-  // {
-  //   "name": "Tests on armv7-unknown-linux-gnueabihf",
-  //   "os": ubuntu,
-  //   "target": "armv7-unknown-linux-gnueabihf",
-  //   "gcc_package": "gcc-arm-linux-gnueabihf",
-  //   "gcc": "arm-linux-gnueabihf-gcc",
-  //   "qemu": "qemu-arm -L /usr/arm-linux-gnueabihf -E LD_LIBRARY_PATH=/usr/arm-linux-gnueabihf/lib",
-  //   "qemu_target": "arm-linux-user",
-  // },
+  {
+    "name": "Tests on i686-unknown-linux-gnu",
+    "os": ubuntu,
+    "target": "i686-unknown-linux-gnu",
+    "gcc_package": "gcc-i686-linux-gnu",
+    "gcc": "i686-linux-gnu-gcc",
+  },
+  {
+    "name": "Tests on armv7-unknown-linux-gnueabihf",
+    "os": ubuntu,
+    "target": "armv7-unknown-linux-gnueabihf",
+    "gcc_package": "gcc-arm-linux-gnueabihf",
+    "gcc": "arm-linux-gnueabihf-gcc",
+    "qemu": "qemu-arm -L /usr/arm-linux-gnueabihf -E LD_LIBRARY_PATH=/usr/arm-linux-gnueabihf/lib",
+    "qemu_target": "arm-linux-user",
+  },
 ];
 
 /// Get the workspace's full list of member crates.
