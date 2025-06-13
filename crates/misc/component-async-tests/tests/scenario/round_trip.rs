@@ -11,165 +11,178 @@ use futures::{
     stream::{FuturesUnordered, TryStreamExt},
 };
 use once_cell::sync::Lazy;
-use tokio::fs;
-use wasmtime::component::{
-    Accessor, AccessorTask, Component, HasSelf, Instance, Linker, ResourceTable, Val,
-};
+use wasmtime::component::{Accessor, AccessorTask, HasSelf, Instance, Linker, ResourceTable, Val};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::Ctx;
 
-pub use component_async_tests::util::{compose, config};
+pub use component_async_tests::util::{config, make_component};
 
 #[tokio::test]
 pub async fn async_round_trip_stackful() -> Result<()> {
-    test_round_trip_uncomposed(
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKFUL_COMPONENT).await?,
-    )
-    .await
+    test_round_trip_uncomposed(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKFUL_COMPONENT).await
 }
 
 #[tokio::test]
 pub async fn async_round_trip_synchronous() -> Result<()> {
-    test_round_trip_uncomposed(
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_SYNCHRONOUS_COMPONENT).await?,
-    )
-    .await
+    test_round_trip_uncomposed(test_programs_artifacts::ASYNC_ROUND_TRIP_SYNCHRONOUS_COMPONENT)
+        .await
 }
 
 #[tokio::test]
 pub async fn async_round_trip_wait() -> Result<()> {
-    test_round_trip_uncomposed(
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_WAIT_COMPONENT).await?,
-    )
-    .await
+    test_round_trip_uncomposed(test_programs_artifacts::ASYNC_ROUND_TRIP_WAIT_COMPONENT).await
 }
 
 #[tokio::test]
 pub async fn async_round_trip_stackless_plus_stackless() -> Result<()> {
-    let stackless =
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT).await?;
-    test_round_trip_composed(stackless, stackless).await
-}
-
-#[tokio::test]
-async fn async_round_trip_synchronous_plus_stackless() -> Result<()> {
-    let synchronous =
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_SYNCHRONOUS_COMPONENT).await?;
-    let stackless =
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT).await?;
-    test_round_trip_composed(synchronous, stackless).await
-}
-
-#[tokio::test]
-async fn async_round_trip_stackless_plus_synchronous() -> Result<()> {
-    let stackless =
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT).await?;
-    let synchronous =
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_SYNCHRONOUS_COMPONENT).await?;
-    test_round_trip_composed(stackless, synchronous).await
-}
-
-#[tokio::test]
-async fn async_round_trip_synchronous_plus_synchronous() -> Result<()> {
-    let synchronous =
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_SYNCHRONOUS_COMPONENT).await?;
-    test_round_trip_composed(synchronous, synchronous).await
-}
-
-#[tokio::test]
-async fn async_round_trip_wait_plus_wait() -> Result<()> {
-    let wait = &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_WAIT_COMPONENT).await?;
-    test_round_trip_composed(wait, wait).await
-}
-
-#[tokio::test]
-async fn async_round_trip_synchronous_plus_wait() -> Result<()> {
-    let synchronous =
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_SYNCHRONOUS_COMPONENT).await?;
-    let wait = &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_WAIT_COMPONENT).await?;
-    test_round_trip_composed(synchronous, wait).await
-}
-
-#[tokio::test]
-async fn async_round_trip_wait_plus_synchronous() -> Result<()> {
-    let wait = &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_WAIT_COMPONENT).await?;
-    let synchronous =
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_SYNCHRONOUS_COMPONENT).await?;
-    test_round_trip_composed(wait, synchronous).await
-}
-
-#[tokio::test]
-async fn async_round_trip_stackless_plus_wait() -> Result<()> {
-    let stackless =
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT).await?;
-    let wait = &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_WAIT_COMPONENT).await?;
-    test_round_trip_composed(stackless, wait).await
-}
-
-#[tokio::test]
-async fn async_round_trip_wait_plus_stackless() -> Result<()> {
-    let wait = &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_WAIT_COMPONENT).await?;
-    let stackless =
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT).await?;
-    test_round_trip_composed(wait, stackless).await
-}
-
-#[tokio::test]
-async fn async_round_trip_stackful_plus_stackful() -> Result<()> {
-    let stackful = &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKFUL_COMPONENT).await?;
-    test_round_trip_composed(stackful, stackful).await
-}
-
-#[tokio::test]
-async fn async_round_trip_stackful_plus_stackless() -> Result<()> {
-    let stackful = &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKFUL_COMPONENT).await?;
-    let stackless =
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT).await?;
-    test_round_trip_composed(stackful, stackless).await
-}
-
-#[tokio::test]
-async fn async_round_trip_stackless_plus_stackful() -> Result<()> {
-    let stackless =
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT).await?;
-    let stackful = &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKFUL_COMPONENT).await?;
-    test_round_trip_composed(stackless, stackful).await
-}
-
-#[tokio::test]
-async fn async_round_trip_synchronous_plus_stackful() -> Result<()> {
-    let synchronous =
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_SYNCHRONOUS_COMPONENT).await?;
-    let stackful = &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKFUL_COMPONENT).await?;
-    test_round_trip_composed(synchronous, stackful).await
-}
-
-#[tokio::test]
-async fn async_round_trip_stackful_plus_synchronous() -> Result<()> {
-    let stackful = &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKFUL_COMPONENT).await?;
-    let synchronous =
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_SYNCHRONOUS_COMPONENT).await?;
-    test_round_trip_composed(stackful, synchronous).await
-}
-
-#[tokio::test]
-pub async fn async_round_trip_stackless() -> Result<()> {
-    test_round_trip_uncomposed(
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT).await?,
+    test_round_trip_composed(
+        test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT,
+        test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT,
     )
     .await
 }
 
 #[tokio::test]
-pub async fn async_round_trip_stackless_joined() -> Result<()> {
-    let component =
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT).await?;
+async fn async_round_trip_synchronous_plus_stackless() -> Result<()> {
+    test_round_trip_composed(
+        test_programs_artifacts::ASYNC_ROUND_TRIP_SYNCHRONOUS_COMPONENT,
+        test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT,
+    )
+    .await
+}
 
+#[tokio::test]
+async fn async_round_trip_stackless_plus_synchronous() -> Result<()> {
+    test_round_trip_composed(
+        test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT,
+        test_programs_artifacts::ASYNC_ROUND_TRIP_SYNCHRONOUS_COMPONENT,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn async_round_trip_synchronous_plus_synchronous() -> Result<()> {
+    test_round_trip_composed(
+        test_programs_artifacts::ASYNC_ROUND_TRIP_SYNCHRONOUS_COMPONENT,
+        test_programs_artifacts::ASYNC_ROUND_TRIP_SYNCHRONOUS_COMPONENT,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn async_round_trip_wait_plus_wait() -> Result<()> {
+    test_round_trip_composed(
+        test_programs_artifacts::ASYNC_ROUND_TRIP_WAIT_COMPONENT,
+        test_programs_artifacts::ASYNC_ROUND_TRIP_WAIT_COMPONENT,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn async_round_trip_synchronous_plus_wait() -> Result<()> {
+    test_round_trip_composed(
+        test_programs_artifacts::ASYNC_ROUND_TRIP_SYNCHRONOUS_COMPONENT,
+        test_programs_artifacts::ASYNC_ROUND_TRIP_WAIT_COMPONENT,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn async_round_trip_wait_plus_synchronous() -> Result<()> {
+    test_round_trip_composed(
+        test_programs_artifacts::ASYNC_ROUND_TRIP_WAIT_COMPONENT,
+        test_programs_artifacts::ASYNC_ROUND_TRIP_SYNCHRONOUS_COMPONENT,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn async_round_trip_stackless_plus_wait() -> Result<()> {
+    test_round_trip_composed(
+        test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT,
+        test_programs_artifacts::ASYNC_ROUND_TRIP_WAIT_COMPONENT,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn async_round_trip_wait_plus_stackless() -> Result<()> {
+    test_round_trip_composed(
+        test_programs_artifacts::ASYNC_ROUND_TRIP_WAIT_COMPONENT,
+        test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn async_round_trip_stackful_plus_stackful() -> Result<()> {
+    test_round_trip_composed(
+        test_programs_artifacts::ASYNC_ROUND_TRIP_STACKFUL_COMPONENT,
+        test_programs_artifacts::ASYNC_ROUND_TRIP_STACKFUL_COMPONENT,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn async_round_trip_stackful_plus_stackless() -> Result<()> {
+    test_round_trip_composed(
+        test_programs_artifacts::ASYNC_ROUND_TRIP_STACKFUL_COMPONENT,
+        test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn async_round_trip_stackless_plus_stackful() -> Result<()> {
+    test_round_trip_composed(
+        test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT,
+        test_programs_artifacts::ASYNC_ROUND_TRIP_STACKFUL_COMPONENT,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn async_round_trip_synchronous_plus_stackful() -> Result<()> {
+    test_round_trip_composed(
+        test_programs_artifacts::ASYNC_ROUND_TRIP_SYNCHRONOUS_COMPONENT,
+        test_programs_artifacts::ASYNC_ROUND_TRIP_STACKFUL_COMPONENT,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn async_round_trip_stackful_plus_synchronous() -> Result<()> {
+    test_round_trip_composed(
+        test_programs_artifacts::ASYNC_ROUND_TRIP_STACKFUL_COMPONENT,
+        test_programs_artifacts::ASYNC_ROUND_TRIP_SYNCHRONOUS_COMPONENT,
+    )
+    .await
+}
+
+#[tokio::test]
+pub async fn async_round_trip_stackless() -> Result<()> {
+    test_round_trip_uncomposed(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT).await
+}
+
+#[tokio::test]
+pub async fn async_round_trip_stackless_joined() -> Result<()> {
     tokio::join!(
-        async { test_round_trip_uncomposed(component).await.unwrap() },
-        async { test_round_trip_uncomposed(component).await.unwrap() },
+        async {
+            test_round_trip_uncomposed(
+                test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT,
+            )
+            .await
+            .unwrap()
+        },
+        async {
+            test_round_trip_uncomposed(
+                test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT,
+            )
+            .await
+            .unwrap()
+        },
     );
 
     Ok(())
@@ -178,13 +191,15 @@ pub async fn async_round_trip_stackless_joined() -> Result<()> {
 #[tokio::test]
 pub async fn async_round_trip_stackless_sync_import() -> Result<()> {
     test_round_trip_uncomposed(
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_SYNC_IMPORT_COMPONENT)
-            .await?,
+        test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_SYNC_IMPORT_COMPONENT,
     )
     .await
 }
 
-pub async fn test_round_trip(component: &[u8], inputs_and_outputs: &[(&str, &str)]) -> Result<()> {
+pub async fn test_round_trip(
+    components: &[&str],
+    inputs_and_outputs: &[(&str, &str)],
+) -> Result<()> {
     let engine = Engine::new(&config())?;
 
     let make_store = || {
@@ -199,7 +214,7 @@ pub async fn test_round_trip(component: &[u8], inputs_and_outputs: &[(&str, &str
         )
     };
 
-    let component = Component::new(&engine, component)?;
+    let component = make_component(&engine, components).await?;
 
     // First, test the `wasmtime-wit-bindgen` static API:
     {
@@ -410,9 +425,9 @@ pub async fn test_round_trip(component: &[u8], inputs_and_outputs: &[(&str, &str
     Ok(())
 }
 
-pub async fn test_round_trip_uncomposed(component: &[u8]) -> Result<()> {
+pub async fn test_round_trip_uncomposed(component: &str) -> Result<()> {
     test_round_trip(
-        component,
+        &[component],
         &[
             (
                 "hello, world!",
@@ -431,24 +446,24 @@ pub async fn test_round_trip_uncomposed(component: &[u8]) -> Result<()> {
     .await
 }
 
-pub async fn test_round_trip_composed(a: &[u8], b: &[u8]) -> Result<()> {
+pub async fn test_round_trip_composed(a: &str, b: &str) -> Result<()> {
     test_round_trip(
-        &compose(a, b).await?,
+        &[a, b],
         &[
             (
                 "hello, world!",
                 "hello, world! - entered guest - entered guest - entered host \
-                     - exited host - exited guest - exited guest",
+                 - exited host - exited guest - exited guest",
             ),
             (
                 "¡hola, mundo!",
                 "¡hola, mundo! - entered guest - entered guest - entered host \
-                     - exited host - exited guest - exited guest",
+                 - exited host - exited guest - exited guest",
             ),
             (
                 "hi y'all!",
                 "hi y'all! - entered guest - entered guest - entered host \
-                     - exited host - exited guest - exited guest",
+                 - exited host - exited guest - exited guest",
             ),
         ],
     )
@@ -467,9 +482,7 @@ enum PanicKind {
 )]
 pub async fn panic_on_direct_await() {
     _ = test_panic(
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT)
-            .await
-            .unwrap(),
+        test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT,
         PanicKind::DirectAwait,
     )
     .await;
@@ -481,9 +494,7 @@ pub async fn panic_on_direct_await() {
 )]
 pub async fn panic_on_wrong_instance() {
     _ = test_panic(
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT)
-            .await
-            .unwrap(),
+        test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT,
         PanicKind::WrongInstance,
     )
     .await;
@@ -493,15 +504,13 @@ pub async fn panic_on_wrong_instance() {
 #[should_panic(expected = "Recursive `Instance::run[_with]` calls not supported")]
 pub async fn panic_on_recursive_run() {
     _ = test_panic(
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT)
-            .await
-            .unwrap(),
+        test_programs_artifacts::ASYNC_ROUND_TRIP_STACKLESS_COMPONENT,
         PanicKind::RecursiveRun,
     )
     .await;
 }
 
-async fn test_panic(component: &[u8], kind: PanicKind) -> Result<()> {
+async fn test_panic(component: &str, kind: PanicKind) -> Result<()> {
     let inputs_and_outputs = &[("a", "b"), ("c", "d")];
 
     let engine = Engine::new(&config())?;
@@ -518,7 +527,7 @@ async fn test_panic(component: &[u8], kind: PanicKind) -> Result<()> {
         )
     };
 
-    let component = Component::new(&engine, component)?;
+    let component = make_component(&engine, &[component]).await?;
 
     let mut linker = Linker::new(&engine);
 
