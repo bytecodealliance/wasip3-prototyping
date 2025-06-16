@@ -49,7 +49,11 @@ pub async fn compose(a: &[u8], b: &[u8]) -> Result<Vec<u8>> {
 #[allow(unused)]
 pub async fn test_run(component: &[u8]) -> Result<()> {
     let mut config = config();
-    config.epoch_interruption(true);
+    // As of this writing, miri/pulley/epochs is a problematic combination, so
+    // we don't test it.
+    if env::var_os("MIRI_TEST_CWASM_DIR").is_none() {
+        config.epoch_interruption(true);
+    }
 
     let engine = Engine::new(&config)?;
 
@@ -80,12 +84,15 @@ pub async fn test_run(component: &[u8]) -> Result<()> {
             wakers: Arc::new(Mutex::new(None)),
         },
     );
-    store.set_epoch_deadline(1);
 
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(10));
-        engine.increment_epoch();
-    });
+    if env::var_os("MIRI_TEST_CWASM_DIR").is_none() {
+        store.set_epoch_deadline(1);
+
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(10));
+            engine.increment_epoch();
+        });
+    }
 
     let yield_host = component_async_tests::yield_host::bindings::YieldHost::instantiate_async(
         &mut store, &component, &linker,

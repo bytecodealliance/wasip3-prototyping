@@ -31,8 +31,8 @@ impl ComponentStoreData {
     }
 
     #[cfg(feature = "component-model-async")]
-    pub(crate) unsafe fn drop_fibers(&mut self) {
-        for (_, instance) in self.instances.iter_mut() {
+    pub(crate) unsafe fn drop_fibers(store: &mut StoreOpaque) {
+        for (_, instance) in store.store_data_mut().components.instances.iter_mut() {
             let Some(instance) = instance.as_mut() else {
                 continue;
             };

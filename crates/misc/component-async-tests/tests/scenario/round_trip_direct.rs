@@ -3,31 +3,24 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use futures::stream::{FuturesUnordered, TryStreamExt};
-use tokio::fs;
-use wasmtime::component::{Component, Linker, ResourceTable, Val};
+use wasmtime::component::{Linker, ResourceTable, Val};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::Ctx;
-use component_async_tests::util::config;
-
-#[tokio::test]
-pub async fn async_direct_stackless() -> Result<()> {
-    let stackless =
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_DIRECT_STACKLESS_COMPONENT).await?;
-    test_round_trip_direct_uncomposed(stackless).await
-}
+use component_async_tests::util::{config, make_component, sleep};
 
 #[tokio::test]
 pub async fn async_round_trip_direct_stackless() -> Result<()> {
-    let stackless =
-        &fs::read(test_programs_artifacts::ASYNC_ROUND_TRIP_DIRECT_STACKLESS_COMPONENT).await?;
-    test_round_trip_direct_uncomposed(stackless).await
+    test_round_trip_direct_uncomposed(
+        test_programs_artifacts::ASYNC_ROUND_TRIP_DIRECT_STACKLESS_COMPONENT,
+    )
+    .await
 }
 
-async fn test_round_trip_direct_uncomposed(component: &[u8]) -> Result<()> {
+async fn test_round_trip_direct_uncomposed(component: &str) -> Result<()> {
     test_round_trip_direct(
-        component,
+        &[component],
         "hello, world!",
         "hello, world! - entered guest - entered host - exited host - exited guest",
     )
@@ -35,7 +28,7 @@ async fn test_round_trip_direct_uncomposed(component: &[u8]) -> Result<()> {
 }
 
 async fn test_round_trip_direct(
-    component: &[u8],
+    components: &[&str],
     input: &str,
     expected_output: &str,
 ) -> Result<()> {
@@ -53,7 +46,7 @@ async fn test_round_trip_direct(
         )
     };
 
-    let component = Component::new(&engine, component)?;
+    let component = make_component(&engine, components).await?;
 
     // First, test the `wasmtime-wit-bindgen` static API:
     {
@@ -90,7 +83,7 @@ async fn test_round_trip_direct(
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
         linker.root().func_new_concurrent("foo", |_, params| {
             Box::pin(async move {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                sleep(Duration::from_millis(10)).await;
                 let Some(Val::String(s)) = params.into_iter().next() else {
                     unreachable!()
                 };

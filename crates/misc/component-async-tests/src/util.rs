@@ -42,6 +42,60 @@ pub fn config() -> Config {
     config
 }
 
+pub async fn sleep(duration: std::time::Duration) {
+    if cfg!(miri) {
+        // TODO: We should be able to use `tokio::time::sleep` here, but as of
+        // this writing the miri-compatible version of `wasmtime-fiber` uses
+        // threads behind the scenes, which means thread-local storage is not
+        // preserved when we switch fibers, and that confuses Tokio.  If we ever
+        // fix that we can stop using our own, special version of `sleep` and
+        // switch back to the Tokio version.
+
+        use std::{
+            future,
+            sync::{
+                Arc, Mutex,
+                atomic::{AtomicU32, Ordering::SeqCst},
+            },
+            task::Poll,
+            thread,
+        };
+
+        let state = Arc::new(AtomicU32::new(0));
+        let waker = Arc::new(Mutex::new(None));
+        let mut join_handle = None;
+        future::poll_fn(move |cx| match state.load(SeqCst) {
+            0 => {
+                state.store(1, SeqCst);
+                let state = state.clone();
+                *waker.lock().unwrap() = Some(cx.waker().clone());
+                let waker = waker.clone();
+                join_handle = Some(thread::spawn(move || {
+                    thread::sleep(duration);
+                    state.store(2, SeqCst);
+                    let waker = waker.lock().unwrap().clone().unwrap();
+                    waker.wake();
+                }));
+                Poll::Pending
+            }
+            1 => {
+                *waker.lock().unwrap() = Some(cx.waker().clone());
+                Poll::Pending
+            }
+            2 => {
+                if let Some(handle) = join_handle.take() {
+                    _ = handle.join();
+                }
+                Poll::Ready(())
+            }
+            _ => unreachable!(),
+        })
+        .await;
+    } else {
+        tokio::time::sleep(duration).await;
+    }
+}
+
 /// Compose two components
 ///
 /// a is the "root" component, and b is composed into it
@@ -166,7 +220,11 @@ pub async fn test_run(components: &[&str]) -> Result<()> {
 
 pub async fn test_run_with_count(components: &[&str], count: usize) -> Result<()> {
     let mut config = config();
-    config.epoch_interruption(true);
+    // As of this writing, miri/pulley/epochs is a problematic combination, so
+    // we don't test it.
+    if env::var_os("MIRI_TEST_CWASM_DIR").is_none() {
+        config.epoch_interruption(true);
+    }
 
     let engine = Engine::new(&config)?;
 
@@ -198,12 +256,15 @@ pub async fn test_run_with_count(components: &[&str], count: usize) -> Result<()
             wakers: Arc::new(std::sync::Mutex::new(None)),
         },
     );
-    store.set_epoch_deadline(1);
 
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(10));
-        engine.increment_epoch();
-    });
+    if env::var_os("MIRI_TEST_CWASM_DIR").is_none() {
+        store.set_epoch_deadline(1);
+
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(10));
+            engine.increment_epoch();
+        });
+    }
 
     let instance = linker.instantiate_async(&mut store, &component).await?;
     let yield_host = super::yield_host::bindings::YieldHost::new(&mut store, &instance)?;

@@ -153,7 +153,7 @@ interface cancel {
     trap-cancel-host-after-return,
   }
 
-  run: func(mode: mode);
+  run: func(mode: mode, cancel-delay-millis: u64);
 }
 
 interface intertask {

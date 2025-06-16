@@ -129,9 +129,15 @@ impl Artifacts {
     }
 
     fn build_rust_tests(&mut self, tests: &mut Vec<Test>) {
+        println!("cargo:rerun-if-env-changed=MIRI_TEST_CWASM_DIR");
+        let release_mode = env::var_os("MIRI_TEST_CWASM_DIR").is_some();
+
         let mut cmd = cargo();
-        cmd.arg("build")
-            .arg("--target=wasm32-wasip1")
+        cmd.arg("build");
+        if release_mode {
+            cmd.arg("--release");
+        }
+        cmd.arg("--target=wasm32-wasip1")
             .arg("--package=test-programs")
             .env("CARGO_TARGET_DIR", &self.out_dir)
             .env("CARGO_PROFILE_DEV_DEBUG", "2")
@@ -157,7 +163,7 @@ impl Artifacts {
             let wasm = self
                 .out_dir
                 .join("wasm32-wasip1")
-                .join("debug")
+                .join(if release_mode { "release" } else { "debug" })
                 .join(format!("{target}.wasm"));
             self.read_deps_of(&wasm);
             tests.push(Test {

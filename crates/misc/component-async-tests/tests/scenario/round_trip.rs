@@ -1,6 +1,9 @@
 use std::future::Future;
 use std::pin::pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU32, Ordering::Relaxed},
+};
 use std::task::{Context, Wake, Waker};
 use std::time::Duration;
 
@@ -17,7 +20,7 @@ use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::Ctx;
 
-pub use component_async_tests::util::{config, make_component};
+pub use component_async_tests::util::{config, make_component, sleep};
 
 #[tokio::test]
 pub async fn async_round_trip_stackful() -> Result<()> {
@@ -216,6 +219,11 @@ pub async fn test_round_trip(
 
     let component = make_component(&engine, components).await?;
 
+    // On miri, we only use one call style per test since they take so long to
+    // run.  On non-miri, we use every call style for each test.
+    static CALL_STYLE_COUNTER: AtomicU32 = AtomicU32::new(0);
+    let call_style = CALL_STYLE_COUNTER.fetch_add(1, Relaxed) % 6;
+
     // First, test the `wasmtime-wit-bindgen` static API:
     {
         let mut linker = Linker::new(&engine);
@@ -232,125 +240,136 @@ pub async fn test_round_trip(
         let round_trip =
             component_async_tests::round_trip::bindings::RoundTrip::new(&mut store, &instance)?;
 
-        // Start concurrent calls and then join them all:
-        let mut futures = FuturesUnordered::new();
-        for (input, output) in inputs_and_outputs {
-            let output = (*output).to_owned();
-            futures.push(
-                round_trip
-                    .local_local_baz()
-                    .call_foo(&mut store, (*input).to_owned())
-                    .map(move |v| v.map(move |v| (v, output))),
-            );
-        }
+        if call_style == 0 || !cfg!(miri) {
+            // Start concurrent calls and then join them all:
+            let mut futures = FuturesUnordered::new();
+            for (input, output) in inputs_and_outputs {
+                let output = (*output).to_owned();
+                futures.push(
+                    round_trip
+                        .local_local_baz()
+                        .call_foo(&mut store, (*input).to_owned())
+                        .map(move |v| v.map(move |v| (v, output))),
+                );
+            }
 
-        while let Some((actual, expected)) = instance.run(&mut store, futures.try_next()).await?? {
-            assert_eq!(expected, actual);
-        }
-
-        // Now do it again using `Instance::run_with`:
-        instance
-            .run_with(&mut store, {
-                let inputs_and_outputs = inputs_and_outputs
-                    .iter()
-                    .map(|(a, b)| (String::from(*a), String::from(*b)))
-                    .collect::<Vec<_>>();
-
-                move |accessor| {
-                    Box::pin(async move {
-                        let mut futures = FuturesUnordered::new();
-                        accessor.with(|mut store| {
-                            for (input, output) in &inputs_and_outputs {
-                                let output = output.clone();
-                                futures.push(
-                                    round_trip
-                                        .local_local_baz()
-                                        .call_foo(&mut store, input.clone())
-                                        .map(move |v| v.map(move |v| (v, output)))
-                                        .boxed(),
-                                );
-                            }
-                        });
-
-                        while let Some((actual, expected)) = futures.try_next().await? {
-                            assert_eq!(expected, actual);
-                        }
-
-                        Ok::<_, wasmtime::Error>(())
-                    })
-                }
-            })
-            .await??;
-
-        // And again using `Instance::spawn`:
-        struct Task {
-            instance: Instance,
-            inputs_and_outputs: Vec<(String, String)>,
-            tx: oneshot::Sender<()>,
-        }
-
-        impl AccessorTask<Ctx, HasSelf<Ctx>, Result<()>> for Task {
-            async fn run(self, accessor: &mut Accessor<Ctx>) -> Result<()> {
-                let mut futures = FuturesUnordered::new();
-                accessor.with(|mut store| {
-                    let round_trip = component_async_tests::round_trip::bindings::RoundTrip::new(
-                        &mut store,
-                        &self.instance,
-                    )?;
-
-                    for (input, output) in &self.inputs_and_outputs {
-                        let output = output.clone();
-                        futures.push(
-                            round_trip
-                                .local_local_baz()
-                                .call_foo(&mut store, input.clone())
-                                .map(move |v| v.map(move |v| (v, output)))
-                                .boxed(),
-                        );
-                    }
-
-                    Ok::<_, wasmtime::Error>(())
-                })?;
-
-                while let Some((actual, expected)) = futures.try_next().await? {
-                    assert_eq!(expected, actual);
-                }
-
-                _ = self.tx.send(());
-
-                Ok(())
+            while let Some((actual, expected)) =
+                instance.run(&mut store, futures.try_next()).await??
+            {
+                assert_eq!(expected, actual);
             }
         }
 
-        let (tx, rx) = oneshot::channel();
-        instance.spawn(
-            &mut store,
-            Task {
-                instance,
-                inputs_and_outputs: inputs_and_outputs
-                    .iter()
-                    .map(|(a, b)| (String::from(*a), String::from(*b)))
-                    .collect::<Vec<_>>(),
-                tx,
-            },
-        );
+        if call_style == 1 || !cfg!(miri) {
+            // Now do it again using `Instance::run_with`:
+            instance
+                .run_with(&mut store, {
+                    let inputs_and_outputs = inputs_and_outputs
+                        .iter()
+                        .map(|(a, b)| (String::from(*a), String::from(*b)))
+                        .collect::<Vec<_>>();
 
-        instance.run(&mut store, rx).await??;
+                    move |accessor| {
+                        Box::pin(async move {
+                            let mut futures = FuturesUnordered::new();
+                            accessor.with(|mut store| {
+                                for (input, output) in &inputs_and_outputs {
+                                    let output = output.clone();
+                                    futures.push(
+                                        round_trip
+                                            .local_local_baz()
+                                            .call_foo(&mut store, input.clone())
+                                            .map(move |v| v.map(move |v| (v, output)))
+                                            .boxed(),
+                                    );
+                                }
+                            });
 
-        // And again using `TypedFunc::call_async`-based bindings:
-        let round_trip =
-            component_async_tests::round_trip::non_concurrent_export_bindings::RoundTrip::new(
-                &mut store, &instance,
-            )?;
+                            while let Some((actual, expected)) = futures.try_next().await? {
+                                assert_eq!(expected, actual);
+                            }
 
-        for (input, expected) in inputs_and_outputs {
-            assert_eq!(
-                *expected,
-                &round_trip
-                    .local_local_baz()
-                    .call_foo(&mut store, (*input).to_owned())
-                    .await?
+                            Ok::<_, wasmtime::Error>(())
+                        })
+                    }
+                })
+                .await??;
+        }
+
+        if call_style == 2 || !cfg!(miri) {
+            // And again using `Instance::spawn`:
+            struct Task {
+                instance: Instance,
+                inputs_and_outputs: Vec<(String, String)>,
+                tx: oneshot::Sender<()>,
+            }
+
+            impl AccessorTask<Ctx, HasSelf<Ctx>, Result<()>> for Task {
+                async fn run(self, accessor: &mut Accessor<Ctx>) -> Result<()> {
+                    let mut futures = FuturesUnordered::new();
+                    accessor.with(|mut store| {
+                        let round_trip =
+                            component_async_tests::round_trip::bindings::RoundTrip::new(
+                                &mut store,
+                                &self.instance,
+                            )?;
+
+                        for (input, output) in &self.inputs_and_outputs {
+                            let output = output.clone();
+                            futures.push(
+                                round_trip
+                                    .local_local_baz()
+                                    .call_foo(&mut store, input.clone())
+                                    .map(move |v| v.map(move |v| (v, output)))
+                                    .boxed(),
+                            );
+                        }
+
+                        Ok::<_, wasmtime::Error>(())
+                    })?;
+
+                    while let Some((actual, expected)) = futures.try_next().await? {
+                        assert_eq!(expected, actual);
+                    }
+
+                    _ = self.tx.send(());
+
+                    Ok(())
+                }
+            }
+
+            let (tx, rx) = oneshot::channel();
+            instance.spawn(
+                &mut store,
+                Task {
+                    instance,
+                    inputs_and_outputs: inputs_and_outputs
+                        .iter()
+                        .map(|(a, b)| (String::from(*a), String::from(*b)))
+                        .collect::<Vec<_>>(),
+                    tx,
+                },
             );
+
+            instance.run(&mut store, rx).await??;
+        }
+
+        if call_style == 3 || !cfg!(miri) {
+            // And again using `TypedFunc::call_async`-based bindings:
+            let round_trip =
+                component_async_tests::round_trip::non_concurrent_export_bindings::RoundTrip::new(
+                    &mut store, &instance,
+                )?;
+
+            for (input, expected) in inputs_and_outputs {
+                assert_eq!(
+                    *expected,
+                    &round_trip
+                        .local_local_baz()
+                        .call_foo(&mut store, (*input).to_owned())
+                        .await?
+                );
+            }
         }
     }
 
@@ -364,7 +383,7 @@ pub async fn test_round_trip(
             .instance("local:local/baz")?
             .func_new_concurrent("[async]foo", |_, params| {
                 Box::pin(async move {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    sleep(Duration::from_millis(10)).await;
                     let Some(Val::String(s)) = params.into_iter().next() else {
                         unreachable!()
                     };
@@ -387,38 +406,44 @@ pub async fn test_round_trip(
             .get_func(&mut store, foo_function)
             .ok_or_else(|| anyhow!("can't find `foo` in instance"))?;
 
-        // Start three concurrent calls and then join them all:
-        let mut futures = FuturesUnordered::new();
-        for (input, output) in inputs_and_outputs {
-            let output = (*output).to_owned();
-            futures.push(
+        if call_style == 4 || !cfg!(miri) {
+            // Start three concurrent calls and then join them all:
+            let mut futures = FuturesUnordered::new();
+            for (input, output) in inputs_and_outputs {
+                let output = (*output).to_owned();
+                futures.push(
+                    foo_function
+                        .call_concurrent(&mut store, vec![Val::String((*input).to_owned())])
+                        .map(move |v| v.map(move |v| (v, output))),
+                );
+            }
+
+            while let Some((actual, expected)) =
+                instance.run(&mut store, futures.try_next()).await??
+            {
+                let Some(Val::String(actual)) = actual.into_iter().next() else {
+                    unreachable!()
+                };
+                assert_eq!(expected, actual);
+            }
+        }
+
+        if call_style == 5 || !cfg!(miri) {
+            // Now do it again using `Func::call_async`:
+            for (input, expected) in inputs_and_outputs {
+                let mut results = [Val::Bool(false)];
                 foo_function
-                    .call_concurrent(&mut store, vec![Val::String((*input).to_owned())])
-                    .map(move |v| v.map(move |v| (v, output))),
-            );
-        }
-
-        while let Some((actual, expected)) = instance.run(&mut store, futures.try_next()).await?? {
-            let Some(Val::String(actual)) = actual.into_iter().next() else {
-                unreachable!()
-            };
-            assert_eq!(expected, actual);
-        }
-
-        // Now do it again using `Func::call_async`:
-        for (input, expected) in inputs_and_outputs {
-            let mut results = [Val::Bool(false)];
-            foo_function
-                .call_async(
-                    &mut store,
-                    &[Val::String((*input).to_owned())],
-                    &mut results,
-                )
-                .await?;
-            let Val::String(actual) = &results[0] else {
-                unreachable!()
-            };
-            assert_eq!(*expected, actual);
+                    .call_async(
+                        &mut store,
+                        &[Val::String((*input).to_owned())],
+                        &mut results,
+                    )
+                    .await?;
+                let Val::String(actual) = &results[0] else {
+                    unreachable!()
+                };
+                assert_eq!(*expected, actual);
+            }
         }
     }
 

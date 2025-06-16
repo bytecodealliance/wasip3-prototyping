@@ -78,6 +78,8 @@
 
 use crate::RootSet;
 #[cfg(feature = "component-model-async")]
+use crate::component::ComponentStoreData;
+#[cfg(feature = "component-model-async")]
 use crate::component::concurrent;
 use crate::module::RegisteredModuleId;
 use crate::prelude::*;
@@ -2337,7 +2339,7 @@ impl<T> Drop for Store<T> {
             // need to be resumed and allowed to exit cleanly before we yank the
             // state out from under them.
             #[cfg(feature = "component-model-async")]
-            self.inner.store_data.components.drop_fibers();
+            ComponentStoreData::drop_fibers(&mut self.inner);
 
             ManuallyDrop::drop(&mut self.inner.data);
             ManuallyDrop::drop(&mut self.inner);

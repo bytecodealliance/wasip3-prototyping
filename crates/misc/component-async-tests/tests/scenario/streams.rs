@@ -1,6 +1,9 @@
 use {
     anyhow::Result,
-    component_async_tests::{Ctx, closed_streams, util::config},
+    component_async_tests::{
+        Ctx, closed_streams,
+        util::{config, make_component},
+    },
     futures::{
         future::{self, FutureExt},
         stream::{FuturesUnordered, StreamExt, TryStreamExt},
@@ -9,10 +12,9 @@ use {
         future::Future,
         sync::{Arc, Mutex},
     },
-    tokio::fs,
     wasmtime::{
         Engine, Store,
-        component::{Component, Linker, ResourceTable, StreamReader, StreamWriter, VecBuffer},
+        component::{Linker, ResourceTable, StreamReader, StreamWriter, VecBuffer},
     },
     wasmtime_wasi::p2::WasiCtxBuilder,
 };
@@ -35,10 +37,11 @@ pub async fn async_watch_streams() -> Result<()> {
 
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
 
-    let component = Component::new(
+    let component = make_component(
         &engine,
-        &fs::read(test_programs_artifacts::ASYNC_CLOSED_STREAMS_COMPONENT).await?,
-    )?;
+        &[test_programs_artifacts::ASYNC_CLOSED_STREAMS_COMPONENT],
+    )
+    .await?;
 
     let instance = linker.instantiate_async(&mut store, &component).await?;
 
@@ -161,10 +164,11 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
 
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
 
-    let component = Component::new(
+    let component = make_component(
         &engine,
-        &fs::read(test_programs_artifacts::ASYNC_CLOSED_STREAMS_COMPONENT).await?,
-    )?;
+        &[test_programs_artifacts::ASYNC_CLOSED_STREAMS_COMPONENT],
+    )
+    .await?;
 
     let instance = linker.instantiate_async(&mut store, &component).await?;
 
