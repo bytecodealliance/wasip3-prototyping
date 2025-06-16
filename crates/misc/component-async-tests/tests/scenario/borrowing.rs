@@ -3,29 +3,37 @@ use std::time::Duration;
 
 use anyhow::Result;
 use futures::stream::{FuturesUnordered, TryStreamExt};
-use tokio::fs;
-use wasmtime::component::{Component, Linker, ResourceTable};
+use wasmtime::component::{Linker, ResourceTable};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
-use component_async_tests::util::{compose, config};
+use component_async_tests::util::{config, make_component};
 
 #[tokio::test]
 pub async fn async_borrowing_caller() -> Result<()> {
-    let caller = &fs::read(test_programs_artifacts::ASYNC_BORROWING_CALLER_COMPONENT).await?;
-    let callee = &fs::read(test_programs_artifacts::ASYNC_BORROWING_CALLEE_COMPONENT).await?;
-    test_run_bool(&compose(caller, callee).await?, false).await
+    test_run_bool(
+        &[
+            test_programs_artifacts::ASYNC_BORROWING_CALLER_COMPONENT,
+            test_programs_artifacts::ASYNC_BORROWING_CALLEE_COMPONENT,
+        ],
+        false,
+    )
+    .await
 }
 
 #[tokio::test]
 async fn async_borrowing_caller_misbehave() -> Result<()> {
-    let caller = &fs::read(test_programs_artifacts::ASYNC_BORROWING_CALLER_COMPONENT).await?;
-    let callee = &fs::read(test_programs_artifacts::ASYNC_BORROWING_CALLEE_COMPONENT).await?;
     let error = format!(
         "{:?}",
-        test_run_bool(&compose(caller, callee).await?, true)
-            .await
-            .unwrap_err()
+        test_run_bool(
+            &[
+                test_programs_artifacts::ASYNC_BORROWING_CALLER_COMPONENT,
+                test_programs_artifacts::ASYNC_BORROWING_CALLEE_COMPONENT
+            ],
+            true
+        )
+        .await
+        .unwrap_err()
     );
     assert!(error.contains("unknown handle index"), "{error}");
     Ok(())
@@ -33,25 +41,35 @@ async fn async_borrowing_caller_misbehave() -> Result<()> {
 
 #[tokio::test]
 async fn async_borrowing_callee_misbehave() -> Result<()> {
-    let callee = &fs::read(test_programs_artifacts::ASYNC_BORROWING_CALLEE_COMPONENT).await?;
-    let error = format!("{:?}", test_run_bool(callee, true).await.unwrap_err());
+    let error = format!(
+        "{:?}",
+        test_run_bool(
+            &[test_programs_artifacts::ASYNC_BORROWING_CALLEE_COMPONENT],
+            true
+        )
+        .await
+        .unwrap_err()
+    );
     assert!(error.contains("unknown handle index"), "{error}");
     Ok(())
 }
 
 #[tokio::test]
 pub async fn async_borrowing_callee() -> Result<()> {
-    let callee = &fs::read(test_programs_artifacts::ASYNC_BORROWING_CALLEE_COMPONENT).await?;
-    test_run_bool(callee, false).await
+    test_run_bool(
+        &[test_programs_artifacts::ASYNC_BORROWING_CALLEE_COMPONENT],
+        false,
+    )
+    .await
 }
 
-pub async fn test_run_bool(component: &[u8], v: bool) -> Result<()> {
+pub async fn test_run_bool(components: &[&str], v: bool) -> Result<()> {
     let mut config = config();
     config.epoch_interruption(true);
 
     let engine = Engine::new(&config)?;
 
-    let component = Component::new(&engine, component)?;
+    let component = make_component(&engine, components).await?;
 
     let mut linker = Linker::new(&engine);
 

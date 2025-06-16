@@ -7,7 +7,6 @@ use futures::{
     future::{self, FutureExt},
     stream::{FuturesUnordered, TryStreamExt},
 };
-use tokio::fs;
 use wasmtime::component::{
     Component, HostFuture, HostStream, Instance, Linker, ResourceTable, StreamReader, StreamWriter,
     Val,
@@ -16,19 +15,19 @@ use wasmtime::{AsContextMut, Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::transmit::bindings::exports::local::local::transmit::Control;
-use component_async_tests::util::{compose, config, test_run, test_run_with_count};
+use component_async_tests::util::{config, make_component, test_run, test_run_with_count};
 use component_async_tests::{Ctx, sleep, transmit};
 
 use cancel::exports::local::local::cancel::Mode;
 
 #[tokio::test]
 pub async fn async_poll_synchronous() -> Result<()> {
-    test_run(&fs::read(test_programs_artifacts::ASYNC_POLL_SYNCHRONOUS_COMPONENT).await?).await
+    test_run(&[test_programs_artifacts::ASYNC_POLL_SYNCHRONOUS_COMPONENT]).await
 }
 
 #[tokio::test]
 pub async fn async_poll_stackless() -> Result<()> {
-    test_run(&fs::read(test_programs_artifacts::ASYNC_POLL_STACKLESS_COMPONENT).await?).await
+    test_run(&[test_programs_artifacts::ASYNC_POLL_STACKLESS_COMPONENT]).await
 }
 
 pub mod cancel {
@@ -91,13 +90,16 @@ async fn test_cancel_trap(mode: Mode) -> Result<()> {
 }
 
 async fn test_cancel(mode: Mode) -> Result<()> {
-    let caller = &fs::read(test_programs_artifacts::ASYNC_CANCEL_CALLER_COMPONENT).await?;
-    let callee = &fs::read(test_programs_artifacts::ASYNC_CANCEL_CALLEE_COMPONENT).await?;
-    let component = &compose(caller, callee).await?;
-
     let engine = Engine::new(&config())?;
 
-    let component = Component::new(&engine, component)?;
+    let component = make_component(
+        &engine,
+        &[
+            test_programs_artifacts::ASYNC_CANCEL_CALLER_COMPONENT,
+            test_programs_artifacts::ASYNC_CANCEL_CALLEE_COMPONENT,
+        ],
+    )
+    .await?;
 
     let mut linker = Linker::new(&engine);
 
@@ -125,7 +127,7 @@ async fn test_cancel(mode: Mode) -> Result<()> {
 #[tokio::test]
 pub async fn async_intertask_communication() -> Result<()> {
     test_run_with_count(
-        &fs::read(test_programs_artifacts::ASYNC_INTERTASK_COMMUNICATION_COMPONENT).await?,
+        &[test_programs_artifacts::ASYNC_INTERTASK_COMMUNICATION_COMPONENT],
         2,
     )
     .await
@@ -133,14 +135,16 @@ pub async fn async_intertask_communication() -> Result<()> {
 
 #[tokio::test]
 pub async fn async_transmit_caller() -> Result<()> {
-    let caller = &fs::read(test_programs_artifacts::ASYNC_TRANSMIT_CALLER_COMPONENT).await?;
-    let callee = &fs::read(test_programs_artifacts::ASYNC_TRANSMIT_CALLEE_COMPONENT).await?;
-    test_run(&compose(caller, callee).await?).await
+    test_run(&[
+        test_programs_artifacts::ASYNC_TRANSMIT_CALLER_COMPONENT,
+        test_programs_artifacts::ASYNC_TRANSMIT_CALLEE_COMPONENT,
+    ])
+    .await
 }
 
 #[tokio::test]
 pub async fn async_transmit_callee() -> Result<()> {
-    test_transmit(&fs::read(test_programs_artifacts::ASYNC_TRANSMIT_CALLEE_COMPONENT).await?).await
+    test_transmit(test_programs_artifacts::ASYNC_TRANSMIT_CALLEE_COMPONENT).await
 }
 
 pub trait TransmitTest {
@@ -299,12 +303,12 @@ impl TransmitTest for DynamicTransmitTest {
     }
 }
 
-async fn test_transmit(component: &[u8]) -> Result<()> {
+async fn test_transmit(component: &str) -> Result<()> {
     test_transmit_with::<StaticTransmitTest>(component).await?;
     test_transmit_with::<DynamicTransmitTest>(component).await
 }
 
-async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> Result<()> {
+async fn test_transmit_with<Test: TransmitTest + 'static>(component: &str) -> Result<()> {
     let engine = Engine::new(&config())?;
 
     let make_store = || {
@@ -319,7 +323,7 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &[u8]) -> R
         )
     };
 
-    let component = Component::new(&engine, component)?;
+    let component = make_component(&engine, &[component]).await?;
 
     let mut linker = Linker::new(&engine);
 

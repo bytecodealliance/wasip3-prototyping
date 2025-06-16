@@ -27,6 +27,7 @@ wasm-compose = { workspace = true }
 wasmparser = { workspace = true }
 wasmtime = { workspace = true, features = [
   "default",
+  "pulley",
   "cranelift",
   "component-model-async",
 ] }
