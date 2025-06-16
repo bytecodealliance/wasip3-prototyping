@@ -9,7 +9,7 @@ use wasmtime::{Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::Ctx;
-use component_async_tests::util::config;
+use component_async_tests::util::{config, sleep};
 
 #[tokio::test]
 pub async fn async_direct_stackless() -> Result<()> {
@@ -90,7 +90,7 @@ async fn test_round_trip_direct(
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
         linker.root().func_new_concurrent("foo", |_, params| {
             Box::pin(async move {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                sleep(Duration::from_millis(10)).await;
                 let Some(Val::String(s)) = params.into_iter().next() else {
                     unreachable!()
                 };

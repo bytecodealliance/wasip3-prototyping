@@ -12,7 +12,7 @@ use wasmtime::{Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::Ctx;
-use component_async_tests::util::{config, make_component};
+use component_async_tests::util::{config, make_component, sleep};
 
 #[tokio::test]
 pub async fn async_round_trip_many_stackless() -> Result<()> {
@@ -321,7 +321,7 @@ async fn test_round_trip_many(
             .instance("local:local/many")?
             .func_new_concurrent("[async]foo", |_, params| {
                 Box::pin(async move {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    sleep(Duration::from_millis(10)).await;
                     let mut params = params.into_iter();
                     let Some(Val::String(s)) = params.next() else {
                         unreachable!()

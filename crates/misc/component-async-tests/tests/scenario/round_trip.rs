@@ -17,7 +17,7 @@ use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::Ctx;
 
-pub use component_async_tests::util::{config, make_component};
+pub use component_async_tests::util::{config, make_component, sleep};
 
 #[tokio::test]
 pub async fn async_round_trip_stackful() -> Result<()> {
@@ -364,7 +364,7 @@ pub async fn test_round_trip(
             .instance("local:local/baz")?
             .func_new_concurrent("[async]foo", |_, params| {
                 Box::pin(async move {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    sleep(Duration::from_millis(10)).await;
                     let Some(Val::String(s)) = params.into_iter().next() else {
                         unreachable!()
                     };
