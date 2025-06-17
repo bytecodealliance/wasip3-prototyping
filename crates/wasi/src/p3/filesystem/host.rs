@@ -61,7 +61,7 @@ where
         store.with(|mut view| {
             let instance = view.instance();
             let (data_tx, data_rx) = instance
-                .stream::<_, _, Vec<_>, _, _>(&mut view)
+                .stream::<_, _, Vec<_>>(&mut view)
                 .context("failed to create stream")?;
             let (res_tx, res_rx) = instance
                 .future(|| unreachable!(), &mut view)
@@ -150,7 +150,7 @@ where
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let mut buf = Vec::with_capacity(8096);
         let (fd, fut) = store.with(|mut view| {
-            let data = data.into_reader::<Vec<u8>, _, _>(&mut view);
+            let data = data.into_reader::<Vec<u8>>(&mut view);
             let fut = data.read(buf);
             let fd = get_descriptor(view.get().table(), &fd)?.clone();
             anyhow::Ok((fd.clone(), fut))
@@ -198,7 +198,7 @@ where
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let mut buf = Vec::with_capacity(8096);
         let (fd, fut) = store.with(|mut view| {
-            let data = data.into_reader::<Vec<u8>, _, _>(&mut view);
+            let data = data.into_reader::<Vec<u8>>(&mut view);
             let fut = data.read(buf);
             let fd = get_descriptor(view.get().table(), &fd)?.clone();
             anyhow::Ok((fd, fut))
@@ -318,7 +318,7 @@ where
         store.with(|mut view| {
             let instance = view.instance();
             let (data_tx, data_rx) = instance
-                .stream::<_, _, Vec<_>, _, _>(&mut view)
+                .stream::<_, _, Vec<_>>(&mut view)
                 .context("failed to create stream")?;
             let (res_tx, res_rx) = instance
                 .future(|| unreachable!(), &mut view)

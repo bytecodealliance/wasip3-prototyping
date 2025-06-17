@@ -605,14 +605,14 @@ impl<T> HostFuture<T> {
     }
 
     /// Convert this object into a [`FutureReader`].
-    pub fn into_reader<U: 'static, S: AsContextMut<Data = U>>(self, mut store: S) -> FutureReader<T>
+    pub fn into_reader(self, mut store: impl AsContextMut) -> FutureReader<T>
     where
         T: func::Lower + func::Lift + Send + Sync + 'static,
     {
         FutureReader {
             instance: self.instance,
             rep: self.rep,
-            tx: Some(self.instance.start_read_event_loop::<_, _, U>(
+            tx: Some(self.instance.start_read_event_loop(
                 store.as_context_mut(),
                 self.rep,
                 TransmitKind::Future,
@@ -984,10 +984,7 @@ impl<T> HostStream<T> {
     }
 
     /// Convert this object into a [`StreamReader`].
-    pub fn into_reader<B, U: 'static, S: AsContextMut<Data = U>>(
-        self,
-        mut store: S,
-    ) -> StreamReader<B>
+    pub fn into_reader<B>(self, mut store: impl AsContextMut) -> StreamReader<B>
     where
         T: func::Lower + func::Lift + Send + 'static,
         B: ReadBuffer<T>,
@@ -995,7 +992,7 @@ impl<T> HostStream<T> {
         StreamReader {
             instance: self.instance,
             rep: self.rep,
-            tx: Some(self.instance.start_read_event_loop::<_, _, U>(
+            tx: Some(self.instance.start_read_event_loop(
                 store.as_context_mut(),
                 self.rep,
                 TransmitKind::Stream,
@@ -1233,7 +1230,7 @@ impl ErrorContext {
     }
 
     /// Attempt to convert the specified [`Val`] to a `ErrorContext`.
-    pub fn from_val<U, S: AsContextMut<Data = U>>(_: S, value: &Val) -> Result<Self> {
+    pub fn from_val(_: impl AsContextMut, value: &Val) -> Result<Self> {
         let Val::ErrorContext(ErrorContextAny(rep)) = value else {
             bail!("expected `error-context`; got `{}`", value.desc());
         };
@@ -1516,14 +1513,10 @@ impl Instance {
     /// If there's no plausible default value, and you're sure
     /// `FutureWriter::write` will be called, you can consider passing `||
     /// unreachable!()` as the `default` parameter.
-    pub fn future<
-        T: func::Lower + func::Lift + Send + Sync + 'static,
-        U: 'static,
-        S: AsContextMut<Data = U>,
-    >(
+    pub fn future<T: func::Lower + func::Lift + Send + Sync + 'static>(
         self,
         default: fn() -> T,
-        mut store: S,
+        mut store: impl AsContextMut,
     ) -> Result<(FutureWriter<T>, FutureReader<T>)> {
         let mut store = store.as_context_mut();
         let (write, read) = self.concurrent_state_mut(store.0).new_transmit()?;
@@ -1531,7 +1524,7 @@ impl Instance {
         Ok((
             FutureWriter::new(
                 default,
-                Some(self.start_write_event_loop::<_, _, U>(
+                Some(self.start_write_event_loop(
                     store.as_context_mut(),
                     write.rep(),
                     TransmitKind::Future,
@@ -1540,7 +1533,7 @@ impl Instance {
             ),
             FutureReader::new(
                 read.rep(),
-                Some(self.start_read_event_loop::<_, _, U>(
+                Some(self.start_read_event_loop(
                     store.as_context_mut(),
                     read.rep(),
                     TransmitKind::Future,
@@ -1556,18 +1549,16 @@ impl Instance {
         T: func::Lower + func::Lift + Send + 'static,
         W: WriteBuffer<T>,
         R: ReadBuffer<T>,
-        U: 'static,
-        S: AsContextMut<Data = U>,
     >(
         self,
-        mut store: S,
+        mut store: impl AsContextMut,
     ) -> Result<(StreamWriter<W>, StreamReader<R>)> {
         let mut store = store.as_context_mut();
         let (write, read) = self.concurrent_state_mut(store.0).new_transmit()?;
 
         Ok((
             StreamWriter::new(
-                Some(self.start_write_event_loop::<_, _, U>(
+                Some(self.start_write_event_loop(
                     store.as_context_mut(),
                     write.rep(),
                     TransmitKind::Stream,
@@ -1576,7 +1567,7 @@ impl Instance {
             ),
             StreamReader::new(
                 read.rep(),
-                Some(self.start_read_event_loop::<_, _, U>(
+                Some(self.start_read_event_loop(
                     store.as_context_mut(),
                     read.rep(),
                     TransmitKind::Stream,
@@ -1598,7 +1589,7 @@ impl Instance {
     fn start_write_event_loop<
         T: func::Lower + func::Lift + Send + 'static,
         B: WriteBuffer<T>,
-        U: 'static,
+        U,
     >(
         self,
         mut store: StoreContextMut<U>,
@@ -1668,11 +1659,7 @@ impl Instance {
 
     /// Same as `Self::start_write_event_loop`, but for the read end of a stream
     /// or future.
-    fn start_read_event_loop<
-        T: func::Lower + func::Lift + Send + 'static,
-        B: ReadBuffer<T>,
-        U: 'static,
-    >(
+    fn start_read_event_loop<T: func::Lower + func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
         self,
         mut store: StoreContextMut<U>,
         rep: u32,
@@ -1748,7 +1735,7 @@ impl Instance {
     /// * `post_write` - Whether the transmit should be dropped after write, possibly with an error context
     /// * `tx` - Oneshot channel to notify when operation completes (or drop on error)
     /// * `kind` - whether this is a stream or a future
-    fn host_write<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>(
+    fn host_write<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U>(
         self,
         mut store: StoreContextMut<U>,
         transmit_rep: u32,
@@ -1871,7 +1858,7 @@ impl Instance {
     /// * `buffer` - Buffer to receive values
     /// * `tx` - Oneshot channel to notify when operation completes (or drop on error)
     /// * `kind` - whether this is a stream or a future
-    fn host_read<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U: 'static>(
+    fn host_read<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
         self,
         mut store: StoreContextMut<U>,
         rep: u32,
@@ -2792,7 +2779,7 @@ impl Instance {
     ///
     /// SAFETY: `memory` and `realloc` must be valid pointers to their
     /// respective guest entities.
-    pub(super) unsafe fn error_context_debug_message<T: 'static>(
+    pub(super) unsafe fn error_context_debug_message<T>(
         self,
         store: StoreContextMut<T>,
         memory: *mut VMMemoryDefinition,

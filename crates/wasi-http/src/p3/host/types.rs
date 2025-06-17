@@ -790,7 +790,7 @@ where
         store.with(|mut view| {
             let instance = view.instance();
             let (contents_tx, contents_rx) = instance
-                .stream::<_, _, Vec<_>, _, _>(&mut view)
+                .stream::<_, _, Vec<_>>(&mut view)
                 .context("failed to create stream")?;
             let (trailers_tx, trailers_rx) = instance
                 .future(|| Ok(None), &mut view)
@@ -1107,7 +1107,7 @@ where
         store.with(|mut view| {
             let instance = view.instance();
             let (contents_tx, contents_rx) = instance
-                .stream::<_, _, Vec<_>, _, _>(&mut view)
+                .stream::<_, _, Vec<_>>(&mut view)
                 .context("failed to create stream")?;
             let (trailers_tx, trailers_rx) = instance
                 .future(|| Ok(None), &mut view)

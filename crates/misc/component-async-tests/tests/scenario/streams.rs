@@ -46,46 +46,46 @@ pub async fn async_watch_streams() -> Result<()> {
     let instance = linker.instantiate_async(&mut store, &component).await?;
 
     // Test watching and then dropping the read end of a stream.
-    let (tx, rx) = instance.stream::<u8, Option<_>, Option<_>, _, _>(&mut store)?;
+    let (tx, rx) = instance.stream::<u8, Option<_>, Option<_>>(&mut store)?;
     let watch = tx.watch_reader().0;
     drop(rx);
     instance.run(&mut store, watch).await?;
 
     // Test dropping and then watching the read end of a stream.
-    let (tx, rx) = instance.stream::<u8, Option<_>, Option<_>, _, _>(&mut store)?;
+    let (tx, rx) = instance.stream::<u8, Option<_>, Option<_>>(&mut store)?;
     drop(rx);
     instance.run(&mut store, tx.watch_reader().0).await?;
 
     // Test watching and then dropping the write end of a stream.
-    let (tx, rx) = instance.stream::<u8, Option<_>, Option<_>, _, _>(&mut store)?;
+    let (tx, rx) = instance.stream::<u8, Option<_>, Option<_>>(&mut store)?;
     let watch = rx.watch_writer().0;
     drop(tx);
     instance.run(&mut store, watch).await?;
 
     // Test dropping and then watching the write end of a stream.
-    let (tx, rx) = instance.stream::<u8, Option<_>, Option<_>, _, _>(&mut store)?;
+    let (tx, rx) = instance.stream::<u8, Option<_>, Option<_>>(&mut store)?;
     drop(tx);
     instance.run(&mut store, rx.watch_writer().0).await?;
 
     // Test watching and then dropping the read end of a future.
-    let (tx, rx) = instance.future::<u8, _, _>(|| 42, &mut store)?;
+    let (tx, rx) = instance.future::<u8>(|| 42, &mut store)?;
     let watch = tx.watch_reader().0;
     drop(rx);
     instance.run(&mut store, watch).await?;
 
     // Test dropping and then watching the read end of a future.
-    let (tx, rx) = instance.future::<u8, _, _>(|| 42, &mut store)?;
+    let (tx, rx) = instance.future::<u8>(|| 42, &mut store)?;
     drop(rx);
     instance.run(&mut store, tx.watch_reader().0).await?;
 
     // Test watching and then dropping the write end of a future.
-    let (tx, rx) = instance.future::<u8, _, _>(|| 42, &mut store)?;
+    let (tx, rx) = instance.future::<u8>(|| 42, &mut store)?;
     let watch = rx.watch_writer().0;
     drop(tx);
     instance.run(&mut store, watch).await?;
 
     // Test dropping and then watching the write end of a future.
-    let (tx, rx) = instance.future::<u8, _, _>(|| 42, &mut store)?;
+    let (tx, rx) = instance.future::<u8>(|| 42, &mut store)?;
     drop(tx);
     instance.run(&mut store, rx.watch_writer().0).await?;
 
@@ -293,7 +293,7 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
 
     // Next, test stream host->guest
     {
-        let (tx, rx) = instance.stream::<_, _, Vec<_>, _, _>(&mut store)?;
+        let (tx, rx) = instance.stream::<_, _, Vec<_>>(&mut store)?;
 
         let mut futures = FuturesUnordered::new();
         futures.push(

@@ -171,7 +171,7 @@ where
         store.with(|mut view| {
             let instance = view.instance();
             let (tx, rx) = instance
-                .stream::<_, _, Vec<_>, _, _>(&mut view)
+                .stream::<_, _, Vec<_>>(&mut view)
                 .context("failed to create stream")?;
             let stdin = view.get().cli().stdin.reader();
             view.spawn(InputTask { input: stdin, tx });

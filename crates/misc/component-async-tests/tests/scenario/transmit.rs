@@ -358,9 +358,8 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &str) -> Re
         ReadNone(Option<StreamReader<Option<String>>>),
     }
 
-    let (control_tx, control_rx) = instance.stream::<_, _, Option<_>, _, _>(&mut store)?;
-    let (caller_stream_tx, caller_stream_rx) =
-        instance.stream::<_, _, Option<_>, _, _>(&mut store)?;
+    let (control_tx, control_rx) = instance.stream::<_, _, Option<_>>(&mut store)?;
+    let (caller_stream_tx, caller_stream_rx) = instance.stream::<_, _, Option<_>>(&mut store)?;
     let (caller_future1_tx, caller_future1_rx) = instance.future(|| unreachable!(), &mut store)?;
     let (_caller_future2_tx, caller_future2_rx) = instance.future(|| unreachable!(), &mut store)?;
 
