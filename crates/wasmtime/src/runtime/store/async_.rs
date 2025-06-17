@@ -234,7 +234,7 @@ impl<T> StoreInner<T> {
                 .context("couldn't create AsyncCx to block on async operation")?;
             let future = mk_future(self);
             let mut future = core::pin::pin!(future);
-            unsafe { Ok(async_cx.block_on(future.as_mut(), None)?.0) }
+            unsafe { Ok(async_cx.block_on(future.as_mut())?) }
         }
         #[cfg(not(feature = "component-model-async"))]
         {
