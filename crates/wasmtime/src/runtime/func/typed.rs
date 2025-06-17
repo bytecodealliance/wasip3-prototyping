@@ -147,23 +147,13 @@ where
         if Self::need_gc_before_call_raw(store.0, &params) {
             store.gc_async(None).await?;
         }
-        #[cfg(feature = "component-model-async")]
-        {
-            crate::component::concurrent::on_fiber(store, |store| {
+
+        store
+            .on_fiber(|store| {
                 let func = self.func.vm_func_ref(store.0);
                 unsafe { Self::call_raw(store, &self.ty, func, params) }
             })
             .await?
-        }
-        #[cfg(not(feature = "component-model-async"))]
-        {
-            store
-                .on_fiber(|store| {
-                    let func = self.func.vm_func_ref(store.0);
-                    unsafe { Self::call_raw(store, &self.ty, func, params) }
-                })
-                .await?
-        }
     }
 
     #[inline]

@@ -81,6 +81,8 @@ use crate::RootSet;
 use crate::component::ComponentStoreData;
 #[cfg(feature = "component-model-async")]
 use crate::component::concurrent;
+#[cfg(feature = "async")]
+use crate::fiber;
 use crate::module::RegisteredModuleId;
 use crate::prelude::*;
 #[cfg(feature = "gc")]
@@ -112,16 +114,14 @@ mod data;
 pub use self::data::*;
 mod func_refs;
 use func_refs::FuncRefs;
-#[cfg(feature = "component-model-async")]
+#[cfg(feature = "async")]
 mod token;
-#[cfg(feature = "component-model-async")]
+#[cfg(feature = "async")]
 pub(crate) use token::StoreToken;
 #[cfg(feature = "async")]
 mod async_;
 #[cfg(all(feature = "async", feature = "call-hook"))]
 pub use self::async_::CallHookHandler;
-#[cfg(feature = "async")]
-use self::async_::*;
 #[cfg(feature = "gc")]
 mod gc;
 
@@ -361,7 +361,7 @@ pub struct StoreOpaque {
     table_count: usize,
     table_limit: usize,
     #[cfg(feature = "async")]
-    async_state: AsyncState,
+    async_state: fiber::AsyncState,
 
     // If fuel_yield_interval is enabled, then we store the remaining fuel (that isn't in
     // runtime_limits) here. The total amount of fuel is the runtime limits and reserve added
@@ -564,7 +564,7 @@ impl<T: 'static> Store<T> {
             table_count: 0,
             table_limit: crate::DEFAULT_TABLE_LIMIT,
             #[cfg(feature = "async")]
-            async_state: AsyncState::default(),
+            async_state: Default::default(),
             fuel_reserve: 0,
             fuel_yield_interval: None,
             store_data,
@@ -602,9 +602,9 @@ impl<T: 'static> Store<T> {
             data: ManuallyDrop::new(data),
         });
 
-        #[cfg(feature = "component-model-async")]
+        #[cfg(feature = "async")]
         {
-            inner.concurrent_async_state.current_executor = &raw mut inner.executor;
+            inner.async_state.current_executor = &raw mut inner.executor;
         }
 
         inner.traitobj = StorePtr::new(NonNull::from(&mut *inner));
@@ -1937,12 +1937,17 @@ at https://bytecodealliance.org/security.
         self.num_component_instances += 1;
     }
 
+    #[cfg(feature = "async")]
+    pub(crate) fn async_state(&mut self) -> *mut fiber::AsyncState {
+        &raw mut self.async_state
+    }
+
     #[cfg(feature = "component-model-async")]
     pub(crate) fn concurrent_async_state(&mut self) -> *mut concurrent::AsyncState {
         &raw mut self.concurrent_async_state
     }
 
-    #[cfg(feature = "component-model-async")]
+    #[cfg(feature = "async")]
     pub(crate) fn has_pkey(&self) -> bool {
         self.pkey.is_some()
     }
@@ -1953,12 +1958,9 @@ at https://bytecodealliance.org/security.
     }
 
     pub(crate) fn executor(&mut self) -> ExecutorRef<'_> {
-        #[cfg(feature = "component-model-async")]
-        let executor = unsafe {
-            assert!(!self.concurrent_async_state.current_executor.is_null());
-            &mut *self.concurrent_async_state.current_executor
-        };
-        #[cfg(not(feature = "component-model-async"))]
+        #[cfg(feature = "async")]
+        let executor = unsafe { &mut *self.async_state.current_executor };
+        #[cfg(not(feature = "async"))]
         let executor = &mut self.executor;
 
         match executor {
@@ -1969,12 +1971,9 @@ at https://bytecodealliance.org/security.
     }
 
     pub(crate) fn unwinder(&self) -> &'static dyn Unwind {
-        #[cfg(feature = "component-model-async")]
-        let executor = unsafe {
-            assert!(!self.concurrent_async_state.current_executor.is_null());
-            &*self.concurrent_async_state.current_executor
-        };
-        #[cfg(not(feature = "component-model-async"))]
+        #[cfg(feature = "async")]
+        let executor = unsafe { &*self.async_state.current_executor };
+        #[cfg(not(feature = "async"))]
         let executor = &self.executor;
 
         match executor {

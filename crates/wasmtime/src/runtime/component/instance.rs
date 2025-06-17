@@ -946,21 +946,12 @@ impl<T: 'static> InstancePre<T> {
     where
         T: Send,
     {
-        let store = store.as_context_mut();
+        let mut store = store.as_context_mut();
         assert!(
             store.0.async_support(),
             "must use sync instantiation when async support is disabled"
         );
-        #[cfg(feature = "component-model-async")]
-        {
-            crate::component::concurrent::on_fiber(store, move |store| self.instantiate_impl(store))
-                .await?
-        }
-        #[cfg(not(feature = "component-model-async"))]
-        {
-            let mut store = store;
-            store.on_fiber(|store| self.instantiate_impl(store)).await?
-        }
+        store.on_fiber(|store| self.instantiate_impl(store)).await?
     }
 
     fn instantiate_impl(&self, mut store: impl AsContextMut<Data = T>) -> Result<Instance> {

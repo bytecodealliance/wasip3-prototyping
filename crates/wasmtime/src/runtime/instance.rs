@@ -233,19 +233,9 @@ impl Instance {
             "must use sync instantiation when async support is disabled",
         );
 
-        #[cfg(feature = "component-model-async")]
-        {
-            crate::component::concurrent::on_fiber(store.as_context_mut(), move |store| {
-                Self::new_started_impl(store, module, imports)
-            })
+        store
+            .on_fiber(|store| Self::new_started_impl(store, module, imports))
             .await?
-        }
-        #[cfg(not(feature = "component-model-async"))]
-        {
-            store
-                .on_fiber(|store| Self::new_started_impl(store, module, imports))
-                .await?
-        }
     }
 
     /// Internal function to create an instance which doesn't have its `start`
