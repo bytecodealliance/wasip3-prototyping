@@ -418,13 +418,30 @@ where
 
     /// Changes this accessor to access `D2` instead of the current type
     /// parameter `D`.
-    //
-    // TODO: this is technically no longer `unsafe` but still not great to
-    // call. This creates a second `Accessor` which makes it easy to call `with`
-    // twice which can easily lead to panics (safe panics though). Needs some
-    // thought about what exactly `Accessor` is represented as.
+    ///
+    /// This changes the underlying data access from `T` to `D2::Data<'_>`.
+    ///
+    /// Note that this is not a public or recommended API because it's easy to
+    /// cause panics with this by having two `Accessor` values live at the same
+    /// time. The returned `Accessor` does not refer to this `Accessor` meaning
+    /// that both can be used. You could, for example, call `Accessor::with`
+    /// simultaneously on both. That would cause a panic though.
+    ///
+    /// In short while there's nothing unsafe about this it's a footgun. It's
+    /// here for bindings generation where the provided accessor is transformed
+    /// into a new accessor and then this returned accessor is passed to
+    /// implementations.
+    ///
+    /// Note that one possible fix for this would be a lifetime parameter on
+    /// `Accessor` itself so the returned value could borrow from the original
+    /// value (or this could be `self`-by-value instead of `&mut self`) but in
+    /// attempting that it was found to be a bit too onerous in terms of
+    /// plumbing things around without a whole lot of benefit.
+    ///
+    /// In short, this works, but must be treated with care. The current main
+    /// user, bindings generation, treats this with care.
     #[doc(hidden)]
-    pub unsafe fn with_data<D2: HasData>(
+    pub fn with_data<D2: HasData>(
         &mut self,
         get_data: fn(&mut T) -> D2::Data<'_>,
     ) -> Accessor<T, D2> {
