@@ -65,7 +65,7 @@ impl bindings::local::local::resource_stream::HostConcurrent for Ctx {
 
         let (tx, rx) = accessor.with(|mut view| {
             let instance = view.instance();
-            instance.stream::<_, _, Option<_>, _, _>(&mut view)
+            instance.stream::<_, _, Option<_>>(&mut view)
         })?;
         accessor.spawn(Task { tx, count });
         Ok(rx.into())
