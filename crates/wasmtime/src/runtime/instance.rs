@@ -341,7 +341,8 @@ impl Instance {
         let caller_vmctx = instance.vmctx();
         unsafe {
             super::func::invoke_wasm_and_catch_traps(store, |_default_caller, vm| {
-                f.func_ref.as_ref().array_call(
+                VMFuncRef::array_call(
+                    f.func_ref,
                     vm,
                     VMOpaqueContext::from_vmcontext(caller_vmctx),
                     NonNull::from(&mut []),

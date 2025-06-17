@@ -79,6 +79,16 @@ pub async fn async_trap_cancel_host_after_return() -> Result<()> {
     test_cancel_trap(Mode::TrapCancelHostAfterReturn).await
 }
 
+fn cancel_delay() -> u64 {
+    // Miri-based builds are much slower to run, so we delay longer in that case
+    // to ensure that async calls which the test expects to return `BLOCKED`
+    // actually do so.
+    //
+    // TODO: Make this test (more) deterministic so that such tuning is not
+    // necessary.
+    if cfg!(miri) { 1000 } else { 10 }
+}
+
 async fn test_cancel_trap(mode: Mode) -> Result<()> {
     let message = "`subtask.cancel` called after terminal status delivered";
     let trap = test_cancel(mode).await.unwrap_err();
@@ -118,7 +128,9 @@ async fn test_cancel(mode: Mode) -> Result<()> {
 
     let instance = linker.instantiate_async(&mut store, &component).await?;
     let cancel_host = cancel::CancelHost::new(&mut store, &instance)?;
-    let run = cancel_host.local_local_cancel().call_run(&mut store, mode);
+    let run = cancel_host
+        .local_local_cancel()
+        .call_run(&mut store, mode, cancel_delay());
     instance.run(&mut store, run).await??;
 
     Ok(())

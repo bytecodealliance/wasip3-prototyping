@@ -7,7 +7,7 @@
 use crate::prelude::*;
 use crate::runtime::vm::stack_switching::VMContObj;
 use crate::runtime::vm::vmcontext::{VMFuncRef, VMTableDefinition};
-use crate::runtime::vm::{GcStore, SendSyncPtr, VMGcRef, VMStore};
+use crate::runtime::vm::{GcStore, SendSyncPtr, VMGcRef, VMStore, VmPtr};
 use core::alloc::Layout;
 use core::mem;
 use core::ops::Range;
@@ -134,19 +134,26 @@ impl From<VMContObj> for TableElement {
 
 #[derive(Copy, Clone)]
 #[repr(transparent)]
-struct TaggedFuncRef(*mut VMFuncRef);
+struct TaggedFuncRef(Option<VmPtr<VMFuncRef>>);
 
 impl TaggedFuncRef {
-    const UNINIT: TaggedFuncRef = TaggedFuncRef(ptr::null_mut());
+    const UNINIT: TaggedFuncRef = TaggedFuncRef(None);
 
     /// Converts the given `ptr`, a valid funcref pointer, into a tagged pointer
     /// by adding in the `FUNCREF_INIT_BIT`.
     fn from(ptr: Option<NonNull<VMFuncRef>>, lazy_init: bool) -> Self {
-        let ptr = ptr.map(|p| p.as_ptr()).unwrap_or(ptr::null_mut());
         if lazy_init {
-            let masked = ptr.map_addr(|a| a | FUNCREF_INIT_BIT);
+            let masked = match ptr {
+                Some(ptr) => Some(ptr.map_addr(|a| a | FUNCREF_INIT_BIT).into()),
+                None => Some(
+                    NonNull::new(core::ptr::without_provenance_mut(FUNCREF_INIT_BIT))
+                        .unwrap()
+                        .into(),
+                ),
+            };
             TaggedFuncRef(masked)
         } else {
+            let ptr = ptr.map(|p| p.into());
             TaggedFuncRef(ptr)
         }
     }
@@ -155,13 +162,14 @@ impl TaggedFuncRef {
     /// for null (not a tagged value) or `FuncRef` for otherwise tagged values.
     fn into_table_element(self, lazy_init: bool) -> TableElement {
         let ptr = self.0;
-        if lazy_init && ptr.is_null() {
+        if lazy_init && ptr.is_none() {
             TableElement::UninitFunc
         } else {
             // Masking off the tag bit is harmless whether the table uses lazy
             // init or not.
-            let unmasked = ptr.map_addr(|a| a & FUNCREF_MASK);
-            TableElement::FuncRef(NonNull::new(unmasked))
+            let unmasked =
+                ptr.and_then(|ptr| NonNull::new(ptr.as_ptr().map_addr(|a| a & FUNCREF_MASK)));
+            TableElement::FuncRef(unmasked)
         }
     }
 }
@@ -957,25 +965,19 @@ impl Table {
             },
             Table::Dynamic(DynamicTable::Func(DynamicFuncTable { elements, .. })) => {
                 VMTableDefinition {
-                    base: NonNull::<[FuncTableElem]>::from(&mut elements[..])
-                        .cast()
-                        .into(),
+                    base: NonNull::new(elements.as_mut_ptr()).unwrap().cast().into(),
                     current_elements: elements.len(),
                 }
             }
             Table::Dynamic(DynamicTable::GcRef(DynamicGcRefTable { elements, .. })) => {
                 VMTableDefinition {
-                    base: NonNull::<[Option<VMGcRef>]>::from(&mut elements[..])
-                        .cast()
-                        .into(),
+                    base: NonNull::new(elements.as_mut_ptr()).unwrap().cast().into(),
                     current_elements: elements.len(),
                 }
             }
             Table::Dynamic(DynamicTable::Cont(DynamicContTable { elements, .. })) => {
                 VMTableDefinition {
-                    base: NonNull::<[Option<VMContObj>]>::from(&mut elements[..])
-                        .cast()
-                        .into(),
+                    base: NonNull::new(elements.as_mut_ptr()).unwrap().cast().into(),
                     current_elements: elements.len(),
                 }
             }

@@ -25,7 +25,7 @@ pub mod non_concurrent_export_bindings {
 
 impl bindings::local::local::baz::HostConcurrent for Ctx {
     async fn foo<T>(_: &mut Accessor<T, Self>, s: String) -> wasmtime::Result<String> {
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        crate::util::sleep(Duration::from_millis(10)).await;
         Ok(format!("{s} - entered host - exited host"))
     }
 }
