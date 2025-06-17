@@ -447,7 +447,7 @@ impl<T: 'static> LinkerInstance<'_, T> {
             {
                 let async_cx = crate::component::concurrent::AsyncCx::new(&mut store.0);
                 let mut future = Pin::from(f(store.as_context_mut(), params));
-                unsafe { async_cx.block_on(future.as_mut(), None) }?.0
+                unsafe { async_cx.block_on(future.as_mut()) }?
             }
             #[cfg(not(feature = "component-model-async"))]
             {
@@ -622,7 +622,7 @@ impl<T: 'static> LinkerInstance<'_, T> {
             {
                 let async_cx = crate::component::concurrent::AsyncCx::new(&mut store.0);
                 let mut future = Pin::from(f(store.as_context_mut(), params, results));
-                unsafe { async_cx.block_on(future.as_mut(), None) }?.0
+                unsafe { async_cx.block_on(future.as_mut()) }?
             }
             #[cfg(not(feature = "component-model-async"))]
             {
@@ -732,7 +732,7 @@ impl<T: 'static> LinkerInstance<'_, T> {
                     let async_cx =
                         crate::component::concurrent::AsyncCx::new(&mut cx.as_context_mut().0);
                     let mut future = Pin::from(dtor(cx.as_context_mut(), param));
-                    unsafe { async_cx.block_on(future.as_mut(), None) }?.0
+                    unsafe { async_cx.block_on(future.as_mut()) }?
                 }
                 #[cfg(not(feature = "component-model-async"))]
                 {

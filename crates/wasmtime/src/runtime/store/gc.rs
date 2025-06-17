@@ -51,7 +51,7 @@ impl StoreOpaque {
                 unsafe {
                     let async_cx = crate::component::concurrent::AsyncCx::new(&mut scope);
                     let future = scope.grow_or_collect_gc_heap_async(bytes_needed);
-                    async_cx.block_on(Box::pin(future).as_mut(), None)?.0;
+                    async_cx.block_on(Box::pin(future).as_mut())?;
                 }
             }
         } else {

@@ -475,9 +475,9 @@ impl<T> Linker<T> {
             {
                 let async_cx = crate::component::concurrent::AsyncCx::new(&mut caller.store.0);
                 let mut future = Pin::from(func(caller, params, results));
-                match unsafe { async_cx.block_on(future.as_mut(), None) } {
-                    Ok((Ok(()), _)) => Ok(()),
-                    Ok((Err(trap), _)) | Err(trap) => Err(trap),
+                match unsafe { async_cx.block_on(future.as_mut()) } {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(trap)) | Err(trap) => Err(trap),
                 }
             }
             #[cfg(not(feature = "component-model-async"))]
@@ -595,8 +595,8 @@ impl<T> Linker<T> {
                     let async_cx = crate::component::concurrent::AsyncCx::new(&mut caller.store.0);
                     let mut future = Pin::from(func(caller, args));
 
-                    match unsafe { async_cx.block_on(future.as_mut(), None) } {
-                        Ok((ret, _)) => ret.into_fallible(),
+                    match unsafe { async_cx.block_on(future.as_mut()) } {
+                        Ok(ret) => ret.into_fallible(),
                         Err(e) => Args::fallible_from_error(e),
                     }
                 }

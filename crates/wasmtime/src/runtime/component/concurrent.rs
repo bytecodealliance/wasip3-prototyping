@@ -4417,15 +4417,14 @@ impl AsyncCx {
     pub(crate) unsafe fn block_on<U>(
         &self,
         mut future: Pin<&mut (dyn Future<Output = U> + Send)>,
-        mut store: Option<*mut dyn VMStore>,
-    ) -> Result<(U, Option<*mut dyn VMStore>)> {
+    ) -> Result<U> {
         loop {
             match self.poll(future.as_mut()) {
-                Poll::Ready(v) => break Ok((v, store)),
-                Poll::Pending => {}
+                Poll::Ready(v) => break Ok(v),
+                Poll::Pending => {
+                    self.suspend(None)?;
+                }
             }
-
-            store = self.suspend(store)?;
         }
     }
 
