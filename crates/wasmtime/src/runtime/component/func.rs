@@ -179,7 +179,7 @@ impl Func {
         Params: ComponentNamedList + Lower,
         Return: ComponentNamedList + Lift,
     {
-        let cx = InstanceType::new(instance.unwrap_or_else(|| &store[self.instance.id()]));
+        let cx = InstanceType::new(instance.unwrap_or_else(|| self.instance.id().get(store)));
         let ty = &cx.types[self.ty(store)];
 
         Params::typecheck(&InterfaceType::Tuple(ty.params), &cx)
@@ -193,7 +193,7 @@ impl Func {
     /// Get the parameter names and types for this function.
     pub fn params(&self, store: impl AsContext) -> Box<[(String, Type)]> {
         let store = store.as_context();
-        let instance = &store[self.instance.id()];
+        let instance = self.instance.id().get(store.0);
         let types = instance.component().types();
         let func_ty = &types[self.ty(store.0)];
         types[func_ty.params]
@@ -207,7 +207,7 @@ impl Func {
     /// Get the result types for this function.
     pub fn results(&self, store: impl AsContext) -> Box<[Type]> {
         let store = store.as_context();
-        let instance = &store[self.instance.id()];
+        let instance = self.instance.id().get(store.0);
         let types = instance.component().types();
         let ty = self.ty(store.0);
         types[types[ty].results]
@@ -218,7 +218,7 @@ impl Func {
     }
 
     fn ty(&self, store: &StoreOpaque) -> TypeFuncIndex {
-        let instance = &store[self.instance.id()];
+        let instance = self.instance.id().get(store);
         let (ty, _, _) = instance.component().export_lifted_function(self.index);
         ty
     }
@@ -514,8 +514,8 @@ impl Func {
         LowerParams: Copy,
         LowerReturn: Copy,
     {
-        let vminstance = &store[self.instance.id()];
         let export = self.lifted_core_func(store.0);
+        let vminstance = &store[self.instance.id()];
         let (options, mut flags, ty, _) = self.abi_info(store.0);
 
         let space = &mut MaybeUninit::<ParamsAndResults<LowerParams, LowerReturn>>::uninit();
@@ -552,7 +552,6 @@ impl Func {
 
             debug_assert!(flags.may_leave());
             flags.set_may_leave(false);
-            let instance_ptr = self.instance.instance_ptr(store.0).as_ptr();
             let mut cx = LowerContext::new(store.as_context_mut(), &options, &types, self.instance);
             cx.enter_call();
             let result = lower(
@@ -605,7 +604,7 @@ impl Func {
                 ret,
             )?;
             let ret_slice = storage_as_slice(ret);
-            (*instance_ptr).post_return_arg_set(
+            self.instance.id().get_mut(store.0).post_return_arg_set(
                 self.index,
                 match ret_slice.len() {
                     0 => ValRaw::i32(0),
@@ -684,15 +683,12 @@ impl Func {
         }
 
         let index = self.index;
-        let vminstance = &store.0[self.instance.id()];
+        let vminstance = self.instance.id().get(store.0);
         let (_ty, _def, options) = vminstance.component().export_lifted_function(index);
         let post_return = self.post_return_core_func(store.0);
-        let instance = self.instance.instance_ptr(store.0).as_ptr();
+        let mut instance = self.instance.id().get_mut(store.0);
 
         unsafe {
-            let post_return_arg = (*instance).post_return_arg_take(index);
-            let mut flags = (*instance).instance_flags(options.instance);
-
             // First assert that the instance is in a "needs post return" state.
             // This will ensure that the previous action on the instance was a
             // function call above. This flag is only set after a component
@@ -743,11 +739,13 @@ impl Func {
             // of the component.
             flags.set_may_enter(true);
 
-            let (calls, host_table, _) = store.0.component_resource_state();
+            let (calls, host_table, _, instance) = store
+                .0
+                .component_resource_state_with_instance(self.instance);
             ResourceTables {
-                calls,
                 host_table: Some(host_table),
-                guest: Some((*instance).guest_tables()),
+                calls,
+                guest: Some(instance.guest_tables()),
             }
             .exit_call()?;
         }
