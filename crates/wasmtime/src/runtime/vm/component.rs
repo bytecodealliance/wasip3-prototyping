@@ -265,10 +265,7 @@ impl ComponentInstance {
         }
 
         #[cfg(feature = "component-model-async")]
-        let concurrent_state = concurrent::ConcurrentState::new(
-            component.env_component().num_runtime_component_instances,
-            component.env_component().num_error_context_tables,
-        );
+        let concurrent_state = concurrent::ConcurrentState::new(component);
 
         let mut ret = OwnedInstance::new(ComponentInstance {
             id,
@@ -286,6 +283,8 @@ impl ComponentInstance {
             imports: imports.clone(),
             store: VMStoreRawPtr(store),
             post_return_arg: None,
+            #[cfg(feature = "component-model-async")]
+            concurrent_state,
             vmctx: OwnedVMContext::new(),
         });
         unsafe {
@@ -833,6 +832,13 @@ impl ComponentInstance {
         // SAFETY: we've chosen the `Pin` guarantee of `Self` to not apply to
         // the map returned.
         unsafe { &mut self.get_unchecked_mut().post_return_arg }
+    }
+
+    #[cfg(feature = "component-model-async")]
+    pub(crate) fn concurrent_state_mut(self: Pin<&mut Self>) -> &mut concurrent::ConcurrentState {
+        // SAFETY: we've chosen the `Pin` guarantee of `Self` to not apply to
+        // the state returned.
+        unsafe { &mut self.get_unchecked_mut().concurrent_state }
     }
 }
 

@@ -445,7 +445,7 @@ impl Func {
     }
 
     pub(crate) fn lifted_core_func(&self, store: &StoreOpaque) -> NonNull<VMFuncRef> {
-        let instance = &store[self.instance.id()];
+        let instance = self.instance.id().get(store);
         let (_ty, def, _options) = instance.component().export_lifted_function(self.index);
         match instance.lookup_def(store, def) {
             Export::Function(f) => f.func_ref,
@@ -454,13 +454,13 @@ impl Func {
     }
 
     pub(crate) fn post_return_core_func(&self, store: &StoreOpaque) -> Option<NonNull<VMFuncRef>> {
-        let instance = &store[self.instance.id()];
+        let instance = self.instance.id().get(store);
         let (_ty, _def, options) = instance.component().export_lifted_function(self.index);
         options.post_return.map(|i| instance.runtime_post_return(i))
     }
 
     pub(crate) fn abi_async(&self, store: &StoreOpaque) -> bool {
-        let instance = &store[self.instance.id()];
+        let instance = self.instance.id().get(store);
         let (_ty, _def, options) = instance.component().export_lifted_function(self.index);
         options.async_
     }
@@ -469,7 +469,7 @@ impl Func {
         &self,
         store: &'a StoreOpaque,
     ) -> (Options, InstanceFlags, TypeFuncIndex, &'a CanonicalOptions) {
-        let vminstance = &store[self.instance.id()];
+        let vminstance = self.instance.id().get(store);
         let (ty, _def, raw_options) = vminstance.component().export_lifted_function(self.index);
         let memory = raw_options
             .memory
@@ -515,7 +515,7 @@ impl Func {
         LowerReturn: Copy,
     {
         let export = self.lifted_core_func(store.0);
-        let vminstance = &store[self.instance.id()];
+        let vminstance = self.instance.id().get(store.0);
         let (options, mut flags, ty, _) = self.abi_info(store.0);
 
         let space = &mut MaybeUninit::<ParamsAndResults<LowerParams, LowerReturn>>::uninit();
@@ -686,7 +686,9 @@ impl Func {
         let vminstance = self.instance.id().get(store.0);
         let (_ty, _def, options) = vminstance.component().export_lifted_function(index);
         let post_return = self.post_return_core_func(store.0);
+        let mut flags = vminstance.instance_flags(options.instance);
         let mut instance = self.instance.id().get_mut(store.0);
+        let post_return_arg = instance.as_mut().post_return_arg_take(index);
 
         unsafe {
             // First assert that the instance is in a "needs post return" state.
@@ -948,7 +950,7 @@ fn lower_params<
 ) -> Result<()> {
     use crate::component::storage::slice_to_storage_mut;
 
-    let reference = &store[instance.id()];
+    let reference = instance.id().get(store.0);
     let types = reference.component().types().clone();
     let (options, mut flags, ty, _) = me.abi_info(store.0);
 
@@ -991,7 +993,7 @@ fn lift_results<
     lift: F,
 ) -> Result<Box<dyn std::any::Any + Send + Sync>> {
     let (options, _flags, ty, _) = me.abi_info(store.0);
-    let types = store[instance.id()].component().types().clone();
+    let types = instance.id().get(store.0).component().types().clone();
     Ok(Box::new(lift(
         &mut LiftContext::new(store.0, &options, &types, instance),
         InterfaceType::Tuple(types[ty].results),

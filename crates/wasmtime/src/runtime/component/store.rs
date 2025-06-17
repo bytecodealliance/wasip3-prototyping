@@ -36,7 +36,7 @@ impl ComponentStoreData {
                 continue;
             };
 
-            instance.drop_fibers();
+            instance.get_mut().concurrent_state_mut().drop_fibers();
         }
     }
 }
