@@ -179,7 +179,7 @@ impl Func {
         Params: ComponentNamedList + Lower,
         Return: ComponentNamedList + Lift,
     {
-        let cx = InstanceType::new(instance.unwrap_or_else(|| &store[self.instance.id()]));
+        let cx = InstanceType::new(instance.unwrap_or_else(|| self.instance.id().get(store)));
         let ty = &cx.types[self.ty(store)];
 
         Params::typecheck(&InterfaceType::Tuple(ty.params), &cx)
@@ -193,7 +193,7 @@ impl Func {
     /// Get the parameter names and types for this function.
     pub fn params(&self, store: impl AsContext) -> Box<[(String, Type)]> {
         let store = store.as_context();
-        let instance = &store[self.instance.id()];
+        let instance = self.instance.id().get(store.0);
         let types = instance.component().types();
         let func_ty = &types[self.ty(store.0)];
         types[func_ty.params]
@@ -207,7 +207,7 @@ impl Func {
     /// Get the result types for this function.
     pub fn results(&self, store: impl AsContext) -> Box<[Type]> {
         let store = store.as_context();
-        let instance = &store[self.instance.id()];
+        let instance = self.instance.id().get(store.0);
         let types = instance.component().types();
         let ty = self.ty(store.0);
         types[types[ty].results]
@@ -218,7 +218,7 @@ impl Func {
     }
 
     fn ty(&self, store: &StoreOpaque) -> TypeFuncIndex {
-        let instance = &store[self.instance.id()];
+        let instance = self.instance.id().get(store);
         let (ty, _, _) = instance.component().export_lifted_function(self.index);
         ty
     }
@@ -445,7 +445,7 @@ impl Func {
     }
 
     pub(crate) fn lifted_core_func(&self, store: &StoreOpaque) -> NonNull<VMFuncRef> {
-        let instance = &store[self.instance.id()];
+        let instance = self.instance.id().get(store);
         let (_ty, def, _options) = instance.component().export_lifted_function(self.index);
         match instance.lookup_def(store, def) {
             Export::Function(f) => f.func_ref,
@@ -454,13 +454,13 @@ impl Func {
     }
 
     pub(crate) fn post_return_core_func(&self, store: &StoreOpaque) -> Option<NonNull<VMFuncRef>> {
-        let instance = &store[self.instance.id()];
+        let instance = self.instance.id().get(store);
         let (_ty, _def, options) = instance.component().export_lifted_function(self.index);
         options.post_return.map(|i| instance.runtime_post_return(i))
     }
 
     pub(crate) fn abi_async(&self, store: &StoreOpaque) -> bool {
-        let instance = &store[self.instance.id()];
+        let instance = self.instance.id().get(store);
         let (_ty, _def, options) = instance.component().export_lifted_function(self.index);
         options.async_
     }
@@ -469,7 +469,7 @@ impl Func {
         &self,
         store: &'a StoreOpaque,
     ) -> (Options, InstanceFlags, TypeFuncIndex, &'a CanonicalOptions) {
-        let vminstance = &store[self.instance.id()];
+        let vminstance = self.instance.id().get(store);
         let (ty, _def, raw_options) = vminstance.component().export_lifted_function(self.index);
         let memory = raw_options
             .memory
@@ -514,8 +514,8 @@ impl Func {
         LowerParams: Copy,
         LowerReturn: Copy,
     {
-        let vminstance = &store[self.instance.id()];
         let export = self.lifted_core_func(store.0);
+        let vminstance = self.instance.id().get(store.0);
         let (options, mut flags, ty, _) = self.abi_info(store.0);
 
         let space = &mut MaybeUninit::<ParamsAndResults<LowerParams, LowerReturn>>::uninit();
@@ -552,7 +552,6 @@ impl Func {
 
             debug_assert!(flags.may_leave());
             flags.set_may_leave(false);
-            let instance_ptr = self.instance.instance_ptr(store.0).as_ptr();
             let mut cx = LowerContext::new(store.as_context_mut(), &options, &types, self.instance);
             cx.enter_call();
             let result = lower(
@@ -605,7 +604,7 @@ impl Func {
                 ret,
             )?;
             let ret_slice = storage_as_slice(ret);
-            (*instance_ptr).post_return_arg_set(
+            self.instance.id().get_mut(store.0).post_return_arg_set(
                 self.index,
                 match ret_slice.len() {
                     0 => ValRaw::i32(0),
@@ -684,15 +683,14 @@ impl Func {
         }
 
         let index = self.index;
-        let vminstance = &store.0[self.instance.id()];
+        let vminstance = self.instance.id().get(store.0);
         let (_ty, _def, options) = vminstance.component().export_lifted_function(index);
         let post_return = self.post_return_core_func(store.0);
-        let instance = self.instance.instance_ptr(store.0).as_ptr();
+        let mut flags = vminstance.instance_flags(options.instance);
+        let mut instance = self.instance.id().get_mut(store.0);
+        let post_return_arg = instance.as_mut().post_return_arg_take(index);
 
         unsafe {
-            let post_return_arg = (*instance).post_return_arg_take(index);
-            let mut flags = (*instance).instance_flags(options.instance);
-
             // First assert that the instance is in a "needs post return" state.
             // This will ensure that the previous action on the instance was a
             // function call above. This flag is only set after a component
@@ -743,11 +741,13 @@ impl Func {
             // of the component.
             flags.set_may_enter(true);
 
-            let (calls, host_table, _) = store.0.component_resource_state();
+            let (calls, host_table, _, instance) = store
+                .0
+                .component_resource_state_with_instance(self.instance);
             ResourceTables {
-                calls,
                 host_table: Some(host_table),
-                guest: Some((*instance).guest_tables()),
+                calls,
+                guest: Some(instance.guest_tables()),
             }
             .exit_call()?;
         }
@@ -950,7 +950,7 @@ fn lower_params<
 ) -> Result<()> {
     use crate::component::storage::slice_to_storage_mut;
 
-    let reference = &store[instance.id()];
+    let reference = instance.id().get(store.0);
     let types = reference.component().types().clone();
     let (options, mut flags, ty, _) = me.abi_info(store.0);
 
@@ -993,7 +993,7 @@ fn lift_results<
     lift: F,
 ) -> Result<Box<dyn std::any::Any + Send + Sync>> {
     let (options, _flags, ty, _) = me.abi_info(store.0);
-    let types = store[instance.id()].component().types().clone();
+    let types = instance.id().get(store.0).component().types().clone();
     Ok(Box::new(lift(
         &mut LiftContext::new(store.0, &options, &types, instance),
         InterfaceType::Tuple(types[ty].results),

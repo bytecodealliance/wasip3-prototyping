@@ -664,7 +664,7 @@ fn backpressure_set(
     caller_instance: u32,
     enabled: u32,
 ) -> Result<()> {
-    store[instance.id()].backpressure_set(
+    instance.concurrent_state_mut(store).backpressure_set(
         wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
         enabled,
     )
@@ -704,7 +704,7 @@ fn waitable_set_new(
     instance: Instance,
     caller_instance: u32,
 ) -> Result<u32> {
-    store[instance.id()].waitable_set_new(
+    instance.concurrent_state_mut(store).waitable_set_new(
         wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
     )
 }
@@ -756,7 +756,7 @@ fn waitable_set_drop(
     caller_instance: u32,
     set: u32,
 ) -> Result<()> {
-    store[instance.id()].waitable_set_drop(
+    instance.concurrent_state_mut(store).waitable_set_drop(
         wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
         set,
     )
@@ -770,7 +770,7 @@ fn waitable_join(
     waitable: u32,
     set: u32,
 ) -> Result<()> {
-    store[instance.id()].waitable_join(
+    instance.concurrent_state_mut(store).waitable_join(
         wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
         waitable,
         set,
@@ -789,7 +789,7 @@ fn subtask_drop(
     caller_instance: u32,
     task_id: u32,
 ) -> Result<()> {
-    store[instance.id()].subtask_drop(
+    instance.concurrent_state_mut(store).subtask_drop(
         wasmtime_environ::component::RuntimeComponentInstanceIndex::from_u32(caller_instance),
         task_id,
     )
@@ -891,7 +891,7 @@ fn future_transfer(
     src_table: u32,
     dst_table: u32,
 ) -> Result<u32> {
-    store[instance.id()].future_transfer(
+    instance.concurrent_state_mut(store).future_transfer(
         src_idx,
         wasmtime_environ::component::TypeFutureTableIndex::from_u32(src_table),
         wasmtime_environ::component::TypeFutureTableIndex::from_u32(dst_table),
@@ -906,7 +906,7 @@ fn stream_transfer(
     src_table: u32,
     dst_table: u32,
 ) -> Result<u32> {
-    store[instance.id()].stream_transfer(
+    instance.concurrent_state_mut(store).stream_transfer(
         src_idx,
         wasmtime_environ::component::TypeStreamTableIndex::from_u32(src_table),
         wasmtime_environ::component::TypeStreamTableIndex::from_u32(dst_table),
@@ -925,7 +925,9 @@ fn error_context_transfer(
         wasmtime_environ::component::TypeComponentLocalErrorContextTableIndex::from_u32(src_table);
     let dst_table =
         wasmtime_environ::component::TypeComponentLocalErrorContextTableIndex::from_u32(dst_table);
-    store[instance.id()].error_context_transfer(src_idx, src_table, dst_table)
+    instance
+        .concurrent_state_mut(store)
+        .error_context_transfer(src_idx, src_table, dst_table)
 }
 
 #[cfg(feature = "component-model-async")]
@@ -941,9 +943,9 @@ unsafe impl HostResultHasUnwindSentinel for ResourcePair {
 
 #[cfg(feature = "component-model-async")]
 fn future_new(store: &mut dyn VMStore, instance: Instance, ty: u32) -> Result<ResourcePair> {
-    store[instance.id()].future_new(wasmtime_environ::component::TypeFutureTableIndex::from_u32(
-        ty,
-    ))
+    instance.concurrent_state_mut(store).future_new(
+        wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
+    )
 }
 
 #[cfg(feature = "component-model-async")]
@@ -1002,7 +1004,7 @@ fn future_cancel_write(
     async_: u8,
     writer: u32,
 ) -> Result<u32> {
-    store[instance.id()].future_cancel_write(
+    instance.concurrent_state_mut(store).future_cancel_write(
         wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
         async_ != 0,
         writer,
@@ -1017,7 +1019,7 @@ fn future_cancel_read(
     async_: u8,
     reader: u32,
 ) -> Result<u32> {
-    store[instance.id()].future_cancel_read(
+    instance.concurrent_state_mut(store).future_cancel_read(
         wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
         async_ != 0,
         reader,
@@ -1031,7 +1033,7 @@ fn future_drop_writable(
     ty: u32,
     writer: u32,
 ) -> Result<()> {
-    store[instance.id()].future_drop_writable(
+    instance.concurrent_state_mut(store).future_drop_writable(
         wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
         writer,
     )
@@ -1053,9 +1055,9 @@ fn future_drop_readable(
 
 #[cfg(feature = "component-model-async")]
 fn stream_new(store: &mut dyn VMStore, instance: Instance, ty: u32) -> Result<ResourcePair> {
-    store[instance.id()].stream_new(wasmtime_environ::component::TypeStreamTableIndex::from_u32(
-        ty,
-    ))
+    instance.concurrent_state_mut(store).stream_new(
+        wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
+    )
 }
 
 #[cfg(feature = "component-model-async")]
@@ -1118,7 +1120,7 @@ fn stream_cancel_write(
     async_: u8,
     writer: u32,
 ) -> Result<u32> {
-    store[instance.id()].stream_cancel_write(
+    instance.concurrent_state_mut(store).stream_cancel_write(
         wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
         async_ != 0,
         writer,
@@ -1133,7 +1135,7 @@ fn stream_cancel_read(
     async_: u8,
     reader: u32,
 ) -> Result<u32> {
-    store[instance.id()].stream_cancel_read(
+    instance.concurrent_state_mut(store).stream_cancel_read(
         wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
         async_ != 0,
         reader,
@@ -1147,7 +1149,7 @@ fn stream_drop_writable(
     ty: u32,
     writer: u32,
 ) -> Result<()> {
-    store[instance.id()].stream_drop_writable(
+    instance.concurrent_state_mut(store).stream_drop_writable(
         wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
         writer,
     )
@@ -1274,7 +1276,7 @@ fn error_context_drop(
     ty: u32,
     err_ctx_handle: u32,
 ) -> Result<()> {
-    store[instance.id()].error_context_drop(
+    instance.concurrent_state_mut(store).error_context_drop(
         wasmtime_environ::component::TypeComponentLocalErrorContextTableIndex::from_u32(ty),
         err_ctx_handle,
     )
@@ -1282,10 +1284,10 @@ fn error_context_drop(
 
 #[cfg(feature = "component-model-async")]
 fn context_get(store: &mut dyn VMStore, instance: Instance, slot: u32) -> Result<u32> {
-    store[instance.id()].context_get(slot)
+    instance.concurrent_state_mut(store).context_get(slot)
 }
 
 #[cfg(feature = "component-model-async")]
 fn context_set(store: &mut dyn VMStore, instance: Instance, slot: u32, val: u32) -> Result<()> {
-    store[instance.id()].context_set(slot, val)
+    instance.concurrent_state_mut(store).context_set(slot, val)
 }

@@ -2,7 +2,7 @@ use crate::linker::{Definition, DefinitionType};
 use crate::prelude::*;
 use crate::runtime::vm::{
     self, Imports, ModuleRuntimeInfo, VMFuncRef, VMFunctionImport, VMGlobalImport, VMMemoryImport,
-    VMOpaqueContext, VMTableImport, VMTagImport,
+    VMTableImport, VMTagImport,
 };
 use crate::store::{AllocateInstanceKind, InstanceId, StoreInstanceId, StoreOpaque};
 use crate::types::matching;
@@ -341,12 +341,7 @@ impl Instance {
         let caller_vmctx = instance.vmctx();
         unsafe {
             super::func::invoke_wasm_and_catch_traps(store, |_default_caller, vm| {
-                VMFuncRef::array_call(
-                    f.func_ref,
-                    vm,
-                    VMOpaqueContext::from_vmcontext(caller_vmctx),
-                    NonNull::from(&mut []),
-                )
+                VMFuncRef::array_call(f.func_ref, vm, caller_vmctx, NonNull::from(&mut []))
             })?;
         }
         Ok(())
