@@ -310,7 +310,6 @@ unsafe extern "C" fn fiber_start(
     return_value_count: u32,
 ) {
     unsafe {
-        let func_ref = func_ref.as_ref().expect("Non-null function reference");
         let caller_vmxtx = NonNull::new_unchecked(caller_vmctx);
         let args = &mut *args;
         let params_and_returns: NonNull<[ValRaw]> = if args.capacity == 0 {
@@ -333,7 +332,12 @@ unsafe extern "C" fn fiber_start(
         //
         // TODO(dhil): we are ignoring the boolean return value
         // here... we probably shouldn't.
-        func_ref.array_call(None, caller_vmxtx, params_and_returns);
+        VMFuncRef::array_call(
+            NonNull::new(func_ref as *mut _).unwrap(),
+            None,
+            caller_vmxtx,
+            params_and_returns,
+        );
 
         // The array call trampoline should have just written
         // `return_value_count` values to the `args` buffer. Let's reflect that

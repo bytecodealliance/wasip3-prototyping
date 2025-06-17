@@ -82,6 +82,7 @@ struct SleepParams {
 enum State {
     S0 {
         mode: u8,
+        cancel_delay_millis: u64,
     },
     S1 {
         mode: u8,
@@ -108,9 +109,15 @@ enum State {
 }
 
 #[unsafe(export_name = "[async-lift]local:local/cancel#run")]
-unsafe extern "C" fn export_run(mode: u8) -> u32 {
+unsafe extern "C" fn export_run(mode: u8, cancel_delay_millis: u64) -> u32 {
     unsafe {
-        context_set(u32::try_from(Box::into_raw(Box::new(State::S0 { mode })) as usize).unwrap());
+        context_set(
+            u32::try_from(Box::into_raw(Box::new(State::S0 {
+                mode,
+                cancel_delay_millis,
+            })) as usize)
+            .unwrap(),
+        );
         callback_run(EVENT_NONE, 0, 0)
     }
 }
@@ -120,7 +127,10 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
     unsafe {
         let state = &mut *(usize::try_from(context_get()).unwrap() as *mut State);
         match state {
-            State::S0 { mode } => {
+            State::S0 {
+                mode,
+                cancel_delay_millis,
+            } => {
                 assert_eq!(event0, EVENT_NONE);
 
                 // First, call and cancel `sleep_with_options::sleep_millis`
@@ -187,7 +197,7 @@ unsafe extern "C" fn callback_run(event0: u32, event1: u32, event2: u32) -> u32 
                 // a non-zero cancel delay.  Cancelling _should_ block this
                 // time.
 
-                (*params).on_cancel_delay_millis = 10;
+                (*params).on_cancel_delay_millis = *cancel_delay_millis;
 
                 let status = sleep_with_options::sleep_millis(params.cast());
 

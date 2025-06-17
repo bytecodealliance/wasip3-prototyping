@@ -1,5 +1,8 @@
 use std::iter;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU32, Ordering::Relaxed},
+};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -12,7 +15,7 @@ use wasmtime::{Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
 
 use component_async_tests::Ctx;
-use component_async_tests::util::{config, make_component};
+use component_async_tests::util::{config, make_component, sleep};
 
 #[tokio::test]
 pub async fn async_round_trip_many_stackless() -> Result<()> {
@@ -224,6 +227,11 @@ async fn test_round_trip_many(
     let f = Some(e.clone());
     let g = Err(());
 
+    // On miri, we only use one call style per test since they take so long to
+    // run.  On non-miri, we use every call style for each test.
+    static CALL_STYLE_COUNTER: AtomicU32 = AtomicU32::new(0);
+    let call_style = CALL_STYLE_COUNTER.fetch_add(1, Relaxed) % 4;
+
     // First, test the `wasmtime-wit-bindgen` static API:
     {
         let mut linker = Linker::new(&engine);
@@ -241,73 +249,79 @@ async fn test_round_trip_many(
             &mut store, &instance,
         )?;
 
-        // Start concurrent calls and then join them all:
-        let mut futures = FuturesUnordered::new();
-        for (input, output) in inputs_and_outputs {
-            let output = (*output).to_owned();
-            futures.push(
-                round_trip_many
-                    .local_local_many()
-                    .call_foo(
-                        &mut store,
-                        (*input).to_owned(),
-                        b,
-                        c.clone(),
-                        d,
-                        e.clone(),
-                        f.clone(),
-                        g.clone(),
-                    )
-                    .map(move |v| v.map(move |v| (v, output))),
-            );
+        if call_style == 0 {
+            // Start concurrent calls and then join them all:
+            let mut futures = FuturesUnordered::new();
+            for (input, output) in inputs_and_outputs {
+                let output = (*output).to_owned();
+                futures.push(
+                    round_trip_many
+                        .local_local_many()
+                        .call_foo(
+                            &mut store,
+                            (*input).to_owned(),
+                            b,
+                            c.clone(),
+                            d,
+                            e.clone(),
+                            f.clone(),
+                            g.clone(),
+                        )
+                        .map(move |v| v.map(move |v| (v, output))),
+                );
+            }
+
+            while let Some((actual, expected)) =
+                instance.run(&mut store, futures.try_next()).await??
+            {
+                assert_eq!(
+                    (expected, b, c.clone(), d, e.clone(), f.clone(), g.clone()),
+                    actual
+                );
+            }
         }
 
-        while let Some((actual, expected)) = instance.run(&mut store, futures.try_next()).await?? {
-            assert_eq!(
-                (expected, b, c.clone(), d, e.clone(), f.clone(), g.clone()),
-                actual
-            );
-        }
-
-        // Now do it again using `TypedFunc::call_async`-based bindings:
-        let e = component_async_tests::round_trip_many::non_concurrent_export_bindings::exports::local::local::many::Stuff {
+        if call_style == 1 {
+            // Now do it again using `TypedFunc::call_async`-based bindings:
+            let e = component_async_tests::round_trip_many::non_concurrent_export_bindings::exports::local::local::many::Stuff {
         a: vec![42i32; 42],
         b: true,
         c: 424242,
     };
-        let f = Some(e.clone());
-        let g = Err(());
+            let f = Some(e.clone());
+            let g = Err(());
 
-        let round_trip_many = component_async_tests::round_trip_many::non_concurrent_export_bindings::RoundTripMany::instantiate_async(
+            let round_trip_many = component_async_tests::round_trip_many::non_concurrent_export_bindings::RoundTripMany::instantiate_async(
             &mut store, &component, &linker,
         )
         .await?;
 
-        for (input, expected) in inputs_and_outputs {
-            assert_eq!(
-                (
-                    (*expected).to_owned(),
-                    b,
-                    c.clone(),
-                    d,
-                    e.clone(),
-                    f.clone(),
-                    g.clone()
-                ),
-                round_trip_many
-                    .local_local_many()
-                    .call_foo(
-                        &mut store,
-                        (*input).to_owned(),
+            for (input, expected) in inputs_and_outputs {
+                assert_eq!(
+                    (
+                        (*expected).to_owned(),
                         b,
                         c.clone(),
                         d,
                         e.clone(),
                         f.clone(),
                         g.clone()
-                    )
-                    .await?
-            );
+                    ),
+                    round_trip_many
+                        .local_local_many()
+                        .call_foo(
+                            &mut store,
+                            (*input).to_owned(),
+                            b,
+                            c.clone(),
+                            d,
+                            e.clone(),
+                            f.clone(),
+                            g.clone()
+                        )
+                        .await?
+                );
+            }
         }
     }
 
@@ -321,7 +335,7 @@ async fn test_round_trip_many(
             .instance("local:local/many")?
             .func_new_concurrent("[async]foo", |_, params| {
                 Box::pin(async move {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    sleep(Duration::from_millis(10)).await;
                     let mut params = params.into_iter();
                     let Some(Val::String(s)) = params.next() else {
                         unreachable!()
@@ -367,34 +381,40 @@ async fn test_round_trip_many(
             ]
         };
 
-        // Start three concurrent calls and then join them all:
-        let mut futures = FuturesUnordered::new();
-        for (input, output) in inputs_and_outputs {
-            let output = (*output).to_owned();
-            futures.push(
+        if call_style == 2 {
+            // Start three concurrent calls and then join them all:
+            let mut futures = FuturesUnordered::new();
+            for (input, output) in inputs_and_outputs {
+                let output = (*output).to_owned();
+                futures.push(
+                    foo_function
+                        .call_concurrent(&mut store, make(input))
+                        .map(move |v| v.map(move |v| (v, output))),
+                );
+            }
+
+            while let Some((actual, expected)) =
+                instance.run(&mut store, futures.try_next()).await??
+            {
+                let Some(Val::Tuple(actual)) = actual.into_iter().next() else {
+                    unreachable!()
+                };
+                assert_eq!(make(&expected), actual);
+            }
+        }
+
+        if call_style == 3 {
+            // Now do it again using `Func::call_async`:
+            for (input, expected) in inputs_and_outputs {
+                let mut results = [Val::Bool(false)];
                 foo_function
-                    .call_concurrent(&mut store, make(input))
-                    .map(move |v| v.map(move |v| (v, output))),
-            );
-        }
-
-        while let Some((actual, expected)) = instance.run(&mut store, futures.try_next()).await?? {
-            let Some(Val::Tuple(actual)) = actual.into_iter().next() else {
-                unreachable!()
-            };
-            assert_eq!(make(&expected), actual);
-        }
-
-        // Now do it again using `Func::call_async`:
-        for (input, expected) in inputs_and_outputs {
-            let mut results = [Val::Bool(false)];
-            foo_function
-                .call_async(&mut store, &make(input), &mut results)
-                .await?;
-            let Val::Tuple(actual) = &results[0] else {
-                unreachable!()
-            };
-            assert_eq!(&make(expected), actual);
+                    .call_async(&mut store, &make(input), &mut results)
+                    .await?;
+                let Val::Tuple(actual) = &results[0] else {
+                    unreachable!()
+                };
+                assert_eq!(&make(expected), actual);
+            }
         }
     }
 

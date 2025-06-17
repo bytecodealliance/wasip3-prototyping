@@ -1,3 +1,4 @@
+use std::env;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -65,7 +66,11 @@ pub async fn async_borrowing_callee() -> Result<()> {
 
 pub async fn test_run_bool(components: &[&str], v: bool) -> Result<()> {
     let mut config = config();
-    config.epoch_interruption(true);
+    // As of this writing, miri/pulley/epochs is a problematic combination, so
+    // we don't test it.
+    if env::var_os("MIRI_TEST_CWASM_DIR").is_none() {
+        config.epoch_interruption(true);
+    }
 
     let engine = Engine::new(&config)?;
 
@@ -88,12 +93,15 @@ pub async fn test_run_bool(components: &[&str], v: bool) -> Result<()> {
             wakers: Arc::new(Mutex::new(None)),
         },
     );
-    store.set_epoch_deadline(1);
 
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(10));
-        engine.increment_epoch();
-    });
+    if env::var_os("MIRI_TEST_CWASM_DIR").is_none() {
+        store.set_epoch_deadline(1);
+
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(10));
+            engine.increment_epoch();
+        });
+    }
 
     let instance = linker.instantiate_async(&mut store, &component).await?;
     let borrowing_host =

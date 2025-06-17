@@ -9,7 +9,7 @@ use {
         component::{
             Instance, Lower, Val, WasmList, WasmStr,
             concurrent::{ConcurrentState, tls},
-            func::{self, Lift, LiftContext, LowerContext, Options},
+            func::{self, LiftContext, LowerContext, Options},
             matching::InstanceType,
             values::{ErrorContextAny, FutureAny, StreamAny},
         },
@@ -2748,16 +2748,12 @@ impl Instance {
         //  Read string from guest memory
         let address = usize::try_from(debug_msg_address)?;
         let len = usize::try_from(debug_msg_len)?;
-        let message = WasmStr::load(
-            lift_ctx,
-            InterfaceType::String,
-            &lift_ctx
-                .memory()
-                .get(address..)
-                .and_then(|b| b.get(..len))
-                .map(|_| [debug_msg_address.to_le_bytes(), debug_msg_len.to_le_bytes()].concat())
-                .ok_or_else(|| anyhow::anyhow!("invalid debug message pointer: out of bounds"))?,
-        )?;
+        lift_ctx
+            .memory()
+            .get(address..)
+            .and_then(|b| b.get(..len))
+            .ok_or_else(|| anyhow::anyhow!("invalid debug message pointer: out of bounds"))?;
+        let message = WasmStr::new(address, len, lift_ctx)?;
 
         // Create a new ErrorContext that is tracked along with other concurrent state
         let err_ctx = ErrorContextState {
