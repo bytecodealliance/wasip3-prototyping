@@ -4528,7 +4528,8 @@ pub struct ConcurrentState {
     global_error_context_ref_counts:
         BTreeMap<TypeComponentGlobalErrorContextTableIndex, GlobalErrorContextRefCount>,
 
-    /// TODO
+    /// Mirror of type information in `ComponentInstance`, placed here for
+    /// convenience at the cost of an extra `Arc` clone.
     component: Component,
 }
 
