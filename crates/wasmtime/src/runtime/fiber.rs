@@ -10,14 +10,14 @@ use {
         },
     },
     anyhow::{Result, anyhow},
-    futures::channel::oneshot,
-    std::{
+    core::{
         future, mem,
         ops::Range,
         pin::Pin,
         ptr::{self, NonNull},
         task::{Context, Poll},
     },
+    futures::channel::oneshot,
     wasmtime_environ::TripleExt,
     wasmtime_fiber::{Fiber, Suspend},
 };

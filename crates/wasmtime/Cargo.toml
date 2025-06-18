@@ -61,7 +61,7 @@ semver = { workspace = true, optional = true }
 smallvec = { workspace = true, optional = true }
 hashbrown = { workspace = true, features = ["default-hasher"] }
 bitflags = { workspace = true }
-futures = { workspace = true, features = ["alloc"], optional = true }
+futures = { workspace = true, default_features = false, features = ["alloc"], optional = true }
 bytes = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies.windows-sys]
@@ -198,7 +198,6 @@ async = [
   "dep:futures",
   "wasmtime-component-macro?/async",
   "runtime",
-  "futures/std",  
 ]
 
 # Enables support for the pooling instance allocation strategy
