@@ -277,21 +277,12 @@ impl Memory {
         mut store: impl AsContextMut<Data: Send>,
         ty: MemoryType,
     ) -> Result<Memory> {
-        let store = store.as_context_mut();
+        let mut store = store.as_context_mut();
         assert!(
             store.0.async_support(),
             "cannot use `new_async` without enabling async support on the config"
         );
-        #[cfg(feature = "component-model-async")]
-        {
-            crate::component::concurrent::on_fiber(store, move |store| Self::_new(store.0, ty))
-                .await?
-        }
-        #[cfg(not(feature = "component-model-async"))]
-        {
-            let mut store = store;
-            store.on_fiber(|store| Self::_new(store.0, ty)).await?
-        }
+        store.on_fiber(|store| Self::_new(store.0, ty)).await?
     }
 
     /// Helper function for attaching the memory to a "frankenstein" instance
@@ -640,21 +631,12 @@ impl Memory {
         mut store: impl AsContextMut<Data: Send>,
         delta: u64,
     ) -> Result<u64> {
-        let store = store.as_context_mut();
+        let mut store = store.as_context_mut();
         assert!(
             store.0.async_support(),
             "cannot use `grow_async` without enabling async support on the config"
         );
-        #[cfg(feature = "component-model-async")]
-        {
-            crate::component::concurrent::on_fiber(store, move |store| self.grow(store, delta))
-                .await?
-        }
-        #[cfg(not(feature = "component-model-async"))]
-        {
-            let mut store = store;
-            store.on_fiber(|store| self.grow(store, delta)).await?
-        }
+        store.on_fiber(|store| self.grow(store, delta)).await?
     }
 
     fn wasmtime_memory(&self, store: &mut StoreOpaque) -> *mut crate::runtime::vm::Memory {

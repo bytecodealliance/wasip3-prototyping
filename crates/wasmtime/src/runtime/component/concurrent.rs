@@ -51,17 +51,16 @@
 
 use {
     crate::{
-        AsContext, AsContextMut, Engine, StoreContext, StoreContextMut, ValRaw,
+        AsContext, AsContextMut, StoreContext, StoreContextMut, ValRaw,
         component::{
             Component, ComponentInstanceId, HasData, HasSelf, Instance,
             func::{self, Func, Options},
         },
-        store::{Executor, StoreInner, StoreOpaque, StoreToken},
+        fiber::{self, AsyncCx, StoreFiber, StoreFiberYield},
+        store::{StoreInner, StoreOpaque, StoreToken},
         vm::{
-            AsyncWasmCallState, Interpreter, PreviousAsyncWasmCallState, SendSyncPtr, VMFuncRef,
-            VMMemoryDefinition, VMStore, VMStoreRawPtr,
+            SendSyncPtr, VMFuncRef, VMMemoryDefinition, VMStore,
             component::{CallContext, InstanceFlags, ResourceTables},
-            mpk::{self, ProtectionMask},
         },
     },
     anyhow::{Context as _, Result, anyhow, bail},
@@ -84,7 +83,6 @@ use {
         future::Future,
         marker::PhantomData,
         mem::{self, MaybeUninit},
-        ops::Range,
         pin::{Pin, pin},
         ptr::{self, NonNull},
         sync::{
@@ -96,7 +94,7 @@ use {
     },
     table::{Table, TableDebug, TableError, TableId},
     wasmtime_environ::{
-        PrimaryMap, TripleExt,
+        PrimaryMap,
         component::{
             MAX_FLAT_PARAMS, MAX_FLAT_RESULTS, PREPARE_ASYNC_NO_RESULT, PREPARE_ASYNC_WITH_RESULT,
             RuntimeComponentInstanceIndex, StringEncoding,
@@ -105,7 +103,6 @@ use {
         },
         fact,
     },
-    wasmtime_fiber::{Fiber, Suspend},
 };
 
 pub use futures_and_streams::{
@@ -1713,26 +1710,20 @@ impl Instance {
         log::trace!("resume_fiber: save current task {old_task:?}");
         let guard_range = fiber.guard_range();
         let mut fiber = Some(fiber);
-        // Here we pass control of the store to the fiber, which requires
-        // smuggling it as a `VMStoreRawPtr` in order to ensure the future is
-        // `Send`.
+        // Here we pass control of the store to the fiber.
         //
         // By the time the future returned by `poll_fn` completes, we'll have
         // exclusive access to it again.
-        let fiber = poll_fn(store, guard_range, move |mut store| {
+        let (mut fiber, resolved) = fiber::poll_fn(store, guard_range, move || {
             // SAFETY: We confer exclusive access to the store to the fiber
             // here, only taking it back when the fiber yields it to us or
             // exits.
-            match unsafe { resume_fiber(fiber.as_mut().unwrap(), store.take(), Ok(())) } {
-                Ok(Ok((_, result))) => Ok(result.map(|()| None)),
-                Ok(Err(store)) => {
-                    if store.is_some() {
-                        Ok(Ok(fiber.take()))
-                    } else {
-                        Err(None)
-                    }
+            match unsafe { fiber::resume_fiber(fiber.as_mut().unwrap(), Ok(())) } {
+                Ok(result) => Poll::Ready(result.map(|()| (fiber.take().unwrap(), true))),
+                Err(StoreFiberYield::KeepStore) => Poll::Pending,
+                Err(StoreFiberYield::ReleaseStore) => {
+                    Poll::Ready(Ok((fiber.take().unwrap(), false)))
                 }
-                Err(error) => Ok(Err(error)),
             }
         })
         .await?;
@@ -1742,7 +1733,13 @@ impl Instance {
         *state.guest_task() = old_task;
         log::trace!("resume_fiber: restore current task {old_task:?}");
 
-        if let Some(fiber) = fiber {
+        if resolved {
+            let stack = fiber.fiber.take().map(|f| f.into_stack());
+            drop(fiber);
+            if let Some(stack) = stack {
+                store.deallocate_fiber_stack(stack);
+            }
+        } else {
             // See the `SuspendReason` documentation for what each case means.
             match state.suspend_reason().take().unwrap() {
                 SuspendReason::NeedWork => {
@@ -1771,7 +1768,7 @@ impl Instance {
         let worker = if let Some(fiber) = self.concurrent_state_mut(store).worker().take() {
             fiber
         } else {
-            make_fiber(store.traitobj_mut(), move |store| {
+            fiber::make_fiber(store.traitobj_mut(), move |store| {
                 loop {
                     let call = self
                         .concurrent_state_mut(store)
@@ -1875,11 +1872,7 @@ impl Instance {
         *suspend_reason = Some(reason);
 
         let async_cx = AsyncCx::new(store.store_opaque_mut());
-        // SAFETY: This is only ever called from a fiber that belongs to this
-        // store (and would in any case panic if called from outside any fiber).
-        unsafe {
-            async_cx.suspend(Some(store.traitobj().as_ptr()))?;
-        }
+        async_cx.suspend(StoreFiberYield::ReleaseStore)?;
 
         if let Some(task) = task {
             *self.concurrent_state_mut(store).guest_task() = old_guest_task;
@@ -4301,55 +4294,9 @@ type LiftedResult = Box<dyn Any + Send + Sync>;
 /// been lowered to a guest task's stack and linear memory.
 struct DummyResult;
 
-/// Helper struct for reseting a raw pointer to its original value on drop.
-struct Reset<T: Copy>(*mut T, T);
-
-impl<T: Copy> Drop for Reset<T> {
-    fn drop(&mut self) {
-        unsafe {
-            *self.0 = self.1;
-        }
-    }
-}
-
-/// Represents the context of a `Future::poll` operation which involves resuming
-/// a fiber.
-///
-/// See `self::poll_fn` for details.
-#[derive(Clone, Copy)]
-struct PollContext {
-    future_context: *mut Context<'static>,
-    guard_range_start: *mut u8,
-    guard_range_end: *mut u8,
-}
-
-impl Default for PollContext {
-    fn default() -> PollContext {
-        PollContext {
-            future_context: ptr::null_mut(),
-            guard_range_start: ptr::null_mut(),
-            guard_range_end: ptr::null_mut(),
-        }
-    }
-}
-
 /// Represents the state of a currently executing fiber which has been resumed
 /// via `self::poll_fn`.
 pub(crate) struct AsyncState {
-    /// The `Suspend` for the current fiber (or null if no such fiber is running).
-    ///
-    /// See `StoreFiber` for an explanation of the signature types we use here.
-    current_suspend: *mut Suspend<
-        (Option<*mut dyn VMStore>, Result<()>),
-        Option<*mut dyn VMStore>,
-        (Option<*mut dyn VMStore>, Result<()>),
-    >,
-
-    pub(crate) current_executor: *mut Executor,
-
-    /// See `PollContext`
-    current_poll_cx: PollContext,
-
     /// List of spawned tasks built up during a polling operation. This is
     /// drained after the poll in `poll_with_state`.
     spawned_tasks: Vec<HostTaskFuture>,
@@ -4363,121 +4310,14 @@ pub(crate) struct AsyncState {
 impl Default for AsyncState {
     fn default() -> Self {
         Self {
-            current_suspend: ptr::null_mut(),
-            current_executor: ptr::null_mut(),
-            current_poll_cx: PollContext::default(),
             spawned_tasks: Vec::new(),
             current_instance: None,
         }
     }
 }
 
-impl AsyncState {
-    pub(crate) fn async_guard_range(&self) -> Range<*mut u8> {
-        let context = self.current_poll_cx;
-        context.guard_range_start..context.guard_range_end
-    }
-}
-
 unsafe impl Send for AsyncState {}
 unsafe impl Sync for AsyncState {}
-
-/// Used to "stackfully" poll a future by suspending the current fiber
-/// repeatedly in a loop until the future completes.
-pub(crate) struct AsyncCx {
-    current_suspend: *mut *mut wasmtime_fiber::Suspend<
-        (Option<*mut dyn VMStore>, Result<()>),
-        Option<*mut dyn VMStore>,
-        (Option<*mut dyn VMStore>, Result<()>),
-    >,
-    current_stack_limit: *mut usize,
-    current_poll_cx: *mut PollContext,
-    track_pkey_context_switch: bool,
-}
-
-impl AsyncCx {
-    /// Create a new `AsyncCx`.
-    ///
-    /// This will panic if called outside the scope of a `self::poll_fn` call.
-    /// Consider using `Self::try_new` instead to avoid panicking.
-    pub(crate) fn new(store: &mut StoreOpaque) -> Self {
-        Self::try_new(store).unwrap()
-    }
-
-    /// Create a new `AsyncCx`.
-    ///
-    /// This will return `None` if called outside the scope of a `self::poll_fn`
-    /// call.
-    pub(crate) fn try_new(store: &mut StoreOpaque) -> Option<Self> {
-        let current_poll_cx = unsafe { &raw mut (*store.concurrent_async_state()).current_poll_cx };
-        if unsafe { (*current_poll_cx).future_context.is_null() } {
-            None
-        } else {
-            Some(Self {
-                current_suspend: unsafe {
-                    &raw mut (*store.concurrent_async_state()).current_suspend
-                },
-                current_stack_limit: store.vm_store_context().stack_limit.get(),
-                current_poll_cx,
-                track_pkey_context_switch: store.has_pkey(),
-            })
-        }
-    }
-
-    /// Poll the specified future using `Self::current_poll_cx`.
-    ///
-    /// This will panic if called recursively using the same `AsyncState`.
-    ///
-    /// SAFETY: TODO
-    unsafe fn poll<U>(&self, mut future: Pin<&mut (dyn Future<Output = U> + Send)>) -> Poll<U> {
-        unsafe {
-            let poll_cx = *self.current_poll_cx;
-            let _reset = Reset(self.current_poll_cx, poll_cx);
-            *self.current_poll_cx = PollContext::default();
-            assert!(!poll_cx.future_context.is_null());
-            future.as_mut().poll(&mut *poll_cx.future_context)
-        }
-    }
-
-    /// "Stackfully" poll the specified future by alternately polling it and
-    /// suspending the current fiber until `Future::poll` returns `Ready`.
-    ///
-    /// SAFETY: TODO
-    pub(crate) unsafe fn block_on<U>(
-        &self,
-        mut future: Pin<&mut (dyn Future<Output = U> + Send)>,
-    ) -> Result<U> {
-        loop {
-            unsafe {
-                match self.poll(future.as_mut()) {
-                    Poll::Ready(v) => break Ok(v),
-                    Poll::Pending => {
-                        self.suspend(None)?;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Suspend the current fiber, optionally transfering exclusive access to
-    /// the store back to the code which resumed it.
-    ///
-    /// SAFETY: TODO
-    unsafe fn suspend(&self, store: Option<*mut dyn VMStore>) -> Result<Option<*mut dyn VMStore>> {
-        let previous_mask = if self.track_pkey_context_switch {
-            let previous_mask = mpk::current_mask();
-            mpk::allow(ProtectionMask::all());
-            previous_mask
-        } else {
-            ProtectionMask::all()
-        };
-        let store = unsafe { suspend_fiber(self.current_suspend, self.current_stack_limit, store) };
-        if self.track_pkey_context_switch {
-            mpk::allow(previous_mask);
-        }
-        store
-    }
-}
 
 /// Represents the Component Model Async state of a (sub-)component instance.
 #[derive(Default)]
@@ -4602,7 +4442,7 @@ impl ConcurrentState {
     /// `Store` to which `self` belongs.
     ///
     /// This is necessary to avoid possible use-after-free bugs due to fibers
-    /// which may still have access to the `Store` and/or `ComponentInstance`.
+    /// which may still have access to the `Store`.
     pub(crate) fn drop_fibers(&mut self) {
         self.table = Table::new();
         self.worker = None;
@@ -4690,291 +4530,8 @@ fn check_recursive_run() {
     });
 }
 
-/// Run the specified function on a newly-created fiber and `.await` its
-/// completion.
-pub(crate) async fn on_fiber<R: Send + 'static, T: Send>(
-    mut store: StoreContextMut<'_, T>,
-    func: impl FnOnce(&mut StoreContextMut<T>) -> R + Send,
-) -> Result<R> {
-    let token = StoreToken::new(store.as_context_mut());
-    on_fiber_raw(store.0.traitobj_mut(), move |store| {
-        func(&mut token.as_context_mut(&mut *store))
-    })
-    .await
-}
-
-/// Same as `on_fiber`, but accepts a `&mut StoreOpaque` instead of a
-/// `StoreContextMut`.
-#[cfg(feature = "gc")]
-pub(crate) async fn on_fiber_opaque<R: Send + 'static>(
-    store: &mut StoreOpaque,
-    func: impl FnOnce(&mut StoreOpaque) -> R + Send,
-) -> Result<R> {
-    on_fiber_raw(store.traitobj_mut(), move |store| {
-        func((*store).store_opaque_mut())
-    })
-    .await
-}
-
-/// Wrap the specified function in a fiber and return it.
-fn prepare_fiber<'a, R: Send + 'static>(
-    store: &mut dyn VMStore,
-    func: impl FnOnce(&mut dyn VMStore) -> R + Send + 'a,
-) -> Result<(StoreFiber<'a>, oneshot::Receiver<R>)> {
-    let (tx, rx) = oneshot::channel();
-    let fiber = make_fiber(store, {
-        move |store| {
-            _ = tx.send(func(store));
-            Ok(())
-        }
-    })?;
-    Ok((fiber, rx))
-}
-
-/// Run the specified function on a newly-created fiber and `.await` its
-/// completion.
-async fn on_fiber_raw<R: Send + 'static>(
-    store: &mut StoreOpaque,
-    func: impl FnOnce(&mut dyn VMStore) -> R + Send,
-) -> Result<R> {
-    let (mut fiber, mut rx) = prepare_fiber(store.traitobj_mut(), func)?;
-
-    let guard_range = fiber.guard_range();
-    poll_fn(store, guard_range, move |mut store| {
-        // SAFETY: We confer exclusive access to the store to the fiber here,
-        // only taking it back when the fiber yields it to us or exits.
-        match unsafe { resume_fiber(&mut fiber, store.take(), Ok(())) } {
-            Ok(Ok((store, result))) => Ok(result.map(|()| store)),
-            Ok(Err(s)) => Err(s),
-            Err(e) => Ok(Err(e)),
-        }
-    })
-    .await?;
-
-    Ok(rx.try_recv().unwrap().unwrap())
-}
-
 fn unpack_callback_code(code: u32) -> (u32, u32) {
     (code & 0xF, code >> 4)
-}
-
-struct StoreFiber<'a> {
-    /// The raw `wasmtime_fiber::Fiber`.
-    ///
-    /// Note that the signatures for resuming, yielding, and returning all allow
-    /// a `*mut dyn VMStore` to be passed to and from the fiber.  This can be
-    /// used by the fiber to indicate whether it needs exclusive access to the
-    /// store across suspend points (in which case it will pass `None` when
-    /// suspending or yielding, meaning the store must not be used at all until
-    /// the fiber is resumed again) or whether it is giving up exclusive access
-    /// (in which case it will pass `Some(_)` when suspending or yielding,
-    /// meaning exclusive access may be given to another fiber that runs
-    /// concurrently.
-    fiber: Option<
-        Fiber<
-            'a,
-            (Option<*mut dyn VMStore>, Result<()>),
-            Option<*mut dyn VMStore>,
-            (Option<*mut dyn VMStore>, Result<()>),
-        >,
-    >,
-    /// See `AsyncWasmCallState`
-    state: Option<AsyncWasmCallState>,
-    /// The Wasmtime `Engine` to which this fiber belongs.
-    engine: Engine,
-    /// The current `Suspend` for this fiber (or null if it's not currently
-    /// running).
-    suspend: *mut *mut Suspend<
-        (Option<*mut dyn VMStore>, Result<()>),
-        Option<*mut dyn VMStore>,
-        (Option<*mut dyn VMStore>, Result<()>),
-    >,
-    /// The stack limit used for handling traps from guest code.
-    stack_limit: *mut usize,
-    executor_ptr: *mut *mut Executor,
-    executor: Executor,
-}
-
-impl StoreFiber<'_> {
-    fn guard_range(&self) -> (Option<SendSyncPtr<u8>>, Option<SendSyncPtr<u8>>) {
-        self.fiber
-            .as_ref()
-            .unwrap()
-            .stack()
-            .guard_range()
-            .map(|r| {
-                (
-                    NonNull::new(r.start).map(SendSyncPtr::new),
-                    NonNull::new(r.end).map(SendSyncPtr::new),
-                )
-            })
-            .unwrap_or((None, None))
-    }
-}
-
-impl Drop for StoreFiber<'_> {
-    fn drop(&mut self) {
-        if !self.fiber.as_ref().unwrap().done() {
-            // SAFETY: `self` is a valid pointer and we pass a `store` parameter
-            // of `None` to inform the resumed fiber that it does _not_ have
-            // access to the store.
-            let result = unsafe { resume_fiber_raw(self, None, Err(anyhow!("future dropped"))) };
-            debug_assert!(result.is_ok());
-        }
-
-        self.state.take().unwrap().assert_null();
-
-        unsafe {
-            self.engine
-                .allocator()
-                .deallocate_fiber_stack(self.fiber.take().unwrap().into_stack());
-        }
-    }
-}
-
-unsafe impl Send for StoreFiber<'_> {}
-unsafe impl Sync for StoreFiber<'_> {}
-
-/// Create a new `StoreFiber` which runs the specified closure.
-fn make_fiber<'a>(
-    store: &mut dyn VMStore,
-    fun: impl FnOnce(&mut dyn VMStore) -> Result<()> + 'a,
-) -> Result<StoreFiber<'a>> {
-    let engine = store.engine().clone();
-    #[cfg(has_host_compiler_backend)]
-    let executor = if cfg!(feature = "pulley") && engine.target().is_pulley() {
-        Executor::Interpreter(Interpreter::new(&engine))
-    } else {
-        Executor::Native
-    };
-    #[cfg(not(has_host_compiler_backend))]
-    let executor = {
-        debug_assert!(engine.target().is_pulley());
-        Executor::Interpreter(Interpreter::new(&engine))
-    };
-    let stack = engine.allocator().allocate_fiber_stack()?;
-    Ok(StoreFiber {
-        fiber: Some(Fiber::new(
-            stack,
-            move |(store, result): (Option<*mut dyn VMStore>, Result<()>), suspend| {
-                if result.is_err() {
-                    (store, result)
-                } else {
-                    // SAFETY: If `store` is `Some`, then we've been given
-                    // exclusive access to the store until we exit or yield it
-                    // back to the resumer.
-                    let store_ref = unsafe { &mut *store.unwrap() };
-                    let suspend_ptr = unsafe {
-                        &raw mut (*store_ref.store_opaque_mut().concurrent_async_state())
-                            .current_suspend
-                    };
-                    // SAFETY: The resumer is responsible for setting
-                    // `current_suspend` to a valid pointer.
-                    let _reset = Reset(suspend_ptr, unsafe { *suspend_ptr });
-                    unsafe { *suspend_ptr = suspend };
-                    (store, fun(store_ref))
-                }
-            },
-        )?),
-        state: Some(AsyncWasmCallState::new()),
-        engine,
-        suspend: unsafe {
-            &raw mut (*store.store_opaque_mut().concurrent_async_state()).current_suspend
-        },
-        stack_limit: store.vm_store_context().stack_limit.get(),
-        executor_ptr: unsafe {
-            &raw mut (*store.store_opaque_mut().concurrent_async_state()).current_executor
-        },
-        executor,
-    })
-}
-
-/// Resume the specified fiber, optionally granting it exclusive access to the
-/// specified store.
-///
-/// This will either return the store or `None` depending on whether the fiber
-/// needs to retain exclusive access to the store accross suspend points.  See
-/// `StoreFiber::fiber` for details.
-///
-/// SAFETY: If a store pointer is provided, the caller must confer exclusive
-/// access to the fiber until it is either dropped, resolved, or forgotten, or
-/// until it gives back the store when suspending or yielding.
-unsafe fn resume_fiber_raw<'a>(
-    fiber: *mut StoreFiber<'a>,
-    store: Option<*mut dyn VMStore>,
-    result: Result<()>,
-) -> Result<(Option<*mut dyn VMStore>, Result<()>), Option<*mut dyn VMStore>> {
-    struct Restore<'a> {
-        fiber: *mut StoreFiber<'a>,
-        state: Option<PreviousAsyncWasmCallState>,
-    }
-
-    impl Drop for Restore<'_> {
-        fn drop(&mut self) {
-            unsafe {
-                (*self.fiber).state = Some(self.state.take().unwrap().restore());
-            }
-        }
-    }
-
-    unsafe {
-        let _reset_executor = Reset((*fiber).executor_ptr, *(*fiber).executor_ptr);
-        *(*fiber).executor_ptr = &raw mut (*fiber).executor;
-        let _reset_suspend = Reset((*fiber).suspend, *(*fiber).suspend);
-        let _reset_stack_limit = Reset((*fiber).stack_limit, *(*fiber).stack_limit);
-        let state = Some((*fiber).state.take().unwrap().push());
-        let restore = Restore { fiber, state };
-        (*restore.fiber)
-            .fiber
-            .as_ref()
-            .unwrap()
-            .resume((store, result))
-    }
-}
-
-/// See `resume_fiber_raw`
-unsafe fn resume_fiber(
-    fiber: &mut StoreFiber,
-    store: Option<*mut dyn VMStore>,
-    result: Result<()>,
-) -> Result<Result<(*mut dyn VMStore, Result<()>), Option<*mut dyn VMStore>>> {
-    match unsafe {
-        resume_fiber_raw(fiber, store, result).map(|(store, result)| (store.unwrap(), result))
-    } {
-        Ok(pair) => Ok(Ok(pair)),
-        Err(s) => {
-            if let Some(range) = fiber.fiber.as_ref().unwrap().stack().range() {
-                AsyncWasmCallState::assert_current_state_not_in_range(range);
-            }
-
-            Ok(Err(s))
-        }
-    }
-}
-
-/// Suspend the current fiber, optionally returning exclusive access to the
-/// specified store to the code which resumed the fiber.
-///
-/// SAFETY: `suspend` must be a valid pointer.  Additionally, if a store pointer
-/// is provided, the fiber must give up access to the store until it is given
-/// back access when next resumed.
-unsafe fn suspend_fiber(
-    suspend: *mut *mut Suspend<
-        (Option<*mut dyn VMStore>, Result<()>),
-        Option<*mut dyn VMStore>,
-        (Option<*mut dyn VMStore>, Result<()>),
-    >,
-    stack_limit: *mut usize,
-    store: Option<*mut dyn VMStore>,
-) -> Result<Option<*mut dyn VMStore>> {
-    let (store, result) = unsafe {
-        let _reset_suspend = Reset(suspend, *suspend);
-        let _reset_stack_limit = Reset(stack_limit, *stack_limit);
-        assert!(!(*suspend).is_null());
-        (**suspend).suspend(store)
-    };
-    result?;
-    Ok(store)
 }
 
 /// Helper struct for packaging parameters to be passed to
@@ -5253,55 +4810,4 @@ fn queue_call0<T: 'static>(
             post_return.map(SendSyncPtr::new),
         )
     }
-}
-
-/// Wrap the specified function in a future which, when polled, will store a
-/// pointer to the `Context` in the `AsyncState::current_poll_cx` field for the
-/// specified store and then call the function.
-///
-/// This is intended for use with functions that resume fibers which may need to
-/// poll futures using the stored `Context` pointer.  The function should return
-/// `Ok(_)` when complete, or `Err(_)` if the future should be polled again
-/// later.
-async fn poll_fn<R>(
-    store: &mut StoreOpaque,
-    guard_range: (Option<SendSyncPtr<u8>>, Option<SendSyncPtr<u8>>),
-    mut fun: impl FnMut(Option<*mut dyn VMStore>) -> Result<R, Option<*mut dyn VMStore>>,
-) -> R {
-    #[derive(Clone, Copy)]
-    struct PollCx(*mut PollContext);
-
-    unsafe impl Send for PollCx {}
-
-    let poll_cx = PollCx(unsafe { &raw mut (*store.concurrent_async_state()).current_poll_cx });
-    future::poll_fn({
-        let mut store = Some(VMStoreRawPtr(store.traitobj()));
-
-        move |cx| {
-            let _reset = Reset(poll_cx.0, unsafe { *poll_cx.0 });
-            let guard_range_start = guard_range.0.map(|v| v.as_ptr()).unwrap_or(ptr::null_mut());
-            let guard_range_end = guard_range.1.map(|v| v.as_ptr()).unwrap_or(ptr::null_mut());
-            // SAFETY: We store the pointer to the `Context` only for the
-            // duration of this call and then reset it to its previous value
-            // afterward, thereby ensuring `fun` never sees a stale pointer.
-            unsafe {
-                *poll_cx.0 = PollContext {
-                    future_context: mem::transmute::<&mut Context<'_>, *mut Context<'static>>(cx),
-                    guard_range_start,
-                    guard_range_end,
-                };
-            }
-            #[allow(dropping_copy_types)]
-            drop(poll_cx);
-
-            match fun(store.take().map(|s| s.0.as_ptr())) {
-                Ok(v) => Poll::Ready(v),
-                Err(s) => {
-                    store = s.map(|s| VMStoreRawPtr(NonNull::new(s).unwrap()));
-                    Poll::Pending
-                }
-            }
-        }
-    })
-    .await
 }

@@ -5263,7 +5263,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen"
 version = "0.42.1"
-source = "git+https://github.com/dicej/wit-bindgen?branch=no-reads-writes-after-dropped#491f066406a1b39100e8656615e4862325f6664e"
+source = "git+https://github.com/bytecodealliance/wit-bindgen#cfb16fdd361c4acab53c449107201b8627ba2da7"
 dependencies = [
  "wit-bindgen-rt 0.42.1",
  "wit-bindgen-rust-macro",
@@ -5272,7 +5272,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-core"
 version = "0.42.1"
-source = "git+https://github.com/dicej/wit-bindgen?branch=no-reads-writes-after-dropped#491f066406a1b39100e8656615e4862325f6664e"
+source = "git+https://github.com/bytecodealliance/wit-bindgen#cfb16fdd361c4acab53c449107201b8627ba2da7"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5300,7 +5300,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rt"
 version = "0.42.1"
-source = "git+https://github.com/dicej/wit-bindgen?branch=no-reads-writes-after-dropped#491f066406a1b39100e8656615e4862325f6664e"
+source = "git+https://github.com/bytecodealliance/wit-bindgen#cfb16fdd361c4acab53c449107201b8627ba2da7"
 dependencies = [
  "bitflags 2.6.0",
  "futures",
@@ -5310,7 +5310,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rust"
 version = "0.42.1"
-source = "git+https://github.com/dicej/wit-bindgen?branch=no-reads-writes-after-dropped#491f066406a1b39100e8656615e4862325f6664e"
+source = "git+https://github.com/bytecodealliance/wit-bindgen#cfb16fdd361c4acab53c449107201b8627ba2da7"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -5325,7 +5325,7 @@ dependencies = [
 [[package]]
 name = "wit-bindgen-rust-macro"
 version = "0.42.1"
-source = "git+https://github.com/dicej/wit-bindgen?branch=no-reads-writes-after-dropped#491f066406a1b39100e8656615e4862325f6664e"
+source = "git+https://github.com/bytecodealliance/wit-bindgen#cfb16fdd361c4acab53c449107201b8627ba2da7"
 dependencies = [
  "anyhow",
  "prettyplease",

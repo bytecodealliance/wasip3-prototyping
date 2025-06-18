@@ -1,3 +1,5 @@
+#[cfg(feature = "async")]
+use crate::fiber::AsyncCx;
 use crate::prelude::*;
 use crate::runtime::Uninhabited;
 use crate::runtime::vm::{
@@ -514,28 +516,11 @@ impl Func {
         );
         assert!(ty.comes_from_same_engine(store.as_context().engine()));
         Func::new(store, ty, move |mut caller, params, results| {
-            #[cfg(feature = "component-model-async")]
-            {
-                let async_cx = crate::component::concurrent::AsyncCx::new(&mut caller.store.0);
-                let mut future = Pin::from(func(caller, params, results));
-                match unsafe { async_cx.block_on(future.as_mut()) } {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(trap)) | Err(trap) => Err(trap),
-                }
-            }
-            #[cfg(not(feature = "component-model-async"))]
-            {
-                let async_cx = caller
-                    .store
-                    .as_context_mut()
-                    .0
-                    .async_cx()
-                    .expect("Attempt to spawn new action on dying fiber");
-                let future = func(caller, params, results);
-                match unsafe { async_cx.block_on(Pin::from(future)) } {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(trap)) | Err(trap) => Err(trap),
-                }
+            let async_cx = AsyncCx::new(&mut caller.store.0);
+            let mut future = Pin::from(func(caller, params, results));
+            match async_cx.block_on(future.as_mut()) {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(trap)) | Err(trap) => Err(trap),
             }
         })
     }
@@ -852,30 +837,12 @@ impl Func {
             concat!("cannot use `wrap_async` without enabling async support on the config")
         );
         Func::wrap_inner(store, move |mut caller: Caller<'_, T>, args| {
-            #[cfg(feature = "component-model-async")]
-            {
-                let async_cx = crate::component::concurrent::AsyncCx::new(&mut caller.store.0);
-                let mut future = Pin::from(func(caller, args));
+            let async_cx = AsyncCx::new(&mut caller.store.0);
+            let mut future = Pin::from(func(caller, args));
 
-                match unsafe { async_cx.block_on(future.as_mut()) } {
-                    Ok(ret) => ret.into_fallible(),
-                    Err(e) => R::fallible_from_error(e),
-                }
-            }
-            #[cfg(not(feature = "component-model-async"))]
-            {
-                let async_cx = caller
-                    .store
-                    .as_context_mut()
-                    .0
-                    .async_cx()
-                    .expect("Attempt to start async function on dying fiber");
-                let future = func(caller, args);
-
-                match unsafe { async_cx.block_on(Pin::from(future)) } {
-                    Ok(ret) => ret.into_fallible(),
-                    Err(e) => R::fallible_from_error(e),
-                }
+            match async_cx.block_on(future.as_mut()) {
+                Ok(ret) => ret.into_fallible(),
+                Err(e) => R::fallible_from_error(e),
             }
         })
     }
@@ -1125,20 +1092,10 @@ impl Func {
         if _need_gc {
             store.gc_async(None).await?;
         }
-        #[cfg(feature = "component-model-async")]
-        {
-            crate::component::concurrent::on_fiber(store, move |store| unsafe {
-                self.call_impl_do_call(store, params, results)
-            })
-            .await?
-        }
-        #[cfg(not(feature = "component-model-async"))]
-        {
-            let result = store
-                .on_fiber(|store| unsafe { self.call_impl_do_call(store, params, results) })
-                .await??;
-            Ok(result)
-        }
+        let result = store
+            .on_fiber(|store| unsafe { self.call_impl_do_call(store, params, results) })
+            .await??;
+        Ok(result)
     }
 
     /// Perform dynamic checks that the arguments given to us match
