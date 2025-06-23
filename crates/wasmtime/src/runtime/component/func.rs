@@ -11,8 +11,8 @@ use crate::{AsContext, AsContextMut, StoreContextMut, ValRaw};
 use core::mem::{self, MaybeUninit};
 use core::ptr::NonNull;
 use wasmtime_environ::component::{
-    CanonicalOptions, ExportIndex, InterfaceType, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS, TypeFuncIndex,
-    TypeTuple,
+    CanonicalOptions, CanonicalOptionsDataModel, ExportIndex, InterfaceType, MAX_FLAT_PARAMS,
+    MAX_FLAT_RESULTS, TypeFuncIndex, TypeTuple,
 };
 
 #[cfg(feature = "component-model-async")]
@@ -444,10 +444,13 @@ impl Func {
         )
     }
 
-    pub(crate) fn lifted_core_func(&self, store: &StoreOpaque) -> NonNull<VMFuncRef> {
-        let instance = self.instance.id().get(store);
-        let (_ty, def, _options) = instance.component().export_lifted_function(self.index);
-        match instance.lookup_def(store, def) {
+    pub(crate) fn lifted_core_func(&self, store: &mut StoreOpaque) -> NonNull<VMFuncRef> {
+        let def = {
+            let instance = self.instance.id().get(store);
+            let (_ty, def, _options) = instance.component().export_lifted_function(self.index);
+            def.clone()
+        };
+        match self.instance.lookup_vmdef(store, &def) {
             Export::Function(f) => f.func_ref,
             _ => unreachable!(),
         }
@@ -471,10 +474,14 @@ impl Func {
     ) -> (Options, InstanceFlags, TypeFuncIndex, &'a CanonicalOptions) {
         let vminstance = self.instance.id().get(store);
         let (ty, _def, raw_options) = vminstance.component().export_lifted_function(self.index);
-        let memory = raw_options
+        let mem_opts = match raw_options.data_model {
+            CanonicalOptionsDataModel::Gc {} => todo!("CM+GC"),
+            CanonicalOptionsDataModel::LinearMemory(opts) => opts,
+        };
+        let memory = mem_opts
             .memory
             .map(|i| NonNull::new(vminstance.runtime_memory(i)).unwrap());
-        let realloc = raw_options.realloc.map(|i| vminstance.runtime_realloc(i));
+        let realloc = mem_opts.realloc.map(|i| vminstance.runtime_realloc(i));
         let flags = vminstance.instance_flags(raw_options.instance);
         let callback = raw_options.callback.map(|i| vminstance.runtime_callback(i));
         let options = unsafe {

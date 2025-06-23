@@ -778,7 +778,7 @@ pub(crate) mod concurrent {
             unreachable!()
         }
 
-        pub(crate) fn lift(
+        pub(crate) fn linear_lift_from_flat(
             _cx: &mut LiftContext<'_>,
             _ty: InterfaceType,
             _src: &<u32 as ComponentType>::Lower,
@@ -786,7 +786,7 @@ pub(crate) mod concurrent {
             unreachable!()
         }
 
-        pub(crate) fn load(
+        pub(crate) fn linear_lift_from_memory(
             _cx: &mut LiftContext<'_>,
             _ty: InterfaceType,
             _bytes: &[u8],
@@ -804,7 +804,7 @@ pub(crate) mod concurrent {
             unreachable!()
         }
 
-        pub(crate) fn lift(
+        pub(crate) fn linear_lift_from_flat(
             _cx: &mut LiftContext<'_>,
             _ty: InterfaceType,
             _src: &<u32 as ComponentType>::Lower,
@@ -812,7 +812,7 @@ pub(crate) mod concurrent {
             unreachable!()
         }
 
-        pub(crate) fn load(
+        pub(crate) fn linear_lift_from_memory(
             _cx: &mut LiftContext<'_>,
             _ty: InterfaceType,
             _bytes: &[u8],
@@ -830,7 +830,7 @@ pub(crate) mod concurrent {
             unreachable!()
         }
 
-        pub(crate) fn lift(
+        pub(crate) fn linear_lift_from_flat(
             _cx: &mut LiftContext<'_>,
             _ty: InterfaceType,
             _src: &<u32 as ComponentType>::Lower,
@@ -838,7 +838,7 @@ pub(crate) mod concurrent {
             unreachable!()
         }
 
-        pub(crate) fn load(
+        pub(crate) fn linear_lift_from_memory(
             _cx: &mut LiftContext<'_>,
             _ty: InterfaceType,
             _bytes: &[u8],

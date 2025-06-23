@@ -230,7 +230,12 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>
                     .ok_or_else(|| anyhow::anyhow!("read pointer out of bounds of memory"))?;
 
                 if let Some(ty) = payload(ty, &types) {
-                    T::store_list(lower, ty, address, &buffer.remaining()[..count])?;
+                    T::linear_store_list_to_memory(
+                        lower,
+                        ty,
+                        address,
+                        &buffer.remaining()[..count],
+                    )?;
                 }
 
                 buffer.skip(count);
@@ -719,34 +724,46 @@ unsafe impl<T> func::ComponentType for HostFuture<T> {
 
 // SAFETY: See the comment on the `ComponentType` `impl` for this type.
 unsafe impl<T> func::Lower for HostFuture<T> {
-    fn lower<U>(
+    fn linear_lower_to_flat<U>(
         &self,
         cx: &mut LowerContext<'_, U>,
         ty: InterfaceType,
         dst: &mut MaybeUninit<Self::Lower>,
     ) -> Result<()> {
-        lower_future_to_index(self.rep, cx, ty)?.lower(cx, InterfaceType::U32, dst)
+        lower_future_to_index(self.rep, cx, ty)?.linear_lower_to_flat(cx, InterfaceType::U32, dst)
     }
 
-    fn store<U>(
+    fn linear_lower_to_memory<U>(
         &self,
         cx: &mut LowerContext<'_, U>,
         ty: InterfaceType,
         offset: usize,
     ) -> Result<()> {
-        lower_future_to_index(self.rep, cx, ty)?.store(cx, InterfaceType::U32, offset)
+        lower_future_to_index(self.rep, cx, ty)?.linear_lower_to_memory(
+            cx,
+            InterfaceType::U32,
+            offset,
+        )
     }
 }
 
 // SAFETY: See the comment on the `ComponentType` `impl` for this type.
 unsafe impl<T> func::Lift for HostFuture<T> {
-    fn lift(cx: &mut LiftContext<'_>, ty: InterfaceType, src: &Self::Lower) -> Result<Self> {
-        let index = u32::lift(cx, InterfaceType::U32, src)?;
+    fn linear_lift_from_flat(
+        cx: &mut LiftContext<'_>,
+        ty: InterfaceType,
+        src: &Self::Lower,
+    ) -> Result<Self> {
+        let index = u32::linear_lift_from_flat(cx, InterfaceType::U32, src)?;
         Self::lift_from_index(cx, ty, index)
     }
 
-    fn load(cx: &mut LiftContext<'_>, ty: InterfaceType, bytes: &[u8]) -> Result<Self> {
-        let index = u32::load(cx, InterfaceType::U32, bytes)?;
+    fn linear_lift_from_memory(
+        cx: &mut LiftContext<'_>,
+        ty: InterfaceType,
+        bytes: &[u8],
+    ) -> Result<Self> {
+        let index = u32::linear_lift_from_memory(cx, InterfaceType::U32, bytes)?;
         Self::lift_from_index(cx, ty, index)
     }
 }
@@ -1093,34 +1110,46 @@ unsafe impl<T> func::ComponentType for HostStream<T> {
 
 // SAFETY: See the comment on the `ComponentType` `impl` for this type.
 unsafe impl<T> func::Lower for HostStream<T> {
-    fn lower<U>(
+    fn linear_lower_to_flat<U>(
         &self,
         cx: &mut LowerContext<'_, U>,
         ty: InterfaceType,
         dst: &mut MaybeUninit<Self::Lower>,
     ) -> Result<()> {
-        lower_stream_to_index(self.rep, cx, ty)?.lower(cx, InterfaceType::U32, dst)
+        lower_stream_to_index(self.rep, cx, ty)?.linear_lower_to_flat(cx, InterfaceType::U32, dst)
     }
 
-    fn store<U>(
+    fn linear_lower_to_memory<U>(
         &self,
         cx: &mut LowerContext<'_, U>,
         ty: InterfaceType,
         offset: usize,
     ) -> Result<()> {
-        lower_stream_to_index(self.rep, cx, ty)?.store(cx, InterfaceType::U32, offset)
+        lower_stream_to_index(self.rep, cx, ty)?.linear_lower_to_memory(
+            cx,
+            InterfaceType::U32,
+            offset,
+        )
     }
 }
 
 // SAFETY: See the comment on the `ComponentType` `impl` for this type.
 unsafe impl<T> func::Lift for HostStream<T> {
-    fn lift(cx: &mut LiftContext<'_>, ty: InterfaceType, src: &Self::Lower) -> Result<Self> {
-        let index = u32::lift(cx, InterfaceType::U32, src)?;
+    fn linear_lift_from_flat(
+        cx: &mut LiftContext<'_>,
+        ty: InterfaceType,
+        src: &Self::Lower,
+    ) -> Result<Self> {
+        let index = u32::linear_lift_from_flat(cx, InterfaceType::U32, src)?;
         Self::lift_from_index(cx, ty, index)
     }
 
-    fn load(cx: &mut LiftContext<'_>, ty: InterfaceType, bytes: &[u8]) -> Result<Self> {
-        let index = u32::load(cx, InterfaceType::U32, bytes)?;
+    fn linear_lift_from_memory(
+        cx: &mut LiftContext<'_>,
+        ty: InterfaceType,
+        bytes: &[u8],
+    ) -> Result<Self> {
+        let index = u32::linear_lift_from_memory(cx, InterfaceType::U32, bytes)?;
         Self::lift_from_index(cx, ty, index)
     }
 }
@@ -1297,34 +1326,50 @@ unsafe impl func::ComponentType for ErrorContext {
 
 // SAFETY: See the comment on the `ComponentType` `impl` for this type.
 unsafe impl func::Lower for ErrorContext {
-    fn lower<T>(
+    fn linear_lower_to_flat<T>(
         &self,
         cx: &mut LowerContext<'_, T>,
         ty: InterfaceType,
         dst: &mut MaybeUninit<Self::Lower>,
     ) -> Result<()> {
-        lower_error_context_to_index(self.rep, cx, ty)?.lower(cx, InterfaceType::U32, dst)
+        lower_error_context_to_index(self.rep, cx, ty)?.linear_lower_to_flat(
+            cx,
+            InterfaceType::U32,
+            dst,
+        )
     }
 
-    fn store<T>(
+    fn linear_lower_to_memory<T>(
         &self,
         cx: &mut LowerContext<'_, T>,
         ty: InterfaceType,
         offset: usize,
     ) -> Result<()> {
-        lower_error_context_to_index(self.rep, cx, ty)?.store(cx, InterfaceType::U32, offset)
+        lower_error_context_to_index(self.rep, cx, ty)?.linear_lower_to_memory(
+            cx,
+            InterfaceType::U32,
+            offset,
+        )
     }
 }
 
 // SAFETY: See the comment on the `ComponentType` `impl` for this type.
 unsafe impl func::Lift for ErrorContext {
-    fn lift(cx: &mut LiftContext<'_>, ty: InterfaceType, src: &Self::Lower) -> Result<Self> {
-        let index = u32::lift(cx, InterfaceType::U32, src)?;
+    fn linear_lift_from_flat(
+        cx: &mut LiftContext<'_>,
+        ty: InterfaceType,
+        src: &Self::Lower,
+    ) -> Result<Self> {
+        let index = u32::linear_lift_from_flat(cx, InterfaceType::U32, src)?;
         Self::lift_from_index(cx, ty, index)
     }
 
-    fn load(cx: &mut LiftContext<'_>, ty: InterfaceType, bytes: &[u8]) -> Result<Self> {
-        let index = u32::load(cx, InterfaceType::U32, bytes)?;
+    fn linear_lift_from_memory(
+        cx: &mut LiftContext<'_>,
+        ty: InterfaceType,
+        bytes: &[u8],
+    ) -> Result<Self> {
+        let index = u32::linear_lift_from_memory(cx, InterfaceType::U32, bytes)?;
         Self::lift_from_index(cx, ty, index)
     }
 }
@@ -2829,7 +2874,7 @@ impl Instance {
             .ok_or_else(|| anyhow::anyhow!("invalid debug message pointer: out of bounds"))?;
         debug_msg
             .as_str()
-            .store(lower_cx, InterfaceType::String, offset)?;
+            .linear_lower_to_memory(lower_cx, InterfaceType::String, offset)?;
 
         Ok(())
     }
