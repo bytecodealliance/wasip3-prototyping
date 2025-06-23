@@ -33,12 +33,11 @@ thiserror = { workspace = true }
 
 ort = { version = "2.0.0-rc.2", default-features = false, features = [
     "copy-dylibs",
-    "download-binaries",
 ], optional = true }
 tch = { version = "0.17.0", default-features = false, optional = true}
 
 [target.'cfg(target_pointer_width = "64")'.dependencies]
-openvino = { version = "0.8.0", features = [
+openvino = { version = "0.9.0", features = [
     "runtime-linking",
 ], optional = true }
 
@@ -70,6 +69,8 @@ default = ["openvino", "winml"]
 openvino = ["dep:openvino"]
 # ONNX is available on all platforms.
 onnx = ["dep:ort"]
+# Use prebuilt ONNX Runtime binaries from ort.
+onnx-download = ["onnx", "ort/download-binaries"]
 # WinML is only available on Windows 10 1809 and later.
 winml = ["dep:windows"]
 # PyTorch is available on all platforms; requires Libtorch to be installed

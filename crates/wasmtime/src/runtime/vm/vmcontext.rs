@@ -869,7 +869,7 @@ impl VMFuncRef {
     /// exhaustively documented.
     #[inline]
     pub unsafe fn array_call(
-        me: NonNull<Self>,
+        me: NonNull<VMFuncRef>,
         pulley: Option<InterpreterRef<'_>>,
         caller: NonNull<VMContext>,
         args_and_results: NonNull<[ValRaw]>,
@@ -881,7 +881,7 @@ impl VMFuncRef {
     }
 
     unsafe fn array_call_interpreted(
-        me: NonNull<Self>,
+        me: NonNull<VMFuncRef>,
         vm: InterpreterRef<'_>,
         caller: NonNull<VMContext>,
         args_and_results: NonNull<[ValRaw]>,
@@ -904,7 +904,7 @@ impl VMFuncRef {
 
     #[inline]
     unsafe fn array_call_native(
-        me: NonNull<Self>,
+        me: NonNull<VMFuncRef>,
         caller: NonNull<VMContext>,
         args_and_results: NonNull<[ValRaw]>,
     ) -> bool {
