@@ -37,7 +37,7 @@ where
     U: wasmtime::component::HasData,
     V: Lower + Send + Sync + 'static,
 {
-    async fn run(self, store: &mut Accessor<T, U>) -> wasmtime::Result<()> {
+    async fn run(self, store: &Accessor<T, U>) -> wasmtime::Result<()> {
         let res = self.io.run(store).await;
         let mut tasks = self.tasks.lock().map_err(|_| anyhow!("lock poisoned"))?;
         tasks.remove(self.id);
@@ -54,7 +54,7 @@ where
     T: WasiFilesystemView + 'static,
 {
     async fn read_via_stream<U: 'static>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         mut offset: Filesize,
     ) -> wasmtime::Result<(HostStream<u8>, HostFuture<Result<(), ErrorCode>>)> {
@@ -74,7 +74,7 @@ where
                     let f = f.clone();
                     let tasks = Arc::clone(&f.tasks);
                     let task = view.spawn(AccessorTaskFn({
-                        move |_: &mut Accessor<U, Self>| async move {
+                        move |_: &Accessor<U, Self>| async move {
                             while let Ok(tx) = task_tx.reserve().await {
                                 match f
                                     .spawn_blocking(move |f| {
@@ -132,7 +132,7 @@ where
                 Err(err) => {
                     drop(data_tx);
                     let fut = res_tx.write(Err(err));
-                    view.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                    view.spawn(AccessorTaskFn(|_: &Accessor<U, Self>| async {
                         fut.await;
                         Ok(())
                     }));
@@ -143,7 +143,7 @@ where
     }
 
     async fn write_via_stream<U: 'static>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         data: HostStream<u8>,
         mut offset: Filesize,
@@ -192,7 +192,7 @@ where
     }
 
     async fn append_via_stream<U: 'static>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         data: HostStream<u8>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
@@ -239,7 +239,7 @@ where
     }
 
     async fn advise<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         offset: Filesize,
         length: Filesize,
@@ -253,7 +253,7 @@ where
     }
 
     async fn sync_data<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let fut = store.with(|mut view| {
@@ -263,7 +263,7 @@ where
     }
 
     async fn get_flags<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
     ) -> wasmtime::Result<Result<DescriptorFlags, ErrorCode>> {
         let fut = store.with(|mut view| {
@@ -273,7 +273,7 @@ where
     }
 
     async fn get_type<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
     ) -> wasmtime::Result<Result<DescriptorType, ErrorCode>> {
         let fut = store.with(|mut view| {
@@ -283,7 +283,7 @@ where
     }
 
     async fn set_size<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         size: Filesize,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
@@ -294,7 +294,7 @@ where
     }
 
     async fn set_times<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         data_access_timestamp: NewTimestamp,
         data_modification_timestamp: NewTimestamp,
@@ -309,7 +309,7 @@ where
     }
 
     async fn read_directory<U: 'static>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
     ) -> wasmtime::Result<(
         HostStream<DirectoryEntry>,
@@ -337,7 +337,7 @@ where
                     let tasks = Arc::clone(&d.tasks);
                     let (task_tx, task_rx) = mpsc::channel(1);
                     let task = view.spawn(AccessorTaskFn({
-                        |_: &mut Accessor<U, Self>| async move {
+                        |_: &Accessor<U, Self>| async move {
                             match d.run_blocking(cap_std::fs::Dir::entries).await {
                                 Ok(mut entries) => {
                                     while let Ok(tx) = task_tx.reserve().await {
@@ -424,7 +424,7 @@ where
                 Err(err) => {
                     drop(data_tx);
                     let fut = res_tx.write(Err(err));
-                    view.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                    view.spawn(AccessorTaskFn(|_: &Accessor<U, Self>| async {
                         fut.await;
                         Ok(())
                     }));
@@ -435,7 +435,7 @@ where
     }
 
     async fn sync<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let fut = store
@@ -444,7 +444,7 @@ where
     }
 
     async fn create_directory_at<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         path: String,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
@@ -455,7 +455,7 @@ where
     }
 
     async fn stat<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
     ) -> wasmtime::Result<Result<DescriptorStat, ErrorCode>> {
         let fut = store
@@ -464,7 +464,7 @@ where
     }
 
     async fn stat_at<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         path_flags: PathFlags,
         path: String,
@@ -476,7 +476,7 @@ where
     }
 
     async fn set_times_at<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         path_flags: PathFlags,
         path: String,
@@ -497,7 +497,7 @@ where
     }
 
     async fn link_at<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         old_path_flags: PathFlags,
         old_path: String,
@@ -515,7 +515,7 @@ where
     }
 
     async fn open_at<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         path_flags: PathFlags,
         path: String,
@@ -549,7 +549,7 @@ where
     }
 
     async fn readlink_at<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         path: String,
     ) -> wasmtime::Result<Result<String, ErrorCode>> {
@@ -560,7 +560,7 @@ where
     }
 
     async fn remove_directory_at<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         path: String,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
@@ -571,7 +571,7 @@ where
     }
 
     async fn rename_at<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         old_path: String,
         new_fd: Resource<Descriptor>,
@@ -586,7 +586,7 @@ where
     }
 
     async fn symlink_at<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         old_path: String,
         new_path: String,
@@ -599,7 +599,7 @@ where
     }
 
     async fn unlink_file_at<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         path: String,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
@@ -610,7 +610,7 @@ where
     }
 
     async fn is_same_object<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         other: Resource<Descriptor>,
     ) -> wasmtime::Result<bool> {
@@ -622,7 +622,7 @@ where
     }
 
     async fn metadata_hash<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
     ) -> wasmtime::Result<Result<MetadataHashValue, ErrorCode>> {
         let fut = store.with(|mut view| {
@@ -632,7 +632,7 @@ where
     }
 
     async fn metadata_hash_at<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         path_flags: PathFlags,
         path: String,

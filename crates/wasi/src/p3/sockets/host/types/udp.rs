@@ -12,7 +12,7 @@ use crate::p3::sockets::{SocketAddrUse, WasiSockets, WasiSocketsImpl, WasiSocket
 
 use super::is_addr_allowed;
 
-fn is_udp_allowed<T, U>(store: &mut Accessor<T, WasiSockets<U>>) -> bool
+fn is_udp_allowed<T, U>(store: &Accessor<T, WasiSockets<U>>) -> bool
 where
     U: WasiSocketsView + 'static,
 {
@@ -42,7 +42,7 @@ where
     T: WasiSocketsView + 'static,
 {
     async fn bind<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         socket: Resource<UdpSocket>,
         local_address: IpSocketAddress,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
@@ -60,7 +60,7 @@ where
     }
 
     async fn connect<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         socket: Resource<UdpSocket>,
         remote_address: IpSocketAddress,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
@@ -78,7 +78,7 @@ where
     }
 
     async fn send<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         socket: Resource<UdpSocket>,
         data: Vec<u8>,
         remote_address: Option<IpSocketAddress>,
@@ -107,7 +107,7 @@ where
     }
 
     async fn receive<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         socket: Resource<UdpSocket>,
     ) -> wasmtime::Result<Result<(Vec<u8>, IpSocketAddress), ErrorCode>> {
         if !is_udp_allowed(store) {

@@ -27,7 +27,7 @@ impl<T, U: WasiHttpView> AccessorTask<T, WasiHttp<U>, wasmtime::Result<()>> for 
 where
     U: 'static,
 {
-    async fn run(self, store: &mut Accessor<T, WasiHttp<U>>) -> wasmtime::Result<()> {
+    async fn run(self, store: &Accessor<T, WasiHttp<U>>) -> wasmtime::Result<()> {
         match self.rx.await {
             Some(Ok(trailers)) => store.with(|mut view| {
                 let mut binding = view.get();
@@ -51,7 +51,7 @@ where
     T: WasiHttpView + 'static,
 {
     async fn handle<U: 'static>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         request: Resource<Request>,
     ) -> wasmtime::Result<Result<Resource<Response>, ErrorCode>> {
         let Request {
@@ -129,13 +129,11 @@ where
                 content_length: Some(ContentLength { limit, sent }),
                 ..
             } if limit != sent => {
-                store.spawn(AccessorTaskFn(
-                    move |_: &mut Accessor<U, Self>| async move {
-                        tx.write(Err(ErrorCode::HttpRequestBodySize(Some(sent))))
-                            .await;
-                        Ok(())
-                    },
-                ));
+                store.spawn(AccessorTaskFn(move |_: &Accessor<U, Self>| async move {
+                    tx.write(Err(ErrorCode::HttpRequestBodySize(Some(sent))))
+                        .await;
+                    Ok(())
+                }));
                 return Ok(Err(ErrorCode::HttpRequestBodySize(Some(sent))));
             }
             Body::Guest {
@@ -149,7 +147,7 @@ where
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                        store.spawn(AccessorTaskFn(|_: &Accessor<U, Self>| async {
                             let res = io.await;
                             tx.write(res.map_err(Into::into)).await;
                             Ok(())
@@ -177,7 +175,7 @@ where
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                        store.spawn(AccessorTaskFn(|_: &Accessor<U, Self>| async {
                             let res = io.await;
                             tx.write(res.map_err(Into::into)).await;
                             Ok(())
@@ -199,7 +197,7 @@ where
             } => {
                 store.spawn({
                     let err = err.clone();
-                    AccessorTaskFn(move |_: &mut Accessor<U, Self>| async move {
+                    AccessorTaskFn(move |_: &Accessor<U, Self>| async move {
                         tx.write(Err(err)).await;
                         Ok(())
                     })
@@ -225,7 +223,7 @@ where
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                        store.spawn(AccessorTaskFn(|_: &Accessor<U, Self>| async {
                             let res = io.await;
                             tx.write(res.map_err(Into::into)).await;
                             Ok(())
@@ -263,7 +261,7 @@ where
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                        store.spawn(AccessorTaskFn(|_: &Accessor<U, Self>| async {
                             let res = io.await;
                             tx.write(res.map_err(Into::into)).await;
                             Ok(())
@@ -286,7 +284,7 @@ where
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                        store.spawn(AccessorTaskFn(|_: &Accessor<U, Self>| async {
                             _ = io.await;
                             Ok(())
                         }));
@@ -307,7 +305,7 @@ where
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                        store.spawn(AccessorTaskFn(|_: &Accessor<U, Self>| async {
                             _ = io.await;
                             Ok(())
                         }));
@@ -331,7 +329,7 @@ where
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                        store.spawn(AccessorTaskFn(|_: &Accessor<U, Self>| async {
                             _ = io.await;
                             Ok(())
                         }));
@@ -351,7 +349,7 @@ where
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                        store.spawn(AccessorTaskFn(|_: &Accessor<U, Self>| async {
                             _ = io.await;
                             Ok(())
                         }));
@@ -373,7 +371,7 @@ where
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        store.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                        store.spawn(AccessorTaskFn(|_: &Accessor<U, Self>| async {
                             _ = io.await;
                             Ok(())
                         }));

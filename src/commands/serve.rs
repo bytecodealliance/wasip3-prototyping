@@ -973,8 +973,13 @@ async fn handle_request(
         Proxy::P3(proxy, instance) => {
             let (req, body) = req.into_parts();
             let body = body.map_err(p3::http::types::ErrorCode::from_hyper_request_error);
-            let handle = proxy.handle(&mut store, http::Request::from_parts(req, body))?;
-            let res = instance.run(&mut store, handle).await???;
+            let res = instance
+                .run_with(&mut store, async |store| {
+                    proxy
+                        .handle(store, http::Request::from_parts(req, body))
+                        .await
+                })
+                .await???;
             let (res, tx, io) =
                 wasmtime_wasi_http::p3::Response::resource_into_http(&mut store, res)?;
             tokio::task::spawn(async move {
