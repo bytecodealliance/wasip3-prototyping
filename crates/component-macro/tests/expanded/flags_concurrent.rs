@@ -763,7 +763,7 @@ pub mod exports {
                         Output = wasmtime::Result<Flag1>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -771,10 +771,12 @@ pub mod exports {
                                 (Flag1,),
                             >::new_unchecked(self.roundtrip_flag1)
                         };
-                        wasmtime::component::__internal::FutureExt::map(
-                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
-                            |v| v.map(|(v,)| v),
-                        )
+                        let future = callee
+                            .call_concurrent(store.as_context_mut(), (arg0,));
+                        async move {
+                            let (ret0,) = future.await?;
+                            Ok(ret0)
+                        }
                     }
                     pub fn call_roundtrip_flag2<S: wasmtime::AsContextMut>(
                         &self,
@@ -784,7 +786,7 @@ pub mod exports {
                         Output = wasmtime::Result<Flag2>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -792,10 +794,12 @@ pub mod exports {
                                 (Flag2,),
                             >::new_unchecked(self.roundtrip_flag2)
                         };
-                        wasmtime::component::__internal::FutureExt::map(
-                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
-                            |v| v.map(|(v,)| v),
-                        )
+                        let future = callee
+                            .call_concurrent(store.as_context_mut(), (arg0,));
+                        async move {
+                            let (ret0,) = future.await?;
+                            Ok(ret0)
+                        }
                     }
                     pub fn call_roundtrip_flag4<S: wasmtime::AsContextMut>(
                         &self,
@@ -805,7 +809,7 @@ pub mod exports {
                         Output = wasmtime::Result<Flag4>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -813,10 +817,12 @@ pub mod exports {
                                 (Flag4,),
                             >::new_unchecked(self.roundtrip_flag4)
                         };
-                        wasmtime::component::__internal::FutureExt::map(
-                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
-                            |v| v.map(|(v,)| v),
-                        )
+                        let future = callee
+                            .call_concurrent(store.as_context_mut(), (arg0,));
+                        async move {
+                            let (ret0,) = future.await?;
+                            Ok(ret0)
+                        }
                     }
                     pub fn call_roundtrip_flag8<S: wasmtime::AsContextMut>(
                         &self,
@@ -826,7 +832,7 @@ pub mod exports {
                         Output = wasmtime::Result<Flag8>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -834,10 +840,12 @@ pub mod exports {
                                 (Flag8,),
                             >::new_unchecked(self.roundtrip_flag8)
                         };
-                        wasmtime::component::__internal::FutureExt::map(
-                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
-                            |v| v.map(|(v,)| v),
-                        )
+                        let future = callee
+                            .call_concurrent(store.as_context_mut(), (arg0,));
+                        async move {
+                            let (ret0,) = future.await?;
+                            Ok(ret0)
+                        }
                     }
                     pub fn call_roundtrip_flag16<S: wasmtime::AsContextMut>(
                         &self,
@@ -847,7 +855,7 @@ pub mod exports {
                         Output = wasmtime::Result<Flag16>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -855,10 +863,12 @@ pub mod exports {
                                 (Flag16,),
                             >::new_unchecked(self.roundtrip_flag16)
                         };
-                        wasmtime::component::__internal::FutureExt::map(
-                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
-                            |v| v.map(|(v,)| v),
-                        )
+                        let future = callee
+                            .call_concurrent(store.as_context_mut(), (arg0,));
+                        async move {
+                            let (ret0,) = future.await?;
+                            Ok(ret0)
+                        }
                     }
                     pub fn call_roundtrip_flag32<S: wasmtime::AsContextMut>(
                         &self,
@@ -868,7 +878,7 @@ pub mod exports {
                         Output = wasmtime::Result<Flag32>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -876,10 +886,12 @@ pub mod exports {
                                 (Flag32,),
                             >::new_unchecked(self.roundtrip_flag32)
                         };
-                        wasmtime::component::__internal::FutureExt::map(
-                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
-                            |v| v.map(|(v,)| v),
-                        )
+                        let future = callee
+                            .call_concurrent(store.as_context_mut(), (arg0,));
+                        async move {
+                            let (ret0,) = future.await?;
+                            Ok(ret0)
+                        }
                     }
                     pub fn call_roundtrip_flag64<S: wasmtime::AsContextMut>(
                         &self,
@@ -889,7 +901,7 @@ pub mod exports {
                         Output = wasmtime::Result<Flag64>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -897,10 +909,12 @@ pub mod exports {
                                 (Flag64,),
                             >::new_unchecked(self.roundtrip_flag64)
                         };
-                        wasmtime::component::__internal::FutureExt::map(
-                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
-                            |v| v.map(|(v,)| v),
-                        )
+                        let future = callee
+                            .call_concurrent(store.as_context_mut(), (arg0,));
+                        async move {
+                            let (ret0,) = future.await?;
+                            Ok(ret0)
+                        }
                     }
                 }
             }

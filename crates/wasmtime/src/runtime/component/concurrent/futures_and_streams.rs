@@ -1,50 +1,40 @@
-use {
-    super::{
-        Event, GlobalErrorContextRefCount, HostTaskOutput, LocalErrorContextRefCount, StateTable,
-        Waitable, WaitableCommon, WaitableState,
-        table::{TableDebug, TableId},
-    },
-    crate::{
-        AsContextMut, StoreContextMut, ValRaw,
-        component::{
-            Instance, Lower, Val, WasmList, WasmStr,
-            concurrent::{ConcurrentState, tls},
-            func::{self, LiftContext, LowerContext, Options},
-            matching::InstanceType,
-            values::{ErrorContextAny, FutureAny, StreamAny},
-        },
-        store::{StoreOpaque, StoreToken},
-        vm::{VMFuncRef, VMMemoryDefinition, VMStore},
-    },
-    anyhow::{Context, Result, anyhow, bail},
-    buffers::Extender,
-    futures::{
-        channel::{mpsc, oneshot},
-        future::{self, FutureExt},
-        stream::StreamExt,
-    },
-    std::{
-        boxed::Box,
-        fmt,
-        future::Future,
-        iter,
-        marker::PhantomData,
-        mem::{self, MaybeUninit},
-        ops::DerefMut,
-        ptr::NonNull,
-        string::{String, ToString},
-        sync::{Arc, Mutex},
-        task::{Poll, Waker},
-        vec::Vec,
-    },
-    wasmtime_environ::component::{
-        CanonicalAbiInfo, ComponentTypes, InterfaceType, RuntimeComponentInstanceIndex,
-        StringEncoding, TypeComponentGlobalErrorContextTableIndex,
-        TypeComponentLocalErrorContextTableIndex, TypeFutureTableIndex, TypeStreamTableIndex,
-    },
+use super::table::{TableDebug, TableId};
+use super::{
+    Event, GlobalErrorContextRefCount, HostTaskOutput, LocalErrorContextRefCount, StateTable,
+    Waitable, WaitableCommon, WaitableState,
+};
+use crate::component::concurrent::{ConcurrentState, tls};
+use crate::component::func::{self, LiftContext, LowerContext, Options};
+use crate::component::matching::InstanceType;
+use crate::component::values::{ErrorContextAny, FutureAny, StreamAny};
+use crate::component::{Instance, Lower, Val, WasmList, WasmStr};
+use crate::store::{StoreOpaque, StoreToken};
+use crate::vm::{VMFuncRef, VMMemoryDefinition, VMStore};
+use crate::{AsContextMut, StoreContextMut, ValRaw};
+use anyhow::{Context, Result, anyhow, bail};
+use buffers::Extender;
+use buffers::UntypedWriteBuffer;
+use futures::channel::{mpsc, oneshot};
+use futures::future::{self, FutureExt};
+use futures::stream::StreamExt;
+use std::boxed::Box;
+use std::fmt;
+use std::future::Future;
+use std::iter;
+use std::marker::PhantomData;
+use std::mem::{self, MaybeUninit};
+use std::ptr::NonNull;
+use std::string::{String, ToString};
+use std::sync::{Arc, Mutex};
+use std::task::{Poll, Waker};
+use std::vec::Vec;
+use wasmtime_environ::component::{
+    CanonicalAbiInfo, ComponentTypes, InterfaceType, RuntimeComponentInstanceIndex, StringEncoding,
+    TypeComponentGlobalErrorContextTableIndex, TypeComponentLocalErrorContextTableIndex,
+    TypeFutureTableIndex, TypeStreamTableIndex,
 };
 
-pub use buffers::{ReadBuffer, TakeBuffer, VecBuffer, WriteBuffer};
+pub use buffers::{ReadBuffer, VecBuffer, WriteBuffer};
 
 mod buffers;
 
@@ -247,7 +237,8 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>
             }
             Reader::Host { accept } => {
                 let count = buffer.remaining().len();
-                let count = accept(&mut buffer, count);
+                let mut untyped = UntypedWriteBuffer::new(&mut buffer);
+                let count = accept(&mut untyped, count);
                 _ = tx.send(HostResult {
                     buffer,
                     dropped: false,
@@ -307,7 +298,7 @@ fn accept_writer<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
                         .ok_or_else(|| anyhow::anyhow!("write pointer out of bounds of memory"))?;
 
                     let list = &WasmList::new(address, count, lift, ty)?;
-                    T::load_into(lift, list, &mut Extender(&mut buffer), count)?
+                    T::linear_lift_into_from_memory(lift, list, &mut Extender(&mut buffer))?
                 }
                 _ = tx.send(HostResult {
                     buffer,
@@ -320,7 +311,7 @@ fn accept_writer<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
                 count,
             } => {
                 let count = count.min(buffer.remaining_capacity());
-                buffer.move_from(input, count);
+                buffer.move_from(input.get_mut::<T>(), count);
                 _ = tx.send(HostResult {
                     buffer,
                     dropped: false,
@@ -425,22 +416,22 @@ fn send<T>(tx: &mut mpsc::Sender<T>, value: T) {
     }
 }
 
-/// State shared between a `Watch` and the wrapped future it is associated with.
-///
-/// See `Watch` for details.
-struct WatchInner<T> {
-    inner: T,
-    rx: oneshot::Receiver<()>,
-    waker: Option<Waker>,
-}
-
 /// Wrapper struct which may be converted to the inner value as needed.
 ///
 /// This object is normally paired with a `Future` which represents a state
 /// change on the inner value, resolving when that state change happens _or_
 /// when the `Watch` is converted back into the inner value -- whichever happens
 /// first.
-pub struct Watch<T>(Arc<Mutex<Option<WatchInner<T>>>>);
+pub struct Watch<T> {
+    inner: T,
+    waker: Arc<Mutex<WatchState>>,
+}
+
+enum WatchState {
+    Idle,
+    Waiting(Waker),
+    Done,
+}
 
 impl<T> Watch<T> {
     /// Convert this object into its inner value.
@@ -448,11 +439,11 @@ impl<T> Watch<T> {
     /// Calling this function will cause the associated `Future` to resolve
     /// immediately if it hasn't already.
     pub fn into_inner(self) -> T {
-        let inner = self.0.try_lock().unwrap().take().unwrap();
-        if let Some(waker) = inner.waker {
+        let state = mem::replace(&mut *self.waker.lock().unwrap(), WatchState::Done);
+        if let WatchState::Waiting(waker) = state {
             waker.wake();
         }
-        inner.inner
+        self.inner
     }
 }
 
@@ -461,36 +452,32 @@ impl<T> Watch<T> {
 /// the returned `Watch`.
 fn watch<T: Send + 'static>(
     instance: Instance,
-    rx: oneshot::Receiver<()>,
+    mut rx: oneshot::Receiver<()>,
     inner: T,
 ) -> (impl Future<Output = ()> + Send + 'static, Watch<T>) {
-    let inner = Arc::new(Mutex::new(Some(WatchInner {
-        inner,
-        rx,
-        waker: None,
-    })));
+    let waker = Arc::new(Mutex::new(WatchState::Idle));
     (
         super::checked(
             instance,
             future::poll_fn({
-                let inner = inner.clone();
+                let waker = waker.clone();
 
                 move |cx| {
-                    if let Some(inner) = inner.try_lock().unwrap().deref_mut() {
-                        match inner.rx.poll_unpin(cx) {
-                            Poll::Ready(_) => Poll::Ready(()),
-                            Poll::Pending => {
-                                inner.waker = Some(cx.waker().clone());
-                                Poll::Pending
-                            }
+                    if rx.poll_unpin(cx).is_ready() {
+                        return Poll::Ready(());
+                    }
+                    let mut state = waker.lock().unwrap();
+                    match *state {
+                        WatchState::Done => Poll::Ready(()),
+                        _ => {
+                            *state = WatchState::Waiting(cx.waker().clone());
+                            Poll::Pending
                         }
-                    } else {
-                        Poll::Ready(())
                     }
                 }
             }),
         ),
-        Watch(inner),
+        Watch { waker, inner },
     )
 }
 
@@ -709,7 +696,7 @@ pub(crate) fn lower_future_to_index<U>(
 
 // SAFETY: This relies on the `ComponentType` implementation for `u32` being
 // safe and correct since we lift and lower future handles as `u32`s.
-unsafe impl<T> func::ComponentType for HostFuture<T> {
+unsafe impl<T: Send + Sync> func::ComponentType for HostFuture<T> {
     const ABI: CanonicalAbiInfo = CanonicalAbiInfo::SCALAR4;
 
     type Lower = <u32 as func::ComponentType>::Lower;
@@ -723,7 +710,7 @@ unsafe impl<T> func::ComponentType for HostFuture<T> {
 }
 
 // SAFETY: See the comment on the `ComponentType` `impl` for this type.
-unsafe impl<T> func::Lower for HostFuture<T> {
+unsafe impl<T: Send + Sync> func::Lower for HostFuture<T> {
     fn linear_lower_to_flat<U>(
         &self,
         cx: &mut LowerContext<'_, U>,
@@ -748,7 +735,7 @@ unsafe impl<T> func::Lower for HostFuture<T> {
 }
 
 // SAFETY: See the comment on the `ComponentType` `impl` for this type.
-unsafe impl<T> func::Lift for HostFuture<T> {
+unsafe impl<T: Send + Sync> func::Lift for HostFuture<T> {
     fn linear_lift_from_flat(
         cx: &mut LiftContext<'_>,
         ty: InterfaceType,
@@ -798,8 +785,7 @@ impl<T> FutureReader<T> {
     /// Read the value from this `future`.
     ///
     /// The returned `Future` will yield `None` if the guest has trapped
-    /// before it could produce a result or if the write end belonged to the
-    /// host and was dropped without writing a result.
+    /// before it could produce a result.
     ///
     /// Note that the returned `Future` must be polled from the event loop of
     /// the component instance from which this `FutureReader` originated.  See
@@ -1095,7 +1081,7 @@ pub(crate) fn lower_stream_to_index<U>(
 
 // SAFETY: This relies on the `ComponentType` implementation for `u32` being
 // safe and correct since we lift and lower stream handles as `u32`s.
-unsafe impl<T> func::ComponentType for HostStream<T> {
+unsafe impl<T: Send + Sync> func::ComponentType for HostStream<T> {
     const ABI: CanonicalAbiInfo = CanonicalAbiInfo::SCALAR4;
 
     type Lower = <u32 as func::ComponentType>::Lower;
@@ -1109,7 +1095,7 @@ unsafe impl<T> func::ComponentType for HostStream<T> {
 }
 
 // SAFETY: See the comment on the `ComponentType` `impl` for this type.
-unsafe impl<T> func::Lower for HostStream<T> {
+unsafe impl<T: Send + Sync> func::Lower for HostStream<T> {
     fn linear_lower_to_flat<U>(
         &self,
         cx: &mut LowerContext<'_, U>,
@@ -1134,7 +1120,7 @@ unsafe impl<T> func::Lower for HostStream<T> {
 }
 
 // SAFETY: See the comment on the `ComponentType` `impl` for this type.
-unsafe impl<T> func::Lift for HostStream<T> {
+unsafe impl<T: Send + Sync> func::Lift for HostStream<T> {
     fn linear_lift_from_flat(
         cx: &mut LiftContext<'_>,
         ty: InterfaceType,
@@ -1272,7 +1258,7 @@ impl ErrorContext {
                 let (rep, _) = cx
                     .instance_mut()
                     .concurrent_state_mut()
-                    .error_context_tables()
+                    .error_context_tables
                     .get_mut(src)
                     .expect("error context table index present in (sub)component table during lift")
                     .get_mut_by_index(index)?;
@@ -1294,7 +1280,7 @@ pub(crate) fn lower_error_context_to_index<U>(
             let tbl = cx
                 .instance_mut()
                 .concurrent_state_mut()
-                .error_context_tables()
+                .error_context_tables
                 .get_mut(dst)
                 .expect("error context table index present in (sub)component table during lower");
 
@@ -1518,7 +1504,7 @@ enum Writer<'a> {
     },
     /// The write end is owned by the host.
     Host {
-        buffer: &'a mut dyn TakeBuffer,
+        buffer: &'a mut UntypedWriteBuffer<'a>,
         count: usize,
     },
     /// The write end has been dropped.
@@ -1538,7 +1524,7 @@ enum Reader<'a> {
     },
     /// The read end is owned by the host.
     Host {
-        accept: Box<dyn FnOnce(&mut dyn TakeBuffer, usize) -> usize>,
+        accept: Box<dyn FnOnce(&mut UntypedWriteBuffer, usize) -> usize>,
     },
     /// The read end has been dropped.
     End,
@@ -1864,8 +1850,9 @@ impl Instance {
 
             ReadState::HostReady { accept } => {
                 let count = buffer.remaining().len();
+                let mut untyped = UntypedWriteBuffer::new(&mut buffer);
                 let code = accept(Writer::Host {
-                    buffer: &mut buffer,
+                    buffer: &mut untyped,
                     count,
                 })?;
                 let (ReturnCode::Completed(_) | ReturnCode::Dropped(_)) = code else {
@@ -1989,7 +1976,7 @@ impl Instance {
                     Reader::Host {
                         accept: Box::new(move |input, count| {
                             let count = count.min(buffer.remaining_capacity());
-                            buffer.move_from(input, count);
+                            buffer.move_from(input.get_mut::<T>(), count);
                             _ = tx.send(HostResult {
                                 buffer,
                                 dropped: false,
@@ -2800,7 +2787,7 @@ impl Instance {
 
         // Add to the global error context ref counts
         let _ = state
-            .global_error_context_ref_counts()
+            .global_error_context_ref_counts
             .insert(global_ref_count_idx, GlobalErrorContextRefCount(1));
 
         // Error context are tracked both locally (to a single component instance) and globally
@@ -2809,7 +2796,7 @@ impl Instance {
         // Here we reflect the newly created global concurrent error context state into the
         // component instance's locally tracked count, along with the appropriate key into the global
         // ref tracking data structures to enable later lookup
-        let local_tbl = &mut state.error_context_tables()[ty];
+        let local_tbl = &mut state.error_context_tables[ty];
 
         assert!(
             !local_tbl.has_handle(table_id.rep()),
@@ -2838,7 +2825,7 @@ impl Instance {
         let id = store.0.store_opaque().id();
         let state = self.concurrent_state_mut(store.0);
         let (state_table_id_rep, _) = state
-            .error_context_tables()
+            .error_context_tables
             .get_mut(ty)
             .context("error context table index present in (sub)component lookup during debug_msg")?
             .get_mut_by_index(err_ctx_handle)?;
@@ -3046,7 +3033,7 @@ impl ConcurrentState {
             TableIndex::Stream(ty) => self.component.types()[ty].instance,
             TableIndex::Future(ty) => self.component.types()[ty].instance,
         };
-        &mut self.waitable_tables()[runtime_instance]
+        &mut self.waitable_tables[runtime_instance]
     }
 
     /// Allocate a new future or stream and grant ownership of both the read and
@@ -3354,7 +3341,7 @@ impl ConcurrentState {
         error_context: u32,
     ) -> Result<()> {
         let local_state_table = self
-            .error_context_tables()
+            .error_context_tables
             .get_mut(ty)
             .context("error context table index present in (sub)component table during drop")?;
 
@@ -3377,7 +3364,7 @@ impl ConcurrentState {
         let global_ref_count_idx = TypeComponentGlobalErrorContextTableIndex::from_u32(rep);
 
         let GlobalErrorContextRefCount(global_ref_count) = self
-            .global_error_context_ref_counts()
+            .global_error_context_ref_counts
             .get_mut(&global_ref_count_idx)
             .expect("retrieve concurrent state for error context during drop");
 
@@ -3387,7 +3374,7 @@ impl ConcurrentState {
         if *global_ref_count == 0 {
             assert!(local_ref_removed);
 
-            self.global_error_context_ref_counts()
+            self.global_error_context_ref_counts
                 .remove(&global_ref_count_idx);
 
             self.delete(TableId::<ErrorContextState>::new(rep))
@@ -3409,14 +3396,14 @@ impl ConcurrentState {
         match_state: impl Fn(&mut WaitableState) -> Result<(U, &mut StreamFutureState)>,
         make_state: impl Fn(U, StreamFutureState) -> WaitableState,
     ) -> Result<u32> {
-        let src_table = &mut self.waitable_tables()[src_instance];
+        let src_table = &mut self.waitable_tables[src_instance];
         let (_rep, src_state) = src_table.get_mut_by_index(src_idx)?;
         let (src_ty, _) = match_state(src_state)?;
         if src_ty != src {
             bail!("invalid future handle");
         }
 
-        let src_table = &mut self.waitable_tables()[src_instance];
+        let src_table = &mut self.waitable_tables[src_instance];
         let (rep, src_state) = src_table.get_mut_by_index(src_idx)?;
         let (_, src_state) = match_state(src_state)?;
 
@@ -3427,7 +3414,7 @@ impl ConcurrentState {
             StreamFutureState::Read { done: false } => {
                 src_table.remove_by_index(src_idx)?;
 
-                let dst_table = &mut self.waitable_tables()[dst_instance];
+                let dst_table = &mut self.waitable_tables[dst_instance];
                 dst_table.insert(
                     rep,
                     make_state(dst, StreamFutureState::Read { done: false }),
@@ -3571,14 +3558,14 @@ impl ConcurrentState {
     ) -> Result<u32> {
         let (rep, _) = {
             let rep = self
-                .error_context_tables()
+                .error_context_tables
                 .get_mut(src)
                 .context("error context table index present in (sub)component lookup")?
                 .get_mut_by_index(src_idx)?;
             rep
         };
         let dst = self
-            .error_context_tables()
+            .error_context_tables
             .get_mut(dst)
             .context("error context table index present in (sub)component lookup")?;
 
@@ -3594,7 +3581,7 @@ impl ConcurrentState {
         // as the new component has essentially created a new reference that will
         // be dropped/handled independently
         let global_ref_count = self
-            .global_error_context_ref_counts()
+            .global_error_context_ref_counts
             .get_mut(&TypeComponentGlobalErrorContextTableIndex::from_u32(rep))
             .context("global ref count present for existing (sub)component error context")?;
         global_ref_count.0 += 1;

@@ -374,7 +374,7 @@ pub mod exports {
                         Output = wasmtime::Result<wasmtime::component::ResourceAny>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -382,10 +382,11 @@ pub mod exports {
                                 (wasmtime::component::ResourceAny,),
                             >::new_unchecked(self.funcs.constructor_a_constructor)
                         };
-                        wasmtime::component::__internal::FutureExt::map(
-                            callee.call_concurrent(store.as_context_mut(), ()),
-                            |v| v.map(|(v,)| v),
-                        )
+                        let future = callee.call_concurrent(store.as_context_mut(), ());
+                        async move {
+                            let (ret0,) = future.await?;
+                            Ok(ret0)
+                        }
                     }
                     pub fn call_static_a<S: wasmtime::AsContextMut>(
                         &self,
@@ -394,7 +395,7 @@ pub mod exports {
                         Output = wasmtime::Result<u32>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -402,10 +403,11 @@ pub mod exports {
                                 (u32,),
                             >::new_unchecked(self.funcs.static_a_static_a)
                         };
-                        wasmtime::component::__internal::FutureExt::map(
-                            callee.call_concurrent(store.as_context_mut(), ()),
-                            |v| v.map(|(v,)| v),
-                        )
+                        let future = callee.call_concurrent(store.as_context_mut(), ());
+                        async move {
+                            let (ret0,) = future.await?;
+                            Ok(ret0)
+                        }
                     }
                     pub fn call_method_a<S: wasmtime::AsContextMut>(
                         &self,
@@ -415,7 +417,7 @@ pub mod exports {
                         Output = wasmtime::Result<u32>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -423,10 +425,12 @@ pub mod exports {
                                 (u32,),
                             >::new_unchecked(self.funcs.method_a_method_a)
                         };
-                        wasmtime::component::__internal::FutureExt::map(
-                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
-                            |v| v.map(|(v,)| v),
-                        )
+                        let future = callee
+                            .call_concurrent(store.as_context_mut(), (arg0,));
+                        async move {
+                            let (ret0,) = future.await?;
+                            Ok(ret0)
+                        }
                     }
                 }
             }
@@ -475,7 +479,7 @@ pub mod exports {
                                 .ok_or_else(|| {
                                     anyhow::anyhow!(
                                         "instance export `foo:foo/export-using-import` does \
-                        not have export `{name}`"
+                  not have export `{name}`"
                                     )
                                 })
                         };
@@ -541,7 +545,7 @@ pub mod exports {
                         Output = wasmtime::Result<wasmtime::component::ResourceAny>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -549,10 +553,12 @@ pub mod exports {
                                 (wasmtime::component::ResourceAny,),
                             >::new_unchecked(self.funcs.constructor_a_constructor)
                         };
-                        wasmtime::component::__internal::FutureExt::map(
-                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
-                            |v| v.map(|(v,)| v),
-                        )
+                        let future = callee
+                            .call_concurrent(store.as_context_mut(), (arg0,));
+                        async move {
+                            let (ret0,) = future.await?;
+                            Ok(ret0)
+                        }
                     }
                     pub fn call_static_a<S: wasmtime::AsContextMut>(
                         &self,
@@ -561,7 +567,7 @@ pub mod exports {
                         Output = wasmtime::Result<wasmtime::component::Resource<Y>>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -569,10 +575,11 @@ pub mod exports {
                                 (wasmtime::component::Resource<Y>,),
                             >::new_unchecked(self.funcs.static_a_static_a)
                         };
-                        wasmtime::component::__internal::FutureExt::map(
-                            callee.call_concurrent(store.as_context_mut(), ()),
-                            |v| v.map(|(v,)| v),
-                        )
+                        let future = callee.call_concurrent(store.as_context_mut(), ());
+                        async move {
+                            let (ret0,) = future.await?;
+                            Ok(ret0)
+                        }
                     }
                     pub fn call_method_a<S: wasmtime::AsContextMut>(
                         &self,
@@ -583,7 +590,7 @@ pub mod exports {
                         Output = wasmtime::Result<wasmtime::component::Resource<Y>>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -594,10 +601,12 @@ pub mod exports {
                                 (wasmtime::component::Resource<Y>,),
                             >::new_unchecked(self.funcs.method_a_method_a)
                         };
-                        wasmtime::component::__internal::FutureExt::map(
-                            callee.call_concurrent(store.as_context_mut(), (arg0, arg1)),
-                            |v| v.map(|(v,)| v),
-                        )
+                        let future = callee
+                            .call_concurrent(store.as_context_mut(), (arg0, arg1));
+                        async move {
+                            let (ret0,) = future.await?;
+                            Ok(ret0)
+                        }
                     }
                 }
             }
@@ -641,7 +650,7 @@ pub mod exports {
                                 .ok_or_else(|| {
                                     anyhow::anyhow!(
                                         "instance export `foo:foo/export-using-export1` does \
-                              not have export `{name}`"
+                  not have export `{name}`"
                                     )
                                 })
                         };
@@ -683,7 +692,7 @@ pub mod exports {
                         Output = wasmtime::Result<wasmtime::component::ResourceAny>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -691,10 +700,11 @@ pub mod exports {
                                 (wasmtime::component::ResourceAny,),
                             >::new_unchecked(self.funcs.constructor_a_constructor)
                         };
-                        wasmtime::component::__internal::FutureExt::map(
-                            callee.call_concurrent(store.as_context_mut(), ()),
-                            |v| v.map(|(v,)| v),
-                        )
+                        let future = callee.call_concurrent(store.as_context_mut(), ());
+                        async move {
+                            let (ret0,) = future.await?;
+                            Ok(ret0)
+                        }
                     }
                 }
             }
@@ -739,7 +749,7 @@ pub mod exports {
                                 .ok_or_else(|| {
                                     anyhow::anyhow!(
                                         "instance export `foo:foo/export-using-export2` does \
-                                not have export `{name}`"
+                  not have export `{name}`"
                                     )
                                 })
                         };
@@ -782,7 +792,7 @@ pub mod exports {
                         Output = wasmtime::Result<wasmtime::component::ResourceAny>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -790,10 +800,12 @@ pub mod exports {
                                 (wasmtime::component::ResourceAny,),
                             >::new_unchecked(self.funcs.constructor_b_constructor)
                         };
-                        wasmtime::component::__internal::FutureExt::map(
-                            callee.call_concurrent(store.as_context_mut(), (arg0,)),
-                            |v| v.map(|(v,)| v),
-                        )
+                        let future = callee
+                            .call_concurrent(store.as_context_mut(), (arg0,));
+                        async move {
+                            let (ret0,) = future.await?;
+                            Ok(ret0)
+                        }
                     }
                 }
             }

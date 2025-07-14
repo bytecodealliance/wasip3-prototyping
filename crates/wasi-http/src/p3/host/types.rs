@@ -31,7 +31,7 @@ use wasmtime::component::{
 };
 use wasmtime_wasi::ResourceTable;
 use wasmtime_wasi::p3::bindings::clocks::monotonic_clock::Duration;
-use wasmtime_wasi::p3::{ResourceView as _, WithChildren};
+use wasmtime_wasi::p3::{AbortOnDropHandle, ResourceView as _, WithChildren};
 
 fn get_request_options<'a>(
     table: &'a ResourceTable,
@@ -817,7 +817,7 @@ where
             });
             let mut binding = view.get();
             let req = get_request_mut(binding.table(), &req)?;
-            req.task = Some(task.abort_on_drop_handle());
+            req.task = Some(AbortOnDropHandle(task));
             Ok(Ok((contents_rx.into(), trailers_rx.into())))
         })
     }
@@ -1134,7 +1134,7 @@ where
             });
             let mut binding = view.get();
             let res = get_response_mut(binding.table(), &res)?;
-            res.body_task = Some(task.abort_on_drop_handle());
+            res.body_task = Some(AbortOnDropHandle(task));
             Ok(Ok((contents_rx.into(), trailers_rx.into())))
         })
     }

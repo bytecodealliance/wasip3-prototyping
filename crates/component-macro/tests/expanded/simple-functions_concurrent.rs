@@ -414,7 +414,7 @@ pub mod exports {
                         Output = wasmtime::Result<()>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -432,7 +432,7 @@ pub mod exports {
                         Output = wasmtime::Result<()>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -451,7 +451,7 @@ pub mod exports {
                         Output = wasmtime::Result<()>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -468,7 +468,7 @@ pub mod exports {
                         Output = wasmtime::Result<u32>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -476,10 +476,11 @@ pub mod exports {
                                 (u32,),
                             >::new_unchecked(self.f4)
                         };
-                        wasmtime::component::__internal::FutureExt::map(
-                            callee.call_concurrent(store.as_context_mut(), ()),
-                            |v| v.map(|(v,)| v),
-                        )
+                        let future = callee.call_concurrent(store.as_context_mut(), ());
+                        async move {
+                            let (ret0,) = future.await?;
+                            Ok(ret0)
+                        }
                     }
                     pub fn call_f5<S: wasmtime::AsContextMut>(
                         &self,
@@ -488,7 +489,7 @@ pub mod exports {
                         Output = wasmtime::Result<(u32, u32)>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -496,10 +497,11 @@ pub mod exports {
                                 ((u32, u32),),
                             >::new_unchecked(self.f5)
                         };
-                        wasmtime::component::__internal::FutureExt::map(
-                            callee.call_concurrent(store.as_context_mut(), ()),
-                            |v| v.map(|(v,)| v),
-                        )
+                        let future = callee.call_concurrent(store.as_context_mut(), ());
+                        async move {
+                            let (ret0,) = future.await?;
+                            Ok(ret0)
+                        }
                     }
                     pub fn call_f6<S: wasmtime::AsContextMut>(
                         &self,
@@ -511,7 +513,7 @@ pub mod exports {
                         Output = wasmtime::Result<(u32, u32, u32)>,
                     > + Send + 'static + use<S>
                     where
-                        <S as wasmtime::AsContext>::Data: Send,
+                        <S as wasmtime::AsContext>::Data: Send + 'static,
                     {
                         let callee = unsafe {
                             wasmtime::component::TypedFunc::<
@@ -519,14 +521,12 @@ pub mod exports {
                                 ((u32, u32, u32),),
                             >::new_unchecked(self.f6)
                         };
-                        wasmtime::component::__internal::FutureExt::map(
-                            callee
-                                .call_concurrent(
-                                    store.as_context_mut(),
-                                    (arg0, arg1, arg2),
-                                ),
-                            |v| v.map(|(v,)| v),
-                        )
+                        let future = callee
+                            .call_concurrent(store.as_context_mut(), (arg0, arg1, arg2));
+                        async move {
+                            let (ret0,) = future.await?;
+                            Ok(ret0)
+                        }
                     }
                 }
             }

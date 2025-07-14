@@ -9,8 +9,8 @@ use io_lifetimes::AsSocketlike as _;
 use io_lifetimes::views::SocketlikeView;
 use rustix::io::Errno;
 use rustix::net::sockopt;
-use wasmtime::component::AbortOnDropHandle;
 
+use crate::p3::AbortOnDropHandle;
 use crate::p3::bindings::sockets::types::{Duration, ErrorCode, IpAddressFamily, IpSocketAddress};
 use crate::p3::sockets::SocketAddressFamily;
 use crate::p3::sockets::util::{

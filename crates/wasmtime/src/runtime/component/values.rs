@@ -63,7 +63,7 @@ use wasmtime_environ::component::{
 ///
 /// [`Func::call`]: crate::component::Func::call
 #[derive(Debug, Clone)]
-#[allow(missing_docs)]
+#[expect(missing_docs, reason = "self-describing variants")]
 pub enum Val {
     Bool(bool),
     S8(i8),
@@ -1111,20 +1111,36 @@ fn unexpected<T>(ty: InterfaceType, val: &Val) -> Result<T> {
     )
 }
 
-// TODO: This is prone to leaks and infinitely blocked writers given that
-// there's no reference counting and thus no way to know when to close the
-// handle.
+/// Represents a component model `future`.
+///
+/// Note that this type is not usable at this time as its implementation has not
+/// been filled out. There are no operations on this and there's additionally no
+/// ability to "drop" or deallocate this index. This means that from the
+/// perspective of wasm it'll appear that this handle has "leaked" without ever
+/// being dropped or read from.
+//
+// FIXME(#11161) this needs to be filled out implementation-wise
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FutureAny(pub(crate) u32);
 
-// TODO: This is prone to leaks and infinitely blocked writers given that
-// there's no reference counting and thus no way to know when to close the
-// handle.
+/// Represents a component model `stream`.
+///
+/// Note that this type is not usable at this time as its implementation has not
+/// been filled out. There are no operations on this and there's additionally no
+/// ability to "drop" or deallocate this index. This means that from the
+/// perspective of wasm it'll appear that this handle has "leaked" without ever
+/// being dropped or read from.
+//
+// FIXME(#11161) this needs to be filled out implementation-wise
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamAny(pub(crate) u32);
 
-// TODO: This is prone to leaks and infinitely blocked writers given that
-// there's no reference counting and thus no way to know when to close the
-// handle.
+/// Represents a component model `error-context`.
+///
+/// Note that this type is not usable at this time as its implementation has not
+/// been filled out. There are no operations on this and there's additionally no
+/// ability to "drop" or deallocate this index.
+//
+// FIXME(#11161) this needs to be filled out implementation-wise
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorContextAny(pub(crate) u32);

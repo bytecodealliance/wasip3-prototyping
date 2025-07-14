@@ -5,7 +5,10 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use super::util::{config, make_component};
 use anyhow::{Result, anyhow};
+use component_async_tests::Ctx;
+use component_async_tests::util::sleep;
 use futures::{
     FutureExt,
     stream::{FuturesUnordered, TryStreamExt},
@@ -13,9 +16,6 @@ use futures::{
 use wasmtime::component::{Linker, ResourceTable, Val};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
-
-use component_async_tests::Ctx;
-use component_async_tests::util::{config, make_component, sleep};
 
 #[tokio::test]
 pub async fn async_round_trip_many_stackless() -> Result<()> {
@@ -245,6 +245,7 @@ async fn test_round_trip_many(
         let mut store = make_store();
 
         let instance = linker.instantiate_async(&mut store, &component).await?;
+        instance.enable_concurrent_state_debug(&mut store, true);
         let round_trip_many = component_async_tests::round_trip_many::bindings::RoundTripMany::new(
             &mut store, &instance,
         )?;
@@ -279,22 +280,24 @@ async fn test_round_trip_many(
                     actual
                 );
             }
+
+            instance.assert_concurrent_state_empty(&mut store);
         }
 
         if call_style == 1 {
             // Now do it again using `TypedFunc::call_async`-based bindings:
             let e = component_async_tests::round_trip_many::non_concurrent_export_bindings::exports::local::local::many::Stuff {
-        a: vec![42i32; 42],
-        b: true,
-        c: 424242,
-    };
+                a: vec![42i32; 42],
+                b: true,
+                c: 424242,
+            };
             let f = Some(e.clone());
             let g = Err(());
 
             let round_trip_many = component_async_tests::round_trip_many::non_concurrent_export_bindings::RoundTripMany::instantiate_async(
-            &mut store, &component, &linker,
-        )
-        .await?;
+                &mut store, &component, &linker,
+            )
+                .await?;
 
             for (input, expected) in inputs_and_outputs {
                 assert_eq!(
@@ -322,6 +325,8 @@ async fn test_round_trip_many(
                         .await?
                 );
             }
+
+            instance.assert_concurrent_state_empty(&mut store);
         }
     }
 
@@ -333,18 +338,19 @@ async fn test_round_trip_many(
         linker
             .root()
             .instance("local:local/many")?
-            .func_new_concurrent("[async]foo", |_, params| {
+            .func_new_concurrent("[async]foo", |_, params, results| {
                 Box::pin(async move {
                     sleep(Duration::from_millis(10)).await;
                     let mut params = params.into_iter();
                     let Some(Val::String(s)) = params.next() else {
                         unreachable!()
                     };
-                    Ok(vec![Val::Tuple(
+                    results[0] = Val::Tuple(
                         iter::once(Val::String(format!("{s} - entered host - exited host")))
-                            .chain(params)
+                            .chain(params.cloned())
                             .collect(),
-                    )])
+                    );
+                    Ok(())
                 })
             })?;
 
@@ -401,6 +407,8 @@ async fn test_round_trip_many(
                 };
                 assert_eq!(make(&expected), actual);
             }
+
+            instance.assert_concurrent_state_empty(&mut store);
         }
 
         if call_style == 3 {
@@ -414,7 +422,10 @@ async fn test_round_trip_many(
                     unreachable!()
                 };
                 assert_eq!(&make(expected), actual);
+                foo_function.post_return_async(&mut store).await?;
             }
+
+            instance.assert_concurrent_state_empty(&mut store);
         }
     }
 

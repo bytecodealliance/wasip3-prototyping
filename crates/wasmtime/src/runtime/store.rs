@@ -242,9 +242,9 @@ pub struct StoreInner<T: 'static> {
 }
 
 enum ResourceLimiterInner<T> {
-    Sync(Box<dyn FnMut(&mut T) -> &mut (dyn crate::ResourceLimiter) + Send + Sync>),
+    Sync(Box<dyn (FnMut(&mut T) -> &mut dyn crate::ResourceLimiter) + Send + Sync>),
     #[cfg(feature = "async")]
-    Async(Box<dyn FnMut(&mut T) -> &mut (dyn crate::ResourceLimiterAsync) + Send + Sync>),
+    Async(Box<dyn (FnMut(&mut T) -> &mut dyn crate::ResourceLimiterAsync) + Send + Sync>),
 }
 
 enum CallHookInner<T: 'static> {
@@ -252,7 +252,10 @@ enum CallHookInner<T: 'static> {
     Sync(Box<dyn FnMut(StoreContextMut<'_, T>, CallHook) -> Result<()> + Send + Sync>),
     #[cfg(all(feature = "async", feature = "call-hook"))]
     Async(Box<dyn CallHookHandler<T> + Send + Sync>),
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "forcing, regardless of cfg, the type param to be used"
+    )]
     ForceTypeParameterToBeUsed {
         uninhabited: Uninhabited,
         _marker: marker::PhantomData<T>,
@@ -418,6 +421,22 @@ pub(crate) enum Executor {
     Native,
 }
 
+impl Executor {
+    pub(crate) fn new(engine: &Engine) -> Self {
+        #[cfg(has_host_compiler_backend)]
+        if cfg!(feature = "pulley") && engine.target().is_pulley() {
+            Executor::Interpreter(Interpreter::new(engine))
+        } else {
+            Executor::Native
+        }
+        #[cfg(not(has_host_compiler_backend))]
+        {
+            debug_assert!(engine.target().is_pulley());
+            Executor::Interpreter(Interpreter::new(engine))
+        }
+    }
+}
+
 /// A borrowed reference to `Executor` above.
 pub(crate) enum ExecutorRef<'a> {
     Interpreter(InterpreterRef<'a>),
@@ -522,7 +541,7 @@ enum StoreInstanceKind {
     Dummy,
 }
 
-impl<T: 'static> Store<T> {
+impl<T> Store<T> {
     /// Creates a new [`Store`] to be associated with the given [`Engine`] and
     /// `data` provided.
     ///
@@ -579,19 +598,9 @@ impl<T: 'static> Store<T> {
             component_calls: Default::default(),
             #[cfg(feature = "component-model")]
             host_resource_data: Default::default(),
+            executor: Executor::new(engine),
             #[cfg(feature = "component-model-async")]
             concurrent_async_state: Default::default(),
-            #[cfg(has_host_compiler_backend)]
-            executor: if cfg!(feature = "pulley") && engine.target().is_pulley() {
-                Executor::Interpreter(Interpreter::new(engine))
-            } else {
-                Executor::Native
-            },
-            #[cfg(not(has_host_compiler_backend))]
-            executor: {
-                debug_assert!(engine.target().is_pulley());
-                Executor::Interpreter(Interpreter::new(engine))
-            },
         };
         let mut inner = Box::new(StoreInner {
             inner,
@@ -601,11 +610,6 @@ impl<T: 'static> Store<T> {
             epoch_deadline_behavior: None,
             data: ManuallyDrop::new(data),
         });
-
-        #[cfg(feature = "async")]
-        {
-            inner.async_state.current_executor = &raw mut inner.executor;
-        }
 
         inner.traitobj = StorePtr::new(NonNull::from(&mut *inner));
 
@@ -655,9 +659,22 @@ impl<T: 'static> Store<T> {
         self.inner.data_mut()
     }
 
+    fn run_manual_drop_routines(&mut self) {
+        // We need to drop the fibers of each component instance before
+        // attempting to drop the instances themselves since the fibers may need
+        // to be resumed and allowed to exit cleanly before we yank the state
+        // out from under them.
+        #[cfg(feature = "component-model-async")]
+        ComponentStoreData::drop_fibers(&mut self.inner);
+
+        // Ensure all fiber stacks, even cached ones, are all flushed out to the
+        // instance allocator.
+        self.inner.flush_fiber_stack();
+    }
+
     /// Consumes this [`Store`], destroying it, and returns the underlying data.
     pub fn into_data(mut self) -> T {
-        self.inner.flush_fiber_stack();
+        self.run_manual_drop_routines();
 
         // This is an unsafe operation because we want to avoid having a runtime
         // check or boolean for whether the data is actually contained within a
@@ -743,7 +760,7 @@ impl<T: 'static> Store<T> {
     /// [`ResourceLimiter`]: crate::ResourceLimiter
     pub fn limiter(
         &mut self,
-        mut limiter: impl FnMut(&mut T) -> &mut (dyn crate::ResourceLimiter) + Send + Sync + 'static,
+        mut limiter: impl (FnMut(&mut T) -> &mut dyn crate::ResourceLimiter) + Send + Sync + 'static,
     ) {
         // Apply the limits on instances, tables, and memory given by the limiter:
         let inner = &mut self.inner;
@@ -1070,7 +1087,7 @@ impl<T> StoreInner<T> {
     }
 
     #[inline]
-    pub(crate) fn data_mut(&mut self) -> &mut T {
+    fn data_mut(&mut self) -> &mut T {
         &mut self.data
     }
 
@@ -1096,7 +1113,6 @@ impl<T> StoreInner<T> {
 
         // Temporarily take the configured behavior to avoid mutably borrowing
         // multiple times.
-        #[cfg_attr(not(feature = "call-hook"), allow(unreachable_patterns))]
         if let Some(mut call_hook) = self.call_hook.take() {
             let result = self.invoke_call_hook(&mut call_hook, s);
             self.call_hook = Some(call_hook);
@@ -1113,7 +1129,12 @@ impl<T> StoreInner<T> {
 
             #[cfg(all(feature = "async", feature = "call-hook"))]
             CallHookInner::Async(handler) => {
-                self.block_on(|store| handler.handle_call_event(StoreContextMut(store), s))?
+                if !self.can_block() {
+                    bail!("couldn't grab async_cx for call hook")
+                }
+                return (&mut *self)
+                    .as_context_mut()
+                    .with_blocking(|store, cx| cx.block_on(handler.handle_call_event(store, s)))?;
             }
 
             CallHookInner::ForceTypeParameterToBeUsed { uninhabited, .. } => {
@@ -1269,6 +1290,7 @@ impl StoreOpaque {
     /// Note that if you have a `StoreInstanceId` you should use
     /// `StoreInstanceId::get` instead. This assumes that `id` has been
     /// validated to already belong to this store.
+    #[inline]
     pub fn instance(&self, id: InstanceId) -> &vm::Instance {
         self.instances[id].handle.get()
     }
@@ -1278,8 +1300,23 @@ impl StoreOpaque {
     /// Note that if you have a `StoreInstanceId` you should use
     /// `StoreInstanceId::get_mut` instead. This assumes that `id` has been
     /// validated to already belong to this store.
+    #[inline]
     pub fn instance_mut(&mut self, id: InstanceId) -> Pin<&mut vm::Instance> {
         self.instances[id].handle.get_mut()
+    }
+
+    /// Pair of `Self::gc_store_mut` and `Self::instance_mut`
+    pub fn gc_store_and_instance_mut(
+        &mut self,
+        id: InstanceId,
+    ) -> Result<(&mut GcStore, Pin<&mut vm::Instance>)> {
+        // Fill in `self.gc_store`, then proceed below to the point where we
+        // convince the borrow checker that we're accessing disjoint fields.
+        self.gc_store_mut()?;
+        Ok((
+            self.gc_store.as_mut().unwrap(),
+            self.instances[id].handle.get_mut(),
+        ))
     }
 
     /// Get all instances (ignoring dummy instances) within this store.
@@ -1346,7 +1383,7 @@ impl StoreOpaque {
         }
     }
 
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // not used on all platforms
+    #[cfg(all(feature = "std", any(unix, windows)))]
     pub fn set_signal_handler(&mut self, handler: Option<SignalHandler>) {
         self.signal_handler = handler;
     }
@@ -1354,6 +1391,11 @@ impl StoreOpaque {
     #[inline]
     pub fn vm_store_context(&self) -> &VMStoreContext {
         &self.vm_store_context
+    }
+
+    #[inline]
+    pub fn vm_store_context_mut(&mut self) -> &mut VMStoreContext {
+        &mut self.vm_store_context
     }
 
     #[inline(never)]
@@ -1394,6 +1436,7 @@ impl StoreOpaque {
                 )),
                 imports: vm::Imports::default(),
                 store: StorePtr::new(vmstore),
+                #[cfg(feature = "wmemcheck")]
                 wmemcheck: false,
                 pkey,
                 tunables: engine.tunables(),
@@ -1456,19 +1499,6 @@ impl StoreOpaque {
             None
         } else {
             self.gc_store.as_mut()
-        }
-    }
-
-    /// If this store is configured with a GC heap, return a shared reference to
-    /// it. Otherwise, return `None`.
-    #[inline]
-    #[cfg(feature = "gc")]
-    pub(crate) fn optional_gc_store(&self) -> Option<&GcStore> {
-        if cfg!(not(feature = "gc")) || !self.engine.features().gc_types() {
-            debug_assert!(self.gc_store.is_none());
-            None
-        } else {
-            self.gc_store.as_ref()
         }
     }
 
@@ -1843,7 +1873,7 @@ impl StoreOpaque {
         }
 
         cfg_if::cfg_if! {
-            if #[cfg(any(feature = "std", unix, windows))] {
+            if #[cfg(feature = "std")] {
                 // With the standard library a rich error can be printed here
                 // to stderr and the native abort path is used.
                 eprintln!(
@@ -1875,14 +1905,23 @@ at https://bytecodealliance.org/security.
                 let _ = pc;
                 panic!("invalid fault");
             } else {
-                // Without `std` and with `panic = "unwind"` there's no way to
-                // abort the process portably, so flag a compile time error.
-                //
-                // NB: if this becomes a problem in the future one option would
-                // be to extend the `capi.rs` module for no_std platforms, but
-                // it remains yet to be seen at this time if this is hit much.
-                compile_error!("either `std` or `panic=abort` must be enabled");
-                None
+                // Without `std` and with `panic = "unwind"` there's no
+                // dedicated API to abort the process portably, so manufacture
+                // this with a double-panic.
+                let _ = pc;
+
+                struct PanicAgainOnDrop;
+
+                impl Drop for PanicAgainOnDrop {
+                    fn drop(&mut self) {
+                        panic!("panicking again to trigger a process abort");
+                    }
+
+                }
+
+                let _bomb = PanicAgainOnDrop;
+
+                panic!("invalid fault");
             }
         }
     }
@@ -1909,25 +1948,6 @@ at https://bytecodealliance.org/security.
         )
     }
 
-    #[inline]
-    #[cfg(feature = "component-model")]
-    pub(crate) fn component_resource_state_with_instance(
-        &mut self,
-        instance: crate::component::Instance,
-    ) -> (
-        &mut crate::runtime::vm::component::CallContexts,
-        &mut crate::runtime::vm::component::ResourceTable,
-        &mut crate::component::HostResourceData,
-        Pin<&mut crate::vm::component::ComponentInstance>,
-    ) {
-        (
-            &mut self.component_calls,
-            &mut self.component_host_table,
-            &mut self.host_resource_data,
-            instance.id().from_data_get_mut(&mut self.store_data),
-        )
-    }
-
     #[cfg(feature = "component-model")]
     pub(crate) fn push_component_instance(&mut self, instance: crate::component::Instance) {
         // We don't actually need the instance itself right now, but it seems
@@ -1938,14 +1958,33 @@ at https://bytecodealliance.org/security.
         self.num_component_instances += 1;
     }
 
+    #[inline]
+    #[cfg(feature = "component-model")]
+    pub(crate) fn component_resource_state_with_instance(
+        &mut self,
+        instance: crate::component::Instance,
+    ) -> (
+        &mut vm::component::CallContexts,
+        &mut vm::component::ResourceTable,
+        &mut crate::component::HostResourceData,
+        Pin<&mut vm::component::ComponentInstance>,
+    ) {
+        (
+            &mut self.component_calls,
+            &mut self.component_host_table,
+            &mut self.host_resource_data,
+            instance.id().from_data_get_mut(&mut self.store_data),
+        )
+    }
+
     #[cfg(feature = "async")]
-    pub(crate) fn async_state(&mut self) -> *mut fiber::AsyncState {
-        &raw mut self.async_state
+    pub(crate) fn fiber_async_state_mut(&mut self) -> &mut fiber::AsyncState {
+        &mut self.async_state
     }
 
     #[cfg(feature = "component-model-async")]
-    pub(crate) fn concurrent_async_state(&mut self) -> *mut concurrent::AsyncState {
-        &raw mut self.concurrent_async_state
+    pub(crate) fn concurrent_async_state_mut(&mut self) -> &mut concurrent::AsyncState {
+        &mut self.concurrent_async_state
     }
 
     #[cfg(feature = "async")]
@@ -1953,31 +1992,21 @@ at https://bytecodealliance.org/security.
         self.pkey.is_some()
     }
 
-    #[cfg(not(feature = "async"))]
-    pub(crate) fn async_guard_range(&self) -> core::ops::Range<*mut u8> {
-        core::ptr::null_mut()..core::ptr::null_mut()
-    }
-
     pub(crate) fn executor(&mut self) -> ExecutorRef<'_> {
-        #[cfg(feature = "async")]
-        let executor = unsafe { &mut *self.async_state.current_executor };
-        #[cfg(not(feature = "async"))]
-        let executor = &mut self.executor;
-
-        match executor {
+        match &mut self.executor {
             Executor::Interpreter(i) => ExecutorRef::Interpreter(i.as_interpreter_ref()),
             #[cfg(has_host_compiler_backend)]
             Executor::Native => ExecutorRef::Native,
         }
     }
 
-    pub(crate) fn unwinder(&self) -> &'static dyn Unwind {
-        #[cfg(feature = "async")]
-        let executor = unsafe { &*self.async_state.current_executor };
-        #[cfg(not(feature = "async"))]
-        let executor = &self.executor;
+    #[cfg(feature = "async")]
+    pub(crate) fn swap_executor(&mut self, executor: &mut Executor) {
+        mem::swap(&mut self.executor, executor);
+    }
 
-        match executor {
+    pub(crate) fn unwinder(&self) -> &'static dyn Unwind {
+        match &self.executor {
             Executor::Interpreter(i) => i.unwinder(),
             #[cfg(has_host_compiler_backend)]
             Executor::Native => &vm::UnwindHost,
@@ -2037,6 +2066,7 @@ at https://bytecodealliance.org/security.
             runtime_info,
             imports,
             store: StorePtr::new(self.traitobj()),
+            #[cfg(feature = "wmemcheck")]
             wmemcheck: self.engine().config().wmemcheck,
             pkey: self.get_pkey(),
             tunables: self.engine().tunables(),
@@ -2132,10 +2162,11 @@ unsafe impl<T> vm::VMStore for StoreInner<T> {
             }
             #[cfg(feature = "async")]
             Some(ResourceLimiterInner::Async(_)) => self.block_on(|store| {
-                let Some(ResourceLimiterInner::Async(limiter)) = &mut store.limiter else {
-                    unreachable!();
+                let limiter = match &mut store.0.limiter {
+                    Some(ResourceLimiterInner::Async(limiter)) => limiter,
+                    _ => unreachable!(),
                 };
-                limiter(&mut store.data).memory_growing(current, desired, maximum)
+                limiter(&mut store.0.data).memory_growing(current, desired, maximum)
             })?,
             None => Ok(true),
         }
@@ -2169,10 +2200,11 @@ unsafe impl<T> vm::VMStore for StoreInner<T> {
             }
             #[cfg(feature = "async")]
             Some(ResourceLimiterInner::Async(_)) => self.block_on(|store| {
-                let Some(ResourceLimiterInner::Async(limiter)) = &mut store.limiter else {
-                    unreachable!();
+                let limiter = match &mut store.0.limiter {
+                    Some(ResourceLimiterInner::Async(limiter)) => limiter,
+                    _ => unreachable!(),
                 };
-                limiter(&mut store.data).table_growing(current, desired, maximum)
+                limiter(&mut store.0.data).table_growing(current, desired, maximum)
             })?,
             None => Ok(true),
         }
@@ -2312,7 +2344,7 @@ impl<T> StoreInner<T> {
     }
 }
 
-impl<T: Default + 'static> Default for Store<T> {
+impl<T: Default> Default for Store<T> {
     fn default() -> Store<T> {
         Store::new(&Engine::default(), T::default())
     }
@@ -2330,17 +2362,10 @@ impl<T: fmt::Debug> fmt::Debug for Store<T> {
 
 impl<T> Drop for Store<T> {
     fn drop(&mut self) {
-        self.inner.flush_fiber_stack();
+        self.run_manual_drop_routines();
 
         // for documentation on this `unsafe`, see `into_data`.
         unsafe {
-            // We need to drop the fibers of each component instance before
-            // attempting to drop the instances themselves since the fibers may
-            // need to be resumed and allowed to exit cleanly before we yank the
-            // state out from under them.
-            #[cfg(feature = "component-model-async")]
-            ComponentStoreData::drop_fibers(&mut self.inner);
-
             ManuallyDrop::drop(&mut self.inner.data);
             ManuallyDrop::drop(&mut self.inner);
         }

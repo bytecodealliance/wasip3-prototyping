@@ -25,19 +25,21 @@ use core::ptr::NonNull;
 use wasmtime_environ::component::*;
 use wasmtime_environ::{DefinedTableIndex, HostPtr, PrimaryMap, VMSharedTypeIndex};
 
-#[allow(clippy::cast_possible_truncation)] // it's intended this is truncated on
-// 32-bit platforms
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "it's intended this is truncated on 32-bit platforms"
+)]
 const INVALID_PTR: usize = 0xdead_dead_beef_beef_u64 as usize;
 
 mod libcalls;
 mod resources;
 
+#[cfg(feature = "component-model-async")]
+pub use self::resources::CallContext;
 pub use self::resources::{
     CallContexts, ResourceTable, ResourceTables, TypedResource, TypedResourceIndex,
 };
 
-#[cfg(feature = "component-model-async")]
-pub use self::resources::CallContext;
 #[cfg(feature = "component-model-async")]
 use crate::component::concurrent;
 
@@ -82,8 +84,10 @@ pub struct ComponentInstance {
     /// is how this field is manipulated.
     instance_resource_tables: PrimaryMap<RuntimeComponentInstanceIndex, ResourceTable>,
 
+    /// State related to async for this component, e.g. futures, streams, tasks,
+    /// etc.
     #[cfg(feature = "component-model-async")]
-    pub(crate) concurrent_state: concurrent::ConcurrentState,
+    concurrent_state: concurrent::ConcurrentState,
 
     /// What all compile-time-identified core instances are mapped to within the
     /// `Store` that this component belongs to.
@@ -262,9 +266,6 @@ impl ComponentInstance {
             instance_resource_tables.push(ResourceTable::default());
         }
 
-        #[cfg(feature = "component-model-async")]
-        let concurrent_state = concurrent::ConcurrentState::new(component);
-
         let mut ret = OwnedInstance::new(ComponentInstance {
             id,
             offsets,
@@ -282,7 +283,7 @@ impl ComponentInstance {
             store: VMStoreRawPtr(store),
             post_return_arg: None,
             #[cfg(feature = "component-model-async")]
-            concurrent_state,
+            concurrent_state: concurrent::ConcurrentState::new(component),
             vmctx: OwnedVMContext::new(),
         });
         unsafe {
@@ -758,7 +759,7 @@ impl ComponentInstance {
     /// the `arg` specified.
     ///
     /// This function is used in conjunction with function calls to record,
-    /// after a fuction call completes, the optional ABI return value. This
+    /// after a function call completes, the optional ABI return value. This
     /// return value is cached within this instance for future use when the
     /// `post_return` Rust-API-level function is invoked.
     ///
@@ -801,7 +802,7 @@ impl ComponentInstance {
     #[cfg(feature = "component-model-async")]
     pub(crate) fn concurrent_state_mut(self: Pin<&mut Self>) -> &mut concurrent::ConcurrentState {
         // SAFETY: we've chosen the `Pin` guarantee of `Self` to not apply to
-        // the state returned.
+        // the map returned.
         unsafe { &mut self.get_unchecked_mut().concurrent_state }
     }
 }
@@ -864,12 +865,10 @@ impl VMOpaqueContext {
     }
 }
 
-#[allow(missing_docs)]
 #[repr(transparent)]
 #[derive(Copy, Clone)]
 pub struct InstanceFlags(SendSyncPtr<VMGlobalDefinition>);
 
-#[allow(missing_docs)]
 impl InstanceFlags {
     /// Wraps the given pointer as an `InstanceFlags`
     ///

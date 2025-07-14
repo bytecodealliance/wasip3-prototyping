@@ -360,7 +360,7 @@ pub mod exports {
                 Output = wasmtime::Result<Response>,
             > + Send + 'static + use<S>
             where
-                <S as wasmtime::AsContext>::Data: Send,
+                <S as wasmtime::AsContext>::Data: Send + 'static,
             {
                 let callee = unsafe {
                     wasmtime::component::TypedFunc::<
@@ -368,10 +368,11 @@ pub mod exports {
                         (Response,),
                     >::new_unchecked(self.handle_request)
                 };
-                wasmtime::component::__internal::FutureExt::map(
-                    callee.call_concurrent(store.as_context_mut(), (arg0,)),
-                    |v| v.map(|(v,)| v),
-                )
+                let future = callee.call_concurrent(store.as_context_mut(), (arg0,));
+                async move {
+                    let (ret0,) = future.await?;
+                    Ok(ret0)
+                }
             }
         }
     }

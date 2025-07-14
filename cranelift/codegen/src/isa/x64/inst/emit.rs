@@ -1,11 +1,7 @@
 use crate::ir::KnownSymbol;
 use crate::ir::immediates::{Ieee32, Ieee64};
 use crate::isa::x64::encoding::evex::{EvexInstruction, EvexVectorLength, RegisterOrAmode};
-use crate::isa::x64::encoding::rex::{
-    LegacyPrefixes, OpcodeMap, RexFlags, emit_std_enc_enc, emit_std_enc_mem, emit_std_reg_mem,
-    emit_std_reg_reg, int_reg_enc, reg_enc,
-};
-use crate::isa::x64::encoding::vex::{VexInstruction, VexVectorLength};
+use crate::isa::x64::encoding::rex::{LegacyPrefixes, OpcodeMap};
 use crate::isa::x64::external::{AsmInst, CraneliftRegisters, PairedGpr};
 use crate::isa::x64::inst::args::*;
 use crate::isa::x64::inst::*;
@@ -39,9 +35,73 @@ fn one_way_jmp(sink: &mut MachBuffer<Inst>, cc: CC, label: MachLabel) {
     let cond_start = sink.cur_offset();
     let cond_disp_off = cond_start + 2;
     sink.use_label_at_offset(cond_disp_off, label, LabelUse::JmpRel32);
-    sink.put1(0x0F);
-    sink.put1(0x80 + cc.get_enc());
-    sink.put4(0x0);
+    emit_jcc_no_offset(sink, cc);
+    debug_assert_eq!(sink.cur_offset(), cond_disp_off + 4);
+}
+
+/// Like `one_way_jmp` above emitting a conditional jump, but also using
+/// `MachBuffer::add_cond_branch`.
+fn cond_jmp(sink: &mut MachBuffer<Inst>, cc: CC, label: MachLabel) {
+    let cond_start = sink.cur_offset();
+    let cond_disp_off = cond_start + 2;
+    let cond_end = cond_start + 6;
+
+    sink.use_label_at_offset(cond_disp_off, label, LabelUse::JmpRel32);
+    // FIXME: ideally this `inverted` calculation would go through the external
+    // assembler, but for now it's left done manually.
+    let inverted: [u8; 6] = [0x0F, 0x80 + (cc.invert().get_enc()), 0x00, 0x00, 0x00, 0x00];
+    sink.add_cond_branch(cond_start, cond_end, label, &inverted[..]);
+
+    emit_jcc_no_offset(sink, cc);
+
+    debug_assert_eq!(sink.cur_offset(), cond_disp_off + 4);
+    debug_assert_eq!(sink.cur_offset(), cond_end);
+}
+
+fn emit_jcc_no_offset(sink: &mut MachBuffer<Inst>, cc: CC) {
+    // Note that the disassembler matches Capstone which doesn't match the `CC`
+    // enum directly as Intel has multiple mnemonics use the same encoding.
+    let inst: AsmInst = match cc {
+        CC::Z => asm::inst::je_d32::new(0).into(),   // jz == je
+        CC::NZ => asm::inst::jne_d32::new(0).into(), // jnz == jne
+        CC::B => asm::inst::jb_d32::new(0).into(),
+        CC::NB => asm::inst::jae_d32::new(0).into(), // jnb == jae
+        CC::BE => asm::inst::jbe_d32::new(0).into(),
+        CC::NBE => asm::inst::ja_d32::new(0).into(), // jnbe == ja
+        CC::L => asm::inst::jl_d32::new(0).into(),
+        CC::LE => asm::inst::jle_d32::new(0).into(),
+        CC::NL => asm::inst::jge_d32::new(0).into(), // jnl == jge
+        CC::NLE => asm::inst::jg_d32::new(0).into(), // jnle == jg
+        CC::O => asm::inst::jo_d32::new(0).into(),
+        CC::NO => asm::inst::jno_d32::new(0).into(),
+        CC::P => asm::inst::jp_d32::new(0).into(),
+        CC::NP => asm::inst::jnp_d32::new(0).into(),
+        CC::S => asm::inst::js_d32::new(0).into(),
+        CC::NS => asm::inst::jns_d32::new(0).into(),
+    };
+    inst.encode(&mut external::AsmCodeSink {
+        sink,
+        incoming_arg_offset: 0,
+        slot_offset: 0,
+    });
+}
+
+/// Emits an unconditional branch.
+fn uncond_jmp(sink: &mut MachBuffer<Inst>, label: MachLabel) {
+    let uncond_start = sink.cur_offset();
+    let uncond_disp_off = uncond_start + 1;
+    let uncond_end = uncond_start + 5;
+
+    sink.use_label_at_offset(uncond_disp_off, label, LabelUse::JmpRel32);
+    sink.add_uncond_branch(uncond_start, uncond_end, label);
+
+    asm::inst::jmp_d32::new(0).encode(&mut external::AsmCodeSink {
+        sink,
+        incoming_arg_offset: 0,
+        slot_offset: 0,
+    });
+    debug_assert_eq!(sink.cur_offset(), uncond_disp_off + 4);
+    debug_assert_eq!(sink.cur_offset(), uncond_end);
 }
 
 /// Emits a relocation, attaching the current source location as well.
@@ -266,22 +326,6 @@ pub(crate) fn emit(
             asm::inst::movq_mr::new(dst, *src).emit(sink, info, state);
         }
 
-        Inst::Setcc { cc, dst } => {
-            let dst = dst.to_reg().to_reg();
-            let opcode = 0x0f90 + cc.get_enc() as u32;
-            let mut rex_flags = RexFlags::clear_w();
-            rex_flags.always_emit();
-            emit_std_enc_enc(
-                sink,
-                LegacyPrefixes::None,
-                opcode,
-                2,
-                0,
-                reg_enc(dst),
-                rex_flags,
-            );
-        }
-
         Inst::XmmCmove {
             ty,
             cc,
@@ -390,16 +434,21 @@ pub(crate) fn emit(
         }
 
         Inst::CallKnown { info: call_info } => {
-            if let Some(s) = state.take_stack_map() {
-                let offset = sink.cur_offset() + 5;
-                sink.push_user_stack_map(state, offset, s);
-            }
+            let stack_map = state.take_stack_map();
 
-            sink.put1(0xE8);
+            asm::inst::callq_d::new(0).emit(sink, info, state);
+
+            // The last 4 bytes of `callq` is the relative displacement to where
+            // we're calling, so that's where the reloc is registered.
+            //
             // The addend adjusts for the difference between the end of the
             // instruction and the beginning of the immediate field.
-            emit_reloc(sink, Reloc::X86CallPCRel4, &call_info.dest, -4);
-            sink.put4(0);
+            let len = sink.cur_offset();
+            sink.add_reloc_at_offset(len - 4, Reloc::X86CallPCRel4, &call_info.dest, -4);
+
+            if let Some(s) = stack_map {
+                sink.push_user_stack_map(state, len, s);
+            }
 
             if let Some(try_call) = call_info.try_call_info.as_ref() {
                 sink.add_call_site(&try_call.exception_dests);
@@ -442,11 +491,11 @@ pub(crate) fn emit(
             // Note: this is not `Inst::Jmp { .. }.emit(..)` because we have
             // different metadata in this case: we don't have a label for the
             // target, but rather a function relocation.
-            sink.put1(0xE9);
+            asm::inst::jmp_d32::new(0).emit(sink, info, state);
+            let offset = sink.cur_offset();
             // The addend adjusts for the difference between the end of the instruction and the
             // beginning of the immediate field.
-            emit_reloc(sink, Reloc::X86CallPCRel4, &call_info.dest, -4);
-            sink.put4(0);
+            sink.add_reloc_at_offset(offset - 4, Reloc::X86CallPCRel4, &call_info.dest, -4);
             sink.add_call_site(&[]);
         }
 
@@ -455,48 +504,23 @@ pub(crate) fn emit(
 
             emit_return_call_common_sequence(sink, info, state, &call_info);
 
-            Inst::JmpUnknown {
-                target: RegMem::reg(callee),
-            }
-            .emit(sink, info, state);
+            asm::inst::jmpq_m::new(callee).emit(sink, info, state);
             sink.add_call_site(&[]);
         }
 
         Inst::CallUnknown {
             info: call_info, ..
         } => {
-            let dest = call_info.dest.clone();
+            let stack_map = state.take_stack_map();
 
-            match dest {
-                RegMem::Reg { reg } => {
-                    let reg_enc = int_reg_enc(reg);
-                    emit_std_enc_enc(
-                        sink,
-                        LegacyPrefixes::None,
-                        0xFF,
-                        1,
-                        2, /*subopcode*/
-                        reg_enc,
-                        RexFlags::clear_w(),
-                    );
-                }
+            let dest = match call_info.dest.clone() {
+                RegMem::Reg { reg } => asm::GprMem::Gpr(Gpr::unwrap_new(reg)),
+                RegMem::Mem { addr } => asm::GprMem::Mem(addr.into()),
+            };
 
-                RegMem::Mem { addr } => {
-                    let addr = &addr.finalize(state.frame_layout(), sink);
-                    emit_std_enc_mem(
-                        sink,
-                        LegacyPrefixes::None,
-                        0xFF,
-                        1,
-                        2, /*subopcode*/
-                        addr,
-                        RexFlags::clear_w(),
-                        0,
-                    );
-                }
-            }
+            asm::inst::callq_m::new(dest).emit(sink, info, state);
 
-            if let Some(s) = state.take_stack_map() {
+            if let Some(s) = stack_map {
                 let offset = sink.cur_offset();
                 sink.push_user_stack_map(state, offset, s);
             }
@@ -630,70 +654,22 @@ pub(crate) fn emit(
             )
             .emit(sink, info, state);
 
-            let inst = Inst::JmpUnknown {
-                target: RegMem::reg(tmp1.to_reg().into()),
-            };
-            emit(&inst, sink, info, state);
+            asm::inst::jmpq_m::new(tmp1.to_reg()).emit(sink, info, state);
 
             sink.bind_label(resume, state.ctrl_plane_mut());
         }
 
-        Inst::JmpKnown { dst } => {
-            let br_start = sink.cur_offset();
-            let br_disp_off = br_start + 1;
-            let br_end = br_start + 5;
+        Inst::JmpKnown { dst } => uncond_jmp(sink, *dst),
 
-            sink.use_label_at_offset(br_disp_off, *dst, LabelUse::JmpRel32);
-            sink.add_uncond_branch(br_start, br_end, *dst);
-
-            sink.put1(0xE9);
-            // Placeholder for the label value.
-            sink.put4(0x0);
-        }
-
-        Inst::WinchJmpIf { cc, taken } => {
-            let cond_start = sink.cur_offset();
-            let cond_disp_off = cond_start + 2;
-
-            sink.use_label_at_offset(cond_disp_off, *taken, LabelUse::JmpRel32);
-            // Since this is not a terminator, don't enroll in the branch inversion mechanism.
-
-            sink.put1(0x0F);
-            sink.put1(0x80 + cc.get_enc());
-            // Placeholder for the label value.
-            sink.put4(0x0);
-        }
+        Inst::WinchJmpIf { cc, taken } => one_way_jmp(sink, *cc, *taken),
 
         Inst::JmpCond {
             cc,
             taken,
             not_taken,
         } => {
-            // If taken.
-            let cond_start = sink.cur_offset();
-            let cond_disp_off = cond_start + 2;
-            let cond_end = cond_start + 6;
-
-            sink.use_label_at_offset(cond_disp_off, *taken, LabelUse::JmpRel32);
-            let inverted: [u8; 6] = [0x0F, 0x80 + (cc.invert().get_enc()), 0x00, 0x00, 0x00, 0x00];
-            sink.add_cond_branch(cond_start, cond_end, *taken, &inverted[..]);
-
-            sink.put1(0x0F);
-            sink.put1(0x80 + cc.get_enc());
-            // Placeholder for the label value.
-            sink.put4(0x0);
-
-            // If not taken.
-            let uncond_start = sink.cur_offset();
-            let uncond_disp_off = uncond_start + 1;
-            let uncond_end = uncond_start + 5;
-
-            sink.use_label_at_offset(uncond_disp_off, *not_taken, LabelUse::JmpRel32);
-            sink.add_uncond_branch(uncond_start, uncond_end, *not_taken);
-
-            sink.put1(0xE9);
-            // Placeholder for the label value.
-            sink.put4(0x0);
+            cond_jmp(sink, *cc, *taken);
+            uncond_jmp(sink, *not_taken);
         }
 
         Inst::JmpCondOr {
@@ -714,89 +690,9 @@ pub(crate) fn emit(
             // not_taken and that one block is the fallthrough block,
             // all three branches can disappear.
 
-            // jcc1 taken
-            let cond_1_start = sink.cur_offset();
-            let cond_1_disp_off = cond_1_start + 2;
-            let cond_1_end = cond_1_start + 6;
-
-            sink.use_label_at_offset(cond_1_disp_off, *taken, LabelUse::JmpRel32);
-            let inverted: [u8; 6] = [
-                0x0F,
-                0x80 + (cc1.invert().get_enc()),
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-            ];
-            sink.add_cond_branch(cond_1_start, cond_1_end, *taken, &inverted[..]);
-
-            sink.put1(0x0F);
-            sink.put1(0x80 + cc1.get_enc());
-            sink.put4(0x0);
-
-            // jcc2 taken
-            let cond_2_start = sink.cur_offset();
-            let cond_2_disp_off = cond_2_start + 2;
-            let cond_2_end = cond_2_start + 6;
-
-            sink.use_label_at_offset(cond_2_disp_off, *taken, LabelUse::JmpRel32);
-            let inverted: [u8; 6] = [
-                0x0F,
-                0x80 + (cc2.invert().get_enc()),
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-            ];
-            sink.add_cond_branch(cond_2_start, cond_2_end, *taken, &inverted[..]);
-
-            sink.put1(0x0F);
-            sink.put1(0x80 + cc2.get_enc());
-            sink.put4(0x0);
-
-            // jmp not_taken
-            let uncond_start = sink.cur_offset();
-            let uncond_disp_off = uncond_start + 1;
-            let uncond_end = uncond_start + 5;
-
-            sink.use_label_at_offset(uncond_disp_off, *not_taken, LabelUse::JmpRel32);
-            sink.add_uncond_branch(uncond_start, uncond_end, *not_taken);
-
-            sink.put1(0xE9);
-            sink.put4(0x0);
-        }
-
-        Inst::JmpUnknown { target } => {
-            let target = target.clone();
-
-            match target {
-                RegMem::Reg { reg } => {
-                    let reg_enc = int_reg_enc(reg);
-                    emit_std_enc_enc(
-                        sink,
-                        LegacyPrefixes::None,
-                        0xFF,
-                        1,
-                        4, /*subopcode*/
-                        reg_enc,
-                        RexFlags::clear_w(),
-                    );
-                }
-
-                RegMem::Mem { addr } => {
-                    let addr = &addr.finalize(state.frame_layout(), sink);
-                    emit_std_enc_mem(
-                        sink,
-                        LegacyPrefixes::None,
-                        0xFF,
-                        1,
-                        4, /*subopcode*/
-                        addr,
-                        RexFlags::clear_w(),
-                        0,
-                    );
-                }
-            }
+            cond_jmp(sink, *cc1, *taken);
+            cond_jmp(sink, *cc2, *taken);
+            uncond_jmp(sink, *not_taken);
         }
 
         &Inst::JmpTableSeq {
@@ -848,8 +744,7 @@ pub(crate) fn emit(
             asm::inst::addq_rm::new(tmp1, tmp2).emit(sink, info, state);
 
             // Branch to computed address.
-            let inst = Inst::jmp_unknown(RegMem::reg(tmp1.to_reg()));
-            inst.emit(sink, info, state);
+            asm::inst::jmpq_m::new(tmp1.to_reg()).emit(sink, info, state);
 
             // Emit jump table (table of 32-bit offsets).
             sink.bind_label(start_of_jumptable, state.ctrl_plane_mut());
@@ -897,34 +792,6 @@ pub(crate) fn emit(
             // Emit two jumps to the same trap if either condition code is true.
             one_way_jmp(sink, *cc1, trap_label);
             one_way_jmp(sink, *cc2, trap_label);
-        }
-
-        Inst::XmmUnaryRmR {
-            op,
-            src: src_e,
-            dst: reg_g,
-        } => {
-            let reg_g = reg_g.to_reg().to_reg();
-            let src_e = src_e.clone().to_reg_mem().clone();
-
-            let rex = RexFlags::clear_w();
-
-            let (prefix, opcode, num_opcodes) = match op {
-                SseOpcode::Pabsb => (LegacyPrefixes::_66, 0x0F381C, 3),
-                SseOpcode::Pabsw => (LegacyPrefixes::_66, 0x0F381D, 3),
-                SseOpcode::Pabsd => (LegacyPrefixes::_66, 0x0F381E, 3),
-                _ => unimplemented!("Opcode {:?} not implemented", op),
-            };
-
-            match src_e {
-                RegMem::Reg { reg: reg_e } => {
-                    emit_std_reg_reg(sink, prefix, opcode, num_opcodes, reg_g, reg_e, rex);
-                }
-                RegMem::Mem { addr } => {
-                    let addr = &addr.finalize(state.frame_layout(), sink);
-                    emit_std_reg_mem(sink, prefix, opcode, num_opcodes, reg_g, addr, rex, 0);
-                }
-            };
         }
 
         Inst::XmmUnaryRmREvex { op, src, dst } => {
@@ -982,417 +849,6 @@ pub(crate) fn emit(
                 .tuple_type(op.tuple_type())
                 .rm(src)
                 .imm(*imm)
-                .encode(sink);
-        }
-
-        Inst::XmmRmR {
-            op,
-            src1,
-            src2,
-            dst,
-        } => emit(
-            &Inst::XmmRmRUnaligned {
-                op: *op,
-                dst: *dst,
-                src1: *src1,
-                src2: XmmMem::unwrap_new(src2.clone().to_reg_mem()),
-            },
-            sink,
-            info,
-            state,
-        ),
-
-        Inst::XmmRmRUnaligned {
-            op,
-            src1,
-            src2: src_e,
-            dst: reg_g,
-        } => {
-            let src1 = src1.to_reg();
-            let reg_g = reg_g.to_reg().to_reg();
-            let src_e = src_e.clone().to_reg_mem().clone();
-            debug_assert_eq!(src1, reg_g);
-
-            let rex = RexFlags::clear_w();
-            let (prefix, opcode, length) = match op {
-                SseOpcode::Packssdw => (LegacyPrefixes::_66, 0x0F6B, 2),
-                SseOpcode::Packsswb => (LegacyPrefixes::_66, 0x0F63, 2),
-                SseOpcode::Packusdw => (LegacyPrefixes::_66, 0x0F382B, 3),
-                SseOpcode::Packuswb => (LegacyPrefixes::_66, 0x0F67, 2),
-                SseOpcode::Pmaddubsw => (LegacyPrefixes::_66, 0x0F3804, 3),
-                SseOpcode::Pavgb => (LegacyPrefixes::_66, 0x0FE0, 2),
-                SseOpcode::Pavgw => (LegacyPrefixes::_66, 0x0FE3, 2),
-                SseOpcode::Pcmpeqb => (LegacyPrefixes::_66, 0x0F74, 2),
-                SseOpcode::Pcmpeqw => (LegacyPrefixes::_66, 0x0F75, 2),
-                SseOpcode::Pcmpeqd => (LegacyPrefixes::_66, 0x0F76, 2),
-                SseOpcode::Pcmpeqq => (LegacyPrefixes::_66, 0x0F3829, 3),
-                SseOpcode::Pcmpgtb => (LegacyPrefixes::_66, 0x0F64, 2),
-                SseOpcode::Pcmpgtw => (LegacyPrefixes::_66, 0x0F65, 2),
-                SseOpcode::Pcmpgtd => (LegacyPrefixes::_66, 0x0F66, 2),
-                SseOpcode::Pcmpgtq => (LegacyPrefixes::_66, 0x0F3837, 3),
-                SseOpcode::Pmaddwd => (LegacyPrefixes::_66, 0x0FF5, 2),
-                SseOpcode::Pshufb => (LegacyPrefixes::_66, 0x0F3800, 3),
-                _ => unimplemented!("Opcode {:?} not implemented", op),
-            };
-
-            match src_e {
-                RegMem::Reg { reg: reg_e } => {
-                    emit_std_reg_reg(sink, prefix, opcode, length, reg_g, reg_e, rex);
-                }
-                RegMem::Mem { addr } => {
-                    let addr = &addr.finalize(state.frame_layout(), sink);
-                    emit_std_reg_mem(sink, prefix, opcode, length, reg_g, addr, rex, 0);
-                }
-            }
-        }
-
-        Inst::XmmRmiRVex {
-            op,
-            src1,
-            src2,
-            dst,
-        } => {
-            use LegacyPrefixes as LP;
-            use OpcodeMap as OM;
-
-            let dst = dst.to_reg().to_reg();
-            let src1 = src1.to_reg();
-            let src2 = src2.clone().to_reg_mem_imm().clone();
-
-            // When the opcode is commutative, src1 is xmm{0..7}, and src2 is
-            // xmm{8..15}, then we can swap the operands to save one byte on the
-            // instruction's encoding.
-            let (src1, src2) = match (src1, src2) {
-                (src1, RegMemImm::Reg { reg: src2 })
-                    if op.is_commutative()
-                        && src1.to_real_reg().unwrap().hw_enc() < 8
-                        && src2.to_real_reg().unwrap().hw_enc() >= 8 =>
-                {
-                    (src2, RegMemImm::Reg { reg: src1 })
-                }
-                (src1, src2) => (src1, src2),
-            };
-
-            let src2 = match src2 {
-                // For opcodes where one of the operands is an immediate the
-                // encoding is a bit different, notably the usage of
-                // `opcode_ext`, so handle that specially here.
-                RegMemImm::Imm { simm32 } => {
-                    let (opcode, opcode_ext, prefix) = match op {
-                        AvxOpcode::Vpsrlw => (0x71, 2, LegacyPrefixes::_66),
-                        AvxOpcode::Vpsrld => (0x72, 2, LegacyPrefixes::_66),
-                        AvxOpcode::Vpsrlq => (0x73, 2, LegacyPrefixes::_66),
-                        AvxOpcode::Vpsllw => (0x71, 6, LegacyPrefixes::_66),
-                        AvxOpcode::Vpslld => (0x72, 6, LegacyPrefixes::_66),
-                        AvxOpcode::Vpsllq => (0x73, 6, LegacyPrefixes::_66),
-                        AvxOpcode::Vpsraw => (0x71, 4, LegacyPrefixes::_66),
-                        AvxOpcode::Vpsrad => (0x72, 4, LegacyPrefixes::_66),
-                        _ => panic!("unexpected rmi_r_vex opcode with immediate {op:?}"),
-                    };
-                    VexInstruction::new()
-                        .length(VexVectorLength::V128)
-                        .prefix(prefix)
-                        .map(OpcodeMap::_0F)
-                        .opcode(opcode)
-                        .opcode_ext(opcode_ext)
-                        .vvvv(dst.to_real_reg().unwrap().hw_enc())
-                        .prefix(LegacyPrefixes::_66)
-                        .rm(src1.to_real_reg().unwrap().hw_enc())
-                        .imm(simm32.try_into().unwrap())
-                        .encode(sink);
-                    return;
-                }
-                RegMemImm::Reg { reg } => {
-                    RegisterOrAmode::Register(reg.to_real_reg().unwrap().hw_enc().into())
-                }
-                RegMemImm::Mem { addr } => {
-                    RegisterOrAmode::Amode(addr.finalize(state.frame_layout(), sink))
-                }
-            };
-
-            let (prefix, map, opcode) = match op {
-                AvxOpcode::Vminps => (LP::None, OM::_0F, 0x5D),
-                AvxOpcode::Vminpd => (LP::_66, OM::_0F, 0x5D),
-                AvxOpcode::Vmaxps => (LP::None, OM::_0F, 0x5F),
-                AvxOpcode::Vmaxpd => (LP::_66, OM::_0F, 0x5F),
-                AvxOpcode::Vandnps => (LP::None, OM::_0F, 0x55),
-                AvxOpcode::Vandnpd => (LP::_66, OM::_0F, 0x55),
-                AvxOpcode::Vpandn => (LP::_66, OM::_0F, 0xDF),
-                AvxOpcode::Vpsrlw => (LP::_66, OM::_0F, 0xD1),
-                AvxOpcode::Vpsrld => (LP::_66, OM::_0F, 0xD2),
-                AvxOpcode::Vpsrlq => (LP::_66, OM::_0F, 0xD3),
-                AvxOpcode::Vpaddb => (LP::_66, OM::_0F, 0xFC),
-                AvxOpcode::Vpaddw => (LP::_66, OM::_0F, 0xFD),
-                AvxOpcode::Vpaddd => (LP::_66, OM::_0F, 0xFE),
-                AvxOpcode::Vpaddq => (LP::_66, OM::_0F, 0xD4),
-                AvxOpcode::Vpaddsb => (LP::_66, OM::_0F, 0xEC),
-                AvxOpcode::Vpaddsw => (LP::_66, OM::_0F, 0xED),
-                AvxOpcode::Vpaddusb => (LP::_66, OM::_0F, 0xDC),
-                AvxOpcode::Vpaddusw => (LP::_66, OM::_0F, 0xDD),
-                AvxOpcode::Vpsubb => (LP::_66, OM::_0F, 0xF8),
-                AvxOpcode::Vpsubw => (LP::_66, OM::_0F, 0xF9),
-                AvxOpcode::Vpsubd => (LP::_66, OM::_0F, 0xFA),
-                AvxOpcode::Vpsubq => (LP::_66, OM::_0F, 0xFB),
-                AvxOpcode::Vpsubsb => (LP::_66, OM::_0F, 0xE8),
-                AvxOpcode::Vpsubsw => (LP::_66, OM::_0F, 0xE9),
-                AvxOpcode::Vpsubusb => (LP::_66, OM::_0F, 0xD8),
-                AvxOpcode::Vpsubusw => (LP::_66, OM::_0F, 0xD9),
-                AvxOpcode::Vpavgb => (LP::_66, OM::_0F, 0xE0),
-                AvxOpcode::Vpavgw => (LP::_66, OM::_0F, 0xE3),
-                AvxOpcode::Vpand => (LP::_66, OM::_0F, 0xDB),
-                AvxOpcode::Vandps => (LP::None, OM::_0F, 0x54),
-                AvxOpcode::Vandpd => (LP::_66, OM::_0F, 0x54),
-                AvxOpcode::Vpor => (LP::_66, OM::_0F, 0xEB),
-                AvxOpcode::Vorps => (LP::None, OM::_0F, 0x56),
-                AvxOpcode::Vorpd => (LP::_66, OM::_0F, 0x56),
-                AvxOpcode::Vpxor => (LP::_66, OM::_0F, 0xEF),
-                AvxOpcode::Vxorps => (LP::None, OM::_0F, 0x57),
-                AvxOpcode::Vxorpd => (LP::_66, OM::_0F, 0x57),
-                AvxOpcode::Vpmullw => (LP::_66, OM::_0F, 0xD5),
-                AvxOpcode::Vpmulld => (LP::_66, OM::_0F38, 0x40),
-                AvxOpcode::Vpmulhw => (LP::_66, OM::_0F, 0xE5),
-                AvxOpcode::Vpmulhrsw => (LP::_66, OM::_0F38, 0x0B),
-                AvxOpcode::Vpmulhuw => (LP::_66, OM::_0F, 0xE4),
-                AvxOpcode::Vpmuldq => (LP::_66, OM::_0F38, 0x28),
-                AvxOpcode::Vpmuludq => (LP::_66, OM::_0F, 0xF4),
-                AvxOpcode::Vpunpckhwd => (LP::_66, OM::_0F, 0x69),
-                AvxOpcode::Vpunpcklwd => (LP::_66, OM::_0F, 0x61),
-                AvxOpcode::Vunpcklps => (LP::None, OM::_0F, 0x14),
-                AvxOpcode::Vunpckhps => (LP::None, OM::_0F, 0x15),
-                AvxOpcode::Vaddps => (LP::None, OM::_0F, 0x58),
-                AvxOpcode::Vaddpd => (LP::_66, OM::_0F, 0x58),
-                AvxOpcode::Vsubps => (LP::None, OM::_0F, 0x5C),
-                AvxOpcode::Vsubpd => (LP::_66, OM::_0F, 0x5C),
-                AvxOpcode::Vmulps => (LP::None, OM::_0F, 0x59),
-                AvxOpcode::Vmulpd => (LP::_66, OM::_0F, 0x59),
-                AvxOpcode::Vdivps => (LP::None, OM::_0F, 0x5E),
-                AvxOpcode::Vdivpd => (LP::_66, OM::_0F, 0x5E),
-                AvxOpcode::Vpcmpeqb => (LP::_66, OM::_0F, 0x74),
-                AvxOpcode::Vpcmpeqw => (LP::_66, OM::_0F, 0x75),
-                AvxOpcode::Vpcmpeqd => (LP::_66, OM::_0F, 0x76),
-                AvxOpcode::Vpcmpeqq => (LP::_66, OM::_0F38, 0x29),
-                AvxOpcode::Vpcmpgtb => (LP::_66, OM::_0F, 0x64),
-                AvxOpcode::Vpcmpgtw => (LP::_66, OM::_0F, 0x65),
-                AvxOpcode::Vpcmpgtd => (LP::_66, OM::_0F, 0x66),
-                AvxOpcode::Vpcmpgtq => (LP::_66, OM::_0F38, 0x37),
-                AvxOpcode::Vpminsb => (LP::_66, OM::_0F38, 0x38),
-                AvxOpcode::Vpminsw => (LP::_66, OM::_0F, 0xEA),
-                AvxOpcode::Vpminsd => (LP::_66, OM::_0F38, 0x39),
-                AvxOpcode::Vpmaxsb => (LP::_66, OM::_0F38, 0x3C),
-                AvxOpcode::Vpmaxsw => (LP::_66, OM::_0F, 0xEE),
-                AvxOpcode::Vpmaxsd => (LP::_66, OM::_0F38, 0x3D),
-                AvxOpcode::Vpminub => (LP::_66, OM::_0F, 0xDA),
-                AvxOpcode::Vpminuw => (LP::_66, OM::_0F38, 0x3A),
-                AvxOpcode::Vpminud => (LP::_66, OM::_0F38, 0x3B),
-                AvxOpcode::Vpmaxub => (LP::_66, OM::_0F, 0xDE),
-                AvxOpcode::Vpmaxuw => (LP::_66, OM::_0F38, 0x3E),
-                AvxOpcode::Vpmaxud => (LP::_66, OM::_0F38, 0x3F),
-                AvxOpcode::Vpunpcklbw => (LP::_66, OM::_0F, 0x60),
-                AvxOpcode::Vpunpckhbw => (LP::_66, OM::_0F, 0x68),
-                AvxOpcode::Vpacksswb => (LP::_66, OM::_0F, 0x63),
-                AvxOpcode::Vpackssdw => (LP::_66, OM::_0F, 0x6B),
-                AvxOpcode::Vpackuswb => (LP::_66, OM::_0F, 0x67),
-                AvxOpcode::Vpackusdw => (LP::_66, OM::_0F38, 0x2B),
-                AvxOpcode::Vpmaddwd => (LP::_66, OM::_0F, 0xF5),
-                AvxOpcode::Vpmaddubsw => (LP::_66, OM::_0F38, 0x04),
-                AvxOpcode::Vpshufb => (LP::_66, OM::_0F38, 0x00),
-                AvxOpcode::Vpsllw => (LP::_66, OM::_0F, 0xF1),
-                AvxOpcode::Vpslld => (LP::_66, OM::_0F, 0xF2),
-                AvxOpcode::Vpsllq => (LP::_66, OM::_0F, 0xF3),
-                AvxOpcode::Vpsraw => (LP::_66, OM::_0F, 0xE1),
-                AvxOpcode::Vpsrad => (LP::_66, OM::_0F, 0xE2),
-                AvxOpcode::Vaddss => (LP::_F3, OM::_0F, 0x58),
-                AvxOpcode::Vaddsd => (LP::_F2, OM::_0F, 0x58),
-                AvxOpcode::Vmulss => (LP::_F3, OM::_0F, 0x59),
-                AvxOpcode::Vmulsd => (LP::_F2, OM::_0F, 0x59),
-                AvxOpcode::Vsubss => (LP::_F3, OM::_0F, 0x5C),
-                AvxOpcode::Vsubsd => (LP::_F2, OM::_0F, 0x5C),
-                AvxOpcode::Vdivss => (LP::_F3, OM::_0F, 0x5E),
-                AvxOpcode::Vdivsd => (LP::_F2, OM::_0F, 0x5E),
-                AvxOpcode::Vminss => (LP::_F3, OM::_0F, 0x5D),
-                AvxOpcode::Vminsd => (LP::_F2, OM::_0F, 0x5D),
-                AvxOpcode::Vmaxss => (LP::_F3, OM::_0F, 0x5F),
-                AvxOpcode::Vmaxsd => (LP::_F2, OM::_0F, 0x5F),
-                AvxOpcode::Vphaddw => (LP::_66, OM::_0F38, 0x01),
-                AvxOpcode::Vphaddd => (LP::_66, OM::_0F38, 0x02),
-                AvxOpcode::Vpunpckldq => (LP::_66, OM::_0F, 0x62),
-                AvxOpcode::Vpunpckhdq => (LP::_66, OM::_0F, 0x6A),
-                AvxOpcode::Vpunpcklqdq => (LP::_66, OM::_0F, 0x6C),
-                AvxOpcode::Vpunpckhqdq => (LP::_66, OM::_0F, 0x6D),
-                AvxOpcode::Vmovsd => (LP::_F2, OM::_0F, 0x10),
-                AvxOpcode::Vmovss => (LP::_F3, OM::_0F, 0x10),
-                AvxOpcode::Vsqrtss => (LP::_F3, OM::_0F, 0x51),
-                AvxOpcode::Vsqrtsd => (LP::_F2, OM::_0F, 0x51),
-                AvxOpcode::Vunpcklpd => (LP::_66, OM::_0F, 0x14),
-                _ => panic!("unexpected rmir vex opcode {op:?}"),
-            };
-            VexInstruction::new()
-                .length(VexVectorLength::V128)
-                .prefix(prefix)
-                .map(map)
-                .opcode(opcode)
-                .reg(dst.to_real_reg().unwrap().hw_enc())
-                .vvvv(src1.to_real_reg().unwrap().hw_enc())
-                .rm(src2)
-                .encode(sink);
-        }
-
-        Inst::XmmRmRImmVex {
-            op,
-            src1,
-            src2,
-            dst,
-            imm,
-        } => {
-            let dst = dst.to_reg().to_reg();
-            let src1 = src1.to_reg();
-            let src2 = match src2.clone().to_reg_mem().clone() {
-                RegMem::Reg { reg } => {
-                    RegisterOrAmode::Register(reg.to_real_reg().unwrap().hw_enc().into())
-                }
-                RegMem::Mem { addr } => {
-                    RegisterOrAmode::Amode(addr.finalize(state.frame_layout(), sink))
-                }
-            };
-
-            let (w, prefix, map, opcode) = match op {
-                AvxOpcode::Vcmpps => (false, LegacyPrefixes::None, OpcodeMap::_0F, 0xC2),
-                AvxOpcode::Vcmppd => (false, LegacyPrefixes::_66, OpcodeMap::_0F, 0xC2),
-                AvxOpcode::Vpalignr => (false, LegacyPrefixes::_66, OpcodeMap::_0F3A, 0x0F),
-                AvxOpcode::Vinsertps => (false, LegacyPrefixes::_66, OpcodeMap::_0F3A, 0x21),
-                AvxOpcode::Vshufps => (false, LegacyPrefixes::None, OpcodeMap::_0F, 0xC6),
-                AvxOpcode::Vpblendw => (false, LegacyPrefixes::_66, OpcodeMap::_0F3A, 0x0E),
-                _ => panic!("unexpected rmr_imm_vex opcode {op:?}"),
-            };
-
-            VexInstruction::new()
-                .length(VexVectorLength::V128)
-                .prefix(prefix)
-                .map(map)
-                .w(w)
-                .opcode(opcode)
-                .reg(dst.to_real_reg().unwrap().hw_enc())
-                .vvvv(src1.to_real_reg().unwrap().hw_enc())
-                .rm(src2)
-                .imm(*imm)
-                .encode(sink);
-        }
-
-        Inst::XmmRmRVex3 {
-            op,
-            src1,
-            src2,
-            src3,
-            dst,
-        } => {
-            let src1 = src1.to_reg();
-            let dst = dst.to_reg().to_reg();
-            debug_assert_eq!(src1, dst);
-            let src2 = src2.to_reg();
-            let src3 = match src3.clone().to_reg_mem().clone() {
-                RegMem::Reg { reg } => {
-                    RegisterOrAmode::Register(reg.to_real_reg().unwrap().hw_enc().into())
-                }
-                RegMem::Mem { addr } => {
-                    RegisterOrAmode::Amode(addr.finalize(state.frame_layout(), sink))
-                }
-            };
-
-            let (w, map, opcode) = match op {
-                AvxOpcode::Vfmadd132ss => (false, OpcodeMap::_0F38, 0x99),
-                AvxOpcode::Vfmadd213ss => (false, OpcodeMap::_0F38, 0xA9),
-                AvxOpcode::Vfnmadd132ss => (false, OpcodeMap::_0F38, 0x9D),
-                AvxOpcode::Vfnmadd213ss => (false, OpcodeMap::_0F38, 0xAD),
-                AvxOpcode::Vfmadd132sd => (true, OpcodeMap::_0F38, 0x99),
-                AvxOpcode::Vfmadd213sd => (true, OpcodeMap::_0F38, 0xA9),
-                AvxOpcode::Vfnmadd132sd => (true, OpcodeMap::_0F38, 0x9D),
-                AvxOpcode::Vfnmadd213sd => (true, OpcodeMap::_0F38, 0xAD),
-                AvxOpcode::Vfmadd132ps => (false, OpcodeMap::_0F38, 0x98),
-                AvxOpcode::Vfmadd213ps => (false, OpcodeMap::_0F38, 0xA8),
-                AvxOpcode::Vfnmadd132ps => (false, OpcodeMap::_0F38, 0x9C),
-                AvxOpcode::Vfnmadd213ps => (false, OpcodeMap::_0F38, 0xAC),
-                AvxOpcode::Vfmadd132pd => (true, OpcodeMap::_0F38, 0x98),
-                AvxOpcode::Vfmadd213pd => (true, OpcodeMap::_0F38, 0xA8),
-                AvxOpcode::Vfnmadd132pd => (true, OpcodeMap::_0F38, 0x9C),
-                AvxOpcode::Vfnmadd213pd => (true, OpcodeMap::_0F38, 0xAC),
-                AvxOpcode::Vfmsub132ss => (false, OpcodeMap::_0F38, 0x9B),
-                AvxOpcode::Vfmsub213ss => (false, OpcodeMap::_0F38, 0xAB),
-                AvxOpcode::Vfnmsub132ss => (false, OpcodeMap::_0F38, 0x9F),
-                AvxOpcode::Vfnmsub213ss => (false, OpcodeMap::_0F38, 0xAF),
-                AvxOpcode::Vfmsub132sd => (true, OpcodeMap::_0F38, 0x9B),
-                AvxOpcode::Vfmsub213sd => (true, OpcodeMap::_0F38, 0xAB),
-                AvxOpcode::Vfnmsub132sd => (true, OpcodeMap::_0F38, 0x9F),
-                AvxOpcode::Vfnmsub213sd => (true, OpcodeMap::_0F38, 0xAF),
-                AvxOpcode::Vfmsub132ps => (false, OpcodeMap::_0F38, 0x9A),
-                AvxOpcode::Vfmsub213ps => (false, OpcodeMap::_0F38, 0xAA),
-                AvxOpcode::Vfnmsub132ps => (false, OpcodeMap::_0F38, 0x9E),
-                AvxOpcode::Vfnmsub213ps => (false, OpcodeMap::_0F38, 0xAE),
-                AvxOpcode::Vfmsub132pd => (true, OpcodeMap::_0F38, 0x9A),
-                AvxOpcode::Vfmsub213pd => (true, OpcodeMap::_0F38, 0xAA),
-                AvxOpcode::Vfnmsub132pd => (true, OpcodeMap::_0F38, 0x9E),
-                AvxOpcode::Vfnmsub213pd => (true, OpcodeMap::_0F38, 0xAE),
-                _ => unreachable!(),
-            };
-
-            VexInstruction::new()
-                .length(VexVectorLength::V128)
-                .prefix(LegacyPrefixes::_66)
-                .map(map)
-                .w(w)
-                .opcode(opcode)
-                .reg(dst.to_real_reg().unwrap().hw_enc())
-                .rm(src3)
-                .vvvv(src2.to_real_reg().unwrap().hw_enc())
-                .encode(sink);
-        }
-
-        Inst::XmmMovRMVex { op, src, dst } => {
-            let src = src.to_reg();
-            let dst = dst.clone().finalize(state.frame_layout(), sink);
-
-            let (prefix, map, opcode) = match op {
-                AvxOpcode::Vmovdqu => (LegacyPrefixes::_F3, OpcodeMap::_0F, 0x7F),
-                AvxOpcode::Vmovss => (LegacyPrefixes::_F3, OpcodeMap::_0F, 0x11),
-                AvxOpcode::Vmovsd => (LegacyPrefixes::_F2, OpcodeMap::_0F, 0x11),
-                AvxOpcode::Vmovups => (LegacyPrefixes::None, OpcodeMap::_0F, 0x11),
-                AvxOpcode::Vmovupd => (LegacyPrefixes::_66, OpcodeMap::_0F, 0x11),
-                _ => unimplemented!("Opcode {:?} not implemented", op),
-            };
-            VexInstruction::new()
-                .length(VexVectorLength::V128)
-                .prefix(prefix)
-                .map(map)
-                .opcode(opcode)
-                .rm(dst)
-                .reg(src.to_real_reg().unwrap().hw_enc())
-                .encode(sink);
-        }
-
-        Inst::XmmCmpRmRVex { op, src1, src2 } => {
-            let src1 = src1.to_reg();
-            let src2 = match src2.clone().to_reg_mem().clone() {
-                RegMem::Reg { reg } => {
-                    RegisterOrAmode::Register(reg.to_real_reg().unwrap().hw_enc().into())
-                }
-                RegMem::Mem { addr } => {
-                    RegisterOrAmode::Amode(addr.finalize(state.frame_layout(), sink))
-                }
-            };
-
-            let (prefix, map, opcode) = match op {
-                AvxOpcode::Vucomiss => (LegacyPrefixes::None, OpcodeMap::_0F, 0x2E),
-                AvxOpcode::Vucomisd => (LegacyPrefixes::_66, OpcodeMap::_0F, 0x2E),
-                AvxOpcode::Vptest => (LegacyPrefixes::_66, OpcodeMap::_0F38, 0x17),
-                _ => unimplemented!("Opcode {:?} not implemented", op),
-            };
-
-            VexInstruction::new()
-                .length(VexVectorLength::V128)
-                .prefix(prefix)
-                .map(map)
-                .opcode(opcode)
-                .rm(src2)
-                .reg(src1.to_real_reg().unwrap().hw_enc())
                 .encode(sink);
         }
 
@@ -1539,67 +995,12 @@ pub(crate) fn emit(
             sink.bind_label(done, state.ctrl_plane_mut());
         }
 
-        Inst::XmmRmRImm {
-            op,
-            src1,
-            src2,
-            dst,
-            imm,
-            size,
-        } => {
-            let src1 = *src1;
-            let dst = dst.to_reg();
-            let src2 = src2.clone();
-            debug_assert_eq!(src1, dst);
-
-            let (prefix, opcode, len) = match op {
-                SseOpcode::Insertps => (LegacyPrefixes::_66, 0x0F3A21, 3),
-                SseOpcode::Palignr => (LegacyPrefixes::_66, 0x0F3A0F, 3),
-                SseOpcode::Shufps => (LegacyPrefixes::None, 0x0FC6, 2),
-                SseOpcode::Pblendw => (LegacyPrefixes::_66, 0x0F3A0E, 3),
-                _ => unimplemented!("Opcode {:?} not implemented", op),
-            };
-            let rex = RexFlags::from(*size);
-            match src2 {
-                RegMem::Reg { reg } => {
-                    emit_std_reg_reg(sink, prefix, opcode, len, dst, reg, rex);
-                }
-                RegMem::Mem { addr } => {
-                    let addr = &addr.finalize(state.frame_layout(), sink);
-                    // N.B.: bytes_at_end == 1, because of the `imm` byte below.
-                    emit_std_reg_mem(sink, prefix, opcode, len, dst, addr, rex, 1);
-                }
-            }
-            sink.put1(*imm);
-        }
-
         Inst::XmmUninitializedValue { .. } | Inst::GprUninitializedValue { .. } => {
             // These instruction formats only exist to declare a register as a
             // `def`; no code is emitted. This is always immediately followed by
             // an instruction, such as `xor <tmp>, <tmp>`, that semantically
             // reads this undefined value but arithmetically produces the same
             // result regardless of its value.
-        }
-
-        Inst::XmmCmpRmR { op, src1, src2 } => {
-            let src1 = src1.to_reg();
-            let src2 = src2.clone().to_reg_mem().clone();
-
-            let rex = RexFlags::clear_w();
-            let (prefix, opcode, len) = match op {
-                SseOpcode::Ptest => (LegacyPrefixes::_66, 0x0F3817, 3),
-                _ => unimplemented!("Emit xmm cmp rm r"),
-            };
-
-            match src2 {
-                RegMem::Reg { reg } => {
-                    emit_std_reg_reg(sink, prefix, opcode, len, src1, reg, rex);
-                }
-                RegMem::Mem { addr } => {
-                    let addr = &addr.finalize(state.frame_layout(), sink);
-                    emit_std_reg_mem(sink, prefix, opcode, len, src1, addr, rex, 0);
-                }
-            }
         }
 
         Inst::CvtUint64ToFloatSeq {
@@ -2118,49 +1519,37 @@ pub(crate) fn emit(
             offset,
             distance,
         } => {
-            let dst = dst.to_reg();
-
+            let name = &**name;
+            let riprel = asm::Amode::RipRelative {
+                target: asm::DeferredTarget::None,
+            };
             if info.flags.is_pic() {
                 // Generates: movq symbol@GOTPCREL(%rip), %dst
-                let enc_dst = int_reg_enc(dst);
-                sink.put1(0x48 | ((enc_dst >> 3) & 1) << 2);
-                sink.put1(0x8B);
-                sink.put1(0x05 | ((enc_dst & 7) << 3));
-                emit_reloc(sink, Reloc::X86GOTPCRel4, name, -4);
-                sink.put4(0);
-                // Offset in the relocation above applies to the address of the *GOT entry*, not
-                // the loaded address; so we emit a separate add or sub instruction if needed.
-                if *offset < 0 {
-                    assert!(*offset >= -i32::MAX as i64);
-                    sink.put1(0x48 | ((enc_dst >> 3) & 1));
-                    sink.put1(0x81);
-                    sink.put1(0xe8 | (enc_dst & 7));
-                    sink.put4((-*offset) as u32);
-                } else if *offset > 0 {
-                    assert!(*offset <= i32::MAX as i64);
-                    sink.put1(0x48 | ((enc_dst >> 3) & 1));
-                    sink.put1(0x81);
-                    sink.put1(0xc0 | (enc_dst & 7));
-                    sink.put4(*offset as u32);
+                asm::inst::movq_rm::new(*dst, riprel).emit(sink, info, state);
+                let cur = sink.cur_offset();
+                sink.add_reloc_at_offset(cur - 4, Reloc::X86GOTPCRel4, name, -4);
+
+                // Offset in the relocation above applies to the address of the
+                // *GOT entry*, not the loaded address; so we emit a separate
+                // add instruction if needed.
+                let offset = i32::try_from(*offset).unwrap();
+                if offset != 0 {
+                    asm::inst::addq_mi_sxl::new(PairedGpr::from(*dst), offset)
+                        .emit(sink, info, state);
                 }
             } else if distance == &RelocDistance::Near {
-                // If we know the distance to the name is within 2GB (e.g., a module-local function),
-                // we can generate a RIP-relative address, with a relocation.
-                // Generates: lea $name(%rip), $dst
-                let enc_dst = int_reg_enc(dst);
-                sink.put1(0x48 | ((enc_dst >> 3) & 1) << 2);
-                sink.put1(0x8D);
-                sink.put1(0x05 | ((enc_dst & 7) << 3));
-                emit_reloc(sink, Reloc::X86CallPCRel4, name, -4);
-                sink.put4(0);
+                // If we know the distance to the name is within 2GB (e.g., a
+                // module-local function), we can generate a RIP-relative
+                // address, with a relocation.
+                asm::inst::leaq_rm::new(*dst, riprel).emit(sink, info, state);
+                let cur = sink.cur_offset();
+                sink.add_reloc_at_offset(cur - 4, Reloc::X86CallPCRel4, name, *offset - 4);
             } else {
-                // The full address can be encoded in the register, with a relocation.
-                // Generates: movabsq $name, %dst
-                let enc_dst = int_reg_enc(dst);
-                sink.put1(0x48 | ((enc_dst >> 3) & 1));
-                sink.put1(0xB8 | (enc_dst & 7));
-                emit_reloc(sink, Reloc::Abs8, name, *offset);
-                sink.put8(0);
+                // The full address can be encoded in the register, with a
+                // relocation.
+                asm::inst::movabsq_oi::new(*dst, 0).emit(sink, info, state);
+                let cur = sink.cur_offset();
+                sink.add_reloc_at_offset(cur - 8, Reloc::Abs8, name, *offset);
             }
         }
 
@@ -2477,9 +1866,12 @@ pub(crate) fn emit(
             emit_reloc(sink, Reloc::MachOX86_64Tlv, symbol, -4);
             sink.put4(0); // offset
 
-            // callq *(%rdi)
-            sink.put1(0xff);
-            sink.put1(0x17);
+            asm::inst::callq_m::new(asm::Amode::ImmReg {
+                base: Gpr::RDI,
+                simm32: asm::AmodeOffsetPlusKnownOffset::ZERO,
+                trap: None,
+            })
+            .emit(sink, info, state);
         }
 
         Inst::CoffTlsGetAddr { symbol, dst, tmp } => {
@@ -2544,19 +1936,25 @@ pub(crate) fn emit(
         }
 
         Inst::External { inst } => {
-            let mut known_offsets = [0, 0];
-            // These values are transcribed from what is happening in
-            // `SyntheticAmode::finalize`. This, plus the `Into` logic
-            // converting a `SyntheticAmode` to its external counterpart, are
-            // necessary to communicate Cranelift's internal offsets to the
-            // assembler; due to when Cranelift determines these offsets, this
-            // happens quite late (i.e., here during emission).
             let frame = state.frame_layout();
-            known_offsets[usize::from(external::offsets::KEY_INCOMING_ARG)] =
-                i32::try_from(frame.tail_args_size + frame.setup_area_size).unwrap();
-            known_offsets[usize::from(external::offsets::KEY_SLOT_OFFSET)] =
-                i32::try_from(frame.outgoing_args_size).unwrap();
-            emit_maybe_shrink(inst, sink, &known_offsets);
+            emit_maybe_shrink(
+                inst,
+                &mut external::AsmCodeSink {
+                    sink,
+
+                    // These values are transcribed from what is happening in
+                    // `SyntheticAmode::finalize`. This, plus the `Into` logic
+                    // converting a `SyntheticAmode` to its external counterpart, are
+                    // necessary to communicate Cranelift's internal offsets to the
+                    // assembler; due to when Cranelift determines these offsets, this
+                    // happens quite late (i.e., here during emission).
+                    incoming_arg_offset: i32::try_from(
+                        frame.tail_args_size + frame.setup_area_size,
+                    )
+                    .unwrap(),
+                    slot_offset: i32::try_from(frame.outgoing_args_size).unwrap(),
+                },
+            );
         }
     }
 
@@ -2649,7 +2047,7 @@ where
 /// has a smaller encoding for `AND AL, imm8` than it does for `AND r/m8, imm8`.
 /// Here the instructions are matched against and if regalloc state indicates
 /// that a smaller variant is available then that's swapped to instead.
-fn emit_maybe_shrink(inst: &AsmInst, sink: &mut MachBuffer<Inst>, table: &[i32; 2]) {
+fn emit_maybe_shrink(inst: &AsmInst, sink: &mut impl asm::CodeSink) {
     use cranelift_assembler_x64::GprMem;
     use cranelift_assembler_x64::inst::*;
 
@@ -2662,183 +2060,167 @@ fn emit_maybe_shrink(inst: &AsmInst, sink: &mut MachBuffer<Inst>, table: &[i32; 
 
     match *inst {
         // and
-        Inst::andb_mi(andb_mi { rm8: RAX_RM, imm8 }) => {
-            andb_i::<R>::new(RAX, imm8).encode(sink, table)
-        }
+        Inst::andb_mi(andb_mi { rm8: RAX_RM, imm8 }) => andb_i::<R>::new(RAX, imm8).encode(sink),
         Inst::andw_mi(andw_mi {
             rm16: RAX_RM,
             imm16,
-        }) => andw_i::<R>::new(RAX, imm16).encode(sink, table),
+        }) => andw_i::<R>::new(RAX, imm16).encode(sink),
         Inst::andl_mi(andl_mi {
             rm32: RAX_RM,
             imm32,
-        }) => andl_i::<R>::new(RAX, imm32).encode(sink, table),
+        }) => andl_i::<R>::new(RAX, imm32).encode(sink),
         Inst::andq_mi_sxl(andq_mi_sxl {
             rm64: RAX_RM,
             imm32,
-        }) => andq_i_sxl::<R>::new(RAX, imm32).encode(sink, table),
+        }) => andq_i_sxl::<R>::new(RAX, imm32).encode(sink),
 
         // or
-        Inst::orb_mi(orb_mi { rm8: RAX_RM, imm8 }) => {
-            orb_i::<R>::new(RAX, imm8).encode(sink, table)
-        }
+        Inst::orb_mi(orb_mi { rm8: RAX_RM, imm8 }) => orb_i::<R>::new(RAX, imm8).encode(sink),
         Inst::orw_mi(orw_mi {
             rm16: RAX_RM,
             imm16,
-        }) => orw_i::<R>::new(RAX, imm16).encode(sink, table),
+        }) => orw_i::<R>::new(RAX, imm16).encode(sink),
         Inst::orl_mi(orl_mi {
             rm32: RAX_RM,
             imm32,
-        }) => orl_i::<R>::new(RAX, imm32).encode(sink, table),
+        }) => orl_i::<R>::new(RAX, imm32).encode(sink),
         Inst::orq_mi_sxl(orq_mi_sxl {
             rm64: RAX_RM,
             imm32,
-        }) => orq_i_sxl::<R>::new(RAX, imm32).encode(sink, table),
+        }) => orq_i_sxl::<R>::new(RAX, imm32).encode(sink),
 
         // xor
-        Inst::xorb_mi(xorb_mi { rm8: RAX_RM, imm8 }) => {
-            xorb_i::<R>::new(RAX, imm8).encode(sink, table)
-        }
+        Inst::xorb_mi(xorb_mi { rm8: RAX_RM, imm8 }) => xorb_i::<R>::new(RAX, imm8).encode(sink),
         Inst::xorw_mi(xorw_mi {
             rm16: RAX_RM,
             imm16,
-        }) => xorw_i::<R>::new(RAX, imm16).encode(sink, table),
+        }) => xorw_i::<R>::new(RAX, imm16).encode(sink),
         Inst::xorl_mi(xorl_mi {
             rm32: RAX_RM,
             imm32,
-        }) => xorl_i::<R>::new(RAX, imm32).encode(sink, table),
+        }) => xorl_i::<R>::new(RAX, imm32).encode(sink),
         Inst::xorq_mi_sxl(xorq_mi_sxl {
             rm64: RAX_RM,
             imm32,
-        }) => xorq_i_sxl::<R>::new(RAX, imm32).encode(sink, table),
+        }) => xorq_i_sxl::<R>::new(RAX, imm32).encode(sink),
 
         // add
-        Inst::addb_mi(addb_mi { rm8: RAX_RM, imm8 }) => {
-            addb_i::<R>::new(RAX, imm8).encode(sink, table)
-        }
+        Inst::addb_mi(addb_mi { rm8: RAX_RM, imm8 }) => addb_i::<R>::new(RAX, imm8).encode(sink),
         Inst::addw_mi(addw_mi {
             rm16: RAX_RM,
             imm16,
-        }) => addw_i::<R>::new(RAX, imm16).encode(sink, table),
+        }) => addw_i::<R>::new(RAX, imm16).encode(sink),
         Inst::addl_mi(addl_mi {
             rm32: RAX_RM,
             imm32,
-        }) => addl_i::<R>::new(RAX, imm32).encode(sink, table),
+        }) => addl_i::<R>::new(RAX, imm32).encode(sink),
         Inst::addq_mi_sxl(addq_mi_sxl {
             rm64: RAX_RM,
             imm32,
-        }) => addq_i_sxl::<R>::new(RAX, imm32).encode(sink, table),
+        }) => addq_i_sxl::<R>::new(RAX, imm32).encode(sink),
 
         // adc
-        Inst::adcb_mi(adcb_mi { rm8: RAX_RM, imm8 }) => {
-            adcb_i::<R>::new(RAX, imm8).encode(sink, table)
-        }
+        Inst::adcb_mi(adcb_mi { rm8: RAX_RM, imm8 }) => adcb_i::<R>::new(RAX, imm8).encode(sink),
         Inst::adcw_mi(adcw_mi {
             rm16: RAX_RM,
             imm16,
-        }) => adcw_i::<R>::new(RAX, imm16).encode(sink, table),
+        }) => adcw_i::<R>::new(RAX, imm16).encode(sink),
         Inst::adcl_mi(adcl_mi {
             rm32: RAX_RM,
             imm32,
-        }) => adcl_i::<R>::new(RAX, imm32).encode(sink, table),
+        }) => adcl_i::<R>::new(RAX, imm32).encode(sink),
         Inst::adcq_mi_sxl(adcq_mi_sxl {
             rm64: RAX_RM,
             imm32,
-        }) => adcq_i_sxl::<R>::new(RAX, imm32).encode(sink, table),
+        }) => adcq_i_sxl::<R>::new(RAX, imm32).encode(sink),
 
         // sub
-        Inst::subb_mi(subb_mi { rm8: RAX_RM, imm8 }) => {
-            subb_i::<R>::new(RAX, imm8).encode(sink, table)
-        }
+        Inst::subb_mi(subb_mi { rm8: RAX_RM, imm8 }) => subb_i::<R>::new(RAX, imm8).encode(sink),
         Inst::subw_mi(subw_mi {
             rm16: RAX_RM,
             imm16,
-        }) => subw_i::<R>::new(RAX, imm16).encode(sink, table),
+        }) => subw_i::<R>::new(RAX, imm16).encode(sink),
         Inst::subl_mi(subl_mi {
             rm32: RAX_RM,
             imm32,
-        }) => subl_i::<R>::new(RAX, imm32).encode(sink, table),
+        }) => subl_i::<R>::new(RAX, imm32).encode(sink),
         Inst::subq_mi_sxl(subq_mi_sxl {
             rm64: RAX_RM,
             imm32,
-        }) => subq_i_sxl::<R>::new(RAX, imm32).encode(sink, table),
+        }) => subq_i_sxl::<R>::new(RAX, imm32).encode(sink),
 
         // sbb
-        Inst::sbbb_mi(sbbb_mi { rm8: RAX_RM, imm8 }) => {
-            sbbb_i::<R>::new(RAX, imm8).encode(sink, table)
-        }
+        Inst::sbbb_mi(sbbb_mi { rm8: RAX_RM, imm8 }) => sbbb_i::<R>::new(RAX, imm8).encode(sink),
         Inst::sbbw_mi(sbbw_mi {
             rm16: RAX_RM,
             imm16,
-        }) => sbbw_i::<R>::new(RAX, imm16).encode(sink, table),
+        }) => sbbw_i::<R>::new(RAX, imm16).encode(sink),
         Inst::sbbl_mi(sbbl_mi {
             rm32: RAX_RM,
             imm32,
-        }) => sbbl_i::<R>::new(RAX, imm32).encode(sink, table),
+        }) => sbbl_i::<R>::new(RAX, imm32).encode(sink),
         Inst::sbbq_mi_sxl(sbbq_mi_sxl {
             rm64: RAX_RM,
             imm32,
-        }) => sbbq_i_sxl::<R>::new(RAX, imm32).encode(sink, table),
+        }) => sbbq_i_sxl::<R>::new(RAX, imm32).encode(sink),
 
         // cmp
         Inst::cmpb_mi(cmpb_mi {
             rm8: GprMem::Gpr(Gpr::RAX),
             imm8,
-        }) => cmpb_i::<R>::new(Gpr::RAX, imm8).encode(sink, table),
+        }) => cmpb_i::<R>::new(Gpr::RAX, imm8).encode(sink),
         Inst::cmpw_mi(cmpw_mi {
             rm16: GprMem::Gpr(Gpr::RAX),
             imm16,
-        }) => cmpw_i::<R>::new(Gpr::RAX, imm16).encode(sink, table),
+        }) => cmpw_i::<R>::new(Gpr::RAX, imm16).encode(sink),
         Inst::cmpl_mi(cmpl_mi {
             rm32: GprMem::Gpr(Gpr::RAX),
             imm32,
-        }) => cmpl_i::<R>::new(Gpr::RAX, imm32).encode(sink, table),
+        }) => cmpl_i::<R>::new(Gpr::RAX, imm32).encode(sink),
         Inst::cmpq_mi(cmpq_mi {
             rm64: GprMem::Gpr(Gpr::RAX),
             imm32,
-        }) => cmpq_i::<R>::new(Gpr::RAX, imm32).encode(sink, table),
+        }) => cmpq_i::<R>::new(Gpr::RAX, imm32).encode(sink),
 
         // test
         Inst::testb_mi(testb_mi {
             rm8: GprMem::Gpr(Gpr::RAX),
             imm8,
-        }) => testb_i::<R>::new(Gpr::RAX, imm8).encode(sink, table),
+        }) => testb_i::<R>::new(Gpr::RAX, imm8).encode(sink),
         Inst::testw_mi(testw_mi {
             rm16: GprMem::Gpr(Gpr::RAX),
             imm16,
-        }) => testw_i::<R>::new(Gpr::RAX, imm16).encode(sink, table),
+        }) => testw_i::<R>::new(Gpr::RAX, imm16).encode(sink),
         Inst::testl_mi(testl_mi {
             rm32: GprMem::Gpr(Gpr::RAX),
             imm32,
-        }) => testl_i::<R>::new(Gpr::RAX, imm32).encode(sink, table),
+        }) => testl_i::<R>::new(Gpr::RAX, imm32).encode(sink),
         Inst::testq_mi(testq_mi {
             rm64: GprMem::Gpr(Gpr::RAX),
             imm32,
-        }) => testq_i::<R>::new(Gpr::RAX, imm32).encode(sink, table),
+        }) => testq_i::<R>::new(Gpr::RAX, imm32).encode(sink),
 
         // lea
         Inst::leal_rm(leal_rm { r32, m32 }) => emit_lea(
             r32,
             m32,
             sink,
-            table,
-            |dst, amode, s, t| leal_rm::<R>::new(dst, amode).encode(s, t),
-            |dst, simm32, s, t| addl_mi::<R>::new(dst, simm32.unsigned()).encode(s, t),
-            |dst, reg, s, t| addl_rm::<R>::new(dst, reg).encode(s, t),
+            |dst, amode, s| leal_rm::<R>::new(dst, amode).encode(s),
+            |dst, simm32, s| addl_mi::<R>::new(dst, simm32.unsigned()).encode(s),
+            |dst, reg, s| addl_rm::<R>::new(dst, reg).encode(s),
         ),
         Inst::leaq_rm(leaq_rm { r64, m64 }) => emit_lea(
             r64,
             m64,
             sink,
-            table,
-            |dst, amode, s, t| leaq_rm::<R>::new(dst, amode).encode(s, t),
-            |dst, simm32, s, t| addq_mi_sxl::<R>::new(dst, simm32).encode(s, t),
-            |dst, reg, s, t| addq_rm::<R>::new(dst, reg).encode(s, t),
+            |dst, amode, s| leaq_rm::<R>::new(dst, amode).encode(s),
+            |dst, simm32, s| addq_mi_sxl::<R>::new(dst, simm32).encode(s),
+            |dst, reg, s| addq_rm::<R>::new(dst, reg).encode(s),
         ),
 
         // All other instructions fall through to here and cannot be shrunk, so
         // return `false` to emit them as usual.
-        _ => inst.encode(sink, table),
+        _ => inst.encode(sink),
     }
 }
 
@@ -2857,15 +2239,16 @@ fn emit_maybe_shrink(inst: &AsmInst, sink: &mut MachBuffer<Inst>, table: &[i32; 
 /// of `lea` should "attempt" to put the `base` in the same register as `dst`
 /// but not at the expense of generating a `mov` instruction. Currently that's
 /// not possible but perhaps one day it may be worth it.
-fn emit_lea(
+fn emit_lea<S>(
     dst: asm::Gpr<WritableGpr>,
     addr: asm::Amode<Gpr>,
-    sink: &mut MachBuffer<Inst>,
-    table: &[i32; 2],
-    lea: fn(WritableGpr, asm::Amode<Gpr>, &mut MachBuffer<Inst>, &[i32; 2]),
-    add_mi: fn(PairedGpr, i32, &mut MachBuffer<Inst>, &[i32; 2]),
-    add_rm: fn(PairedGpr, Gpr, &mut MachBuffer<Inst>, &[i32; 2]),
-) {
+    sink: &mut S,
+    lea: fn(WritableGpr, asm::Amode<Gpr>, &mut S),
+    add_mi: fn(PairedGpr, i32, &mut S),
+    add_rm: fn(PairedGpr, Gpr, &mut S),
+) where
+    S: asm::CodeSink,
+{
     match addr {
         // If `base == dst` then this is `add dst, $imm`, so encode that
         // instead.
@@ -2884,7 +2267,6 @@ fn emit_lea(
             },
             simm32.value(),
             sink,
-            table,
         ),
 
         // If the offset is 0 and the shift is a scale of 1, then:
@@ -2906,7 +2288,6 @@ fn emit_lea(
                     },
                     *index.as_ref(),
                     sink,
-                    table,
                 )
             } else if dst.as_ref().to_reg() == *index.as_ref() {
                 add_rm(
@@ -2916,13 +2297,12 @@ fn emit_lea(
                     },
                     base,
                     sink,
-                    table,
                 )
             } else {
-                lea(*dst.as_ref(), addr, sink, table)
+                lea(*dst.as_ref(), addr, sink)
             }
         }
 
-        _ => lea(*dst.as_ref(), addr, sink, table),
+        _ => lea(*dst.as_ref(), addr, sink),
     }
 }

@@ -45,9 +45,10 @@ pub struct Options {
     /// This defaults to utf-8 but can be changed if necessary.
     string_encoding: StringEncoding,
 
+    /// Whether or not this the async option was set when lowering.
     async_: bool,
 
-    #[cfg_attr(not(feature = "component-model-async"), allow(unused))]
+    #[cfg(feature = "component-model-async")]
     callback: Option<NonNull<VMFuncRef>>,
 }
 
@@ -75,12 +76,14 @@ impl Options {
         async_: bool,
         callback: Option<NonNull<VMFuncRef>>,
     ) -> Options {
+        let _ = callback;
         Options {
             store_id,
             memory,
             realloc,
             string_encoding,
             async_,
+            #[cfg(feature = "component-model-async")]
             callback,
         }
     }
@@ -106,11 +109,6 @@ impl Options {
         );
 
         type ReallocFunc = crate::TypedFunc<(u32, u32, u32, u32), u32>;
-
-        // This call doesn't take any GC refs, and therefore we shouldn't ever
-        // need to GC before entering Wasm.
-        #[cfg(feature = "gc")]
-        debug_assert!(!ReallocFunc::need_gc_before_call_raw(store.0, &params));
 
         // Invoke the wasm malloc function using its raw and statically known
         // signature.

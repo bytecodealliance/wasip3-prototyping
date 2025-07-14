@@ -11,9 +11,9 @@ use http::{HeaderMap, StatusCode};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, BodyStream, StreamBody};
 use tokio::sync::{mpsc, oneshot};
-use wasmtime::component::{AbortOnDropHandle, FutureWriter, Resource};
+use wasmtime::component::{FutureWriter, Resource};
 use wasmtime::{AsContextMut, StoreContextMut};
-use wasmtime_wasi::p3::{ResourceView, WithChildren};
+use wasmtime_wasi::p3::{AbortOnDropHandle, ResourceView, WithChildren};
 
 use crate::p3::bindings::http::types::ErrorCode;
 use crate::p3::{
