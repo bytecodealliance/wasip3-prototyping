@@ -23,7 +23,7 @@ use crate::p3::sockets::util::{
 use crate::p3::sockets::{
     SocketAddrUse, SocketAddressFamily, WasiSockets, WasiSocketsImpl, WasiSocketsView,
 };
-use crate::p3::{AccessorTaskFn, IoTask, ResourceView as _};
+use crate::p3::{AbortOnDropHandle, AccessorTaskFn, IoTask, ResourceView as _};
 
 use super::is_addr_allowed;
 
@@ -325,7 +325,7 @@ where
                     } = get_socket_mut(binding.table(), &socket)?;
                     *tcp_state = TcpState::Listening {
                         listener,
-                        task: task.abort_on_drop_handle(),
+                        task: AbortOnDropHandle(task),
                     };
                     Ok(Ok((
                         rx,
@@ -495,7 +495,7 @@ where
                     else {
                         bail!("corrupted socket state");
                     };
-                    *rx_task = Some(task.abort_on_drop_handle());
+                    *rx_task = Some(AbortOnDropHandle(task));
                 }
                 _ => {
                     let fut = res_tx.write(Err(ErrorCode::InvalidState));

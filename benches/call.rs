@@ -134,8 +134,8 @@ fn bench_host_to_wasm<Params, Results>(
     typed_params: Params,
     typed_results: Results,
 ) where
-    Params: WasmParams + ToVals + Copy,
-    Results: WasmResults + ToVals + Copy + PartialEq + Debug + Sync + 'static,
+    Params: WasmParams + ToVals + Copy + Sync,
+    Results: WasmResults + ToVals + Copy + Sync + PartialEq + Debug + 'static,
 {
     // Benchmark the "typed" version, which should be faster than the versions
     // below.

@@ -62,9 +62,9 @@ preview1 = [
 ]
 p3 = [
     "wasmtime/component-model-async",
+    "wasmtime/component-model-async-bytes",
 ]
 
 [[test]]
 name = "process_stdin"
 harness = false
-

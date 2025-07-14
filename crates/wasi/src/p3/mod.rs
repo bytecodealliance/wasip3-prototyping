@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use wasmtime::component::{
-    AbortOnDropHandle, Accessor, AccessorTask, FutureWriter, HasData, Linker, Lower, ResourceTable,
+    AbortHandle, Accessor, AccessorTask, FutureWriter, HasData, Linker, Lower, ResourceTable,
     StreamWriter, VecBuffer,
 };
 
@@ -16,6 +16,14 @@ pub mod clocks;
 pub mod filesystem;
 pub mod random;
 pub mod sockets;
+
+pub struct AbortOnDropHandle(pub AbortHandle);
+
+impl Drop for AbortOnDropHandle {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 /// Add all WASI interfaces from this module into the `linker` provided.
 ///

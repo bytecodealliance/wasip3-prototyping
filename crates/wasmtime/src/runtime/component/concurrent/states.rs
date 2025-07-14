@@ -1,8 +1,10 @@
-use {
-    alloc::vec::Vec,
-    anyhow::{Result, bail},
-    core::mem,
-};
+// FIXME: This file was copied from vm/component/resources.rs and should be
+// deduplicated as part of
+// https://github.com/bytecodealliance/wasmtime/issues/11189.
+
+use alloc::vec::Vec;
+use anyhow::{Result, bail};
+use core::mem;
 
 /// The maximum handle value is specified in
 /// <https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md>
@@ -35,6 +37,13 @@ impl<T> Default for StateTable<T> {
 }
 
 impl<T> StateTable<T> {
+    /// Returns whether or not this table is empty.
+    pub fn is_empty(&self) -> bool {
+        self.slots
+            .iter()
+            .all(|slot| matches!(slot, Slot::Free { .. }))
+    }
+
     pub fn insert(&mut self, rep: u32, state: T) -> Result<u32> {
         if matches!(self
             .reps_to_indexes

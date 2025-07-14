@@ -8,8 +8,8 @@ use http::HeaderMap;
 use http_body_util::BodyExt as _;
 use http_body_util::combinators::BoxBody;
 use tokio::sync::{mpsc, oneshot};
-use wasmtime::component::{AbortOnDropHandle, FutureWriter, Resource, StreamReader};
-use wasmtime_wasi::p3::WithChildren;
+use wasmtime::component::{FutureWriter, Resource, StreamReader};
+use wasmtime_wasi::p3::{AbortOnDropHandle, WithChildren};
 
 use crate::p3::DEFAULT_BUFFER_CAPACITY;
 use crate::p3::bindings::http::types::ErrorCode;

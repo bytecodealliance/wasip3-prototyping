@@ -15,7 +15,7 @@ use crate::p3::bindings::filesystem::{preopens, types};
 use crate::p3::filesystem::{
     Descriptor, DirPerms, FilePerms, WasiFilesystem, WasiFilesystemImpl, WasiFilesystemView,
 };
-use crate::p3::{AccessorTaskFn, IoTask, ResourceView as _, TaskTable};
+use crate::p3::{AbortOnDropHandle, AccessorTaskFn, IoTask, ResourceView as _, TaskTable};
 
 fn get_descriptor<'a>(
     table: &'a ResourceTable,
@@ -116,7 +116,7 @@ where
                     let id = {
                         let mut tasks = tasks.lock().map_err(|_| anyhow!("lock poisoned"))?;
                         tasks
-                            .push(task.abort_on_drop_handle())
+                            .push(AbortOnDropHandle(task))
                             .context("failed to push task to table")?
                     };
                     view.spawn(ReadTask {
@@ -408,7 +408,7 @@ where
                     let id = {
                         let mut tasks = tasks.lock().map_err(|_| anyhow!("lock poisoned"))?;
                         tasks
-                            .push(task.abort_on_drop_handle())
+                            .push(AbortOnDropHandle(task))
                             .context("failed to push task to table")?
                     };
                     view.spawn(ReadTask {

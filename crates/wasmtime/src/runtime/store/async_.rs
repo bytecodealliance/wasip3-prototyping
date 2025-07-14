@@ -1,13 +1,9 @@
 #[cfg(feature = "call-hook")]
 use crate::CallHook;
-use crate::fiber::{self, AsyncCx};
+use crate::fiber::{self};
 use crate::prelude::*;
 use crate::store::{ResourceLimiterInner, StoreInner, StoreOpaque, StoreToken};
 use crate::{AsContextMut, Store, StoreContextMut, UpdateDeadline};
-use anyhow::Context as _;
-use core::future::Future;
-use core::ops::Range;
-use core::pin::Pin;
 
 /// An object that can take callbacks when the runtime enters or exits hostcalls.
 #[cfg(feature = "call-hook")]
@@ -44,7 +40,7 @@ impl<T> Store<T> {
     /// [`Config::async_support`](crate::Config::async_support).
     pub fn limiter_async(
         &mut self,
-        mut limiter: impl FnMut(&mut T) -> &mut (dyn crate::ResourceLimiterAsync)
+        mut limiter: impl (FnMut(&mut T) -> &mut dyn crate::ResourceLimiterAsync)
         + Send
         + Sync
         + 'static,
@@ -155,21 +151,6 @@ impl<'a, T> StoreContextMut<'a, T> {
 }
 
 impl<T> StoreInner<T> {
-    /// Yields execution to the caller on out-of-gas or epoch interruption.
-    ///
-    /// This only works on async futures and stores, and assumes that we're
-    /// executing on a fiber. This will yield execution back to the caller once.
-    pub fn async_yield_impl(&mut self) -> Result<()> {
-        // When control returns, we have a `Result<()>` passed
-        // in from the host fiber. If this finished successfully then
-        // we were resumed normally via a `poll`, so keep going.  If
-        // the future was dropped while we were yielded, then we need
-        // to clean up this fiber. Do so by raising a trap which will
-        // abort all wasm and get caught on the other side to clean
-        // things up.
-        self.block_on(|_| crate::runtime::vm::Yield::new())
-    }
-
     #[cfg(target_has_atomic = "64")]
     fn epoch_deadline_async_yield_and_update(&mut self, delta: u64) {
         assert!(
@@ -178,17 +159,6 @@ impl<T> StoreInner<T> {
         );
         self.epoch_deadline_behavior =
             Some(Box::new(move |_store| Ok(UpdateDeadline::Yield(delta))));
-    }
-
-    pub(crate) fn block_on<'a, F: Future + Send>(
-        &'a mut self,
-        mk_future: impl FnOnce(&'a mut Self) -> F,
-    ) -> Result<F::Output> {
-        let async_cx = AsyncCx::try_new(self)
-            .context("couldn't create AsyncCx to block on async operation")?;
-        let future = mk_future(self);
-        let mut future = core::pin::pin!(future);
-        Ok(async_cx.block_on(future.as_mut())?)
     }
 }
 
@@ -199,9 +169,9 @@ impl StoreOpaque {
     /// This function will convert the synchronous `func` into an asynchronous
     /// future. This is done by running `func` in a fiber on a separate native
     /// stack which can be suspended and resumed from.
-    pub(crate) async fn on_fiber<R: Send + 'static>(
+    pub(crate) async fn on_fiber<R: Send + Sync>(
         &mut self,
-        func: impl FnOnce(&mut Self) -> R + Send,
+        func: impl FnOnce(&mut Self) -> R + Send + Sync,
     ) -> Result<R> {
         fiber::on_fiber(self, func).await
     }
@@ -269,10 +239,6 @@ impl StoreOpaque {
     /// This only works on async futures and stores, and assumes that we're
     /// executing on a fiber. This will yield execution back to the caller once.
     pub fn async_yield_impl(&mut self) -> Result<()> {
-        use crate::runtime::vm::Yield;
-
-        let mut future = Yield::new();
-
         // When control returns, we have a `Result<()>` passed
         // in from the host fiber. If this finished successfully then
         // we were resumed normally via a `poll`, so keep going.  If
@@ -280,17 +246,11 @@ impl StoreOpaque {
         // to clean up this fiber. Do so by raising a trap which will
         // abort all wasm and get caught on the other side to clean
         // things up.
-        AsyncCx::try_new(self)
-            .expect("attempted to pull async context during shutdown")
-            .block_on(unsafe { Pin::new_unchecked(&mut future) })
-    }
-
-    pub(crate) fn async_guard_range(&mut self) -> Range<*mut u8> {
-        unsafe { (*self.async_state()).async_guard_range() }
+        self.block_on(|_| Box::pin(crate::runtime::vm::Yield::new()))
     }
 
     pub(crate) fn allocate_fiber_stack(&mut self) -> Result<wasmtime_fiber::FiberStack> {
-        if let Some(stack) = self.async_state.last_fiber_stack.take() {
+        if let Some(stack) = self.async_state.last_fiber_stack().take() {
             return Ok(stack);
         }
         self.engine().allocator().allocate_fiber_stack()
@@ -298,13 +258,13 @@ impl StoreOpaque {
 
     pub(crate) fn deallocate_fiber_stack(&mut self, stack: wasmtime_fiber::FiberStack) {
         self.flush_fiber_stack();
-        self.async_state.last_fiber_stack = Some(stack);
+        *self.async_state.last_fiber_stack() = Some(stack);
     }
 
     /// Releases the last fiber stack to the underlying instance allocator, if
     /// present.
     pub fn flush_fiber_stack(&mut self) {
-        if let Some(stack) = self.async_state.last_fiber_stack.take() {
+        if let Some(stack) = self.async_state.last_fiber_stack().take() {
             unsafe {
                 self.engine.allocator().deallocate_fiber_stack(stack);
             }
@@ -314,9 +274,9 @@ impl StoreOpaque {
 
 impl<T> StoreContextMut<'_, T> {
     /// Executes a synchronous computation `func` asynchronously on a new fiber.
-    pub(crate) async fn on_fiber<R: Send + 'static>(
+    pub(crate) async fn on_fiber<R: Send + Sync>(
         &mut self,
-        func: impl FnOnce(&mut StoreContextMut<'_, T>) -> R + Send,
+        func: impl FnOnce(&mut StoreContextMut<'_, T>) -> R + Send + Sync,
     ) -> Result<R>
     where
         T: Send + 'static,

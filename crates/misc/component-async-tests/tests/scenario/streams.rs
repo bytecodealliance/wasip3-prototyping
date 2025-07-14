@@ -1,9 +1,7 @@
 use {
+    super::util::{config, make_component},
     anyhow::Result,
-    component_async_tests::{
-        Ctx, closed_streams,
-        util::{config, make_component},
-    },
+    component_async_tests::{Ctx, closed_streams},
     futures::{
         future::{self, FutureExt},
         stream::{FuturesUnordered, StreamExt, TryStreamExt},
@@ -345,7 +343,7 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
     // Next, test futures host->guest
     {
         let (tx, rx) = instance.future(|| unreachable!(), &mut store)?;
-        let (tx_ignored, rx_ignored) = instance.future(|| unreachable!(), &mut store)?;
+        let (tx_ignored, rx_ignored) = instance.future(|| 0, &mut store)?;
 
         let mut futures = FuturesUnordered::new();
         futures.push(

@@ -145,6 +145,86 @@ mod no_imports_concurrent {
     }
 }
 
+mod no_imports_concurrent {
+    use super::*;
+    use futures::{
+        FutureExt,
+        stream::{FuturesUnordered, TryStreamExt},
+    };
+
+    wasmtime::component::bindgen!({
+        inline: "
+            package foo:foo;
+
+            world no-imports {
+                export foo: interface {
+                    foo: func();
+                }
+
+                export bar: func();
+            }
+        ",
+        async: true,
+        concurrent_exports: true,
+    });
+
+    #[tokio::test]
+    async fn run() -> Result<()> {
+        let mut config = Config::new();
+        config.wasm_component_model_async(true);
+        config.async_support(true);
+        let engine = &Engine::new(&config)?;
+
+        let component = Component::new(
+            &engine,
+            r#"
+                (component
+                    (core module $m
+                        (import "" "task.return" (func $task-return))
+                        (func (export "bar") (result i32)
+                            call $task-return
+                            i32.const 0
+                        )
+                        (func (export "callback") (param i32 i32 i32) (result i32) unreachable)
+                    )
+                    (core func $task-return (canon task.return))
+                    (core instance $i (instantiate $m
+                        (with "" (instance (export "task.return" (func $task-return))))
+                    ))
+
+                    (func $f (export "bar")
+                        (canon lift (core func $i "bar") async (callback (func $i "callback")))
+                    )
+
+                    (instance $i (export "foo" (func $f)))
+                    (export "foo" (instance $i))
+                )
+            "#,
+        )?;
+
+        let linker = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker.instantiate_async(&mut store, &component).await?;
+        let no_imports = NoImports::new(&mut store, &instance)?;
+        let mut futures = FuturesUnordered::new();
+        futures.push(no_imports.call_bar(&mut store).boxed());
+        futures.push(no_imports.foo().call_foo(&mut store).boxed());
+        assert!(
+            instance
+                .run(&mut store, futures.try_next())
+                .await??
+                .is_some()
+        );
+        assert!(
+            instance
+                .run(&mut store, futures.try_next())
+                .await??
+                .is_some()
+        );
+        Ok(())
+    }
+}
+
 mod one_import {
     use super::*;
     use wasmtime::component::HasSelf;

@@ -7,7 +7,10 @@ use std::sync::{
 use std::task::{Context, Wake, Waker};
 use std::time::Duration;
 
+use super::util::{config, make_component};
 use anyhow::{Result, anyhow};
+use component_async_tests::Ctx;
+use component_async_tests::util::sleep;
 use futures::{
     FutureExt,
     channel::oneshot,
@@ -17,10 +20,6 @@ use once_cell::sync::Lazy;
 use wasmtime::component::{Accessor, AccessorTask, HasSelf, Instance, Linker, ResourceTable, Val};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::p2::WasiCtxBuilder;
-
-use component_async_tests::Ctx;
-
-pub use component_async_tests::util::{config, make_component, sleep};
 
 #[tokio::test]
 pub async fn async_round_trip_stackful() -> Result<()> {
@@ -237,6 +236,7 @@ pub async fn test_round_trip(
         let mut store = make_store();
 
         let instance = linker.instantiate_async(&mut store, &component).await?;
+        instance.enable_concurrent_state_debug(&mut store, true);
         let round_trip =
             component_async_tests::round_trip::bindings::RoundTrip::new(&mut store, &instance)?;
 
@@ -258,6 +258,8 @@ pub async fn test_round_trip(
             {
                 assert_eq!(expected, actual);
             }
+
+            instance.assert_concurrent_state_empty(&mut store);
         }
 
         if call_style == 1 || !cfg!(miri) {
@@ -294,6 +296,8 @@ pub async fn test_round_trip(
                     }
                 })
                 .await??;
+
+            instance.assert_concurrent_state_empty(&mut store);
         }
 
         if call_style == 2 || !cfg!(miri) {
@@ -352,6 +356,8 @@ pub async fn test_round_trip(
             );
 
             instance.run(&mut store, rx).await??;
+
+            instance.assert_concurrent_state_empty(&mut store);
         }
 
         if call_style == 3 || !cfg!(miri) {
@@ -370,6 +376,8 @@ pub async fn test_round_trip(
                         .await?
                 );
             }
+
+            instance.assert_concurrent_state_empty(&mut store);
         }
     }
 
@@ -381,15 +389,14 @@ pub async fn test_round_trip(
         linker
             .root()
             .instance("local:local/baz")?
-            .func_new_concurrent("[async]foo", |_, params| {
+            .func_new_concurrent("[async]foo", |_, params, results| {
                 Box::pin(async move {
                     sleep(Duration::from_millis(10)).await;
                     let Some(Val::String(s)) = params.into_iter().next() else {
                         unreachable!()
                     };
-                    Ok(vec![Val::String(format!(
-                        "{s} - entered host - exited host"
-                    ))])
+                    results[0] = Val::String(format!("{s} - entered host - exited host"));
+                    Ok(())
                 })
             })?;
 
@@ -426,6 +433,8 @@ pub async fn test_round_trip(
                 };
                 assert_eq!(expected, actual);
             }
+
+            instance.assert_concurrent_state_empty(&mut store);
         }
 
         if call_style == 5 || !cfg!(miri) {
@@ -443,7 +452,10 @@ pub async fn test_round_trip(
                     unreachable!()
                 };
                 assert_eq!(*expected, actual);
+                foo_function.post_return_async(&mut store).await?;
             }
+
+            instance.assert_concurrent_state_empty(&mut store);
         }
     }
 

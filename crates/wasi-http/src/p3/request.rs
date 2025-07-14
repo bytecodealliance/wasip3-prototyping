@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use http::uri::{Authority, PathAndQuery, Scheme};
 use http::{HeaderMap, Method};
-use wasmtime::component::AbortOnDropHandle;
-use wasmtime_wasi::p3::WithChildren;
+use wasmtime_wasi::p3::{AbortOnDropHandle, WithChildren};
 
 use crate::p3::Body;
 

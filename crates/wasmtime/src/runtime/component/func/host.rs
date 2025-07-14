@@ -15,13 +15,12 @@ use crate::{AsContextMut, CallHook, StoreContextMut, ValRaw};
 use alloc::sync::Arc;
 use core::any::Any;
 use core::future::Future;
-use core::iter;
 use core::mem::{self, MaybeUninit};
 use core::pin::Pin;
 use core::ptr::NonNull;
 use wasmtime_environ::component::{
-    CanonicalAbiInfo, ComponentTypes, InterfaceType, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS,
-    RuntimeComponentInstanceIndex, StringEncoding, TypeFuncIndex, TypeTuple,
+    CanonicalAbiInfo, ComponentTypes, InterfaceType, MAX_FLAT_ASYNC_PARAMS, MAX_FLAT_PARAMS,
+    MAX_FLAT_RESULTS, RuntimeComponentInstanceIndex, StringEncoding, TypeFuncIndex, TypeTuple,
 };
 
 pub struct HostFunc {
@@ -36,19 +35,18 @@ impl core::fmt::Debug for HostFunc {
     }
 }
 
+enum HostResult<T> {
+    Done(Result<T>),
+    #[cfg(feature = "component-model-async")]
+    Future(Pin<Box<dyn Future<Output = Result<T>> + Send>>),
+}
+
 impl HostFunc {
     fn from_canonical<T: 'static, F, P, R>(func: F) -> Arc<HostFunc>
     where
-        F: Fn(
-                StoreContextMut<'_, T>,
-                Instance,
-                P,
-            ) -> Pin<Box<dyn Future<Output = Result<R>> + Send + 'static>>
-            + Send
-            + Sync
-            + 'static,
-        P: ComponentNamedList + Lift + Send + Sync + 'static,
-        R: ComponentNamedList + Lower + Send + Sync + 'static,
+        F: Fn(StoreContextMut<'_, T>, Instance, P) -> HostResult<R> + Send + Sync + 'static,
+        P: ComponentNamedList + Lift + 'static,
+        R: ComponentNamedList + Lower + 'static,
         T: 'static,
     {
         let entrypoint = Self::entrypoint::<T, F, P, R>;
@@ -62,12 +60,11 @@ impl HostFunc {
     pub(crate) fn from_closure<T: 'static, F, P, R>(func: F) -> Arc<HostFunc>
     where
         F: Fn(StoreContextMut<T>, P) -> Result<R> + Send + Sync + 'static,
-        P: ComponentNamedList + Lift + Send + Sync + 'static,
-        R: ComponentNamedList + Lower + Send + Sync + 'static,
+        P: ComponentNamedList + Lift + 'static,
+        R: ComponentNamedList + Lower + 'static,
     {
         Self::from_canonical::<T, _, _, _>(move |store, _, params| {
-            let result = func(store, params);
-            Box::pin(async move { result })
+            HostResult::Done(func(store, params))
         })
     }
 
@@ -79,12 +76,15 @@ impl HostFunc {
             + Send
             + Sync
             + 'static,
-        P: ComponentNamedList + Lift + Send + Sync + 'static,
-        R: ComponentNamedList + Lower + Send + Sync + 'static,
+        P: ComponentNamedList + Lift + 'static,
+        R: ComponentNamedList + Lower + 'static,
     {
         let func = Arc::new(func);
         Self::from_canonical::<T, _, _, _>(move |store, instance, params| {
-            Box::pin(instance.wrap_call(store, func.clone(), params))
+            let func = func.clone();
+            HostResult::Future(Box::pin(
+                instance.wrap_call(store, move |accessor| func(accessor, params)),
+            ))
         })
     }
 
@@ -102,16 +102,9 @@ impl HostFunc {
         storage_len: usize,
     ) -> bool
     where
-        F: Fn(
-                StoreContextMut<'_, T>,
-                Instance,
-                P,
-            ) -> Pin<Box<dyn Future<Output = Result<R>> + Send + 'static>>
-            + Send
-            + Sync
-            + 'static,
-        P: ComponentNamedList + Lift + Send + Sync + 'static,
-        R: ComponentNamedList + Lower + Send + Sync + 'static,
+        F: Fn(StoreContextMut<'_, T>, Instance, P) -> HostResult<R> + Send + Sync + 'static,
+        P: ComponentNamedList + Lift,
+        R: ComponentNamedList + Lower + 'static,
         T: 'static,
     {
         let data = SendSyncPtr::new(NonNull::new(data.as_ptr() as *mut F).unwrap());
@@ -161,32 +154,41 @@ impl HostFunc {
     where
         F: Fn(StoreContextMut<'_, T>, &[Val], &mut [Val]) -> Result<()> + Send + Sync + 'static,
     {
-        Self::new_dynamic_canonical::<T, _>(move |store, _, params: Vec<Val>, result_count| {
-            let mut results = iter::repeat(Val::Bool(false))
-                .take(result_count)
-                .collect::<Vec<_>>();
-            let result = func(store, &params, &mut results);
-            let result = result.map(move |()| results);
-            Box::pin(async move { result })
-        })
+        Self::new_dynamic_canonical::<T, _>(
+            move |store, _, mut params_and_results, result_start| {
+                let (params, results) = params_and_results.split_at_mut(result_start);
+                let result = func(store, params, results).map(move |()| params_and_results);
+                Box::pin(async move { result })
+            },
+        )
     }
 
     #[cfg(feature = "component-model-async")]
     pub(crate) fn new_dynamic_concurrent<T: 'static, F>(func: F) -> Arc<HostFunc>
     where
         T: 'static,
-        F: Fn(
-                &mut Accessor<T>,
-                Vec<Val>,
-            ) -> Pin<Box<dyn Future<Output = Result<Vec<Val>>> + Send + '_>>
+        F: for<'a> Fn(
+                &'a mut Accessor<T>,
+                &'a [Val],
+                &'a mut [Val],
+            ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>
             + Send
             + Sync
             + 'static,
     {
         let func = Arc::new(func);
-        Self::new_dynamic_canonical::<T, _>(move |store, instance, params, _| {
-            Box::pin(instance.wrap_call(store, func.clone(), params))
-        })
+        Self::new_dynamic_canonical::<T, _>(
+            move |store, instance, mut params_and_results, result_start| {
+                let func = func.clone();
+                Box::pin(instance.wrap_call(store, move |accessor| {
+                    Box::pin(async move {
+                        let (params, results) = params_and_results.split_at_mut(result_start);
+                        func(accessor, params, results).await?;
+                        Ok(params_and_results)
+                    })
+                }))
+            },
+        )
     }
 
     pub fn typecheck(&self, ty: TypeFuncIndex, types: &InstanceType<'_>) -> Result<()> {
@@ -249,16 +251,9 @@ unsafe fn call_host<T, Params, Return, F>(
     closure: F,
 ) -> Result<()>
 where
-    F: Fn(
-            StoreContextMut<'_, T>,
-            Instance,
-            Params,
-        ) -> Pin<Box<dyn Future<Output = Result<Return>> + Send + 'static>>
-        + Send
-        + Sync
-        + 'static,
-    Params: Lift + Send + Sync + 'static,
-    Return: Lower + Send + Sync + 'static,
+    F: Fn(StoreContextMut<'_, T>, Instance, Params) -> HostResult<Return> + Send + Sync + 'static,
+    Params: Lift,
+    Return: Lower + 'static,
 {
     let options = Options::new(
         store.0.store_opaque().id(),
@@ -310,8 +305,9 @@ where
                 }
             };
 
-            let future = closure(store.as_context_mut(), instance, params);
-            let task = instance.first_poll(store.as_context_mut(), future, caller_instance, {
+            let host_result = closure(store.as_context_mut(), instance, params);
+
+            let mut lower_result = {
                 let types = types.clone();
                 move |store: StoreContextMut<T>, instance: Instance, ret: Return| {
                     flags.set_may_leave(false);
@@ -321,7 +317,20 @@ where
                     lower.exit_call()?;
                     Ok(())
                 }
-            })?;
+            };
+            let task = match host_result {
+                HostResult::Done(result) => {
+                    lower_result(store.as_context_mut(), instance, result?)?;
+                    None
+                }
+                #[cfg(feature = "component-model-async")]
+                HostResult::Future(future) => instance.first_poll(
+                    store.as_context_mut(),
+                    future,
+                    caller_instance,
+                    lower_result,
+                )?,
+            };
 
             let status = if let Some(task) = task {
                 Status::Started.pack(Some(task))
@@ -334,6 +343,7 @@ where
         }
         #[cfg(not(feature = "component-model-async"))]
         {
+            let _ = caller_instance;
             unreachable!(
                 "async-lowered imports should have failed validation \
                  when `component-model-async` feature disabled"
@@ -345,9 +355,13 @@ where
         lift.enter_call();
         let params = storage.lift_params(&mut lift, param_tys)?;
 
-        let future = closure(store.as_context_mut(), instance, params);
-
-        let ret = instance.poll_and_block(store.0.traitobj_mut(), future, caller_instance)?;
+        let ret = match closure(store.as_context_mut(), instance, params) {
+            HostResult::Done(result) => result?,
+            #[cfg(feature = "component-model-async")]
+            HostResult::Future(future) => {
+                instance.poll_and_block(store.0.traitobj_mut(), future, caller_instance)?
+            }
+        };
 
         flags.set_may_leave(false);
         let mut lower = LowerContext::new(store, &options, &types, instance);
@@ -737,23 +751,31 @@ where
     let param_tys = &types[func_ty.params];
     let result_tys = &types[func_ty.results];
 
+    let mut params_and_results = Vec::new();
+    let mut lift = &mut LiftContext::new(store.0.store_opaque_mut(), &options, &types, instance);
+    lift.enter_call();
+    let max_flat = if async_ {
+        MAX_FLAT_ASYNC_PARAMS
+    } else {
+        MAX_FLAT_PARAMS
+    };
+
+    let ret_index = dynamic_params_load(
+        &mut lift,
+        &types,
+        storage,
+        param_tys,
+        &mut params_and_results,
+        max_flat,
+    )?;
+    let result_start = params_and_results.len();
+    for _ in 0..result_tys.types.len() {
+        params_and_results.push(Val::Bool(false));
+    }
+
     if async_ {
         #[cfg(feature = "component-model-async")]
         {
-            let mut params = Vec::new();
-            let mut lift =
-                &mut LiftContext::new(store.0.store_opaque_mut(), &options, &types, instance);
-            lift.enter_call();
-
-            let ret_index = dynamic_params_load(
-                &mut lift,
-                &types,
-                storage,
-                param_tys,
-                &mut params,
-                wasmtime_environ::component::MAX_FLAT_ASYNC_PARAMS,
-            )?;
-
             let retptr = if result_tys.types.len() == 0 {
                 0
             } else {
@@ -766,8 +788,8 @@ where
             let future = closure(
                 store.as_context_mut(),
                 instance,
-                params,
-                result_tys.types.len(),
+                params_and_results,
+                result_start,
             );
 
             let task = instance.first_poll(store, future, caller_instance, {
@@ -775,9 +797,8 @@ where
                 let result_tys = func_ty.results;
                 move |store: StoreContextMut<T>, instance: Instance, result_vals: Vec<Val>| {
                     let result_tys = &types[result_tys];
-                    if result_vals.len() != result_tys.types.len() {
-                        bail!("result length mismatch");
-                    }
+                    let result_vals = &result_vals[result_start..];
+                    assert_eq!(result_vals.len(), result_tys.types.len());
 
                     flags.set_may_leave(false);
 
@@ -812,26 +833,15 @@ where
             );
         }
     } else {
-        let mut args = Vec::new();
-        let mut cx = LiftContext::new(store.0.store_opaque_mut(), &options, &types, instance);
-        cx.enter_call();
-        let ret_index = dynamic_params_load(
-            &mut cx,
-            &types,
-            storage,
-            param_tys,
-            &mut args,
-            MAX_FLAT_PARAMS,
-        )?;
-
         let future = closure(
             store.as_context_mut(),
             instance,
-            args,
-            result_tys.types.len(),
+            params_and_results,
+            result_start,
         );
         let result_vals =
             instance.poll_and_block(store.0.traitobj_mut(), future, caller_instance)?;
+        let result_vals = &result_vals[result_start..];
 
         flags.set_may_leave(false);
 

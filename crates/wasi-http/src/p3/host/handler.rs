@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 use tracing::debug;
 use wasmtime::component::{Accessor, AccessorTask, Resource};
-use wasmtime_wasi::p3::{AccessorTaskFn, ResourceView as _};
+use wasmtime_wasi::p3::{AbortOnDropHandle, AccessorTaskFn, ResourceView as _};
 
 struct TrailerTask {
     rx: OutgoingTrailerFuture,
@@ -220,7 +220,7 @@ where
                 });
                 let body = empty_body().with_trailers(OutgoingRequestTrailers {
                     trailers: Some(trailers_rx),
-                    trailer_task: task.abort_on_drop_handle(),
+                    trailer_task: AbortOnDropHandle(task),
                 });
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
@@ -258,7 +258,7 @@ where
                 let body = OutgoingRequestBody::new(contents, buffer, content_length)
                     .with_trailers(OutgoingRequestTrailers {
                         trailers: Some(trailers_rx),
-                        trailer_task: task.abort_on_drop_handle(),
+                        trailer_task: AbortOnDropHandle(task),
                     });
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
