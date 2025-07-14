@@ -7,7 +7,7 @@ use crate::component::concurrent::{ConcurrentState, tls};
 use crate::component::func::{self, LiftContext, LowerContext, Options};
 use crate::component::matching::InstanceType;
 use crate::component::values::{ErrorContextAny, FutureAny, StreamAny};
-use crate::component::{Instance, Lower, Val, WasmList, WasmStr};
+use crate::component::{Accessor, HasData, Instance, Lower, Val, WasmList, WasmStr};
 use crate::store::{StoreOpaque, StoreToken};
 use crate::vm::{VMFuncRef, VMMemoryDefinition, VMStore};
 use crate::{AsContextMut, StoreContextMut, ValRaw};
@@ -507,13 +507,23 @@ impl<T> FutureWriter<T> {
     /// value; otherwise it will return `false`, meaning the read end was dropped
     /// before the value could be delivered.
     ///
-    /// Note that the returned `Future` must be polled from the event loop of
-    /// the component instance from which this `FutureWriter` originated.  See
-    /// [`Instance::run`] for details.
-    pub fn write(mut self, value: T) -> impl Future<Output = bool> + Send + 'static
+    /// The [`Accessor`] provided can be acquired from [`Instance::run_with`] or
+    /// from within a host function for example.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the store that the [`Accessor`] is derived from does not own
+    /// this future.
+    pub async fn write<U, D>(mut self, accessor: &Accessor<U, D>, value: T) -> bool
     where
+        U: Send,
+        D: HasData,
         T: Send + 'static,
     {
+        // FIXME: this is intended to be used in the future to directly
+        // manipulate state for this future within the store without having to
+        // go through an mpsc.
+        let _ = accessor;
         let (tx, rx) = oneshot::channel();
         send(
             &mut self.tx.as_mut().unwrap(),
@@ -523,38 +533,37 @@ impl<T> FutureWriter<T> {
             },
         );
         self.default = None;
-        let instance = self.instance;
-        super::checked(
-            instance,
-            rx.map(move |v| {
-                drop(self);
-                match v {
-                    Ok(HostResult { dropped, .. }) => !dropped,
-                    Err(_) => todo!("guarantee buffer recovery if event loop errors or panics"),
-                }
-            }),
-        )
+        let v = rx.await;
+        drop(self);
+        match v {
+            Ok(HostResult { dropped, .. }) => !dropped,
+            Err(_) => todo!("guarantee buffer recovery if event loop errors or panics"),
+        }
     }
 
-    /// Convert this object into a `Future` which will resolve when the read end
-    /// of this `future` is dropped, plus a `Watch` which can be used to retrieve
-    /// the `FutureWriter` again.
+    /// Wait for the read end of this `future` is dropped.
     ///
-    /// Note that calling `Watch::into_inner` on the returned `Watch` will have
-    /// the side effect of causing the `Future` to resolve immediately if it
-    /// hasn't already.
+    /// The [`Accessor`] provided can be acquired from [`Instance::run_with`] or
+    /// from within a host function for example.
     ///
-    /// Also note that the returned `Future` must be polled from the event loop
-    /// of the component instance from which this `FutureWriter` originated.
-    /// See [`Instance::run`] for details.
-    pub fn watch_reader(mut self) -> (impl Future<Output = ()> + Send + 'static, Watch<Self>)
+    /// # Panics
+    ///
+    /// Panics if the store that the [`Accessor`] is derived from does not own
+    /// this future.
+    pub async fn watch_reader<U, D>(&mut self, accessor: &Accessor<U, D>)
     where
+        U: Send,
+        D: HasData,
         T: Send + 'static,
     {
+        // FIXME: this is intended to be used in the future to directly
+        // manipulate state for this future within the store without having to
+        // go through an mpsc.
+        let _ = accessor;
         let (tx, rx) = oneshot::channel();
         send(&mut self.tx.as_mut().unwrap(), WriteEvent::Watch { tx });
-        let instance = self.instance;
-        watch(instance, rx, self)
+        let (future, _watch) = watch(self.instance, rx, ());
+        future.await;
     }
 }
 
@@ -787,56 +796,65 @@ impl<T> FutureReader<T> {
     /// The returned `Future` will yield `None` if the guest has trapped
     /// before it could produce a result.
     ///
-    /// Note that the returned `Future` must be polled from the event loop of
-    /// the component instance from which this `FutureReader` originated.  See
-    /// [`Instance::run`] for details.
-    pub fn read(mut self) -> impl Future<Output = Option<T>> + Send + 'static
+    /// The [`Accessor`] provided can be acquired from [`Instance::run_with`] or
+    /// from within a host function for example.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the store that the [`Accessor`] is derived from does not own
+    /// this future.
+    pub async fn read<U, D>(mut self, accessor: &Accessor<U, D>) -> Option<T>
     where
+        U: Send,
+        D: HasData,
         T: Send + 'static,
     {
+        // FIXME: this is intended to be used in the future to directly
+        // manipulate state for this future within the store without having to
+        // go through an mpsc.
+        let _ = accessor;
         let (tx, rx) = oneshot::channel();
         send(
             &mut self.tx.as_mut().unwrap(),
             ReadEvent::Read { buffer: None, tx },
         );
-        let instance = self.instance;
-        super::checked(
-            instance,
-            rx.map(move |v| {
-                drop(self);
+        let v = rx.await;
+        drop(self);
 
-                if let Ok(HostResult {
-                    mut buffer,
-                    dropped: false,
-                }) = v
-                {
-                    buffer.take()
-                } else {
-                    None
-                }
-            }),
-        )
+        if let Ok(HostResult {
+            mut buffer,
+            dropped: false,
+        }) = v
+        {
+            buffer.take()
+        } else {
+            None
+        }
     }
 
-    /// Convert this object into a `Future` which will resolve when the write
-    /// end of this `future` is dropped, plus a `Watch` which can be used to
-    /// retrieve the `FutureReader` again.
+    /// Wait for the write end of this `future` to be dropped.
     ///
-    /// Note that calling `Watch::into_inner` on the returned `Watch` will have
-    /// the side effect of causing the `Future` to resolve immediately if it
-    /// hasn't already.
+    /// The [`Accessor`] provided can be acquired from [`Instance::run_with`] or
+    /// from within a host function for example.
     ///
-    /// Also note that the returned `Future` must be polled from the event loop
-    /// of the component instance from which this `FutureReader` originated.
-    /// See [`Instance::run`] for details.
-    pub fn watch_writer(mut self) -> (impl Future<Output = ()> + Send + 'static, Watch<Self>)
+    /// # Panics
+    ///
+    /// Panics if the store that the [`Accessor`] is derived from does not own
+    /// this future.
+    pub async fn watch_writer<U, D>(&mut self, accessor: &Accessor<U, D>)
     where
+        U: Send,
+        D: HasData,
         T: Send + 'static,
     {
+        // FIXME: this is intended to be used in the future to directly
+        // manipulate state for this future within the store without having to
+        // go through an mpsc.
+        let _ = accessor;
         let (tx, rx) = oneshot::channel();
         send(&mut self.tx.as_mut().unwrap(), ReadEvent::Watch { tx });
-        let instance = self.instance;
-        watch(instance, rx, self)
+        let (future, _watch) = watch(self.instance, rx, ());
+        future.await
     }
 }
 

@@ -427,7 +427,7 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &str) -> Re
                             caller_future1_tx
                                 .take()
                                 .unwrap()
-                                .write("b".into())
+                                .write(accessor, "b".into())
                                 .map(Event::WriteB)
                                 .map(Ok)
                                 .boxed(),
@@ -467,7 +467,7 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &str) -> Re
                             callee_future1_rx
                                 .take()
                                 .unwrap()
-                                .read()
+                                .read(accessor)
                                 .map(Event::ReadD)
                                 .map(Ok)
                                 .boxed(),

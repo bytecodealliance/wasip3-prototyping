@@ -66,26 +66,38 @@ pub async fn async_watch_streams() -> Result<()> {
     instance.run(&mut store, rx.watch_writer().0).await?;
 
     // Test watching and then dropping the read end of a future.
-    let (tx, rx) = instance.future::<u8>(|| 42, &mut store)?;
-    let watch = tx.watch_reader().0;
-    drop(rx);
-    instance.run(&mut store, watch).await?;
+    let (mut tx, rx) = instance.future::<u8>(|| 42, &mut store)?;
+    instance
+        .run_with(&mut store, async |store| {
+            futures::join!(tx.watch_reader(store), async {
+                drop(rx);
+            });
+        })
+        .await?;
 
     // Test dropping and then watching the read end of a future.
-    let (tx, rx) = instance.future::<u8>(|| 42, &mut store)?;
+    let (mut tx, rx) = instance.future::<u8>(|| 42, &mut store)?;
     drop(rx);
-    instance.run(&mut store, tx.watch_reader().0).await?;
+    instance
+        .run_with(&mut store, async |store| tx.watch_reader(store).await)
+        .await?;
 
     // Test watching and then dropping the write end of a future.
-    let (tx, rx) = instance.future::<u8>(|| 42, &mut store)?;
-    let watch = rx.watch_writer().0;
-    drop(tx);
-    instance.run(&mut store, watch).await?;
+    let (tx, mut rx) = instance.future::<u8>(|| 42, &mut store)?;
+    instance
+        .run_with(&mut store, async |store| {
+            futures::join!(rx.watch_writer(store), async {
+                drop(tx);
+            });
+        })
+        .await?;
 
     // Test dropping and then watching the write end of a future.
-    let (tx, rx) = instance.future::<u8>(|| 42, &mut store)?;
+    let (tx, mut rx) = instance.future::<u8>(|| 42, &mut store)?;
     drop(tx);
-    instance.run(&mut store, rx.watch_writer().0).await?;
+    instance
+        .run_with(&mut store, async |store| rx.watch_writer(store).await)
+        .await?;
 
     enum Event {
         Write(Option<StreamWriter<Option<u8>>>),
@@ -243,48 +255,52 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
     // Next, test futures host->host
     {
         let (tx, rx) = instance.future(|| unreachable!(), &mut store)?;
-        let (tx_ignored, rx_ignored) = instance.future(|| 42u8, &mut store)?;
+        let (mut tx_ignored, rx_ignored) = instance.future(|| 42u8, &mut store)?;
 
-        let mut futures = FuturesUnordered::new();
-        futures.push(tx.write(value).map(FutureEvent::Write).boxed());
-        futures.push(rx.read().map(FutureEvent::Read).boxed());
-        if watch {
-            futures.push(
-                tx_ignored
-                    .watch_reader()
-                    .0
-                    .map(|()| FutureEvent::WriteIgnored(false))
-                    .boxed(),
-            );
-        } else {
-            futures.push(
-                tx_ignored
-                    .write(value)
-                    .map(FutureEvent::WriteIgnored)
-                    .boxed(),
-            );
-        }
-        drop(rx_ignored);
+        instance
+            .run_with(&mut store, async |store| {
+                let mut futures = FuturesUnordered::new();
+                futures.push(tx.write(store, value).map(FutureEvent::Write).boxed());
+                futures.push(rx.read(store).map(FutureEvent::Read).boxed());
+                if watch {
+                    futures.push(
+                        tx_ignored
+                            .watch_reader(store)
+                            .map(|()| FutureEvent::WriteIgnored(false))
+                            .boxed(),
+                    );
+                } else {
+                    futures.push(
+                        tx_ignored
+                            .write(store, value)
+                            .map(FutureEvent::WriteIgnored)
+                            .boxed(),
+                    );
+                }
+                drop(rx_ignored);
 
-        let mut count = 0;
-        while let Some(event) = instance.run(&mut store, futures.next()).await? {
-            count += 1;
-            match event {
-                FutureEvent::Write(delivered) => {
-                    assert!(delivered);
+                let mut count = 0;
+                while let Some(event) = futures.next().await {
+                    count += 1;
+                    match event {
+                        FutureEvent::Write(delivered) => {
+                            assert!(delivered);
+                        }
+                        FutureEvent::Read(Some(result)) => {
+                            assert_eq!(value, result);
+                        }
+                        FutureEvent::Read(None) => panic!("read should have succeeded"),
+                        FutureEvent::WriteIgnored(delivered) => {
+                            assert!(!delivered);
+                        }
+                        FutureEvent::GuestCompleted => unreachable!(),
+                    }
                 }
-                FutureEvent::Read(Some(result)) => {
-                    assert_eq!(value, result);
-                }
-                FutureEvent::Read(None) => panic!("read should have succeeded"),
-                FutureEvent::WriteIgnored(delivered) => {
-                    assert!(!delivered);
-                }
-                FutureEvent::GuestCompleted => unreachable!(),
-            }
-        }
 
-        assert_eq!(count, 3);
+                assert_eq!(count, 3);
+                anyhow::Ok(())
+            })
+            .await??;
     }
 
     // Next, test stream host->guest
@@ -351,7 +367,7 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
     // Next, test futures host->guest
     {
         let (tx, rx) = instance.future(|| unreachable!(), &mut store)?;
-        let (tx_ignored, rx_ignored) = instance.future(|| 0, &mut store)?;
+        let (mut tx_ignored, rx_ignored) = instance.future(|| 0, &mut store)?;
 
         let closed_streams = closed_streams::bindings::ClosedStreams::new(&mut store, &instance)?;
 
@@ -365,19 +381,23 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
                         .map(|v| v.map(|()| FutureEvent::GuestCompleted))
                         .boxed(),
                 );
-                futures.push(tx.write(value).map(FutureEvent::Write).map(Ok).boxed());
+                futures.push(
+                    tx.write(accessor, value)
+                        .map(FutureEvent::Write)
+                        .map(Ok)
+                        .boxed(),
+                );
                 if watch {
                     futures.push(
                         tx_ignored
-                            .watch_reader()
-                            .0
+                            .watch_reader(accessor)
                             .map(|()| Ok(FutureEvent::WriteIgnored(false)))
                             .boxed(),
                     );
                 } else {
                     futures.push(
                         tx_ignored
-                            .write(value)
+                            .write(accessor, value)
                             .map(FutureEvent::WriteIgnored)
                             .map(Ok)
                             .boxed(),
