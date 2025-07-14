@@ -332,6 +332,51 @@ where
     instance: Instance,
 }
 
+/// A helper trait to take any type of accessor-with-data in functions.
+///
+/// This trait is similar to [`AsContextMut`] except that it's used when
+/// working with an [`Accessor`] instead of a [`StoreContextMut`]. The
+/// [`Accessor`] is the main type used in concurrent settings and is passed to
+/// functions such as [`Func::call_concurrent`] or [`FutureWriter::write`].
+///
+/// This trait is implemented for [`Accessor`] and `&T` where `T` implements
+/// this trait. This effectively means that regardless of the `D` in
+/// `Accessor<T, D>` it can still be passed to a function which just needs a
+/// store accessor.
+///
+/// Acquiring an [`Accessor`] can be done through [`Instance::run_with`] for
+/// example or in a host function through
+/// [`Linker::func_wrap_concurrent`](crate::component::Linker::func_wrap_concurrent).
+pub trait AsAccessor {
+    /// The `T` in `Store<T>` that this accessor refers to.
+    type Data: 'static;
+
+    /// The `D` in `Accessor<T, D>`, or the projection out of
+    /// `Self::Data`.
+    type AccessorData: HasData;
+
+    /// Returns the accessor that this is referring to.
+    fn as_accessor(&self) -> &Accessor<Self::Data, Self::AccessorData>;
+}
+
+impl<T: AsAccessor + ?Sized> AsAccessor for &T {
+    type Data = T::Data;
+    type AccessorData = T::AccessorData;
+
+    fn as_accessor(&self) -> &Accessor<Self::Data, Self::AccessorData> {
+        T::as_accessor(self)
+    }
+}
+
+impl<T, D: HasData> AsAccessor for Accessor<T, D> {
+    type Data = T;
+    type AccessorData = D;
+
+    fn as_accessor(&self) -> &Accessor<T, D> {
+        self
+    }
+}
+
 // Note that it is intentional at this time that `Accessor` does not actually
 // store `&mut T` or anything similar. This distinctly enables the `Accessor`
 // structure to be both `Send` and `Sync` regardless of what `T` is (or `D` for

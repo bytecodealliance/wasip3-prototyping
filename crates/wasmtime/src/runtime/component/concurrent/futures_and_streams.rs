@@ -7,7 +7,7 @@ use crate::component::concurrent::{ConcurrentState, tls};
 use crate::component::func::{self, LiftContext, LowerContext, Options};
 use crate::component::matching::InstanceType;
 use crate::component::values::{ErrorContextAny, FutureAny, StreamAny};
-use crate::component::{Accessor, HasData, Instance, Lower, Val, WasmList, WasmStr};
+use crate::component::{AsAccessor, Instance, Lower, Val, WasmList, WasmStr};
 use crate::store::{StoreOpaque, StoreToken};
 use crate::vm::{VMFuncRef, VMMemoryDefinition, VMStore};
 use crate::{AsContextMut, StoreContextMut, ValRaw};
@@ -507,23 +507,18 @@ impl<T> FutureWriter<T> {
     /// value; otherwise it will return `false`, meaning the read end was dropped
     /// before the value could be delivered.
     ///
-    /// The [`Accessor`] provided can be acquired from [`Instance::run_with`] or
-    /// from within a host function for example.
-    ///
     /// # Panics
     ///
-    /// Panics if the store that the [`Accessor`] is derived from does not own
+    /// Panics if the store that the `accessor` is derived from does not own
     /// this future.
-    pub async fn write<U, D>(mut self, accessor: &Accessor<U, D>, value: T) -> bool
+    pub async fn write(mut self, accessor: impl AsAccessor, value: T) -> bool
     where
-        U: Send,
-        D: HasData,
         T: Send + 'static,
     {
         // FIXME: this is intended to be used in the future to directly
         // manipulate state for this future within the store without having to
         // go through an mpsc.
-        let _ = accessor;
+        let _accessor = accessor.as_accessor();
         let (tx, rx) = oneshot::channel();
         send(
             &mut self.tx.as_mut().unwrap(),
@@ -550,16 +545,14 @@ impl<T> FutureWriter<T> {
     ///
     /// Panics if the store that the [`Accessor`] is derived from does not own
     /// this future.
-    pub async fn watch_reader<U, D>(&mut self, accessor: &Accessor<U, D>)
+    pub async fn watch_reader(&mut self, accessor: impl AsAccessor)
     where
-        U: Send,
-        D: HasData,
         T: Send + 'static,
     {
         // FIXME: this is intended to be used in the future to directly
         // manipulate state for this future within the store without having to
         // go through an mpsc.
-        let _ = accessor;
+        let _accessor = accessor.as_accessor();
         let (tx, rx) = oneshot::channel();
         send(&mut self.tx.as_mut().unwrap(), WriteEvent::Watch { tx });
         let (future, _watch) = watch(self.instance, rx, ());
@@ -803,16 +796,14 @@ impl<T> FutureReader<T> {
     ///
     /// Panics if the store that the [`Accessor`] is derived from does not own
     /// this future.
-    pub async fn read<U, D>(mut self, accessor: &Accessor<U, D>) -> Option<T>
+    pub async fn read(mut self, accessor: impl AsAccessor) -> Option<T>
     where
-        U: Send,
-        D: HasData,
         T: Send + 'static,
     {
         // FIXME: this is intended to be used in the future to directly
         // manipulate state for this future within the store without having to
         // go through an mpsc.
-        let _ = accessor;
+        let _accessor = accessor.as_accessor();
         let (tx, rx) = oneshot::channel();
         send(
             &mut self.tx.as_mut().unwrap(),
@@ -841,16 +832,14 @@ impl<T> FutureReader<T> {
     ///
     /// Panics if the store that the [`Accessor`] is derived from does not own
     /// this future.
-    pub async fn watch_writer<U, D>(&mut self, accessor: &Accessor<U, D>)
+    pub async fn watch_writer(&mut self, accessor: impl AsAccessor)
     where
-        U: Send,
-        D: HasData,
         T: Send + 'static,
     {
         // FIXME: this is intended to be used in the future to directly
         // manipulate state for this future within the store without having to
         // go through an mpsc.
-        let _ = accessor;
+        let _accessor = accessor.as_accessor();
         let (tx, rx) = oneshot::channel();
         send(&mut self.tx.as_mut().unwrap(), ReadEvent::Watch { tx });
         let (future, _watch) = watch(self.instance, rx, ());
