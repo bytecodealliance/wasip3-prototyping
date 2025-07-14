@@ -622,37 +622,3 @@ debug = "line-tables-only"
 inherits = "release"
 codegen-units = 1
 lto = true
-
-# TODO: remove this once we've switched to a wasm-tools/wit-bindgen release:
-[patch.crates-io]
-# wasmparser = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wat = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wast = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wasmprinter = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wasm-encoder = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wasm-smith = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wasm-mutate = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wit-parser = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wit-component = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wasm-wave = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wasm-compose = { git = "https://github.com/bytecodealliance/wasm-tools" }
-# wasm-metadata = { git = "https://github.com/bytecodealliance/wasm-tools" }
-wit-bindgen = { git = "https://github.com/bytecodealliance/wit-bindgen" }
-wit-bindgen-rt = { git = "https://github.com/bytecodealliance/wit-bindgen" }
-wit-bindgen-rust-macro = { git = "https://github.com/bytecodealliance/wit-bindgen" }
-
-# wasmparser = { path = '../wasm-tools/crates/wasmparser' }
-# wat = { path = '../wasm-tools/crates/wat' }
-# wast = { path = '../wasm-tools/crates/wast' }
-# wasmprinter = { path = '../wasm-tools/crates/wasmprinter' }
-# wasm-encoder = { path = '../wasm-tools/crates/wasm-encoder' }
-# wasm-smith = { path = '../wasm-tools/crates/wasm-smith' }
-# wasm-mutate = { path = '../wasm-tools/crates/wasm-mutate' }
-# wit-parser = { path = '../wasm-tools/crates/wit-parser' }
-# wit-component = { path = '../wasm-tools/crates/wit-component' }
-# wasm-wave = { path = '../wasm-tools/crates/wasm-wave' }
-# wasm-compose = { path = '../wasm-tools/crates/wasm-compose' }
-# wasm-metadata = { path = '../wasm-tools/crates/wasm-metadata' }
-# wit-bindgen = { path = '../wit-bindgen/crates/guest-rust' }
-# wit-bindgen-rt = { path = '../wit-bindgen/crates/guest-rust/rt' }
-# wit-bindgen-rust-macro = { path = '../wit-bindgen/crates/guest-rust/macro' }
