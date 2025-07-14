@@ -14,7 +14,7 @@ where
     T: WasiSocketsView + 'static,
 {
     async fn resolve_addresses<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         name: String,
     ) -> wasmtime::Result<Result<Vec<types::IpAddress>, ErrorCode>> {
         // `url::Host::parse` serves us two functions:

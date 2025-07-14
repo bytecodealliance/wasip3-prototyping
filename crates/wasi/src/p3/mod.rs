@@ -152,10 +152,10 @@ pub struct AccessorTaskFn<F>(pub F);
 impl<T, U, R, F, Fut> AccessorTask<T, U, R> for AccessorTaskFn<F>
 where
     U: HasData,
-    F: FnOnce(&mut Accessor<T, U>) -> Fut + Send + 'static,
+    F: FnOnce(&Accessor<T, U>) -> Fut + Send + 'static,
     Fut: Future<Output = R> + Send,
 {
-    fn run(self, accessor: &mut Accessor<T, U>) -> impl Future<Output = R> + Send {
+    fn run(self, accessor: &Accessor<T, U>) -> impl Future<Output = R> + Send {
         self.0(accessor)
     }
 }
@@ -172,7 +172,7 @@ where
     O: Lower + Send + Sync + 'static,
     E: Lower + Send + Sync + 'static,
 {
-    async fn run(mut self, _: &mut Accessor<T, U>) -> wasmtime::Result<()> {
+    async fn run(mut self, _: &Accessor<T, U>) -> wasmtime::Result<()> {
         let mut tx = self.data;
         let res = loop {
             match self.rx.recv().await {

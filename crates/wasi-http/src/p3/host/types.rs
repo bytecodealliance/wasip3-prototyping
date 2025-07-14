@@ -120,7 +120,7 @@ impl<T, U> AccessorTask<T, WasiHttp<U>, wasmtime::Result<()>> for BodyTask
 where
     U: WasiHttpView + 'static,
 {
-    async fn run(self, store: &mut Accessor<T, WasiHttp<U>>) -> wasmtime::Result<()> {
+    async fn run(self, store: &Accessor<T, WasiHttp<U>>) -> wasmtime::Result<()> {
         let body = {
             let Ok(mut body) = self.body.lock() else {
                 bail!("lock poisoned");
@@ -740,7 +740,7 @@ where
     T: WasiHttpView + 'static,
 {
     async fn new<U: 'static>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         headers: Resource<WithChildren<http::HeaderMap>>,
         contents: Option<HostStream<u8>>,
         trailers: TrailerFuture,
@@ -784,7 +784,7 @@ where
     }
 
     async fn body<U: 'static>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         req: Resource<Request>,
     ) -> wasmtime::Result<Result<(HostStream<u8>, TrailerFuture), ()>> {
         store.with(|mut view| {
@@ -1067,7 +1067,7 @@ where
     T: WasiHttpView + 'static,
 {
     async fn new<U: 'static>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         headers: Resource<WithChildren<http::HeaderMap>>,
         contents: Option<HostStream<u8>>,
         trailers: TrailerFuture,
@@ -1101,7 +1101,7 @@ where
     }
 
     async fn body<U: 'static>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         res: Resource<Response>,
     ) -> wasmtime::Result<Result<(HostStream<u8>, TrailerFuture), ()>> {
         store.with(|mut view| {

@@ -505,8 +505,11 @@ impl RunCommand {
                     let result = if let Ok(command) =
                         wasmtime_wasi::p3::bindings::Command::new(&mut *store, &instance)
                     {
-                        let run = command.wasi_cli_run().call_run(&mut *store);
-                        instance.run(&mut *store, run).await?
+                        instance
+                            .run_with(&mut *store, async |store| {
+                                command.wasi_cli_run().call_run(store).await
+                            })
+                            .await?
                     } else {
                         wasmtime_wasi::p2::bindings::Command::new(&mut *store, &instance)?
                             .wasi_cli_run()

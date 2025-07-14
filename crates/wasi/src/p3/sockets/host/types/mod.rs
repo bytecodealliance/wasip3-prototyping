@@ -14,7 +14,7 @@ impl<T> Host for WasiSocketsImpl<T> where T: WasiSocketsView {}
 
 impl<T> HostConcurrent for WasiSockets<T> where T: WasiSocketsView + 'static {}
 
-fn get_socket_addr_check<T, U>(store: &mut Accessor<T, WasiSockets<U>>) -> SocketAddrCheck
+fn get_socket_addr_check<T, U>(store: &Accessor<T, WasiSockets<U>>) -> SocketAddrCheck
 where
     U: WasiSocketsView + 'static,
 {
@@ -22,7 +22,7 @@ where
 }
 
 async fn is_addr_allowed<T, U>(
-    store: &mut Accessor<T, WasiSockets<U>>,
+    store: &Accessor<T, WasiSockets<U>>,
     addr: SocketAddr,
     reason: SocketAddrUse,
 ) -> bool

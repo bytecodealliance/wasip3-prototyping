@@ -39,8 +39,10 @@ pub async fn run_wasi_http<E: Into<ErrorCode> + 'static>(
     wasmtime_wasi_http::p3::add_to_linker(&mut linker)?;
     let instance = linker.instantiate_async(&mut store, &component).await?;
     let proxy = Proxy::new(&mut store, &instance)?;
-    let handle = proxy.handle(&mut store, req)?;
-    let res = match instance.run(&mut store, handle).await?? {
+    let res = match instance
+        .run_with(&mut store, async |s| proxy.handle(s, req).await)
+        .await??
+    {
         Ok(res) => res,
         Err(err) => return Ok(Err(Some(err))),
     };

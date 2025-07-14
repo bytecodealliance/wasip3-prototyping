@@ -23,7 +23,7 @@ where
     U: 'static,
     V: AsyncRead + Send + Sync + Unpin + 'static,
 {
-    async fn run(mut self, _: &mut Accessor<T, WasiCli<U>>) -> wasmtime::Result<()> {
+    async fn run(mut self, _: &Accessor<T, WasiCli<U>>) -> wasmtime::Result<()> {
         let mut tx = self.tx;
         let mut buf = BytesMut::with_capacity(8096);
         loop {
@@ -58,7 +58,7 @@ where
     U: 'static,
     V: AsyncWrite + Send + Sync + Unpin + 'static,
 {
-    async fn run(mut self, _: &mut Accessor<T, WasiCli<U>>) -> wasmtime::Result<()> {
+    async fn run(mut self, _: &Accessor<T, WasiCli<U>>) -> wasmtime::Result<()> {
         let mut buf = BytesMut::with_capacity(8096);
         let mut fut = self.data.read(buf);
         loop {
@@ -165,9 +165,7 @@ impl<T> stdin::HostConcurrent for WasiCli<T>
 where
     T: WasiCliView + 'static,
 {
-    async fn get_stdin<U: 'static>(
-        store: &mut Accessor<U, Self>,
-    ) -> wasmtime::Result<HostStream<u8>> {
+    async fn get_stdin<U: 'static>(store: &Accessor<U, Self>) -> wasmtime::Result<HostStream<u8>> {
         store.with(|mut view| {
             let instance = view.instance();
             let (tx, rx) = instance
@@ -187,7 +185,7 @@ where
     T: WasiCliView + 'static,
 {
     async fn set_stdout<U: 'static>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         data: HostStream<u8>,
     ) -> wasmtime::Result<()> {
         store.with(|mut view| {
@@ -209,7 +207,7 @@ where
     T: WasiCliView + 'static,
 {
     async fn set_stderr<U: 'static>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         data: HostStream<u8>,
     ) -> wasmtime::Result<()> {
         store.with(|mut view| {

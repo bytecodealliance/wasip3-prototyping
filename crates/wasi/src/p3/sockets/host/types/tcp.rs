@@ -27,7 +27,7 @@ use crate::p3::{AbortOnDropHandle, AccessorTaskFn, IoTask, ResourceView as _};
 
 use super::is_addr_allowed;
 
-fn is_tcp_allowed<T, U>(store: &mut Accessor<T, WasiSockets<U>>) -> bool
+fn is_tcp_allowed<T, U>(store: &Accessor<T, WasiSockets<U>>) -> bool
 where
     U: WasiSocketsView + 'static,
 {
@@ -74,7 +74,7 @@ impl<T, U> AccessorTask<T, WasiSockets<U>, wasmtime::Result<()>> for ListenTask
 where
     U: WasiSocketsView + 'static,
 {
-    async fn run(mut self, store: &mut Accessor<T, WasiSockets<U>>) -> wasmtime::Result<()> {
+    async fn run(mut self, store: &Accessor<T, WasiSockets<U>>) -> wasmtime::Result<()> {
         let mut tx = self.tx;
         while let Some(res) = self.rx.recv().await {
             let state = match res {
@@ -193,7 +193,7 @@ where
     T: WasiSocketsView + 'static,
 {
     async fn bind<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         socket: Resource<TcpSocket>,
         local_address: IpSocketAddress,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
@@ -211,7 +211,7 @@ where
     }
 
     async fn connect<U>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         socket: Resource<TcpSocket>,
         remote_address: IpSocketAddress,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
@@ -269,7 +269,7 @@ where
     }
 
     async fn listen<U: 'static>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         socket: Resource<TcpSocket>,
     ) -> wasmtime::Result<Result<HostStream<Resource<TcpSocket>>, ErrorCode>> {
         match store.with(|mut view| {
@@ -302,7 +302,7 @@ where
                     let (task_tx, task_rx) = mpsc::channel(1);
                     let task = view.spawn(AccessorTaskFn({
                         let listener = Arc::clone(&listener);
-                        |_: &mut Accessor<U, Self>| async move {
+                        |_: &Accessor<U, Self>| async move {
                             while let Ok(tx) = task_tx.reserve().await {
                                 tx.send(listener.accept().await)
                             }
@@ -373,7 +373,7 @@ where
     }
 
     async fn send<U: 'static>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         socket: Resource<TcpSocket>,
         data: HostStream<u8>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
@@ -434,7 +434,7 @@ where
     }
 
     async fn receive<U: 'static>(
-        store: &mut Accessor<U, Self>,
+        store: &Accessor<U, Self>,
         socket: Resource<TcpSocket>,
     ) -> wasmtime::Result<(HostStream<u8>, HostFuture<Result<(), ErrorCode>>)> {
         store.with(|mut view| {
@@ -455,7 +455,7 @@ where
                     let (task_tx, task_rx) = mpsc::channel(1);
                     let stream = Arc::clone(&stream);
                     let task = view.spawn(AccessorTaskFn({
-                        |_: &mut Accessor<U, Self>| async move {
+                        |_: &Accessor<U, Self>| async move {
                             while let Ok(tx) = task_tx.reserve().await {
                                 let mut buf = vec![0; 8096];
                                 match stream.try_read(&mut buf) {
@@ -499,7 +499,7 @@ where
                 }
                 _ => {
                     let fut = res_tx.write(Err(ErrorCode::InvalidState));
-                    view.spawn(AccessorTaskFn(|_: &mut Accessor<U, Self>| async {
+                    view.spawn(AccessorTaskFn(|_: &Accessor<U, Self>| async {
                         fut.await;
                         Ok(())
                     }));
