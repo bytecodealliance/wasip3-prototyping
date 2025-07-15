@@ -9,8 +9,8 @@ use crate::p3::host::{
     push_request, push_response,
 };
 use crate::p3::{
-    Body, BodyContext, BodyFrame, ContentLength, DEFAULT_BUFFER_CAPACITY, Request, RequestOptions,
-    Response, WasiHttp, WasiHttpImpl, WasiHttpView,
+    Body, BodyContext, BodyFrame, BodyGuestContents, ContentLength, DEFAULT_BUFFER_CAPACITY,
+    Request, RequestOptions, Response, WasiHttp, WasiHttpImpl, WasiHttpView,
 };
 use anyhow::{Context as _, bail};
 use bytes::{Bytes, BytesMut};
@@ -18,7 +18,7 @@ use core::future::Future;
 use core::future::poll_fn;
 use core::mem;
 use core::ops::{Deref, DerefMut};
-use core::pin::Pin;
+use core::pin::{Pin, pin};
 use core::str;
 use core::task::Poll;
 use futures::join;
@@ -129,7 +129,7 @@ where
         };
         match body {
             Body::Guest {
-                contents: None,
+                contents: BodyGuestContents::None,
                 buffer: Some(BodyFrame::Trailers(Ok(None))) | None,
                 tx,
                 content_length: Some(ContentLength { limit, sent }),
@@ -149,7 +149,7 @@ where
                 return Ok(());
             }
             Body::Guest {
-                contents: None,
+                contents: BodyGuestContents::None,
                 trailers: Some(mut trailers_rx),
                 buffer: None,
                 tx,
@@ -168,7 +168,7 @@ where
                         bail!("lock poisoned");
                     };
                     *body = Body::Guest {
-                        contents: None,
+                        contents: BodyGuestContents::None,
                         trailers: Some(trailers_rx),
                         buffer: None,
                         tx,
@@ -182,7 +182,7 @@ where
                         bail!("lock poisoned");
                     };
                     *body = Body::Guest {
-                        contents: None,
+                        contents: BodyGuestContents::None,
                         trailers: None,
                         buffer: Some(BodyFrame::Trailers(res)),
                         tx,
@@ -194,7 +194,7 @@ where
                 Ok(())
             }
             Body::Guest {
-                contents: None,
+                contents: BodyGuestContents::None,
                 trailers: None,
                 buffer: Some(BodyFrame::Trailers(res)),
                 tx,
@@ -206,7 +206,7 @@ where
                         bail!("lock poisoned");
                     };
                     *body = Body::Guest {
-                        contents: None,
+                        contents: BodyGuestContents::None,
                         trailers: None,
                         buffer: Some(BodyFrame::Trailers(res)),
                         tx,
@@ -218,7 +218,7 @@ where
                 Ok(())
             }
             Body::Guest {
-                contents: Some(mut contents_rx),
+                contents: BodyGuestContents::Some(mut contents_rx),
                 trailers: Some(mut trailers_rx),
                 buffer,
                 tx,
@@ -235,7 +235,7 @@ where
                             let pos = buffer.position().try_into()?;
                             let buffer = buffer.into_inner().split_off(pos);
                             *body = Body::Guest {
-                                contents: Some(contents_rx),
+                                contents: BodyGuestContents::Some(contents_rx),
                                 trailers: Some(trailers_rx),
                                 buffer: Some(BodyFrame::Data(buffer)),
                                 tx,
@@ -250,11 +250,13 @@ where
                 }
                 let (contents_tx_drop, mut contents_tx) = contents_tx.watch_reader();
                 let mut contents_tx_drop = Box::pin(contents_tx_drop);
+                let mut rx_buffer = BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY);
                 loop {
-                    let Some((rx_tail, mut rx_buffer)) =
+                    let mut next_chunk = pin!(contents_rx.read(rx_buffer));
+                    let Some((rx_tail, b)) =
                         poll_fn(|cx| match contents_tx_drop.as_mut().poll(cx) {
                             Poll::Ready(()) => return Poll::Ready(None),
-                            Poll::Pending => contents_rx.as_mut().poll(cx).map(Some),
+                            Poll::Pending => next_chunk.as_mut().poll(cx).map(Some),
                         })
                         .await
                     else {
@@ -263,7 +265,10 @@ where
                             bail!("lock poisoned");
                         };
                         *body = Body::Guest {
-                            contents: Some(contents_rx),
+                            // FIXME: cancellation support should be added to
+                            // reads in Wasmtime to fully support this to avoid
+                            // needing `Taken` at all.
+                            contents: BodyGuestContents::Taken,
                             trailers: Some(trailers_rx),
                             buffer: None,
                             tx,
@@ -271,6 +276,7 @@ where
                         };
                         return Ok(());
                     };
+                    rx_buffer = b;
                     let tx_tail = contents_tx.into_inner();
                     let Some(rx_tail) = rx_tail else {
                         debug_assert!(rx_buffer.is_empty());
@@ -322,7 +328,7 @@ where
                     }
                     let buffer = rx_buffer.split().freeze();
                     rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
-                    contents_rx = Box::pin(rx_tail.read(rx_buffer));
+                    contents_rx = rx_tail;
                     let (tx_tail, buffer) = tx_tail.write_all(Cursor::new(buffer)).await;
                     let Some(tx_tail) = tx_tail else {
                         let Ok(mut body) = self.body.lock() else {
@@ -331,7 +337,7 @@ where
                         let pos = buffer.position().try_into()?;
                         let buffer = buffer.into_inner().split_off(pos);
                         *body = Body::Guest {
-                            contents: Some(contents_rx),
+                            contents: BodyGuestContents::Some(contents_rx),
                             trailers: Some(trailers_rx),
                             buffer: Some(BodyFrame::Data(buffer)),
                             tx,
@@ -356,7 +362,7 @@ where
                         bail!("lock poisoned");
                     };
                     *body = Body::Guest {
-                        contents: None,
+                        contents: BodyGuestContents::None,
                         trailers: Some(trailers_rx),
                         buffer: None,
                         tx,
@@ -370,7 +376,7 @@ where
                         bail!("lock poisoned");
                     };
                     *body = Body::Guest {
-                        contents: None,
+                        contents: BodyGuestContents::None,
                         trailers: None,
                         buffer: Some(BodyFrame::Trailers(res)),
                         tx,
@@ -751,11 +757,10 @@ where
             let (res_tx, res_rx) = instance
                 .future(|| Ok(()), &mut view)
                 .context("failed to create future")?;
-            let contents = contents.map(|contents| {
-                contents
-                    .into_reader(&mut view)
-                    .read(BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY))
-            });
+            let contents = match contents {
+                Some(contents) => BodyGuestContents::Some(contents.into_reader(&mut view)),
+                None => BodyGuestContents::None,
+            };
             let trailers = trailers.into_reader(&mut view).read();
             let mut binding = view.get();
             let table = binding.table();
@@ -769,7 +774,7 @@ where
                 })
                 .transpose()?;
             let body = Body::Guest {
-                contents: contents.map(|v| Box::pin(v) as _),
+                contents,
                 trailers: Some(Box::pin(trailers)),
                 buffer: None,
                 tx: res_tx,
@@ -1077,11 +1082,10 @@ where
             let (res_tx, res_rx) = instance
                 .future(|| Ok(()), &mut view)
                 .context("failed to create future")?;
-            let contents = contents.map(|contents| {
-                contents
-                    .into_reader(&mut view)
-                    .read(BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY))
-            });
+            let contents = match contents {
+                Some(contents) => BodyGuestContents::Some(contents.into_reader(&mut view)),
+                None => BodyGuestContents::None,
+            };
             let trailers = trailers.into_reader(&mut view).read();
             let mut binding = view.get();
             let table = binding.table();
@@ -1089,7 +1093,7 @@ where
             let headers = headers.unwrap_or_clone()?;
             let content_length = get_content_length(&headers)?;
             let body = Body::Guest {
-                contents: contents.map(|v| Box::pin(v) as _),
+                contents,
                 trailers: Some(Box::pin(trailers)),
                 buffer: None,
                 tx: res_tx,

@@ -25,8 +25,11 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
             request
                 .set_authority(Some("www.example.com"))
                 .expect("setting authority");
-            let remaining = contents_tx.write_all(b"request-body".to_vec()).await;
-            assert!(remaining.is_empty());
+            let (remaining, ()) =
+                futures::join!(contents_tx.write_all(b"request-body".to_vec()), async {
+                    drop(request);
+                },);
+            assert!(!remaining.is_empty());
         }
         {
             let headers = Headers::from_list(&[(
@@ -38,7 +41,7 @@ impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
             let (_, trailers_rx) = wit_future::new(|| Ok(None));
             let _ = Response::new(headers, Some(contents_rx), trailers_rx);
             let remaining = contents_tx.write_all(b"response-body".to_vec()).await;
-            assert!(remaining.is_empty());
+            assert!(!remaining.is_empty());
         }
 
         {

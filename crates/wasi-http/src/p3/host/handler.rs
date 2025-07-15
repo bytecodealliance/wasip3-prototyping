@@ -2,12 +2,12 @@ use super::{delete_request, get_fields_inner, push_response};
 use crate::p3::bindings::http::handler;
 use crate::p3::bindings::http::types::ErrorCode;
 use crate::p3::{
-    Body, BodyChannel, BodyFrame, BodyWithContentLength, Client as _, ContentLength,
-    DEFAULT_BUFFER_CAPACITY, OutgoingTrailerFuture, Request, Response, WasiHttp, WasiHttpImpl,
-    WasiHttpView, empty_body,
+    Body, BodyChannel, BodyFrame, BodyGuestContents, BodyWithContentLength, Client as _,
+    ContentLength, DEFAULT_BUFFER_CAPACITY, OutgoingTrailerFuture, Request, Response, WasiHttp,
+    WasiHttpImpl, WasiHttpView, empty_body,
 };
 use anyhow::bail;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use core::iter;
 use futures::StreamExt as _;
 use http::header::HOST;
@@ -125,7 +125,7 @@ where
         let (request, ()) = request.into_parts();
         let response = match body {
             Body::Guest {
-                contents: None,
+                contents: BodyGuestContents::None,
                 buffer: Some(BodyFrame::Trailers(Ok(None))) | None,
                 tx,
                 content_length: Some(ContentLength { limit, sent }),
@@ -139,7 +139,7 @@ where
                 return Ok(Err(ErrorCode::HttpRequestBodySize(Some(sent))));
             }
             Body::Guest {
-                contents: None,
+                contents: BodyGuestContents::None,
                 trailers: None,
                 buffer: Some(BodyFrame::Trailers(Ok(None))),
                 tx,
@@ -163,7 +163,7 @@ where
                 }
             }
             Body::Guest {
-                contents: None,
+                contents: BodyGuestContents::None,
                 trailers: None,
                 buffer: Some(BodyFrame::Trailers(Ok(Some(trailers)))),
                 tx,
@@ -191,7 +191,7 @@ where
                 }
             }
             Body::Guest {
-                contents: None,
+                contents: BodyGuestContents::None,
                 trailers: None,
                 buffer: Some(BodyFrame::Trailers(Err(err))),
                 tx,
@@ -207,7 +207,7 @@ where
                 return Ok(Err(err));
             }
             Body::Guest {
-                contents: None,
+                contents: BodyGuestContents::None,
                 trailers: Some(trailers),
                 buffer: None,
                 tx,
@@ -237,7 +237,7 @@ where
                 }
             }
             Body::Guest {
-                contents: Some(contents),
+                contents: BodyGuestContents::Some(contents),
                 trailers: Some(trailers),
                 buffer,
                 tx,
@@ -267,7 +267,9 @@ where
                         io,
                         async {
                             body_tx.send(Ok(buffer)).await?;
-                            let (mut tail, mut rx_buffer) = contents.await;
+                            let (mut tail, mut rx_buffer) = contents
+                                .read(BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY))
+                                .await;
                             loop {
                                 let buffer = rx_buffer.split();
                                 body_tx.send(Ok(buffer.freeze())).await?;

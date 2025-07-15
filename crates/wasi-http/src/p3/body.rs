@@ -15,9 +15,6 @@ use wasmtime_wasi::p3::WithChildren;
 
 use crate::p3::bindings::http::types::ErrorCode;
 
-pub(crate) type OutgoingContentsStreamFuture =
-    Pin<Box<dyn Future<Output = (Option<StreamReader<BytesMut>>, BytesMut)> + Send + 'static>>;
-
 pub(crate) type OutgoingTrailerFuture = Pin<
     Box<
         dyn Future<Output = Option<Result<Option<Resource<WithChildren<HeaderMap>>>, ErrorCode>>>
@@ -62,7 +59,7 @@ pub enum Body {
     /// Body constructed by the guest
     Guest {
         /// The body stream
-        contents: Option<OutgoingContentsStreamFuture>,
+        contents: BodyGuestContents,
         /// Future, on which guest will write result and optional trailers
         trailers: Option<OutgoingTrailerFuture>,
         /// Buffered frame, if any
@@ -81,6 +78,22 @@ pub enum Body {
     },
     /// Body has been fully consumed
     Consumed,
+}
+
+/// Variants of `Body::Guest::contents`.
+pub enum BodyGuestContents {
+    /// The guest body is this provided stream.
+    Some(StreamReader<BytesMut>),
+
+    /// The guest body was previously taken into a body task, and that body task
+    /// has finished.
+    ///
+    /// In this situation the guest body can no longer be read due to a bug in
+    /// Wasmtime where cancellation of an in-progress read is not yet supported.
+    Taken,
+
+    /// The guest body is not provided.
+    None,
 }
 
 impl Body {
