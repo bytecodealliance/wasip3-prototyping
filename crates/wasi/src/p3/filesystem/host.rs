@@ -15,7 +15,7 @@ use crate::p3::bindings::filesystem::{preopens, types};
 use crate::p3::filesystem::{
     Descriptor, DirPerms, FilePerms, WasiFilesystem, WasiFilesystemImpl, WasiFilesystemView,
 };
-use crate::p3::{AbortOnDropHandle, AccessorTaskFn, IoTask, ResourceView as _, TaskTable};
+use crate::p3::{AbortOnDropHandle, IoTask, ResourceView as _, SpawnExt, TaskTable};
 
 fn get_descriptor<'a>(
     table: &'a ResourceTable,
@@ -73,46 +73,44 @@ where
                     let (task_tx, task_rx) = mpsc::channel(1);
                     let f = f.clone();
                     let tasks = Arc::clone(&f.tasks);
-                    let task = view.spawn(AccessorTaskFn({
-                        move |_: &Accessor<U, Self>| async move {
-                            while let Ok(tx) = task_tx.reserve().await {
-                                match f
-                                    .spawn_blocking(move |f| {
-                                        let mut buf = vec![0; 8096];
-                                        loop {
-                                            let res = f.read_at(&mut buf, offset);
-                                            if let Err(err) = &res {
-                                                if err.kind() == std::io::ErrorKind::Interrupted {
-                                                    // Try again, continue looping
-                                                    continue;
-                                                }
+                    let task = view.spawn_fn(move |_| async move {
+                        while let Ok(tx) = task_tx.reserve().await {
+                            match f
+                                .spawn_blocking(move |f| {
+                                    let mut buf = vec![0; 8096];
+                                    loop {
+                                        let res = f.read_at(&mut buf, offset);
+                                        if let Err(err) = &res {
+                                            if err.kind() == std::io::ErrorKind::Interrupted {
+                                                // Try again, continue looping
+                                                continue;
                                             }
-                                            return (res, buf);
                                         }
-                                    })
-                                    .await
-                                {
-                                    (Ok(0), ..) => break,
-                                    (Ok(n), mut buf) => {
-                                        buf.truncate(n);
-                                        let Some(n) =
-                                            n.try_into().ok().and_then(|n| offset.checked_add(n))
-                                        else {
-                                            tx.send(Err(ErrorCode::Overflow));
-                                            break;
-                                        };
-                                        offset = n;
-                                        tx.send(Ok(buf));
+                                        return (res, buf);
                                     }
-                                    (Err(err), ..) => {
-                                        tx.send(Err(err.into()));
+                                })
+                                .await
+                            {
+                                (Ok(0), ..) => break,
+                                (Ok(n), mut buf) => {
+                                    buf.truncate(n);
+                                    let Some(n) =
+                                        n.try_into().ok().and_then(|n| offset.checked_add(n))
+                                    else {
+                                        tx.send(Err(ErrorCode::Overflow));
                                         break;
-                                    }
+                                    };
+                                    offset = n;
+                                    tx.send(Ok(buf));
+                                }
+                                (Err(err), ..) => {
+                                    tx.send(Err(err.into()));
+                                    break;
                                 }
                             }
-                            Ok(())
                         }
-                    }));
+                        Ok(())
+                    });
                     let id = {
                         let mut tasks = tasks.lock().map_err(|_| anyhow!("lock poisoned"))?;
                         tasks
@@ -132,10 +130,10 @@ where
                 Err(err) => {
                     drop(data_tx);
                     let fut = res_tx.write(Err(err));
-                    view.spawn(AccessorTaskFn(|_: &Accessor<U, Self>| async {
+                    view.spawn_fn(|_| async {
                         fut.await;
                         Ok(())
-                    }));
+                    });
                 }
             }
             Ok((data_rx.into(), res_rx.into()))
@@ -336,75 +334,73 @@ where
                     let d = d.clone();
                     let tasks = Arc::clone(&d.tasks);
                     let (task_tx, task_rx) = mpsc::channel(1);
-                    let task = view.spawn(AccessorTaskFn({
-                        |_: &Accessor<U, Self>| async move {
-                            match d.run_blocking(cap_std::fs::Dir::entries).await {
-                                Ok(mut entries) => {
-                                    while let Ok(tx) = task_tx.reserve().await {
-                                        match d
-                                            .run_blocking(|_| match entries.next()? {
-                                                Ok(entry) => {
-                                                    let meta = match entry.metadata() {
-                                                        Ok(meta) => meta,
-                                                        Err(err) => return Some(Err(err.into())),
+                    let task = view.spawn_fn(|_| async move {
+                        match d.run_blocking(cap_std::fs::Dir::entries).await {
+                            Ok(mut entries) => {
+                                while let Ok(tx) = task_tx.reserve().await {
+                                    match d
+                                        .run_blocking(|_| match entries.next()? {
+                                            Ok(entry) => {
+                                                let meta = match entry.metadata() {
+                                                    Ok(meta) => meta,
+                                                    Err(err) => return Some(Err(err.into())),
+                                                };
+                                                let Ok(name) = entry.file_name().into_string()
+                                                else {
+                                                    return Some(Err(
+                                                        ErrorCode::IllegalByteSequence,
+                                                    ));
+                                                };
+                                                Some(Ok((
+                                                    Some(DirectoryEntry {
+                                                        type_: meta.file_type().into(),
+                                                        name,
+                                                    }),
+                                                    entries,
+                                                )))
+                                            }
+                                            Err(err) => {
+                                                // On windows, filter out files like `C:\DumpStack.log.tmp` which we
+                                                // can't get full metadata for.
+                                                #[cfg(windows)]
+                                                {
+                                                    use windows_sys::Win32::Foundation::{
+                                                        ERROR_ACCESS_DENIED,
+                                                        ERROR_SHARING_VIOLATION,
                                                     };
-                                                    let Ok(name) = entry.file_name().into_string()
-                                                    else {
-                                                        return Some(Err(
-                                                            ErrorCode::IllegalByteSequence,
-                                                        ));
-                                                    };
-                                                    Some(Ok((
-                                                        Some(DirectoryEntry {
-                                                            type_: meta.file_type().into(),
-                                                            name,
-                                                        }),
-                                                        entries,
-                                                    )))
-                                                }
-                                                Err(err) => {
-                                                    // On windows, filter out files like `C:\DumpStack.log.tmp` which we
-                                                    // can't get full metadata for.
-                                                    #[cfg(windows)]
+                                                    if err.raw_os_error()
+                                                        == Some(ERROR_SHARING_VIOLATION as i32)
+                                                        || err.raw_os_error()
+                                                            == Some(ERROR_ACCESS_DENIED as i32)
                                                     {
-                                                        use windows_sys::Win32::Foundation::{
-                                                            ERROR_ACCESS_DENIED,
-                                                            ERROR_SHARING_VIOLATION,
-                                                        };
-                                                        if err.raw_os_error()
-                                                            == Some(ERROR_SHARING_VIOLATION as i32)
-                                                            || err.raw_os_error()
-                                                                == Some(ERROR_ACCESS_DENIED as i32)
-                                                        {
-                                                            return Some(Ok((None, entries)));
-                                                        }
+                                                        return Some(Ok((None, entries)));
                                                     }
-                                                    Some(Err(err.into()))
                                                 }
-                                            })
-                                            .await
-                                        {
-                                            None => break,
-                                            Some(Ok((entry, tail))) => {
-                                                if let Some(entry) = entry {
-                                                    tx.send(Ok(vec![entry]));
-                                                }
-                                                entries = tail;
+                                                Some(Err(err.into()))
                                             }
-                                            Some(Err(err)) => {
-                                                tx.send(Err(err));
-                                                break;
+                                        })
+                                        .await
+                                    {
+                                        None => break,
+                                        Some(Ok((entry, tail))) => {
+                                            if let Some(entry) = entry {
+                                                tx.send(Ok(vec![entry]));
                                             }
+                                            entries = tail;
+                                        }
+                                        Some(Err(err)) => {
+                                            tx.send(Err(err));
+                                            break;
                                         }
                                     }
                                 }
-                                Err(err) => {
-                                    _ = task_tx.send(Err(err.into())).await;
-                                }
                             }
-                            Ok(())
+                            Err(err) => {
+                                _ = task_tx.send(Err(err.into())).await;
+                            }
                         }
-                    }));
+                        Ok(())
+                    });
                     let id = {
                         let mut tasks = tasks.lock().map_err(|_| anyhow!("lock poisoned"))?;
                         tasks
@@ -424,10 +420,10 @@ where
                 Err(err) => {
                     drop(data_tx);
                     let fut = res_tx.write(Err(err));
-                    view.spawn(AccessorTaskFn(|_: &Accessor<U, Self>| async {
+                    view.spawn_fn(|_| async {
                         fut.await;
                         Ok(())
-                    }));
+                    });
                 }
             }
             Ok((data_rx.into(), res_rx.into()))
