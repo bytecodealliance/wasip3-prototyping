@@ -2,51 +2,23 @@ use super::{delete_request, get_fields_inner, push_response};
 use crate::p3::bindings::http::handler;
 use crate::p3::bindings::http::types::ErrorCode;
 use crate::p3::{
-    Body, BodyChannel, BodyFrame, BodyGuestContents, BodyWithContentLength, Client as _,
-    ContentLength, DEFAULT_BUFFER_CAPACITY, OutgoingTrailerFuture, Request, Response, WasiHttp,
-    WasiHttpImpl, WasiHttpView, empty_body,
+    Body, BodyChannel, BodyFrame, BodyWithContentLength, Client as _, ContentLength,
+    DEFAULT_BUFFER_CAPACITY, MaybeTombstone, Request, Response, WasiHttp, WasiHttpImpl,
+    WasiHttpView, empty_body, handle_guest_trailers,
 };
 use anyhow::bail;
 use bytes::{Bytes, BytesMut};
 use core::iter;
 use futures::StreamExt as _;
 use http::header::HOST;
-use http::{HeaderMap, HeaderValue, Uri};
+use http::{HeaderValue, Uri};
 use http_body_util::{BodyExt as _, BodyStream, StreamBody};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::debug;
-use wasmtime::component::{Accessor, AccessorTask, Resource};
+use wasmtime::component::{Accessor, Resource};
 use wasmtime_wasi::p3::{AbortOnDropHandle, ResourceView as _, SpawnExt};
-
-struct TrailerTask {
-    rx: OutgoingTrailerFuture,
-    tx: oneshot::Sender<Result<Option<http::HeaderMap>, ErrorCode>>,
-}
-
-impl<T, U: WasiHttpView> AccessorTask<T, WasiHttp<U>, wasmtime::Result<()>> for TrailerTask
-where
-    U: 'static,
-{
-    async fn run(self, store: &Accessor<T, WasiHttp<U>>) -> wasmtime::Result<()> {
-        match self.rx.await {
-            Some(Ok(trailers)) => store.with(|mut view| {
-                let mut binding = view.get();
-                let trailers = trailers
-                    .map(|trailers| get_fields_inner(binding.table(), &trailers))
-                    .transpose()?;
-                _ = self.tx.send(Ok(trailers.as_deref().cloned()));
-                Ok(())
-            }),
-            Some(Err(err)) => {
-                _ = self.tx.send(Err(err));
-                Ok(())
-            }
-            None => Ok(()),
-        }
-    }
-}
 
 impl<T> handler::HostConcurrent for WasiHttp<T>
 where
@@ -125,7 +97,7 @@ where
         let (request, ()) = request.into_parts();
         let response = match body {
             Body::Guest {
-                contents: BodyGuestContents::None,
+                contents: MaybeTombstone::None,
                 buffer: Some(BodyFrame::Trailers(Ok(None))) | None,
                 tx,
                 content_length: Some(ContentLength { limit, sent }),
@@ -139,8 +111,8 @@ where
                 return Ok(Err(ErrorCode::HttpRequestBodySize(Some(sent))));
             }
             Body::Guest {
-                contents: BodyGuestContents::None,
-                trailers: None,
+                contents: MaybeTombstone::None,
+                trailers: MaybeTombstone::None,
                 buffer: Some(BodyFrame::Trailers(Ok(None))),
                 tx,
                 content_length: None,
@@ -163,8 +135,8 @@ where
                 }
             }
             Body::Guest {
-                contents: BodyGuestContents::None,
-                trailers: None,
+                contents: MaybeTombstone::None,
+                trailers: MaybeTombstone::None,
                 buffer: Some(BodyFrame::Trailers(Ok(Some(trailers)))),
                 tx,
                 content_length: None,
@@ -191,8 +163,8 @@ where
                 }
             }
             Body::Guest {
-                contents: BodyGuestContents::None,
-                trailers: None,
+                contents: MaybeTombstone::None,
+                trailers: MaybeTombstone::None,
                 buffer: Some(BodyFrame::Trailers(Err(err))),
                 tx,
                 content_length: None,
@@ -207,19 +179,21 @@ where
                 return Ok(Err(err));
             }
             Body::Guest {
-                contents: BodyGuestContents::None,
-                trailers: Some(trailers),
+                contents: MaybeTombstone::None,
+                trailers: MaybeTombstone::Some(trailers),
                 buffer: None,
                 tx,
                 content_length: None,
             } => {
                 let (trailers_tx, trailers_rx) = oneshot::channel();
-                let task = store.spawn(TrailerTask {
-                    rx: trailers,
-                    tx: trailers_tx,
+                let task = AbortOnDropHandle(store.spawn_fn_box(|store| {
+                    Box::pin(handle_guest_trailers(store, trailers, trailers_tx))
+                }));
+                let body = empty_body().with_trailers(async {
+                    let result = trailers_rx.await.ok();
+                    drop(task);
+                    result
                 });
-                let body = empty_body()
-                    .with_trailers(wait_for_trailers(trailers_rx, AbortOnDropHandle(task)));
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
@@ -237,26 +211,29 @@ where
                 }
             }
             Body::Guest {
-                contents: BodyGuestContents::Some(contents),
-                trailers: Some(trailers),
+                contents: MaybeTombstone::Some(contents),
+                trailers: MaybeTombstone::Some(trailers),
                 buffer,
                 tx,
                 content_length,
             } => {
                 let (trailers_tx, trailers_rx) = oneshot::channel();
                 let (body_tx, body_rx) = mpsc::channel(1);
-                let task = store.spawn(TrailerTask {
-                    rx: trailers,
-                    tx: trailers_tx,
-                });
+                let task = AbortOnDropHandle(store.spawn_fn_box(|store| {
+                    Box::pin(handle_guest_trailers(store, trailers, trailers_tx))
+                }));
                 let buffer = match buffer {
                     Some(BodyFrame::Data(buffer)) => buffer,
                     Some(BodyFrame::Trailers(..)) => bail!("guest body is corrupted"),
                     None => Bytes::default(),
                 };
                 let body = BodyChannel::new(body_rx);
-                let body = BodyWithContentLength::new(body, content_length)
-                    .with_trailers(wait_for_trailers(trailers_rx, AbortOnDropHandle(task)));
+                let body =
+                    BodyWithContentLength::new(body, content_length).with_trailers(async move {
+                        let result = trailers_rx.await.ok();
+                        drop(task);
+                        result
+                    });
                 let request = http::Request::from_parts(request, body);
                 let (response, io) = match client.send_request(request, options).await? {
                     Ok(pair) => pair,
@@ -425,18 +402,3 @@ where
 }
 
 impl<T> handler::Host for WasiHttpImpl<T> where T: WasiHttpView {}
-
-async fn wait_for_trailers(
-    trailers: oneshot::Receiver<Result<Option<HeaderMap>, ErrorCode>>,
-    trailer_task: AbortOnDropHandle,
-) -> Option<Result<HeaderMap, Option<ErrorCode>>> {
-    let result = match trailers.await {
-        Ok(Ok(Some(trailers))) => Some(Ok(trailers)),
-        Ok(Ok(None)) => None,
-        Ok(Err(err)) => Some(Err(Some(err))),
-        Err(..) => Some(Err(None)), // future was dropped without writing a result
-    };
-
-    drop(trailer_task);
-    result
-}

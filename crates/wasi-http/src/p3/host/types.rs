@@ -9,8 +9,8 @@ use crate::p3::host::{
     push_request, push_response,
 };
 use crate::p3::{
-    Body, BodyContext, BodyFrame, BodyGuestContents, ContentLength, DEFAULT_BUFFER_CAPACITY,
-    Request, RequestOptions, Response, WasiHttp, WasiHttpImpl, WasiHttpView,
+    Body, BodyContext, BodyFrame, ContentLength, DEFAULT_BUFFER_CAPACITY, MaybeTombstone, Request,
+    RequestOptions, Response, WasiHttp, WasiHttpImpl, WasiHttpView,
 };
 use anyhow::{Context as _, bail};
 use bytes::{Bytes, BytesMut};
@@ -129,7 +129,7 @@ where
         };
         match body {
             Body::Guest {
-                contents: BodyGuestContents::None,
+                contents: MaybeTombstone::None,
                 buffer: Some(BodyFrame::Trailers(Ok(None))) | None,
                 tx,
                 content_length: Some(ContentLength { limit, sent }),
@@ -149,14 +149,15 @@ where
                 return Ok(());
             }
             Body::Guest {
-                contents: BodyGuestContents::None,
-                trailers: Some(mut trailers_rx),
+                contents: MaybeTombstone::None,
+                trailers: MaybeTombstone::Some(trailers_rx),
                 buffer: None,
                 tx,
                 content_length: None,
             } => {
                 drop(self.contents_tx);
                 let (watch_reader, trailers_tx) = self.trailers_tx.watch_reader();
+                let mut trailers_rx = pin!(trailers_rx.read());
                 let mut watch_reader = Box::pin(watch_reader);
                 let Some(Some(res)) = poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
                     Poll::Ready(()) => return Poll::Ready(None),
@@ -168,8 +169,10 @@ where
                         bail!("lock poisoned");
                     };
                     *body = Body::Guest {
-                        contents: BodyGuestContents::None,
-                        trailers: Some(trailers_rx),
+                        contents: MaybeTombstone::None,
+                        // FIXME: implement future read cancellation and put the
+                        // trailers back in here.
+                        trailers: MaybeTombstone::Tombstone,
                         buffer: None,
                         tx,
                         content_length: None,
@@ -182,8 +185,8 @@ where
                         bail!("lock poisoned");
                     };
                     *body = Body::Guest {
-                        contents: BodyGuestContents::None,
-                        trailers: None,
+                        contents: MaybeTombstone::None,
+                        trailers: MaybeTombstone::None,
                         buffer: Some(BodyFrame::Trailers(res)),
                         tx,
                         content_length: None,
@@ -194,8 +197,8 @@ where
                 Ok(())
             }
             Body::Guest {
-                contents: BodyGuestContents::None,
-                trailers: None,
+                contents: MaybeTombstone::None,
+                trailers: MaybeTombstone::None,
                 buffer: Some(BodyFrame::Trailers(res)),
                 tx,
                 content_length: None,
@@ -206,8 +209,8 @@ where
                         bail!("lock poisoned");
                     };
                     *body = Body::Guest {
-                        contents: BodyGuestContents::None,
-                        trailers: None,
+                        contents: MaybeTombstone::None,
+                        trailers: MaybeTombstone::None,
                         buffer: Some(BodyFrame::Trailers(res)),
                         tx,
                         content_length: None,
@@ -218,8 +221,8 @@ where
                 Ok(())
             }
             Body::Guest {
-                contents: BodyGuestContents::Some(mut contents_rx),
-                trailers: Some(mut trailers_rx),
+                contents: MaybeTombstone::Some(mut contents_rx),
+                trailers: MaybeTombstone::Some(trailers_rx),
                 buffer,
                 tx,
                 mut content_length,
@@ -235,8 +238,8 @@ where
                             let pos = buffer.position().try_into()?;
                             let buffer = buffer.into_inner().split_off(pos);
                             *body = Body::Guest {
-                                contents: BodyGuestContents::Some(contents_rx),
-                                trailers: Some(trailers_rx),
+                                contents: MaybeTombstone::Some(contents_rx),
+                                trailers: MaybeTombstone::Some(trailers_rx),
                                 buffer: Some(BodyFrame::Data(buffer)),
                                 tx,
                                 content_length,
@@ -268,8 +271,8 @@ where
                             // FIXME: cancellation support should be added to
                             // reads in Wasmtime to fully support this to avoid
                             // needing `Taken` at all.
-                            contents: BodyGuestContents::Taken,
-                            trailers: Some(trailers_rx),
+                            contents: MaybeTombstone::Tombstone,
+                            trailers: MaybeTombstone::Some(trailers_rx),
                             buffer: None,
                             tx,
                             content_length,
@@ -337,8 +340,8 @@ where
                         let pos = buffer.position().try_into()?;
                         let buffer = buffer.into_inner().split_off(pos);
                         *body = Body::Guest {
-                            contents: BodyGuestContents::Some(contents_rx),
-                            trailers: Some(trailers_rx),
+                            contents: MaybeTombstone::Some(contents_rx),
+                            trailers: MaybeTombstone::Some(trailers_rx),
                             buffer: Some(BodyFrame::Data(buffer)),
                             tx,
                             content_length,
@@ -351,6 +354,7 @@ where
                 }
 
                 let (watch_reader, trailers_tx) = self.trailers_tx.watch_reader();
+                let mut trailers_rx = pin!(trailers_rx.read());
                 let mut watch_reader = Box::pin(watch_reader);
                 let Some(Some(res)) = poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
                     Poll::Ready(()) => return Poll::Ready(None),
@@ -362,8 +366,10 @@ where
                         bail!("lock poisoned");
                     };
                     *body = Body::Guest {
-                        contents: BodyGuestContents::None,
-                        trailers: Some(trailers_rx),
+                        contents: MaybeTombstone::None,
+                        // FIXME: implement future read cancellation and put the
+                        // trailers back in here.
+                        trailers: MaybeTombstone::Tombstone,
                         buffer: None,
                         tx,
                         content_length: None,
@@ -376,8 +382,8 @@ where
                         bail!("lock poisoned");
                     };
                     *body = Body::Guest {
-                        contents: BodyGuestContents::None,
-                        trailers: None,
+                        contents: MaybeTombstone::None,
+                        trailers: MaybeTombstone::None,
                         buffer: Some(BodyFrame::Trailers(res)),
                         tx,
                         content_length: None,
@@ -758,10 +764,10 @@ where
                 .future(|| Ok(()), &mut view)
                 .context("failed to create future")?;
             let contents = match contents {
-                Some(contents) => BodyGuestContents::Some(contents.into_reader(&mut view)),
-                None => BodyGuestContents::None,
+                Some(contents) => MaybeTombstone::Some(contents.into_reader(&mut view)),
+                None => MaybeTombstone::None,
             };
-            let trailers = trailers.into_reader(&mut view).read();
+            let trailers = trailers.into_reader(&mut view);
             let mut binding = view.get();
             let table = binding.table();
             let headers = delete_fields(table, headers)?;
@@ -775,7 +781,7 @@ where
                 .transpose()?;
             let body = Body::Guest {
                 contents,
-                trailers: Some(Box::pin(trailers)),
+                trailers: MaybeTombstone::Some(trailers),
                 buffer: None,
                 tx: res_tx,
                 content_length: content_length.map(ContentLength::new),
@@ -1083,10 +1089,10 @@ where
                 .future(|| Ok(()), &mut view)
                 .context("failed to create future")?;
             let contents = match contents {
-                Some(contents) => BodyGuestContents::Some(contents.into_reader(&mut view)),
-                None => BodyGuestContents::None,
+                Some(contents) => MaybeTombstone::Some(contents.into_reader(&mut view)),
+                None => MaybeTombstone::None,
             };
-            let trailers = trailers.into_reader(&mut view).read();
+            let trailers = trailers.into_reader(&mut view);
             let mut binding = view.get();
             let table = binding.table();
             let headers = delete_fields(table, headers)?;
@@ -1094,7 +1100,7 @@ where
             let content_length = get_content_length(&headers)?;
             let body = Body::Guest {
                 contents,
-                trailers: Some(Box::pin(trailers)),
+                trailers: MaybeTombstone::Some(trailers),
                 buffer: None,
                 tx: res_tx,
                 content_length: content_length.map(ContentLength::new),
