@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{stderr, stdin, stdout};
 use tokio::sync::Notify;
 use wasmtime::component::{Component, Instance, InstancePre, Linker};
-use wasmtime::{AsContextMut, Engine, Store, StoreLimits, UpdateDeadline};
+use wasmtime::{Engine, Store, StoreLimits, UpdateDeadline};
 use wasmtime_wasi::p2::{IoView, StreamError, StreamResult, WasiCtx, WasiCtxBuilder, WasiView};
 use wasmtime_wasi_http::bindings as p2;
 use wasmtime_wasi_http::io::TokioIo;
@@ -980,17 +980,15 @@ async fn handle_request(
                         .await
                 })
                 .await???;
-            let (res, tx, io) =
-                wasmtime_wasi_http::p3::Response::resource_into_http(&mut store, res)?;
+            let (res, io) = wasmtime_wasi_http::p3::Response::resource_into_http(&mut store, res)?;
             tokio::task::spawn(async move {
-                if let Some(io) = io {
-                    let closure = instance.run(&mut store, io).await?;
-                    closure(store.as_context_mut())?;
-                }
-                // TODO: Report transmit errors
-                if let Some(tx) = tx {
-                    instance.run(&mut store, tx.write(Ok(()))).await?;
-                }
+                instance
+                    .run_with(&mut store, async |store| {
+                        // TODO: Report transmit errors
+                        let guest_io_result = async { Ok(()) };
+                        io.run(store, guest_io_result).await
+                    })
+                    .await??;
 
                 write_profile(&mut store);
                 drop(epoch_thread);
