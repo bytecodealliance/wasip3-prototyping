@@ -2,8 +2,8 @@ use bytes::Bytes;
 use futures::try_join;
 use http_body::Body;
 use http_body_util::{BodyExt as _, Collected, Empty};
+use wasmtime::Store;
 use wasmtime::component::{Component, Linker};
-use wasmtime::{AsContextMut as _, Store};
 use wasmtime_wasi::p3::cli::WasiCliCtx;
 use wasmtime_wasi_http::p3::bindings::Proxy;
 use wasmtime_wasi_http::p3::bindings::http::types::ErrorCode;
@@ -46,25 +46,19 @@ pub async fn run_wasi_http<E: Into<ErrorCode> + 'static>(
         Ok(res) => res,
         Err(err) => return Ok(Err(Some(err))),
     };
-    let (res, tx, io) = Response::resource_into_http(&mut store, res)?;
+    let (res, io) = Response::resource_into_http(&mut store, res)?;
     let (parts, body) = res.into_parts();
-    let ((), body) = try_join!(
-        async {
-            if let Some(io) = io {
-                let closure = instance.run(&mut store, io).await?;
-                closure(store.as_context_mut())?;
-            }
-            anyhow::Ok(())
-        },
+    let (res, body) = try_join!(
+        instance.run_with(&mut store, async |store| io
+            .run(store, async { Ok(()) })
+            .await),
         async { Ok(body.collect().await) },
     )?;
+    res?;
     let body = match body {
         Ok(body) => body,
         Err(err) => return Ok(Err(err)),
     };
-    if let Some(tx) = tx {
-        instance.run(store, tx.write(Ok(()))).await?;
-    }
     Ok(Ok(http::Response::from_parts(parts, body)))
 }
 
