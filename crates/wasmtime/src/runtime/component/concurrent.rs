@@ -1251,54 +1251,6 @@ impl Instance {
     /// `Instance::spawn` to ensure they are polled as part of the correct event
     /// loop.
     ///
-    /// Consider the following examples:
-    ///
-    /// ```
-    /// # use {
-    /// #   anyhow::{anyhow, Result},
-    /// #   wasmtime::{
-    /// #     component::{ Component, Linker, HostFuture },
-    /// #     Config, Engine, Store
-    /// #   },
-    /// # };
-    /// #
-    /// # async fn foo() -> Result<()> {
-    /// # let mut config = Config::new();
-    /// # let engine = Engine::new(&config)?;
-    /// # let mut store = Store::new(&engine, ());
-    /// # let mut linker = Linker::new(&engine);
-    /// # let component = Component::new(&engine, "")?;
-    /// linker.root().func_wrap_concurrent("foo", |accessor, (future,): (HostFuture<bool>,)| Box::pin(async move {
-    ///     let future = accessor.with(|view| future.into_reader(view));
-    ///     // We can `.await` this directly (i.e. without using
-    ///     // `Instance::{run,run_with,spawn}`) since we're running in a host
-    ///     // function:
-    ///     Ok((future.read().await.ok_or_else(|| anyhow!("read failed"))?,))
-    /// }))?;
-    /// let instance = linker.instantiate_async(&mut store, &component).await?;
-    /// let bar = instance.get_typed_func::<(), (HostFuture<bool>,)>(&mut store, "bar")?;
-    ///
-    /// let (future,) = instance.run_with(&mut store, async |store| {
-    ///     bar.call_concurrent(store, ()).await
-    /// }).await??;
-    ///
-    /// let future = future.into_reader(&mut store);
-    ///
-    /// // // NOT OK; this will panic if polled outside the event loop:
-    /// // let _result = future.read().await;
-    ///
-    /// // OK, since we use `Instance::run` to poll the `Future` returned by
-    /// // `FutureReader::read`. Here we wrap that future in an async block for
-    /// // illustration, although it's redundant for a simple case like this. In
-    /// // a more complex scenario, we could use composition, loops, conditionals,
-    /// // etc.
-    /// let _result = instance.run(&mut store, Box::pin(async move {
-    ///     future.read().await
-    /// })).await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
     /// Note that this function will return a "deadlock" error in either of the
     /// following scenarios:
     ///

@@ -171,15 +171,13 @@ where
                     }
                 }
             };
-            let fut = store.with(|mut view| {
-                let socket = view
-                    .get()
+            let socket = store.with(|mut view| {
+                view.get()
                     .table()
                     .push(TcpSocket::from_state(state, self.family))
-                    .context("failed to push socket to table")?;
-                Ok::<_, wasmtime::Error>(tx.write(Some(socket)))
+                    .context("failed to push socket to table")
             })?;
-            let (Some(tail), _) = fut.await else {
+            let (Some(tail), _) = tx.write(store, Some(socket)).await else {
                 return Ok(());
             };
             tx = tail;
@@ -377,23 +375,21 @@ where
         socket: Resource<TcpSocket>,
         data: HostStream<u8>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
-        let mut buf = Vec::with_capacity(8096);
-        let (stream, fut) = match store.with(|mut view| {
+        let (stream, data) = match store.with(|mut view| -> wasmtime::Result<_> {
             let data = data.into_reader::<Vec<u8>>(&mut view);
-            let fut = data.read(buf);
             let mut binding = view.get();
             let sock = get_socket(binding.table(), &socket)?;
             if let TcpState::Connected { stream, .. } = &sock.tcp_state {
-                Ok(Ok((Arc::clone(&stream), fut)))
+                Ok(Ok((Arc::clone(&stream), data)))
             } else {
                 Ok(Err(ErrorCode::InvalidState))
             }
-        }) {
-            Ok(Ok((stream, fut))) => (stream, fut),
-            Ok(Err(err)) => return Ok(Err(err)),
-            Err(err) => return Err(err),
+        })? {
+            Ok((stream, data)) => (stream, data),
+            Err(err) => return Ok(Err(err)),
         };
-        let mut fut = fut;
+        let mut buf = Vec::with_capacity(8096);
+        let mut fut = data.read(store, buf);
         'outer: loop {
             let (Some(tail), buf_again) = fut.await else {
                 _ = stream
@@ -408,7 +404,7 @@ where
                         if n == slice.len() {
                             buf = buf_again;
                             buf.clear();
-                            fut = tail.read(buf);
+                            fut = tail.read(store, buf);
                             continue 'outer;
                         } else {
                             slice = &slice[n..];
@@ -496,10 +492,11 @@ where
                     *rx_task = Some(AbortOnDropHandle(task));
                 }
                 _ => {
-                    let fut = res_tx.write(Err(ErrorCode::InvalidState));
-                    view.spawn_fn(|_| async {
-                        fut.await;
-                        Ok(())
+                    view.spawn_fn_box(move |store| {
+                        Box::pin(async move {
+                            res_tx.write(store, Err(ErrorCode::InvalidState)).await;
+                            Ok(())
+                        })
                     });
                 }
             }

@@ -23,14 +23,15 @@ where
     U: 'static,
     V: AsyncRead + Send + Sync + Unpin + 'static,
 {
-    async fn run(mut self, _: &Accessor<T, WasiCli<U>>) -> wasmtime::Result<()> {
+    async fn run(mut self, store: &Accessor<T, WasiCli<U>>) -> wasmtime::Result<()> {
         let mut tx = self.tx;
         let mut buf = BytesMut::with_capacity(8096);
         loop {
             match self.input.read_buf(&mut buf).await {
                 Ok(0) => return Ok(()),
                 Ok(_) => {
-                    let (Some(tail), buf_again) = tx.write_all(Cursor::new(buf)).await else {
+                    let (Some(tail), buf_again) = tx.write_all(store, Cursor::new(buf)).await
+                    else {
                         break Ok(());
                     };
                     tx = tail;
@@ -58,9 +59,9 @@ where
     U: 'static,
     V: AsyncWrite + Send + Sync + Unpin + 'static,
 {
-    async fn run(mut self, _: &Accessor<T, WasiCli<U>>) -> wasmtime::Result<()> {
+    async fn run(mut self, store: &Accessor<T, WasiCli<U>>) -> wasmtime::Result<()> {
         let mut buf = BytesMut::with_capacity(8096);
-        let mut fut = self.data.read(buf);
+        let mut fut = self.data.read(store, buf);
         loop {
             let (Some(tail), buf_again) = fut.await else {
                 return Ok(());
@@ -70,7 +71,7 @@ where
             match self.output.write_all(&buf).await {
                 Ok(()) => {
                     buf.clear();
-                    fut = tail.read(buf);
+                    fut = tail.read(store, buf);
                     continue;
                 }
                 Err(_err) => {
