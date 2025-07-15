@@ -21,7 +21,7 @@ fn dns_error(rcode: String, info_code: u16) -> ErrorCode {
 /// HTTP client
 pub trait Client: Clone + Send + Sync {
     /// Error returned by `send_request`
-    type Error: Into<ErrorCode>;
+    type Error: Into<ErrorCode> + Send;
 
     /// Whether to set `host` header in the request passed to `send_request`.
     fn set_host_header(&mut self) -> bool {

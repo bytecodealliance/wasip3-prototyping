@@ -3,15 +3,16 @@ use core::mem;
 use core::pin::Pin;
 use core::task::{Context, Poll, ready};
 
-use bytes::{Bytes, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 use http::HeaderMap;
+use http_body::Frame;
 use http_body_util::BodyExt as _;
 use http_body_util::combinators::BoxBody;
-use tokio::sync::{mpsc, oneshot};
+use pin_project_lite::pin_project;
+use tokio::sync::mpsc;
 use wasmtime::component::{FutureWriter, Resource, StreamReader};
-use wasmtime_wasi::p3::{AbortOnDropHandle, WithChildren};
+use wasmtime_wasi::p3::WithChildren;
 
-use crate::p3::DEFAULT_BUFFER_CAPACITY;
 use crate::p3::bindings::http::types::ErrorCode;
 
 pub(crate) type OutgoingContentsStreamFuture =
@@ -100,33 +101,6 @@ impl Body {
         Self::Host {
             stream: Some(http_body_util::Empty::new().map_err(Into::into).boxed()),
             buffer: None,
-        }
-    }
-}
-
-pub(crate) struct OutgoingRequestTrailers {
-    pub trailers: Option<oneshot::Receiver<Result<Option<HeaderMap>, ErrorCode>>>,
-    #[expect(dead_code, reason = "here for the dtor")]
-    pub trailer_task: AbortOnDropHandle,
-}
-
-impl Future for OutgoingRequestTrailers {
-    type Output = Option<Result<HeaderMap, Option<ErrorCode>>>;
-
-    fn poll(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<HeaderMap, Option<ErrorCode>>>> {
-        let Some(trailers) = &mut self.trailers else {
-            return Poll::Ready(None);
-        };
-        let trailers = ready!(Pin::new(trailers).poll(cx));
-        self.trailers = None;
-        match trailers {
-            Ok(Ok(Some(trailers))) => Poll::Ready(Some(Ok(trailers))),
-            Ok(Ok(None)) => Poll::Ready(None),
-            Ok(Err(err)) => Poll::Ready(Some(Err(Some(err)))),
-            Err(..) => Poll::Ready(Some(Err(None))), // future was dropped without writing a result
         }
     }
 }
@@ -240,101 +214,150 @@ impl http_body::Body for OutgoingResponseBody {
     }
 }
 
-/// Request body constructed by the guest
-pub(crate) struct OutgoingRequestBody {
-    pub contents: Option<OutgoingContentsStreamFuture>,
-    pub buffer: Bytes,
-    pub content_length: Option<ContentLength>,
+/// Helper structure to validate that the body `B` provided matches the
+/// content length specified in its header.
+///
+/// This will behave as if it were `B` except that an error will be
+/// generated if too much data is generated or if too little data is
+/// generated. This body will only succeed if the `body` contained produces
+/// exactly `remaining` bytes.
+pub(crate) struct BodyChannel<D, E> {
+    rx: mpsc::Receiver<Result<D, E>>,
 }
 
-impl OutgoingRequestBody {
-    pub fn new(
-        contents: OutgoingContentsStreamFuture,
-        buffer: Bytes,
-        content_length: Option<ContentLength>,
-    ) -> Self {
-        Self {
-            contents: Some(contents),
-            buffer,
-            content_length,
-        }
+impl<D, E> BodyChannel<D, E> {
+    pub(crate) fn new(rx: mpsc::Receiver<Result<D, E>>) -> Self {
+        BodyChannel { rx }
     }
 }
 
-impl http_body::Body for OutgoingRequestBody {
-    type Data = Bytes;
-    type Error = Option<ErrorCode>;
+impl<D: Buf, E> http_body::Body for BodyChannel<D, E> {
+    type Data = D;
+    type Error = E;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-        if !self.buffer.is_empty() {
-            let buffer = mem::take(&mut self.buffer);
-            if let Some(ContentLength { limit, sent }) = &mut self.content_length {
-                let Ok(n) = buffer.len().try_into() else {
-                    return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(None)))));
-                };
-                let Some(n) = sent.checked_add(n) else {
-                    return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(None)))));
-                };
-                if n > *limit {
-                    return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(Some(n))))));
-                }
-                *sent = n;
-            }
-            return Poll::Ready(Some(Ok(http_body::Frame::data(buffer))));
+        match self.rx.poll_recv(cx) {
+            Poll::Ready(Some(Ok(frame))) => Poll::Ready(Some(Ok(Frame::data(frame)))),
+            Poll::Ready(Some(Err(err))) => Poll::Ready(Some(Err(err))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
         }
-        let Some(stream) = &mut self.contents else {
+    }
+}
+
+pin_project! {
+    /// Helper structure to validate that the body `B` provided matches the
+    /// content length specified in its header.
+    ///
+    /// This will behave as if it were `B` except that an error will be
+    /// generated if too much data is generated or if too little data is
+    /// generated. This body will only succeed if the `body` contained produces
+    /// exactly `remaining` bytes.
+    pub(crate) struct BodyWithContentLength<B> {
+        #[pin]
+        body: B,
+        content_length: Option<ContentLength>,
+        body_length_mismatch: bool,
+    }
+}
+
+impl<B> BodyWithContentLength<B> {
+    pub(crate) fn new(body: B, content_length: Option<ContentLength>) -> BodyWithContentLength<B> {
+        BodyWithContentLength {
+            body,
+            content_length,
+            body_length_mismatch: false,
+        }
+    }
+}
+
+pub(crate) trait ContentLengthError: Sized {
+    fn body_too_long(amt: Option<u64>) -> Self;
+    fn body_too_short(amt: Option<u64>) -> Self;
+}
+
+impl<B> http_body::Body for BodyWithContentLength<B>
+where
+    B: http_body::Body,
+    B::Error: ContentLengthError,
+{
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        let mut this = self.project();
+        if *this.body_length_mismatch {
             return Poll::Ready(None);
-        };
-        let (tail, mut rx_buffer) = ready!(Pin::new(stream).poll(cx));
-        match tail {
-            Some(tail) => {
-                let buffer = rx_buffer.split();
-                rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
-                self.contents = Some(Box::pin(tail.read(rx_buffer)));
-                if let Some(ContentLength { limit, sent }) = &mut self.content_length {
-                    let Ok(n) = buffer.len().try_into() else {
-                        return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(None)))));
-                    };
-                    let Some(n) = sent.checked_add(n) else {
-                        return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(None)))));
-                    };
-                    if n > *limit {
-                        return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(Some(
-                            n,
-                        ))))));
-                    }
-                    *sent = n;
-                }
-                Poll::Ready(Some(Ok(http_body::Frame::data(buffer.freeze()))))
-            }
-            None => {
-                debug_assert!(rx_buffer.is_empty());
-                self.contents = None;
-                if let Some(ContentLength { limit, sent }) = self.content_length {
-                    if limit != sent {
-                        return Poll::Ready(Some(Err(Some(ErrorCode::HttpRequestBodySize(Some(
-                            sent,
-                        ))))));
-                    }
-                }
-                Poll::Ready(None)
-            }
         }
+        let frame = match Pin::new(&mut this.body).poll_frame(cx) {
+            Poll::Ready(frame) => frame,
+            Poll::Pending => return Poll::Pending,
+        };
+        let content_length = match &mut this.content_length {
+            Some(content_length) => content_length,
+            None => return Poll::Ready(frame),
+        };
+        let res = match frame {
+            Some(Ok(frame)) => {
+                if let Some(data) = frame.data_ref() {
+                    let data_len = u64::try_from(data.remaining()).unwrap();
+                    content_length.sent = content_length.sent.saturating_add(data_len);
+                    if content_length.sent > content_length.limit {
+                        *this.body_length_mismatch = true;
+                        Some(Err(B::Error::body_too_long(Some(content_length.sent))))
+                    } else {
+                        Some(Ok(frame))
+                    }
+                } else {
+                    Some(Ok(frame))
+                }
+            }
+            Some(Err(err)) => Some(Err(err)),
+            None => {
+                if content_length.sent != content_length.limit {
+                    *this.body_length_mismatch = true;
+                    Some(Err(B::Error::body_too_short(Some(content_length.sent))))
+                } else {
+                    None
+                }
+            }
+        };
+
+        Poll::Ready(res)
     }
 
     fn is_end_stream(&self) -> bool {
-        self.contents.is_none()
+        self.body.is_end_stream()
     }
 
     fn size_hint(&self) -> http_body::SizeHint {
-        if let Some(ContentLength { limit, sent }) = self.content_length {
-            http_body::SizeHint::with_exact(limit.saturating_sub(sent))
-        } else {
-            http_body::SizeHint::default()
+        let mut hint = self.body.size_hint();
+        if let Some(content_length) = self.content_length {
+            let remaining = content_length.limit.saturating_sub(content_length.sent);
+            if hint.lower() >= remaining {
+                hint.set_exact(remaining)
+            } else if let Some(max) = hint.upper() {
+                hint.set_upper(remaining.min(max))
+            } else {
+                hint.set_upper(remaining)
+            }
         }
+        hint
+    }
+}
+
+impl ContentLengthError for Option<ErrorCode> {
+    fn body_too_long(amt: Option<u64>) -> Self {
+        Some(ErrorCode::HttpRequestBodySize(amt))
+    }
+    fn body_too_short(amt: Option<u64>) -> Self {
+        Some(ErrorCode::HttpRequestBodySize(amt))
     }
 }
 
