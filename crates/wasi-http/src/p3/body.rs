@@ -1,38 +1,33 @@
-use core::future::Future;
+use crate::p3::ResourceView;
+use crate::p3::bindings::http::types::ErrorCode;
+use anyhow::Context as _;
+use bytes::{Buf, Bytes, BytesMut};
 use core::mem;
 use core::pin::Pin;
 use core::task::{Context, Poll, ready};
-
-use bytes::{Buf, Bytes, BytesMut};
 use http::HeaderMap;
 use http_body::Frame;
 use http_body_util::BodyExt as _;
 use http_body_util::combinators::BoxBody;
 use pin_project_lite::pin_project;
 use tokio::sync::mpsc;
-use wasmtime::component::{FutureWriter, Resource, StreamReader};
+use tokio::sync::oneshot;
+use wasmtime::component::{Accessor, FutureReader, FutureWriter, HasData, Resource, StreamReader};
 use wasmtime_wasi::p3::WithChildren;
-
-use crate::p3::bindings::http::types::ErrorCode;
-
-pub(crate) type OutgoingTrailerFuture = Pin<
-    Box<
-        dyn Future<Output = Option<Result<Option<Resource<WithChildren<HeaderMap>>>, ErrorCode>>>
-            + Send
-            + 'static,
-    >,
->;
 
 pub(crate) fn empty_body() -> impl http_body::Body<Data = Bytes, Error = Option<ErrorCode>> {
     http_body_util::Empty::new().map_err(|_| None)
 }
+
+/// Type for trailers that are received directly from the guest.
+pub type GuestTrailers = Result<Option<Resource<WithChildren<HeaderMap>>>, ErrorCode>;
 
 /// A body frame
 pub enum BodyFrame {
     /// Data frame
     Data(Bytes),
     /// Trailer frame, this is the last frame of the body and it includes the transmit/receipt result
-    Trailers(Result<Option<Resource<WithChildren<HeaderMap>>>, ErrorCode>),
+    Trailers(GuestTrailers),
 }
 
 /// Whether the body is a request or response body.
@@ -59,9 +54,9 @@ pub enum Body {
     /// Body constructed by the guest
     Guest {
         /// The body stream
-        contents: BodyGuestContents,
+        contents: MaybeTombstone<StreamReader<BytesMut>>,
         /// Future, on which guest will write result and optional trailers
-        trailers: Option<OutgoingTrailerFuture>,
+        trailers: MaybeTombstone<FutureReader<GuestTrailers>>,
         /// Buffered frame, if any
         buffer: Option<BodyFrame>,
         /// Future, on which transmission result will be written
@@ -81,16 +76,16 @@ pub enum Body {
 }
 
 /// Variants of `Body::Guest::contents`.
-pub enum BodyGuestContents {
-    /// The guest body is this provided stream.
-    Some(StreamReader<BytesMut>),
+pub enum MaybeTombstone<T> {
+    /// The provided value is available.
+    Some(T),
 
-    /// The guest body was previously taken into a body task, and that body task
-    /// has finished.
+    /// The guest body item was previously taken into a body task, and that body
+    /// task has finished.
     ///
     /// In this situation the guest body can no longer be read due to a bug in
     /// Wasmtime where cancellation of an in-progress read is not yet supported.
-    Taken,
+    Tombstone,
 
     /// The guest body is not provided.
     None,
@@ -410,4 +405,33 @@ impl http_body::Body for IncomingResponseBody {
     fn size_hint(&self) -> http_body::SizeHint {
         self.incoming.size_hint()
     }
+}
+
+pub(crate) async fn handle_guest_trailers<T, D>(
+    accessor: &Accessor<T, D>,
+    guest_trailers: FutureReader<GuestTrailers>,
+    host_trailers: oneshot::Sender<Result<http::HeaderMap, Option<ErrorCode>>>,
+) -> wasmtime::Result<()>
+where
+    D: HasData,
+    for<'a> D::Data<'a>: ResourceView,
+{
+    match guest_trailers.read().await {
+        Some(Ok(Some(trailers))) => {
+            let trailers = accessor.with(|mut store| {
+                let mut binding = store.get();
+                let table = binding.table();
+                table.delete(trailers).context("failed to delete trailers")
+            })?;
+            let trailers = trailers.unwrap_or_clone()?;
+            _ = host_trailers.send(Ok(trailers));
+        }
+        Some(Err(err)) => {
+            _ = host_trailers.send(Err(Some(err)));
+        }
+        // If no trailers were explicitly sent, or if nothing was sent at all,
+        // then interpret that as no trailers.
+        Some(Ok(None)) | None => {}
+    }
+    Ok(())
 }

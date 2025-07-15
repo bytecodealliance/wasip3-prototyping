@@ -10,14 +10,14 @@ use http::{HeaderMap, StatusCode};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, BodyStream, StreamBody};
 use tokio::sync::{mpsc, oneshot};
-use wasmtime::component::{Accessor, FutureWriter, HasData, Resource, StreamReader};
+use wasmtime::component::{Accessor, FutureReader, FutureWriter, Resource, StreamReader};
 use wasmtime::{AsContextMut, StoreContextMut};
 use wasmtime_wasi::p3::{AbortOnDropHandle, ResourceView, WithChildren};
 
 use crate::p3::bindings::http::types::ErrorCode;
 use crate::p3::{
-    Body, BodyFrame, BodyGuestContents, ContentLength, DEFAULT_BUFFER_CAPACITY,
-    OutgoingResponseBody, OutgoingTrailerFuture, empty_body,
+    Body, BodyFrame, ContentLength, DEFAULT_BUFFER_CAPACITY, GuestTrailers, MaybeTombstone,
+    OutgoingResponseBody, empty_body, handle_guest_trailers,
 };
 
 /// The concrete type behind a `wasi:http/types/response` resource.
@@ -30,23 +30,6 @@ pub struct Response {
     pub(crate) body: Arc<std::sync::Mutex<Body>>,
     /// Body stream task handle
     pub(crate) body_task: Option<AbortOnDropHandle>,
-}
-
-async fn receive_trailers(
-    rx: oneshot::Receiver<Option<Result<WithChildren<HeaderMap>, ErrorCode>>>,
-) -> Option<Result<HeaderMap, Option<ErrorCode>>> {
-    match rx.await {
-        Ok(Some(Ok(trailers))) => match trailers.unwrap_or_clone() {
-            Ok(trailers) => Some(Ok(trailers)),
-            Err(err) => Some(Err(Some(ErrorCode::InternalError(Some(format!(
-                "{err:#}"
-            )))))),
-        },
-        Ok(Some(Err(err))) => Some(Err(Some(err))),
-        // If no trailers were explicitly sent, or if nothing was sent at all,
-        // then interpret that as no trailers.
-        Ok(None) | Err(..) => None,
-    }
 }
 
 /// Closure returned by promise returned by [`Response::into_http`]
@@ -102,7 +85,7 @@ impl Response {
         let (response, body) = response.into_parts();
         let (body, io) = match body {
             Body::Guest {
-                contents: BodyGuestContents::None,
+                contents: MaybeTombstone::None,
                 buffer: None | Some(BodyFrame::Trailers(Ok(None))),
                 content_length: Some(ContentLength { limit, sent }),
                 ..
@@ -110,15 +93,15 @@ impl Response {
                 bail!("guest response Content-Length mismatch, limit: {limit}, sent: {sent}")
             }
             Body::Guest {
-                contents: BodyGuestContents::None,
-                trailers: None,
+                contents: MaybeTombstone::None,
+                trailers: MaybeTombstone::None,
                 buffer: Some(BodyFrame::Trailers(Ok(None))),
                 tx,
                 ..
             } => (empty_body().boxed(), ResponseIo::new_only_tx(tx)),
             Body::Guest {
-                contents: BodyGuestContents::None,
-                trailers: None,
+                contents: MaybeTombstone::None,
+                trailers: MaybeTombstone::None,
                 buffer: Some(BodyFrame::Trailers(Ok(Some(trailers)))),
                 tx,
                 ..
@@ -137,8 +120,8 @@ impl Response {
                 )
             }
             Body::Guest {
-                contents: BodyGuestContents::None,
-                trailers: None,
+                contents: MaybeTombstone::None,
+                trailers: MaybeTombstone::None,
                 buffer: Some(BodyFrame::Trailers(Err(err))),
                 tx,
                 ..
@@ -149,15 +132,15 @@ impl Response {
                 ResponseIo::new_only_tx(tx),
             ),
             Body::Guest {
-                contents: BodyGuestContents::None,
-                trailers: Some(trailers),
+                contents: MaybeTombstone::None,
+                trailers: MaybeTombstone::Some(trailers),
                 buffer: None,
                 tx,
                 ..
             } => {
                 let (trailers_tx, trailers_rx) = oneshot::channel();
                 let body = empty_body()
-                    .with_trailers(receive_trailers(trailers_rx))
+                    .with_trailers(async { trailers_rx.await.ok() })
                     .boxed();
                 (
                     body,
@@ -169,8 +152,8 @@ impl Response {
                 )
             }
             Body::Guest {
-                contents: BodyGuestContents::Some(contents),
-                trailers: Some(trailers),
+                contents: MaybeTombstone::Some(contents),
+                trailers: MaybeTombstone::Some(trailers),
                 buffer,
                 tx,
                 content_length,
@@ -184,7 +167,7 @@ impl Response {
                 };
 
                 let body = OutgoingResponseBody::new(contents_rx, buffer, content_length)
-                    .with_trailers(receive_trailers(trailers_rx))
+                    .with_trailers(async { trailers_rx.await.ok() })
                     .boxed();
                 (
                     body,
@@ -255,8 +238,8 @@ impl Response {
 pub struct ResponseIo {
     body: Option<(StreamReader<BytesMut>, mpsc::Sender<Bytes>)>,
     trailers: Option<(
-        OutgoingTrailerFuture,
-        oneshot::Sender<Option<Result<WithChildren<HeaderMap>, ErrorCode>>>,
+        FutureReader<GuestTrailers>,
+        oneshot::Sender<Result<HeaderMap, Option<ErrorCode>>>,
     )>,
     tx: Option<FutureWriter<Result<(), ErrorCode>>>,
 }
@@ -283,14 +266,13 @@ impl ResponseIo {
     ///
     /// The provided `io_result` is transmitted to the guest once I/O is
     /// complete.
-    pub async fn run<T, D>(
+    pub async fn run<T>(
         mut self,
-        accessor: &Accessor<T, D>,
+        accessor: &Accessor<T>,
         io_result: impl Future<Output = Result<(), ErrorCode>>,
     ) -> wasmtime::Result<()>
     where
         T: ResourceView + 'static,
-        D: HasData,
     {
         if let Some((contents, contents_tx)) = self.body.take() {
             let (mut tail, mut rx_buffer) = contents
@@ -315,22 +297,7 @@ impl ResponseIo {
         }
 
         if let Some((trailers, trailers_tx)) = self.trailers.take() {
-            match trailers.await {
-                Some(Ok(Some(trailers))) => {
-                    let trailers = accessor.with(|mut store| {
-                        let table = store.data_mut().table();
-                        table.delete(trailers).context("failed to delete trailers")
-                    })?;
-                    _ = trailers_tx.send(Some(Ok(trailers)));
-                }
-                Some(Ok(None)) => {
-                    _ = trailers_tx.send(None);
-                }
-                Some(Err(err)) => {
-                    _ = trailers_tx.send(Some(Err(err)));
-                }
-                None => {}
-            }
+            handle_guest_trailers(accessor, trailers, trailers_tx).await?;
         }
 
         let io_result = io_result.await;
