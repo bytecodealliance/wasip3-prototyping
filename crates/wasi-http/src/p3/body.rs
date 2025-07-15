@@ -7,9 +7,9 @@ use bytes::{Bytes, BytesMut};
 use http::HeaderMap;
 use http_body_util::BodyExt as _;
 use http_body_util::combinators::BoxBody;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use wasmtime::component::{FutureWriter, Resource, StreamReader};
-use wasmtime_wasi::p3::{AbortOnDropHandle, WithChildren};
+use wasmtime_wasi::p3::WithChildren;
 
 use crate::p3::DEFAULT_BUFFER_CAPACITY;
 use crate::p3::bindings::http::types::ErrorCode;
@@ -100,33 +100,6 @@ impl Body {
         Self::Host {
             stream: Some(http_body_util::Empty::new().map_err(Into::into).boxed()),
             buffer: None,
-        }
-    }
-}
-
-pub(crate) struct OutgoingRequestTrailers {
-    pub trailers: Option<oneshot::Receiver<Result<Option<HeaderMap>, ErrorCode>>>,
-    #[expect(dead_code, reason = "here for the dtor")]
-    pub trailer_task: AbortOnDropHandle,
-}
-
-impl Future for OutgoingRequestTrailers {
-    type Output = Option<Result<HeaderMap, Option<ErrorCode>>>;
-
-    fn poll(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<HeaderMap, Option<ErrorCode>>>> {
-        let Some(trailers) = &mut self.trailers else {
-            return Poll::Ready(None);
-        };
-        let trailers = ready!(Pin::new(trailers).poll(cx));
-        self.trailers = None;
-        match trailers {
-            Ok(Ok(Some(trailers))) => Poll::Ready(Some(Ok(trailers))),
-            Ok(Ok(None)) => Poll::Ready(None),
-            Ok(Err(err)) => Poll::Ready(Some(Err(Some(err)))),
-            Err(..) => Poll::Ready(Some(Err(None))), // future was dropped without writing a result
         }
     }
 }

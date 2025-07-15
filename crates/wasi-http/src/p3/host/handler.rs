@@ -2,15 +2,15 @@ use super::{delete_request, get_fields_inner, push_response};
 use crate::p3::bindings::http::handler;
 use crate::p3::bindings::http::types::ErrorCode;
 use crate::p3::{
-    Body, BodyFrame, Client as _, ContentLength, OutgoingRequestBody, OutgoingRequestTrailers,
-    OutgoingTrailerFuture, Request, Response, WasiHttp, WasiHttpImpl, WasiHttpView, empty_body,
+    Body, BodyFrame, Client as _, ContentLength, OutgoingRequestBody, OutgoingTrailerFuture,
+    Request, Response, WasiHttp, WasiHttpImpl, WasiHttpView, empty_body,
 };
 use anyhow::bail;
 use bytes::Bytes;
 use core::iter;
 use futures::StreamExt as _;
 use http::header::HOST;
-use http::{HeaderValue, Uri};
+use http::{HeaderMap, HeaderValue, Uri};
 use http_body_util::{BodyExt as _, BodyStream, StreamBody};
 use std::sync::Arc;
 use tokio::sync::oneshot;
@@ -216,10 +216,8 @@ where
                     rx: trailers,
                     tx: trailers_tx,
                 });
-                let body = empty_body().with_trailers(OutgoingRequestTrailers {
-                    trailers: Some(trailers_rx),
-                    trailer_task: AbortOnDropHandle(task),
-                });
+                let body = empty_body()
+                    .with_trailers(wait_for_trailers(trailers_rx, AbortOnDropHandle(task)));
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
@@ -254,10 +252,7 @@ where
                     None => Bytes::default(),
                 };
                 let body = OutgoingRequestBody::new(contents, buffer, content_length)
-                    .with_trailers(OutgoingRequestTrailers {
-                        trailers: Some(trailers_rx),
-                        trailer_task: AbortOnDropHandle(task),
-                    });
+                    .with_trailers(wait_for_trailers(trailers_rx, AbortOnDropHandle(task)));
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
@@ -403,3 +398,18 @@ where
 }
 
 impl<T> handler::Host for WasiHttpImpl<T> where T: WasiHttpView {}
+
+async fn wait_for_trailers(
+    trailers: oneshot::Receiver<Result<Option<HeaderMap>, ErrorCode>>,
+    trailer_task: AbortOnDropHandle,
+) -> Option<Result<HeaderMap, Option<ErrorCode>>> {
+    let result = match trailers.await {
+        Ok(Ok(Some(trailers))) => Some(Ok(trailers)),
+        Ok(Ok(None)) => None,
+        Ok(Err(err)) => Some(Err(Some(err))),
+        Err(..) => Some(Err(None)), // future was dropped without writing a result
+    };
+
+    drop(trailer_task);
+    result
+}
