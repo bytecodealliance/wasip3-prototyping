@@ -23,7 +23,7 @@ use crate::p3::sockets::util::{
 use crate::p3::sockets::{
     SocketAddrUse, SocketAddressFamily, WasiSockets, WasiSocketsImpl, WasiSocketsView,
 };
-use crate::p3::{AbortOnDropHandle, AccessorTaskFn, IoTask, ResourceView as _};
+use crate::p3::{AbortOnDropHandle, IoTask, ResourceView as _, SpawnExt};
 
 use super::is_addr_allowed;
 
@@ -300,15 +300,15 @@ where
                 Ok(listener) => {
                     let listener = Arc::new(listener);
                     let (task_tx, task_rx) = mpsc::channel(1);
-                    let task = view.spawn(AccessorTaskFn({
+                    let task = view.spawn_fn({
                         let listener = Arc::clone(&listener);
-                        |_: &Accessor<U, Self>| async move {
+                        |_| async move {
                             while let Ok(tx) = task_tx.reserve().await {
                                 tx.send(listener.accept().await)
                             }
                             Ok(())
                         }
-                    }));
+                    });
                     let mut binding = view.get();
                     let TcpSocket {
                         tcp_state,
@@ -454,34 +454,32 @@ where
                 } => {
                     let (task_tx, task_rx) = mpsc::channel(1);
                     let stream = Arc::clone(&stream);
-                    let task = view.spawn(AccessorTaskFn({
-                        |_: &Accessor<U, Self>| async move {
-                            while let Ok(tx) = task_tx.reserve().await {
-                                let mut buf = vec![0; 8096];
-                                match stream.try_read(&mut buf) {
-                                    Ok(0) => break,
-                                    Ok(n) => {
-                                        buf.truncate(n);
-                                        tx.send(Ok(buf));
-                                    }
-                                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                                        if let Err(err) = stream.readable().await {
-                                            tx.send(Err(err.into()));
-                                            break;
-                                        }
-                                    }
-                                    Err(err) => {
+                    let task = view.spawn_fn(|_| async move {
+                        while let Ok(tx) = task_tx.reserve().await {
+                            let mut buf = vec![0; 8096];
+                            match stream.try_read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    buf.truncate(n);
+                                    tx.send(Ok(buf));
+                                }
+                                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                                    if let Err(err) = stream.readable().await {
                                         tx.send(Err(err.into()));
                                         break;
                                     }
                                 }
+                                Err(err) => {
+                                    tx.send(Err(err.into()));
+                                    break;
+                                }
                             }
-                            _ = stream
-                                .as_socketlike_view::<std::net::TcpStream>()
-                                .shutdown(Shutdown::Read);
-                            Ok(())
                         }
-                    }));
+                        _ = stream
+                            .as_socketlike_view::<std::net::TcpStream>()
+                            .shutdown(Shutdown::Read);
+                        Ok(())
+                    });
                     view.spawn(IoTask {
                         data: data_tx,
                         result: res_tx,
@@ -499,10 +497,10 @@ where
                 }
                 _ => {
                     let fut = res_tx.write(Err(ErrorCode::InvalidState));
-                    view.spawn(AccessorTaskFn(|_: &Accessor<U, Self>| async {
+                    view.spawn_fn(|_| async {
                         fut.await;
                         Ok(())
-                    }));
+                    });
                 }
             }
             Ok((data_rx.into(), res_rx.into()))

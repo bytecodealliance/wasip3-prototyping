@@ -1,13 +1,14 @@
 use crate::p3::bindings::LinkOptions;
-use anyhow::{anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use core::future::Future;
 use core::ops::{Deref, DerefMut};
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use wasmtime::component::{
-    AbortHandle, Accessor, AccessorTask, FutureWriter, HasData, Linker, Lower, ResourceTable,
-    StreamWriter, VecBuffer,
+    AbortHandle, Access, Accessor, AccessorTask, FutureWriter, HasData, Linker, Lower,
+    ResourceTable, StreamWriter, VecBuffer,
 };
 
 pub mod bindings;
@@ -147,16 +148,80 @@ impl<T: ResourceView> ResourceView for &mut T {
     }
 }
 
-pub struct AccessorTaskFn<F>(pub F);
+/// Helper trait to use `spawn_*` functions below that benefit from type
+/// inference where there's a single closure parameter.
+pub trait SpawnExt: Sized {
+    type Data: 'static;
+    type AccessorData: HasData;
 
-impl<T, U, R, F, Fut> AccessorTask<T, U, R> for AccessorTaskFn<F>
-where
-    U: HasData,
-    F: FnOnce(&Accessor<T, U>) -> Fut + Send + 'static,
-    Fut: Future<Output = R> + Send,
-{
-    fn run(self, accessor: &Accessor<T, U>) -> impl Future<Output = R> + Send {
-        self.0(accessor)
+    fn spawn(
+        self,
+        task: impl AccessorTask<Self::Data, Self::AccessorData, Result<()>>,
+    ) -> AbortHandle;
+
+    fn spawn_fn<F>(
+        self,
+        func: impl FnOnce(&Accessor<Self::Data, Self::AccessorData>) -> F + Send + 'static,
+    ) -> AbortHandle
+    where
+        F: Future<Output = Result<()>> + Send,
+    {
+        struct AccessorTaskFn<F>(pub F);
+
+        impl<T, U, R, F, Fut> AccessorTask<T, U, R> for AccessorTaskFn<F>
+        where
+            U: HasData,
+            F: FnOnce(&Accessor<T, U>) -> Fut + Send + 'static,
+            Fut: Future<Output = R> + Send,
+        {
+            fn run(self, accessor: &Accessor<T, U>) -> impl Future<Output = R> + Send {
+                self.0(accessor)
+            }
+        }
+
+        self.spawn(AccessorTaskFn(func))
+    }
+
+    fn spawn_fn_box(
+        self,
+        func: impl FnOnce(
+            &Accessor<Self::Data, Self::AccessorData>,
+        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>>
+        + Send
+        + 'static,
+    ) -> AbortHandle {
+        struct AccessorTaskFnBox<F>(pub F);
+
+        impl<T, U, R, F> AccessorTask<T, U, R> for AccessorTaskFnBox<F>
+        where
+            U: HasData,
+            F: FnOnce(&Accessor<T, U>) -> Pin<Box<dyn Future<Output = R> + Send + '_>>
+                + Send
+                + 'static,
+        {
+            async fn run(self, accessor: &Accessor<T, U>) -> R {
+                self.0(accessor).await
+            }
+        }
+        self.spawn(AccessorTaskFnBox(func))
+    }
+}
+
+impl<T, D: HasData> SpawnExt for &mut Access<'_, T, D> {
+    type Data = T;
+    type AccessorData = D;
+
+    fn spawn(self, task: impl AccessorTask<T, D, Result<()>>) -> AbortHandle {
+        <Access<'_, T, D>>::spawn(self, task)
+    }
+}
+
+impl<T, D: HasData> SpawnExt for &Accessor<T, D> {
+    type Data = T;
+    type AccessorData = D;
+
+    fn spawn(self, task: impl AccessorTask<T, D, Result<()>>) -> AbortHandle {
+        <Accessor<T, D>>::spawn(self, task)
     }
 }
 
