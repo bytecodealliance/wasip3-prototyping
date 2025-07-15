@@ -2,8 +2,9 @@ use super::{delete_request, get_fields_inner, push_response};
 use crate::p3::bindings::http::handler;
 use crate::p3::bindings::http::types::ErrorCode;
 use crate::p3::{
-    Body, BodyFrame, Client as _, ContentLength, OutgoingRequestBody, OutgoingTrailerFuture,
-    Request, Response, WasiHttp, WasiHttpImpl, WasiHttpView, empty_body,
+    Body, BodyChannel, BodyFrame, BodyWithContentLength, Client as _, ContentLength,
+    DEFAULT_BUFFER_CAPACITY, OutgoingTrailerFuture, Request, Response, WasiHttp, WasiHttpImpl,
+    WasiHttpView, empty_body,
 };
 use anyhow::bail;
 use bytes::Bytes;
@@ -13,6 +14,7 @@ use http::header::HOST;
 use http::{HeaderMap, HeaderValue, Uri};
 use http_body_util::{BodyExt as _, BodyStream, StreamBody};
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::debug;
 use wasmtime::component::{Accessor, AccessorTask, Resource};
@@ -242,6 +244,7 @@ where
                 content_length,
             } => {
                 let (trailers_tx, trailers_rx) = oneshot::channel();
+                let (body_tx, body_rx) = mpsc::channel(1);
                 let task = store.spawn(TrailerTask {
                     rx: trailers,
                     tx: trailers_tx,
@@ -251,22 +254,44 @@ where
                     Some(BodyFrame::Trailers(..)) => bail!("guest body is corrupted"),
                     None => Bytes::default(),
                 };
-                let body = OutgoingRequestBody::new(contents, buffer, content_length)
+                let body = BodyChannel::new(body_rx);
+                let body = BodyWithContentLength::new(body, content_length)
                     .with_trailers(wait_for_trailers(trailers_rx, AbortOnDropHandle(task)));
                 let request = http::Request::from_parts(request, body);
-                match client.send_request(request, options).await? {
-                    Ok((response, io)) => {
-                        store.spawn(AccessorTaskFn(|_: &Accessor<U, Self>| async {
-                            let res = io.await;
-                            tx.write(res.map_err(Into::into)).await;
-                            Ok(())
-                        }));
-                        match response.await {
-                            Ok(response) => response.map(|body| body.map_err(Into::into).boxed()),
+                let (response, io) = match client.send_request(request, options).await? {
+                    Ok(pair) => pair,
+                    Err(err) => return Ok(Err(err)),
+                };
+                store.spawn(AccessorTaskFn(move |_: &Accessor<U, Self>| async move {
+                    let (io_res, body_res) = futures::join! {
+                        io,
+                        async {
+                            body_tx.send(Ok(buffer)).await?;
+                            let (mut tail, mut rx_buffer) = contents.await;
+                            loop {
+                                let buffer = rx_buffer.split();
+                                body_tx.send(Ok(buffer.freeze())).await?;
+                                rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
 
-                            Err(err) => return Ok(Err(err)),
+                                match tail {
+                                    Some(rest) => (tail, rx_buffer) = rest.read(rx_buffer).await,
+                                    None => break
+                                }
+
+                            }
+                            drop(body_tx);
+                            anyhow::Ok(())
                         }
-                    }
+                    };
+                    // Failure in sending the body only happens when the body
+                    // itself goes away due to cancellation elsewhere, so
+                    // swallow this error.
+                    let _ = body_res;
+                    tx.write(io_res.map_err(Into::into)).await;
+                    Ok(())
+                }));
+                match response.await {
+                    Ok(response) => response.map(|body| body.map_err(Into::into).boxed()),
                     Err(err) => return Ok(Err(err)),
                 }
             }

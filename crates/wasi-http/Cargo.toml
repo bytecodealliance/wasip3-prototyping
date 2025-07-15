@@ -32,6 +32,7 @@ wasmtime = { workspace = true, features = ['component-model'] }
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
 webpki-roots = { workspace = true }
+pin-project-lite = "0.2.14"
 
 [dev-dependencies]
 env_logger = { workspace = true }
