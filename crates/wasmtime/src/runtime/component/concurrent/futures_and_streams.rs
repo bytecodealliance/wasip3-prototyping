@@ -1007,6 +1007,7 @@ impl<T> HostStream<T> {
                 self.rep,
                 TransmitKind::Stream,
             )),
+            closed: false,
         }
     }
 
@@ -1167,11 +1168,23 @@ pub struct StreamReader<B> {
     instance: Instance,
     rep: u32,
     tx: Option<mpsc::Sender<ReadEvent<B>>>,
+    closed: bool,
 }
 
 impl<B> StreamReader<B> {
     fn new(rep: u32, tx: Option<mpsc::Sender<ReadEvent<B>>>, instance: Instance) -> Self {
-        Self { instance, rep, tx }
+        Self {
+            instance,
+            rep,
+            tx,
+            closed: false,
+        }
+    }
+
+    /// Returns whether this stream is "closed" meaning that the other end of
+    /// the stream has been dropped.
+    pub fn is_closed(&self) -> bool {
+        self.closed
     }
 
     /// Read values from this `stream`.
@@ -1186,11 +1199,7 @@ impl<B> StreamReader<B> {
     ///
     /// Panics if the store that the [`Accessor`] is derived from does not own
     /// this future.
-    pub async fn read(
-        mut self,
-        accessor: impl AsAccessor,
-        buffer: B,
-    ) -> (Option<StreamReader<B>>, B)
+    pub async fn read(&mut self, accessor: impl AsAccessor, buffer: B) -> B
     where
         B: Send + 'static,
     {
@@ -1202,7 +1211,13 @@ impl<B> StreamReader<B> {
         send(self.tx.as_mut().unwrap(), ReadEvent::Read { buffer, tx });
         let v = rx.await;
         match v {
-            Ok(HostResult { buffer, dropped }) => ((!dropped).then_some(self), buffer),
+            Ok(HostResult { buffer, dropped }) => {
+                if self.closed {
+                    debug_assert!(dropped);
+                }
+                self.closed = dropped;
+                buffer
+            }
             Err(_) => {
                 todo!("guarantee buffer recovery if event loop errors or panics")
             }

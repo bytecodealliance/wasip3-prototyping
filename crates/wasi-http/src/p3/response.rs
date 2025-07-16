@@ -274,23 +274,16 @@ impl ResponseIo {
     where
         T: ResourceView + 'static,
     {
-        if let Some((contents, contents_tx)) = self.body.take() {
-            let (mut tail, mut rx_buffer) = contents
-                .read(store, BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY))
-                .await;
-            loop {
+        if let Some((mut contents, contents_tx)) = self.body.take() {
+            let mut rx_buffer = BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY);
+            while !contents.is_closed() {
+                rx_buffer = contents.read(store, rx_buffer).await;
                 let buffer = rx_buffer.split();
                 if !buffer.is_empty() {
                     if let Err(..) = contents_tx.send(buffer.freeze()).await {
                         break;
                     }
                     rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
-                }
-                if let Some(rx) = tail {
-                    (tail, rx_buffer) = rx.read(store, rx_buffer).await;
-                } else {
-                    debug_assert!(rx_buffer.is_empty());
-                    break;
                 }
             }
             drop(contents_tx);

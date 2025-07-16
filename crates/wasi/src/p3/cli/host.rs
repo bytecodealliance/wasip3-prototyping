@@ -57,26 +57,22 @@ where
 {
     async fn run(mut self, store: &Accessor<T, WasiCli<U>>) -> wasmtime::Result<()> {
         let mut buf = BytesMut::with_capacity(8096);
-        let mut fut = self.data.read(store, buf);
-        loop {
-            let (Some(tail), buf_again) = fut.await else {
-                return Ok(());
-            };
-
-            buf = buf_again;
+        while !self.data.is_closed() {
+            buf = self.data.read(store, buf).await;
             match self.output.write_all(&buf).await {
                 Ok(()) => {
                     buf.clear();
-                    fut = tail.read(store, buf);
                     continue;
                 }
                 Err(_err) => {
                     // TODO: Report the error to the guest
-                    drop(tail);
-                    return Ok(());
+                    drop(self.data);
+                    break;
                 }
             }
         }
+
+        Ok(())
     }
 }
 

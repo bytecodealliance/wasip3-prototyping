@@ -375,7 +375,7 @@ where
         socket: Resource<TcpSocket>,
         data: HostStream<u8>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
-        let (stream, data) = match store.with(|mut view| -> wasmtime::Result<_> {
+        let (stream, mut data) = match store.with(|mut view| -> wasmtime::Result<_> {
             let data = data.into_reader::<Vec<u8>>(&mut view);
             let mut binding = view.get();
             let sock = get_socket(binding.table(), &socket)?;
@@ -389,44 +389,31 @@ where
             Err(err) => return Ok(Err(err)),
         };
         let mut buf = Vec::with_capacity(8096);
-        let mut fut = data.read(store, buf);
-        'outer: loop {
-            let (Some(tail), buf_again) = fut.await else {
-                _ = stream
-                    .as_socketlike_view::<std::net::TcpStream>()
-                    .shutdown(Shutdown::Write);
-                return Ok(Ok(()));
-            };
-            let mut slice = buf_again.as_slice();
-            loop {
+        let mut result = Ok(());
+        while !data.is_closed() {
+            buf = data.read(store, buf).await;
+            let mut slice = buf.as_slice();
+            while !slice.is_empty() {
                 match stream.try_write(&slice) {
-                    Ok(n) => {
-                        if n == slice.len() {
-                            buf = buf_again;
-                            buf.clear();
-                            fut = tail.read(store, buf);
-                            continue 'outer;
-                        } else {
-                            slice = &slice[n..];
-                        }
-                    }
+                    Ok(n) => slice = &slice[n..],
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                         if let Err(err) = stream.writable().await {
-                            _ = stream
-                                .as_socketlike_view::<std::net::TcpStream>()
-                                .shutdown(Shutdown::Write);
-                            return Ok(Err(err.into()));
+                            result = Err(err.into());
+                            break;
                         }
                     }
                     Err(err) => {
-                        _ = stream
-                            .as_socketlike_view::<std::net::TcpStream>()
-                            .shutdown(Shutdown::Write);
-                        return Ok(Err(err.into()));
+                        result = Err(err.into());
+                        break;
                     }
                 }
             }
+            buf.clear();
         }
+        _ = stream
+            .as_socketlike_view::<std::net::TcpStream>()
+            .shutdown(Shutdown::Write);
+        Ok(result)
     }
 
     async fn receive<U: 'static>(
