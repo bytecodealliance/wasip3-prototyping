@@ -269,7 +269,7 @@ where
                         })
                         .await
                     };
-                    let Some((rx_tail, b)) = res else {
+                    let Some(b) = res else {
                         // read handle dropped
                         let Ok(mut body) = self.body.lock() else {
                             bail!("lock poisoned");
@@ -288,7 +288,7 @@ where
                     };
                     rx_buffer = b;
                     let mut tx_tail = contents_tx;
-                    let Some(rx_tail) = rx_tail else {
+                    if contents_rx.is_closed() {
                         debug_assert!(rx_buffer.is_empty());
                         if let Some(ContentLength { limit, sent }) = content_length {
                             if limit != sent {
@@ -339,7 +339,6 @@ where
                     }
                     let buffer = rx_buffer.split().freeze();
                     rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
-                    contents_rx = rx_tail;
                     let buffer = tx_tail.write_all(store, Cursor::new(buffer)).await;
                     if tx_tail.is_closed() {
                         let Ok(mut body) = self.body.lock() else {

@@ -463,13 +463,14 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &str) -> Re
                     }
                     Event::WriteB(delivered) => {
                         assert!(delivered);
+                        let mut rx = callee_stream_rx.take().unwrap();
                         futures.push(
-                            callee_stream_rx
-                                .take()
-                                .unwrap()
-                                .read(accessor, None)
-                                .map(|(r, b)| Ok(Event::ReadC(r, b)))
-                                .boxed(),
+                            async move {
+                                let b = rx.read(accessor, None).await;
+                                let r = if rx.is_closed() { None } else { Some(rx) };
+                                Ok(Event::ReadC(r, b))
+                            }
+                            .boxed(),
                         );
                     }
                     Event::ControlWriteC(tx) => {
@@ -501,13 +502,14 @@ async fn test_transmit_with<Test: TransmitTest + 'static>(component: &str) -> Re
                     Event::ReadD(None) => unreachable!(),
                     Event::ReadD(Some(value)) => {
                         assert_eq!(&value, "d");
+                        let mut rx = callee_stream_rx.take().unwrap();
                         futures.push(
-                            callee_stream_rx
-                                .take()
-                                .unwrap()
-                                .read(accessor, None)
-                                .map(|(r, _)| Ok(Event::ReadNone(r)))
-                                .boxed(),
+                            async move {
+                                rx.read(accessor, None).await;
+                                let r = if rx.is_closed() { None } else { Some(rx) };
+                                Ok(Event::ReadNone(r))
+                            }
+                            .boxed(),
                         );
                     }
                     Event::ReadNone(Some(_)) => unreachable!(),

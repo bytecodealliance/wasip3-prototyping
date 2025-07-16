@@ -123,7 +123,7 @@ pub async fn async_watch_streams() -> Result<()> {
     instance
         .run_with(&mut store, async |store| -> wasmtime::Result<_> {
             let mut futures = FuturesUnordered::new();
-            let (mut tx, rx) = store.with(|s| instance.stream(s))?;
+            let (mut tx, mut rx) = store.with(|s| instance.stream(s))?;
             assert!(
                 pin!(tx.watch_reader(store))
                     .poll(&mut Context::from_waker(&Waker::noop()))
@@ -137,7 +137,14 @@ pub async fn async_watch_streams() -> Result<()> {
                 }
                 .boxed(),
             );
-            futures.push(rx.read(store, None).map(|(r, b)| Event::Read(r, b)).boxed());
+            futures.push(
+                async move {
+                    let b = rx.read(store, None).await;
+                    let r = if rx.is_closed() { None } else { Some(rx) };
+                    Event::Read(r, b)
+                }
+                .boxed(),
+            );
             let mut rx = None;
             let mut tx = None;
             while let Some(event) = futures.next().await {
@@ -220,7 +227,7 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
     // First, test stream host->host
     instance
         .run_with(&mut store, async |store| -> wasmtime::Result<_> {
-            let (mut tx, rx) = store.with(|mut s| instance.stream(&mut s))?;
+            let (mut tx, mut rx) = store.with(|mut s| instance.stream(&mut s))?;
 
             let mut futures = FuturesUnordered::new();
             futures.push({
@@ -232,9 +239,12 @@ pub async fn test_closed_streams(watch: bool) -> Result<()> {
                 .boxed()
             });
             futures.push(
-                rx.read(store, Vec::with_capacity(3))
-                    .map(|(r, b)| StreamEvent::FirstRead(r, b))
-                    .boxed(),
+                async move {
+                    let b = rx.read(store, Vec::with_capacity(3)).await;
+                    let r = if rx.is_closed() { None } else { Some(rx) };
+                    StreamEvent::FirstRead(r, b)
+                }
+                .boxed(),
             );
 
             let mut count = 0;

@@ -147,7 +147,7 @@ where
         data: HostStream<u8>,
         mut offset: Filesize,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
-        let (fd, data) = store.with(|mut view| -> wasmtime::Result<_> {
+        let (fd, mut data) = store.with(|mut view| -> wasmtime::Result<_> {
             let fd = get_descriptor(view.get().table(), &fd)?.clone();
             let data = data.into_reader::<Vec<u8>>(&mut view);
             Ok((fd, data))
@@ -160,33 +160,30 @@ where
             return Ok(Err(types::ErrorCode::BadDescriptor));
         }
         let mut buf = Vec::with_capacity(8096);
-        let mut fut = data.read(store, buf);
-        loop {
-            let (Some(tail), buf_again) = fut.await else {
-                return Ok(Ok(()));
-            };
+        while !data.is_closed() {
+            buf = data.read(store, buf).await;
             match f
                 .spawn_blocking(move |f| {
-                    let mut buf = buf_again.as_slice();
-                    while !buf.is_empty() {
-                        let n = f.write_at(buf, offset)?;
-                        buf = &buf[n..];
+                    let mut slice = buf.as_slice();
+                    while !slice.is_empty() {
+                        let n = f.write_at(slice, offset)?;
+                        slice = &slice[n..];
                         let n = n.try_into().or(Err(ErrorCode::Overflow))?;
                         offset = offset.checked_add(n).ok_or(ErrorCode::Overflow)?;
                     }
-                    Ok((offset, buf_again))
+                    Ok((offset, buf))
                 })
                 .await
             {
-                Ok((n, buf_again)) => {
+                Ok((n, b)) => {
                     offset = n;
-                    buf = buf_again;
+                    buf = b;
                     buf.clear();
                 }
                 Err(err) => return Ok(Err(err)),
             }
-            fut = tail.read(store, buf);
         }
+        Ok(Ok(()))
     }
 
     async fn append_via_stream<U: 'static>(
@@ -194,7 +191,7 @@ where
         fd: Resource<Descriptor>,
         data: HostStream<u8>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
-        let (fd, data) = store.with(|mut view| {
+        let (fd, mut data) = store.with(|mut view| {
             let fd = get_descriptor(view.get().table(), &fd)?.clone();
             let data = data.into_reader::<Vec<u8>>(&mut view);
             anyhow::Ok((fd, data))
@@ -207,20 +204,17 @@ where
             return Ok(Err(types::ErrorCode::BadDescriptor));
         }
         let mut buf = Vec::with_capacity(8096);
-        let mut fut = data.read(store, buf);
-        loop {
-            let (Some(tail), buf_again) = fut.await else {
-                return Ok(Ok(()));
-            };
+        while !data.is_closed() {
+            buf = data.read(store, buf).await;
             match f
                 .spawn_blocking(move |f| {
-                    let mut buf = buf_again.as_slice();
+                    let mut slice = buf.as_slice();
                     loop {
-                        let n = f.append(buf)?;
-                        if buf.len() == n {
-                            return Ok(buf_again);
+                        let n = f.append(slice)?;
+                        if slice.len() == n {
+                            return Ok(buf);
                         }
-                        buf = &buf[n..];
+                        slice = &slice[n..];
                     }
                 })
                 .await
@@ -231,8 +225,8 @@ where
                 }
                 Err(err) => return Ok(Err(err)),
             }
-            fut = tail.read(store, buf)
         }
+        Ok(Ok(()))
     }
 
     async fn advise<U>(

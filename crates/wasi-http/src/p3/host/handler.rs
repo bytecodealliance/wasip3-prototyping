@@ -221,7 +221,7 @@ where
                 }
             }
             Body::Guest {
-                contents: MaybeTombstone::Some(contents),
+                contents: MaybeTombstone::Some(mut contents),
                 trailers: MaybeTombstone::Some(trailers),
                 buffer,
                 tx,
@@ -254,19 +254,12 @@ where
                         io,
                         async {
                             body_tx.send(Ok(buffer)).await?;
-                            let (mut tail, mut rx_buffer) = contents
-                                .read(store,BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY))
-                                .await;
-                            loop {
+                            let mut rx_buffer = BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY);
+                            while !contents.is_closed() {
+                                rx_buffer = contents.read(store,rx_buffer).await;
                                 let buffer = rx_buffer.split();
                                 body_tx.send(Ok(buffer.freeze())).await?;
                                 rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
-
-                                match tail {
-                                    Some(rest) => (tail, rx_buffer) = rest.read(store, rx_buffer).await,
-                                    None => break
-                                }
-
                             }
                             drop(body_tx);
                             anyhow::Ok(())
