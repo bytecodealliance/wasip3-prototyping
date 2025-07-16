@@ -238,9 +238,8 @@ where
                 let mut contents_tx = self.contents_tx;
                 match buffer {
                     Some(BodyFrame::Data(buffer)) => {
-                        let (tx_tail, buffer) =
-                            contents_tx.write_all(store, Cursor::new(buffer)).await;
-                        let Some(tx_tail) = tx_tail else {
+                        let buffer = contents_tx.write_all(store, Cursor::new(buffer)).await;
+                        if contents_tx.is_closed() {
                             let Ok(mut body) = self.body.lock() else {
                                 bail!("lock poisoned");
                             };
@@ -254,8 +253,7 @@ where
                                 content_length,
                             };
                             return Ok(());
-                        };
-                        contents_tx = tx_tail;
+                        }
                     }
                     Some(BodyFrame::Trailers(..)) => bail!("corrupted guest body state"),
                     None => {}
@@ -289,7 +287,7 @@ where
                         return Ok(());
                     };
                     rx_buffer = b;
-                    let tx_tail = contents_tx;
+                    let mut tx_tail = contents_tx;
                     let Some(rx_tail) = rx_tail else {
                         debug_assert!(rx_buffer.is_empty());
                         if let Some(ContentLength { limit, sent }) = content_length {
@@ -342,8 +340,8 @@ where
                     let buffer = rx_buffer.split().freeze();
                     rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
                     contents_rx = rx_tail;
-                    let (tx_tail, buffer) = tx_tail.write_all(store, Cursor::new(buffer)).await;
-                    let Some(tx_tail) = tx_tail else {
+                    let buffer = tx_tail.write_all(store, Cursor::new(buffer)).await;
+                    if tx_tail.is_closed() {
                         let Ok(mut body) = self.body.lock() else {
                             bail!("lock poisoned");
                         };
@@ -413,9 +411,8 @@ where
                 let mut contents_tx = self.contents_tx;
                 match buffer {
                     Some(BodyFrame::Data(buffer)) => {
-                        let (tx_tail, buffer) =
-                            contents_tx.write_all(store, Cursor::new(buffer)).await;
-                        let Some(tx_tail) = tx_tail else {
+                        let buffer = contents_tx.write_all(store, Cursor::new(buffer)).await;
+                        if contents_tx.is_closed() {
                             let Ok(mut body) = self.body.lock() else {
                                 bail!("lock poisoned");
                             };
@@ -426,8 +423,7 @@ where
                                 buffer: Some(BodyFrame::Data(buffer)),
                             };
                             return Ok(());
-                        };
-                        contents_tx = tx_tail;
+                        }
                     }
                     Some(BodyFrame::Trailers(..)) => bail!("corrupted guest body state"),
                     None => {}
@@ -469,9 +465,9 @@ where
                         Some(Some(Ok(frame))) => {
                             match frame.into_data().map_err(http_body::Frame::into_trailers) {
                                 Ok(buffer) => {
-                                    let (tx_tail, buffer) =
+                                    let buffer =
                                         contents_tx.write_all(store, Cursor::new(buffer)).await;
-                                    let Some(tx_tail) = tx_tail else {
+                                    if contents_tx.is_closed() {
                                         let Ok(mut body) = self.body.lock() else {
                                             bail!("lock poisoned");
                                         };
@@ -483,7 +479,6 @@ where
                                         };
                                         return Ok(());
                                     };
-                                    contents_tx = tx_tail;
                                 }
                                 Err(Ok(trailers)) => {
                                     drop(contents_tx);

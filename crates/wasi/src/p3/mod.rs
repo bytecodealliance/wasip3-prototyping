@@ -251,11 +251,10 @@ where
                     break Ok(());
                 }
                 Some(Ok(buf)) => {
-                    let fut = tx.write_all(store, buf.into());
-                    let (Some(tail), _) = fut.await else {
+                    tx.write_all(store, buf.into()).await;
+                    if tx.is_closed() {
                         break Ok(());
-                    };
-                    tx = tail;
+                    }
                 }
                 Some(Err(err)) => {
                     // TODO: Close the stream with an error context

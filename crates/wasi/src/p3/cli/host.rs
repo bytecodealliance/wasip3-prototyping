@@ -26,25 +26,21 @@ where
     async fn run(mut self, store: &Accessor<T, WasiCli<U>>) -> wasmtime::Result<()> {
         let mut tx = self.tx;
         let mut buf = BytesMut::with_capacity(8096);
-        loop {
+        while !tx.is_closed() {
+            buf.clear();
             match self.input.read_buf(&mut buf).await {
                 Ok(0) => return Ok(()),
                 Ok(_) => {
-                    let (Some(tail), buf_again) = tx.write_all(store, Cursor::new(buf)).await
-                    else {
-                        break Ok(());
-                    };
-                    tx = tail;
-                    buf = buf_again.into_inner();
-                    buf.clear();
+                    buf = tx.write_all(store, Cursor::new(buf)).await.into_inner();
                 }
                 Err(_err) => {
                     // TODO: Close the stream with an error context
                     drop(tx);
-                    return Ok(());
+                    break;
                 }
             }
         }
+        Ok(())
     }
 }
 
