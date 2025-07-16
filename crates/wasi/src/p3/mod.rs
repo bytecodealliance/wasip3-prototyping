@@ -48,7 +48,7 @@ impl Drop for AbortOnDropHandle {
 ///
 /// # Example
 ///
-/// ```
+/// ```ignore(TODO fix after upstreaming is complete)
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{ResourceTable, Linker};
 /// use wasmtime_wasi::p3::cli::{WasiCliCtx, WasiCliView};

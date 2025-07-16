@@ -11,7 +11,7 @@
 //! use this modules's bindings rather than generate fresh bindings. That can be
 //! done using the `with` option to [`bindgen!`]:
 //!
-//! ```rust
+//! ```rust,ignore(TODO fix after upstreaming is complete)
 //! use wasmtime_wasi::p3::{WasiCtx, WasiView};
 //! use wasmtime::{Result, Engine, Config};
 //! use wasmtime::component::{Linker, HasSelf};
@@ -190,7 +190,7 @@ pub use self::generated::wasi::*;
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```no_run,ignore(TODO fix after upstreaming is complete)
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{Component, Linker};
 /// use wasmtime_wasi::p3::{WasiCtx, WasiView, WasiCtxBuilder};
@@ -257,7 +257,7 @@ pub use self::generated::Command;
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```no_run,ignore(TODO fix after upstreaming is complete)
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{Linker, Component};
 /// use wasmtime_wasi::p3::{WasiCtx, WasiView, WasiCtxBuilder};
