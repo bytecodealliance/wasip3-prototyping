@@ -277,8 +277,8 @@ use wasmtime_wasi::p3::ResourceView;
 pub fn add_to_linker<T>(l: &mut wasmtime::component::Linker<T>) -> anyhow::Result<()>
 where
     T: WasiHttpView
-        + wasmtime_wasi::p3::clocks::WasiClocksView
-        + wasmtime_wasi::p3::random::WasiRandomView
+        + wasmtime_wasi::clocks::WasiClocksView
+        + wasmtime_wasi::random::WasiRandomView
         + wasmtime_wasi::p3::cli::WasiCliView
         + 'static,
 {

@@ -39,9 +39,9 @@ struct Host {
     http_outgoing_body_chunk_size: Option<usize>,
 
     p3_cli: Option<Arc<Mutex<wasmtime_wasi::p3::cli::WasiCliCtx>>>,
-    p3_clocks: Option<Arc<Mutex<wasmtime_wasi::p3::clocks::WasiClocksCtx>>>,
+    p3_clocks: Option<Arc<Mutex<wasmtime_wasi::clocks::WasiClocksCtx>>>,
     p3_filesystem: Option<wasmtime_wasi::p3::filesystem::WasiFilesystemCtx>,
-    p3_random: Option<Arc<Mutex<wasmtime_wasi::p3::random::WasiRandomCtx>>>,
+    p3_random: Option<Arc<Mutex<wasmtime_wasi::random::WasiRandomCtx>>>,
     p3_sockets: Option<wasmtime_wasi::p3::sockets::WasiSocketsCtx>,
     p3_http: wasmtime_wasi_http::p3::WasiHttpCtx,
 
@@ -103,8 +103,8 @@ impl wasmtime_wasi::p3::cli::WasiCliView for Host {
     }
 }
 
-impl wasmtime_wasi::p3::clocks::WasiClocksView for Host {
-    fn clocks(&mut self) -> &wasmtime_wasi::p3::clocks::WasiClocksCtx {
+impl wasmtime_wasi::clocks::WasiClocksView for Host {
+    fn clocks(&mut self) -> &wasmtime_wasi::clocks::WasiClocksCtx {
         let clocks = self
             .p3_clocks
             .as_mut()
@@ -122,8 +122,8 @@ impl wasmtime_wasi::p3::filesystem::WasiFilesystemView for Host {
     }
 }
 
-impl wasmtime_wasi::p3::random::WasiRandomView for Host {
-    fn random(&mut self) -> &mut wasmtime_wasi::p3::random::WasiRandomCtx {
+impl wasmtime_wasi::random::WasiRandomView for Host {
+    fn random(&mut self) -> &mut wasmtime_wasi::random::WasiRandomCtx {
         let random = self
             .p3_random
             .as_mut()
@@ -259,8 +259,8 @@ impl ServeCommand {
             p3_filesystem.preopened_dir(
                 host,
                 guest,
-                wasmtime_wasi::p3::filesystem::DirPerms::all(),
-                wasmtime_wasi::p3::filesystem::FilePerms::all(),
+                wasmtime_wasi::DirPerms::all(),
+                wasmtime_wasi::FilePerms::all(),
             )?;
         }
         store.data_mut().p3_filesystem = Some(p3_filesystem);

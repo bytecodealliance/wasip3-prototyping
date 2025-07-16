@@ -9,8 +9,11 @@
 //!
 //! For components and WASIp2, see [`p2`].
 //! For WASIp1 and core modules, see the [`preview1`] module documentation.
+//!
+//! For WASIp3, see [`p3`]. WASIp3 support is experimental, unstable and incomplete.
 
-mod clocks;
+pub mod clocks;
+mod ctx;
 mod error;
 mod fs;
 mod net;
@@ -21,10 +24,11 @@ pub mod p3;
 pub mod preview0;
 #[cfg(feature = "preview1")]
 pub mod preview1;
-mod random;
+pub mod random;
 pub mod runtime;
 
 pub use self::clocks::{HostMonotonicClock, HostWallClock};
+pub(crate) use self::ctx::WasiCtxBuilder;
 pub use self::error::{I32Exit, TrappableError};
 pub use self::fs::{DirPerms, FilePerms, OpenMode};
 pub use self::net::{Network, SocketAddrUse};

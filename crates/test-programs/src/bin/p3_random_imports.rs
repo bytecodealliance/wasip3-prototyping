@@ -6,13 +6,6 @@ test_programs::p3::export!(Component);
 
 impl test_programs::p3::exports::wasi::cli::run::Guest for Component {
     async fn run() -> Result<(), ()> {
-        let mut bytes = [0_u8; 256];
-        unsafe {
-            wasip1::random_get(bytes.as_mut_ptr(), bytes.len()).unwrap();
-        }
-
-        assert!(bytes.iter().any(|x| *x != 0));
-
         // Acquired random bytes should be of the expected length.
         let array = random::random::get_random_bytes(100);
         assert_eq!(array.len(), 100);

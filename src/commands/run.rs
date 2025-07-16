@@ -1080,8 +1080,7 @@ impl RunCommand {
     }
 
     fn set_p3_ctx(&self, store: &mut Store<Host>) -> Result<()> {
-        store.data_mut().p3_clocks = Some(Arc::default());
-        store.data_mut().p3_random = Some(Arc::default());
+        store.data_mut().p3_ctx = Some(Arc::default());
 
         let mut environment = Vec::default();
         if self.run.common.wasi.inherit_env == Some(true) {
@@ -1120,8 +1119,8 @@ impl RunCommand {
             p3_filesystem.preopened_dir(
                 host,
                 guest,
-                wasmtime_wasi::p3::filesystem::DirPerms::all(),
-                wasmtime_wasi::p3::filesystem::FilePerms::all(),
+                wasmtime_wasi::DirPerms::all(),
+                wasmtime_wasi::FilePerms::all(),
             )?;
         }
         store.data_mut().p3_filesystem = Some(p3_filesystem);
@@ -1178,10 +1177,9 @@ struct Host {
     preview2_ctx: Option<Arc<Mutex<wasmtime_wasi::preview1::WasiP1Ctx>>>,
 
     p3_cli: Option<Arc<Mutex<wasmtime_wasi::p3::cli::WasiCliCtx>>>,
-    p3_clocks: Option<Arc<Mutex<wasmtime_wasi::p3::clocks::WasiClocksCtx>>>,
     p3_filesystem: Option<wasmtime_wasi::p3::filesystem::WasiFilesystemCtx>,
-    p3_random: Option<Arc<Mutex<wasmtime_wasi::p3::random::WasiRandomCtx>>>,
     p3_sockets: Option<wasmtime_wasi::p3::sockets::WasiSocketsCtx>,
+    p3_ctx: Option<Arc<Mutex<wasmtime_wasi::p3::WasiCtx>>>,
     #[cfg(feature = "wasi-http")]
     p3_http: Option<wasmtime_wasi_http::p3::WasiHttpCtx>,
 
@@ -1221,6 +1219,14 @@ impl Host {
             .get_mut()
             .unwrap()
     }
+
+    fn p3_ctx(&mut self) -> &mut wasmtime_wasi::p3::WasiCtx {
+        let ctx = self.p3_ctx.as_mut().expect("wasip3 is not configured");
+        Arc::get_mut(ctx)
+            .expect("wasmtime_wasi is not compatible with threads")
+            .get_mut()
+            .unwrap()
+    }
 }
 
 impl IoView for Host {
@@ -1238,6 +1244,11 @@ impl wasmtime_wasi::p3::ResourceView for Host {
         self.preview2_ctx().table()
     }
 }
+impl wasmtime_wasi::p3::WasiView for Host {
+    fn ctx(&mut self) -> &mut wasmtime_wasi::p3::WasiCtx {
+        self.p3_ctx()
+    }
+}
 impl wasmtime_wasi::p3::cli::WasiCliView for Host {
     fn cli(&mut self) -> &wasmtime_wasi::p3::cli::WasiCliCtx {
         let cli = self
@@ -1249,33 +1260,11 @@ impl wasmtime_wasi::p3::cli::WasiCliView for Host {
     }
 }
 
-impl wasmtime_wasi::p3::clocks::WasiClocksView for Host {
-    fn clocks(&mut self) -> &wasmtime_wasi::p3::clocks::WasiClocksCtx {
-        let clocks = self
-            .p3_clocks
-            .as_mut()
-            .and_then(Arc::get_mut)
-            .expect("`wasi:clocks@0.3` not configured");
-        clocks.get_mut().unwrap()
-    }
-}
-
 impl wasmtime_wasi::p3::filesystem::WasiFilesystemView for Host {
     fn filesystem(&self) -> &wasmtime_wasi::p3::filesystem::WasiFilesystemCtx {
         self.p3_filesystem
             .as_ref()
             .expect("`wasi:filesystem@0.3` not configured")
-    }
-}
-
-impl wasmtime_wasi::p3::random::WasiRandomView for Host {
-    fn random(&mut self) -> &mut wasmtime_wasi::p3::random::WasiRandomCtx {
-        let random = self
-            .p3_random
-            .as_mut()
-            .and_then(Arc::get_mut)
-            .expect("`wasi:random@0.3` not configured");
-        random.get_mut().unwrap()
     }
 }
 

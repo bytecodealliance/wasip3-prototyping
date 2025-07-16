@@ -3,13 +3,13 @@ use core::future::Future;
 use bytes::Bytes;
 use wasmtime::Store;
 use wasmtime::component::{Component, Linker, ResourceTable};
+use wasmtime_wasi::clocks::{WasiClocksCtx, WasiClocksView};
 use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 use wasmtime_wasi::p3::ResourceView;
 use wasmtime_wasi::p3::cli::{WasiCliCtx, WasiCliView};
-use wasmtime_wasi::p3::clocks::{WasiClocksCtx, WasiClocksView};
 use wasmtime_wasi::p3::filesystem::{WasiFilesystemCtx, WasiFilesystemView};
-use wasmtime_wasi::p3::random::{WasiRandomCtx, WasiRandomView};
 use wasmtime_wasi::p3::sockets::{WasiSocketsCtx, WasiSocketsView};
+use wasmtime_wasi::random::{WasiRandomCtx, WasiRandomView};
 use wasmtime_wasi_http::p3::bindings::http::types::ErrorCode;
 use wasmtime_wasi_http::p3::{
     Client, DEFAULT_FORBIDDEN_HEADERS, RequestOptions, WasiHttpCtx, WasiHttpView,
@@ -22,12 +22,11 @@ mod proxy;
 
 struct Ctx<C: Client = TestClient> {
     cli: WasiCliCtx,
-    clocks: WasiClocksCtx,
     filesystem: WasiFilesystemCtx,
-    random: WasiRandomCtx,
     sockets: WasiSocketsCtx,
     table: ResourceTable,
     wasip2: WasiCtx,
+    wasip3: wasmtime_wasi::p3::WasiCtx,
     http: WasiHttpCtx<C>,
 }
 
@@ -38,12 +37,13 @@ where
     fn default() -> Self {
         Self {
             cli: WasiCliCtx::default(),
-            clocks: WasiClocksCtx::default(),
             filesystem: WasiFilesystemCtx::default(),
             sockets: WasiSocketsCtx::default(),
-            random: WasiRandomCtx::default(),
             table: ResourceTable::default(),
             wasip2: WasiCtxBuilder::new().inherit_stdio().build(),
+            wasip3: wasmtime_wasi::p3::WasiCtxBuilder::new()
+                .inherit_stdio()
+                .build(),
             http: WasiHttpCtx::default(),
         }
     }
@@ -61,6 +61,12 @@ impl<C: Client> IoView for Ctx<C> {
     }
 }
 
+impl<C: Client> wasmtime_wasi::p3::WasiView for Ctx<C> {
+    fn ctx(&mut self) -> &mut wasmtime_wasi::p3::WasiCtx {
+        &mut self.wasip3
+    }
+}
+
 impl<C: Client> ResourceView for Ctx<C> {
     fn table(&mut self) -> &mut ResourceTable {
         &mut self.table
@@ -75,7 +81,7 @@ impl<C: Client> WasiCliView for Ctx<C> {
 
 impl<C: Client> WasiClocksView for Ctx<C> {
     fn clocks(&mut self) -> &WasiClocksCtx {
-        &self.clocks
+        &self.wasip3.clocks
     }
 }
 
@@ -87,7 +93,7 @@ impl<C: Client> WasiFilesystemView for Ctx<C> {
 
 impl<C: Client> WasiRandomView for Ctx<C> {
     fn random(&mut self) -> &mut WasiRandomCtx {
-        &mut self.random
+        &mut self.wasip3.random
     }
 }
 
