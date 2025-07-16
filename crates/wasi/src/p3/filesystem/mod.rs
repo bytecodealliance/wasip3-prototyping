@@ -1,3 +1,4 @@
+use crate::fs::{DirPerms, FilePerms, OpenMode};
 use crate::p3::bindings::clocks::wall_clock;
 use crate::p3::bindings::filesystem;
 use crate::p3::bindings::filesystem::types::{
@@ -6,7 +7,6 @@ use crate::p3::bindings::filesystem::types::{
 };
 use crate::p3::{ResourceView, TaskTable};
 use crate::runtime::{AbortOnDropJoinHandle, spawn_blocking};
-use bitflags::bitflags;
 use cap_fs_ext::{FileTypeExt as _, MetadataExt as _};
 use cap_std::ambient_authority;
 use std::collections::hash_map;
@@ -378,39 +378,6 @@ impl From<Advice> for system_interface::fs::Advice {
             Advice::DontNeed => Self::DontNeed,
             Advice::NoReuse => Self::NoReuse,
         }
-    }
-}
-
-bitflags! {
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-    pub struct FilePerms: usize {
-        const READ = 0b1;
-        const WRITE = 0b10;
-    }
-}
-
-bitflags! {
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-    pub struct OpenMode: usize {
-        const READ = 0b1;
-        const WRITE = 0b10;
-    }
-}
-
-bitflags! {
-    /// Permission bits for operating on a directory.
-    ///
-    /// Directories can be limited to being readonly. This will restrict what
-    /// can be done with them, for example preventing creation of new files.
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-    pub struct DirPerms: usize {
-        /// This directory can be read, for example its entries can be iterated
-        /// over and files can be opened.
-        const READ = 0b1;
-
-        /// This directory can be mutated, for example by creating new files
-        /// within it.
-        const MUTATE = 0b10;
     }
 }
 

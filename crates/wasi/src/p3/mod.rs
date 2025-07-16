@@ -1,4 +1,6 @@
+use crate::clocks::WasiClocksImpl;
 use crate::p3::bindings::LinkOptions;
+use crate::random::WasiRandomImpl;
 use anyhow::{Result, anyhow, bail};
 use core::future::Future;
 use core::ops::{Deref, DerefMut};
@@ -14,9 +16,14 @@ use wasmtime::component::{
 pub mod bindings;
 pub mod cli;
 pub mod clocks;
+mod ctx;
 pub mod filesystem;
 pub mod random;
 pub mod sockets;
+mod view;
+
+pub use self::ctx::{WasiCtx, WasiCtxBuilder};
+pub use self::view::{WasiImpl, WasiView};
 
 pub struct AbortOnDropHandle(pub AbortHandle);
 
@@ -106,8 +113,7 @@ impl Drop for AbortOnDropHandle {
 /// ```
 pub fn add_to_linker<T>(linker: &mut Linker<T>) -> wasmtime::Result<()>
 where
-    T: clocks::WasiClocksView
-        + random::WasiRandomView
+    T: WasiView
         + sockets::WasiSocketsView
         + filesystem::WasiFilesystemView
         + cli::WasiCliView
@@ -123,15 +129,14 @@ pub fn add_to_linker_with_options<T>(
     options: &LinkOptions,
 ) -> anyhow::Result<()>
 where
-    T: clocks::WasiClocksView
-        + random::WasiRandomView
+    T: WasiView
         + sockets::WasiSocketsView
         + filesystem::WasiFilesystemView
         + cli::WasiCliView
         + 'static,
 {
-    clocks::add_to_linker(linker)?;
-    random::add_to_linker(linker)?;
+    clocks::add_to_linker_impl(linker, |x| WasiClocksImpl(&mut x.ctx().clocks))?;
+    random::add_to_linker_impl(linker, |x| WasiRandomImpl(&mut x.ctx().random))?;
     sockets::add_to_linker(linker)?;
     filesystem::add_to_linker(linker)?;
     cli::add_to_linker_with_options(linker, &options.into())?;
