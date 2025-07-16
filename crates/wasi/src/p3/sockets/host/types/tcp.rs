@@ -177,10 +177,10 @@ where
                     .push(TcpSocket::from_state(state, self.family))
                     .context("failed to push socket to table")
             })?;
-            let (Some(tail), _) = tx.write(store, Some(socket)).await else {
+            tx.write(store, Some(socket)).await;
+            if tx.is_closed() {
                 return Ok(());
-            };
-            tx = tail;
+            }
         }
         Ok(())
     }
