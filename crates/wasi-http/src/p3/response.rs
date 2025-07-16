@@ -268,7 +268,7 @@ impl ResponseIo {
     /// complete.
     pub async fn run<T>(
         mut self,
-        accessor: &Accessor<T>,
+        store: &Accessor<T>,
         io_result: impl Future<Output = Result<(), ErrorCode>>,
     ) -> wasmtime::Result<()>
     where
@@ -276,7 +276,7 @@ impl ResponseIo {
     {
         if let Some((contents, contents_tx)) = self.body.take() {
             let (mut tail, mut rx_buffer) = contents
-                .read(BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY))
+                .read(store, BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY))
                 .await;
             loop {
                 let buffer = rx_buffer.split();
@@ -287,7 +287,7 @@ impl ResponseIo {
                     rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
                 }
                 if let Some(rx) = tail {
-                    (tail, rx_buffer) = rx.read(rx_buffer).await;
+                    (tail, rx_buffer) = rx.read(store, rx_buffer).await;
                 } else {
                     debug_assert!(rx_buffer.is_empty());
                     break;
@@ -297,12 +297,12 @@ impl ResponseIo {
         }
 
         if let Some((trailers, trailers_tx)) = self.trailers.take() {
-            handle_guest_trailers(accessor, trailers, trailers_tx).await?;
+            handle_guest_trailers(store, trailers, trailers_tx).await?;
         }
 
         let io_result = io_result.await;
         if let Some(tx) = self.tx.take() {
-            tx.write(io_result).await;
+            tx.write(store, io_result).await;
         }
         Ok(())
     }

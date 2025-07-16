@@ -408,7 +408,7 @@ impl http_body::Body for IncomingResponseBody {
 }
 
 pub(crate) async fn handle_guest_trailers<T, D>(
-    accessor: &Accessor<T, D>,
+    store: &Accessor<T, D>,
     guest_trailers: FutureReader<GuestTrailers>,
     host_trailers: oneshot::Sender<Result<http::HeaderMap, Option<ErrorCode>>>,
 ) -> wasmtime::Result<()>
@@ -416,9 +416,9 @@ where
     D: HasData,
     for<'a> D::Data<'a>: ResourceView,
 {
-    match guest_trailers.read().await {
+    match guest_trailers.read(store).await {
         Some(Ok(Some(trailers))) => {
-            let trailers = accessor.with(|mut store| {
+            let trailers = store.with(|mut store| {
                 let mut binding = store.get();
                 let table = binding.table();
                 table.delete(trailers).context("failed to delete trailers")

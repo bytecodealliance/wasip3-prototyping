@@ -103,10 +103,12 @@ where
                 content_length: Some(ContentLength { limit, sent }),
                 ..
             } if limit != sent => {
-                store.spawn_fn(move |_| async move {
-                    tx.write(Err(ErrorCode::HttpRequestBodySize(Some(sent))))
-                        .await;
-                    Ok(())
+                store.spawn_fn_box(move |store: &Accessor<U, Self>| {
+                    Box::pin(async move {
+                        tx.write(store, Err(ErrorCode::HttpRequestBodySize(Some(sent))))
+                            .await;
+                        Ok(())
+                    })
                 });
                 return Ok(Err(ErrorCode::HttpRequestBodySize(Some(sent))));
             }
@@ -121,10 +123,12 @@ where
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        store.spawn_fn(|_| async {
-                            let res = io.await;
-                            tx.write(res.map_err(Into::into)).await;
-                            Ok(())
+                        store.spawn_fn_box(move |store| {
+                            Box::pin(async move {
+                                let res = io.await;
+                                tx.write(store, res.map_err(Into::into)).await;
+                                Ok(())
+                            })
                         });
                         match response.await {
                             Ok(response) => response.map(|body| body.map_err(Into::into).boxed()),
@@ -149,10 +153,12 @@ where
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        store.spawn_fn(|_| async {
-                            let res = io.await;
-                            tx.write(res.map_err(Into::into)).await;
-                            Ok(())
+                        store.spawn_fn_box(move |store| {
+                            Box::pin(async move {
+                                let res = io.await;
+                                tx.write(store, res.map_err(Into::into)).await;
+                                Ok(())
+                            })
                         });
                         match response.await {
                             Ok(response) => response.map(|body| body.map_err(Into::into).boxed()),
@@ -169,11 +175,13 @@ where
                 tx,
                 content_length: None,
             } => {
-                store.spawn_fn({
+                store.spawn_fn_box({
                     let err = err.clone();
-                    move |_| async move {
-                        tx.write(Err(err)).await;
-                        Ok(())
+                    move |store| {
+                        Box::pin(async move {
+                            tx.write(store, Err(err)).await;
+                            Ok(())
+                        })
                     }
                 });
                 return Ok(Err(err));
@@ -197,10 +205,12 @@ where
                 let request = http::Request::from_parts(request, body);
                 match client.send_request(request, options).await? {
                     Ok((response, io)) => {
-                        store.spawn_fn(|_| async {
-                            let res = io.await;
-                            tx.write(res.map_err(Into::into)).await;
-                            Ok(())
+                        store.spawn_fn_box(|store| {
+                            Box::pin(async move {
+                                let res = io.await;
+                                tx.write(store, res.map_err(Into::into)).await;
+                                Ok(())
+                            })
                         });
                         match response.await {
                             Ok(response) => response.map(|body| body.map_err(Into::into).boxed()),
@@ -239,13 +249,13 @@ where
                     Ok(pair) => pair,
                     Err(err) => return Ok(Err(err)),
                 };
-                store.spawn_fn(move |_| async move {
+                store.spawn_fn_box(move |store| Box::pin(async move {
                     let (io_res, body_res) = futures::join! {
                         io,
                         async {
                             body_tx.send(Ok(buffer)).await?;
                             let (mut tail, mut rx_buffer) = contents
-                                .read(BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY))
+                                .read(store,BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY))
                                 .await;
                             loop {
                                 let buffer = rx_buffer.split();
@@ -253,7 +263,7 @@ where
                                 rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
 
                                 match tail {
-                                    Some(rest) => (tail, rx_buffer) = rest.read(rx_buffer).await,
+                                    Some(rest) => (tail, rx_buffer) = rest.read(store, rx_buffer).await,
                                     None => break
                                 }
 
@@ -266,9 +276,9 @@ where
                     // itself goes away due to cancellation elsewhere, so
                     // swallow this error.
                     let _ = body_res;
-                    tx.write(io_res.map_err(Into::into)).await;
+                    tx.write(store,io_res.map_err(Into::into)).await;
                     Ok(())
-                });
+                }));
                 match response.await {
                     Ok(response) => response.map(|body| body.map_err(Into::into).boxed()),
                     Err(err) => return Ok(Err(err)),

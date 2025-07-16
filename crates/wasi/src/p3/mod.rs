@@ -237,7 +237,7 @@ where
     O: Lower + Send + Sync + 'static,
     E: Lower + Send + Sync + 'static,
 {
-    async fn run(mut self, _: &Accessor<T, U>) -> wasmtime::Result<()> {
+    async fn run(mut self, store: &Accessor<T, U>) -> wasmtime::Result<()> {
         let mut tx = self.data;
         let res = loop {
             match self.rx.recv().await {
@@ -246,7 +246,7 @@ where
                     break Ok(());
                 }
                 Some(Ok(buf)) => {
-                    let fut = tx.write_all(buf.into());
+                    let fut = tx.write_all(store, buf.into());
                     let (Some(tail), _) = fut.await else {
                         break Ok(());
                     };
@@ -259,7 +259,7 @@ where
                 }
             }
         };
-        self.result.write(res).await;
+        self.result.write(store, res).await;
         Ok(())
     }
 }

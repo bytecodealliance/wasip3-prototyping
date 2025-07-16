@@ -129,10 +129,11 @@ where
                 }
                 Err(err) => {
                     drop(data_tx);
-                    let fut = res_tx.write(Err(err));
-                    view.spawn_fn(|_| async {
-                        fut.await;
-                        Ok(())
+                    view.spawn_fn_box(move |store| {
+                        Box::pin(async move {
+                            res_tx.write(store, Err(err)).await;
+                            Ok(())
+                        })
                     });
                 }
             }
@@ -146,12 +147,10 @@ where
         data: HostStream<u8>,
         mut offset: Filesize,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
-        let mut buf = Vec::with_capacity(8096);
-        let (fd, fut) = store.with(|mut view| {
-            let data = data.into_reader::<Vec<u8>>(&mut view);
-            let fut = data.read(buf);
+        let (fd, data) = store.with(|mut view| -> wasmtime::Result<_> {
             let fd = get_descriptor(view.get().table(), &fd)?.clone();
-            anyhow::Ok((fd.clone(), fut))
+            let data = data.into_reader::<Vec<u8>>(&mut view);
+            Ok((fd, data))
         })?;
         let f = match fd.file() {
             Ok(f) => f,
@@ -160,7 +159,8 @@ where
         if !f.perms.contains(FilePerms::WRITE) {
             return Ok(Err(types::ErrorCode::BadDescriptor));
         }
-        let mut fut = fut;
+        let mut buf = Vec::with_capacity(8096);
+        let mut fut = data.read(store, buf);
         loop {
             let (Some(tail), buf_again) = fut.await else {
                 return Ok(Ok(()));
@@ -185,7 +185,7 @@ where
                 }
                 Err(err) => return Ok(Err(err)),
             }
-            fut = tail.read(buf);
+            fut = tail.read(store, buf);
         }
     }
 
@@ -194,12 +194,10 @@ where
         fd: Resource<Descriptor>,
         data: HostStream<u8>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
-        let mut buf = Vec::with_capacity(8096);
-        let (fd, fut) = store.with(|mut view| {
-            let data = data.into_reader::<Vec<u8>>(&mut view);
-            let fut = data.read(buf);
+        let (fd, data) = store.with(|mut view| {
             let fd = get_descriptor(view.get().table(), &fd)?.clone();
-            anyhow::Ok((fd, fut))
+            let data = data.into_reader::<Vec<u8>>(&mut view);
+            anyhow::Ok((fd, data))
         })?;
         let f = match fd.file() {
             Ok(f) => f,
@@ -208,7 +206,8 @@ where
         if !f.perms.contains(FilePerms::WRITE) {
             return Ok(Err(types::ErrorCode::BadDescriptor));
         }
-        let mut fut = fut;
+        let mut buf = Vec::with_capacity(8096);
+        let mut fut = data.read(store, buf);
         loop {
             let (Some(tail), buf_again) = fut.await else {
                 return Ok(Ok(()));
@@ -232,7 +231,7 @@ where
                 }
                 Err(err) => return Ok(Err(err)),
             }
-            fut = tail.read(buf)
+            fut = tail.read(store, buf)
         }
     }
 
@@ -419,10 +418,11 @@ where
                 }
                 Err(err) => {
                     drop(data_tx);
-                    let fut = res_tx.write(Err(err));
-                    view.spawn_fn(|_| async {
-                        fut.await;
-                        Ok(())
+                    view.spawn_fn_box(move |store| {
+                        Box::pin(async move {
+                            res_tx.write(store, Err(err)).await;
+                            Ok(())
+                        })
                     });
                 }
             }
