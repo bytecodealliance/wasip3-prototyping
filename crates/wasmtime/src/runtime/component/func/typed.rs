@@ -5,15 +5,13 @@ use crate::component::storage::{storage_as_slice, storage_as_slice_mut};
 use crate::prelude::*;
 use crate::{AsContextMut, StoreContext, StoreContextMut, ValRaw};
 use alloc::borrow::Cow;
-use alloc::sync::Arc;
 use core::fmt;
 use core::iter;
 use core::marker;
 use core::mem::{self, MaybeUninit};
 use core::str;
 use wasmtime_environ::component::{
-    CanonicalAbiInfo, ComponentTypes, InterfaceType, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS,
-    StringEncoding, VariantInfo,
+    CanonicalAbiInfo, InterfaceType, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS, StringEncoding, VariantInfo,
 };
 
 #[cfg(feature = "component-model-async")]
@@ -234,7 +232,7 @@ where
             let result = concurrent::queue_call(wrapper.store.as_context_mut(), prepared)?;
             self.func
                 .instance
-                .run(wrapper.store.as_context_mut(), result)
+                .run_concurrent(wrapper.store.as_context_mut(), async |_| result.await)
                 .await?
         }
         #[cfg(not(feature = "component-model-async"))]
@@ -254,11 +252,10 @@ where
     /// (if any) automatically when the guest task completes -- no need to
     /// explicitly call `Func::post_return` afterward.
     ///
-    /// Note that the `Future` returned by this method will panic if polled or
-    /// `.await`ed outside of the event loop of the component instance this
-    /// function belongs to; use `Instance::run`, `Instance::run_with`, or
-    /// `Instance::spawn` to poll it from within the event loop.  See
-    /// [`Instance::run`] for examples.
+    /// # Panics
+    ///
+    /// Panics if the store that the [`Accessor`] is derived from does not own
+    /// this function.
     #[cfg(feature = "component-model-async")]
     pub async fn call_concurrent(
         self,
@@ -1842,10 +1839,6 @@ pub struct WasmList<T> {
     len: usize,
     options: Options,
     elem: InterfaceType,
-    // NB: it would probably be more efficient to store a non-atomic index-style
-    // reference to something inside a `StoreOpaque`, but that's not easily
-    // available at this time, so it's left as a future exercise.
-    types: Arc<ComponentTypes>,
     instance: Instance,
     _marker: marker::PhantomData<T>,
 }
@@ -1872,7 +1865,6 @@ impl<T: Lift> WasmList<T> {
             len,
             options: *cx.options,
             elem,
-            types: cx.types.clone(),
             instance: cx.instance_handle(),
             _marker: marker::PhantomData,
         })
@@ -1901,7 +1893,7 @@ impl<T: Lift> WasmList<T> {
     pub fn get(&self, mut store: impl AsContextMut, index: usize) -> Option<Result<T>> {
         let store = store.as_context_mut().0;
         self.options.store_id().assert_belongs_to(store.id());
-        let mut cx = LiftContext::new(store, &self.options, &self.types, self.instance);
+        let mut cx = LiftContext::new(store, &self.options, self.instance);
         self.get_from_store(&mut cx, index)
     }
 
@@ -1929,7 +1921,7 @@ impl<T: Lift> WasmList<T> {
     ) -> impl ExactSizeIterator<Item = Result<T>> + 'a {
         let store = store.into().0;
         self.options.store_id().assert_belongs_to(store.id());
-        let mut cx = LiftContext::new(store, &self.options, &self.types, self.instance);
+        let mut cx = LiftContext::new(store, &self.options, self.instance);
         (0..self.len).map(move |i| self.get_from_store(&mut cx, i).unwrap())
     }
 }

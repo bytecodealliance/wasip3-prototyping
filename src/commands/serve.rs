@@ -974,7 +974,7 @@ async fn handle_request(
             let (req, body) = req.into_parts();
             let body = body.map_err(p3::http::types::ErrorCode::from_hyper_request_error);
             let res = instance
-                .run_with(&mut store, async |store| {
+                .run_concurrent(&mut store, async |store| {
                     proxy
                         .handle(store, http::Request::from_parts(req, body))
                         .await
@@ -983,7 +983,7 @@ async fn handle_request(
             let (res, io) = wasmtime_wasi_http::p3::Response::resource_into_http(&mut store, res)?;
             tokio::task::spawn(async move {
                 instance
-                    .run_with(&mut store, async |store| {
+                    .run_concurrent(&mut store, async |store| {
                         // TODO: Report transmit errors
                         let guest_io_result = async { Ok(()) };
                         io.run(store, guest_io_result).await
