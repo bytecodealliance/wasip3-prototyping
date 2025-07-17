@@ -89,8 +89,8 @@ use wasmtime_environ::component::{
 
 pub use abort::AbortHandle;
 pub use futures_and_streams::{
-    ErrorContext, FutureReader, FutureWriter, HostFuture, HostStream, ReadBuffer, StreamReader,
-    StreamWriter, VecBuffer, Watch, WriteBuffer,
+    DropWithStore, DropWithStoreAndValue, ErrorContext, FutureReader, FutureWriter, ReadBuffer,
+    StreamReader, StreamWriter, VecBuffer, WithAccessor, WithAccessorAndValue, WriteBuffer,
 };
 pub(crate) use futures_and_streams::{
     ResourcePair, lower_error_context_to_index, lower_future_to_index, lower_stream_to_index,
@@ -101,7 +101,7 @@ mod error_contexts;
 mod futures_and_streams;
 mod states;
 mod table;
-mod tls;
+pub(crate) mod tls;
 
 /// Constant defined in the Component Model spec to indicate that the async
 /// intrinsic (e.g. `future.write`) has not yet completed.
@@ -229,7 +229,7 @@ where
     where
         T: 'static,
     {
-        self.accessor.instance.spawn_with_accessor(
+        self.accessor.instance.unwrap().spawn_with_accessor(
             self.store.as_context_mut(),
             self.accessor.clone_for_spawn(),
             task,
@@ -329,7 +329,7 @@ where
 {
     token: StoreToken<T>,
     get_data: fn(&mut T) -> D::Data<'_>,
-    instance: Instance,
+    instance: Option<Instance>,
 }
 
 /// A helper trait to take any type of accessor-with-data in functions.
@@ -416,7 +416,7 @@ impl<T> Accessor<T> {
     ///
     /// - `instance`: used to access the `Instance` to which this `Accessor`
     /// (and the future which closes over it) belongs
-    fn new(token: StoreToken<T>, instance: Instance) -> Self {
+    pub(crate) fn new(token: StoreToken<T>, instance: Option<Instance>) -> Self {
         Self {
             token,
             get_data: |x| x,
@@ -448,6 +448,17 @@ where
     /// this does not happen.
     pub fn with<R>(&self, fun: impl FnOnce(Access<'_, T, D>) -> R) -> R {
         tls::get(|vmstore| {
+            fun(Access {
+                store: self.token.as_context_mut(vmstore),
+                accessor: self,
+            })
+        })
+    }
+
+    /// Like `with`, except skips running `fun` if the thread-local state is not
+    /// set.
+    fn maybe_with<R>(&self, fun: impl FnOnce(Access<'_, T, D>) -> R) -> Option<R> {
+        tls::maybe_get(|vmstore| {
             fun(Access {
                 store: self.token.as_context_mut(vmstore),
                 accessor: self,
@@ -507,7 +518,7 @@ where
     where
         T: 'static,
     {
-        let instance = self.instance;
+        let instance = self.instance.unwrap();
         let accessor = self.clone_for_spawn();
         self.with(|mut access| {
             instance.spawn_with_accessor(access.as_context_mut(), accessor, task)
@@ -516,7 +527,7 @@ where
 
     /// Retrieve the component instance of the caller.
     pub fn instance(&self) -> Instance {
-        self.instance
+        self.instance.unwrap()
     }
 
     fn clone_for_spawn(&self) -> Self {
@@ -1289,7 +1300,7 @@ impl Instance {
         let token = StoreToken::new(store.as_context_mut());
 
         self.poll_until(store.as_context_mut(), async move {
-            let accessor = Accessor::new(token, self);
+            let accessor = Accessor::new(token, Some(self));
             fun(&accessor).await
         })
         .await
@@ -1310,7 +1321,7 @@ impl Instance {
         task: impl AccessorTask<U, HasSelf<U>, Result<()>>,
     ) -> AbortHandle {
         let mut store = store.as_context_mut();
-        let accessor = Accessor::new(StoreToken::new(store.as_context_mut()), self);
+        let accessor = Accessor::new(StoreToken::new(store.as_context_mut()), Some(self));
         self.spawn_with_accessor(store, accessor, task)
     }
 
@@ -1405,34 +1416,49 @@ impl Instance {
                             // outer loop in case there is another one ready to
                             // complete.
                             Poll::Ready(true) => Poll::Ready(Ok(Either::Right(Vec::new()))),
-                            // In this case, there are no more pending futures
-                            // in `ConcurrentState::futures`, there are no
-                            // remaining work items, _and_ the future we were
-                            // passed as an argument still hasn't completed,
-                            // meaning we're stuck, so we return an error.  The
-                            // underlying assumption is that `future` depends on
-                            // this component instance making such progress, and
-                            // thus there's no point in continuing to poll it
-                            // given we've run out of work to do.
-                            //
-                            // Note that we'd also reach this point if the host
-                            // embedder passed e.g. a `std::future::Pending` to
-                            // `Instance::run_concurrent`, in which case we'd
-                            // return a "deadlock" error even when any and all
-                            // tasks have completed normally.  However, that's
-                            // not how `Instance::run_concurrent` is intended
-                            // (and documented) to be used, so it seems
-                            // reasonable to lump that case in with "real"
-                            // deadlocks.
-                            //
-                            // TODO: Once we've added host APIs for cancelling
-                            // in-progress tasks, we can return some other,
-                            // non-error value here, treating it as "normal" and
-                            // giving the host embedder a chance to intervene by
-                            // cancelling one or more tasks and/or starting new
-                            // tasks capable of waking the existing ones.
                             Poll::Ready(false) => {
-                                Poll::Ready(Err(anyhow!(crate::Trap::AsyncDeadlock)))
+                                // Poll the future we were passed one last time
+                                // in case one of `ConcurrentState::futures` had
+                                // the side effect of unblocking it.
+                                if let Poll::Ready(value) =
+                                    self.set_tls(store.0, || future.as_mut().poll(cx))
+                                {
+                                    Poll::Ready(Ok(Either::Left(value)))
+                                } else {
+                                    // In this case, there are no more pending
+                                    // futures in `ConcurrentState::futures`,
+                                    // there are no remaining work items, _and_
+                                    // the future we were passed as an argument
+                                    // still hasn't completed, meaning we're
+                                    // stuck, so we return an error.  The
+                                    // underlying assumption is that `future`
+                                    // depends on this component instance making
+                                    // such progress, and thus there's no point
+                                    // in continuing to poll it given we've run
+                                    // out of work to do.
+                                    //
+                                    // Note that we'd also reach this point if
+                                    // the host embedder passed e.g. a
+                                    // `std::future::Pending` to
+                                    // `Instance::run_concurrent`, in which case
+                                    // we'd return a "deadlock" error even when
+                                    // any and all tasks have completed
+                                    // normally.  However, that's not how
+                                    // `Instance::run_concurrent` is intended
+                                    // (and documented) to be used, so it seems
+                                    // reasonable to lump that case in with
+                                    // "real" deadlocks.
+                                    //
+                                    // TODO: Once we've added host APIs for
+                                    // cancelling in-progress tasks, we can
+                                    // return some other, non-error value here,
+                                    // treating it as "normal" and giving the
+                                    // host embedder a chance to intervene by
+                                    // cancelling one or more tasks and/or
+                                    // starting new tasks capable of waking the
+                                    // existing ones.
+                                    Poll::Ready(Err(anyhow!(crate::Trap::AsyncDeadlock)))
+                                }
                             }
                             // There is at least one pending future in
                             // `ConcurrentState::futures` and we have nothing
@@ -2442,7 +2468,7 @@ impl Instance {
     {
         let token = StoreToken::new(store);
         async move {
-            let mut accessor = Accessor::new(token, self);
+            let mut accessor = Accessor::new(token, Some(self));
             closure(&mut accessor).await
         }
     }

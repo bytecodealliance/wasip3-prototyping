@@ -8,13 +8,11 @@ use anyhow::{Context as _, anyhow};
 use bytes::BytesMut;
 use std::io::Cursor;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
-use wasmtime::component::{
-    Accessor, AccessorTask, HostStream, Resource, StreamReader, StreamWriter,
-};
+use wasmtime::component::{Accessor, AccessorTask, Resource, StreamReader, StreamWriter};
 
 struct InputTask<T> {
     input: T,
-    tx: StreamWriter<Cursor<BytesMut>>,
+    tx: StreamWriter<u8>,
 }
 
 impl<T, U, V> AccessorTask<T, WasiCli<U>, wasmtime::Result<()>> for InputTask<V>
@@ -46,7 +44,7 @@ where
 
 struct OutputTask<T> {
     output: T,
-    data: StreamReader<BytesMut>,
+    data: StreamReader<u8>,
 }
 
 impl<T, U, V> AccessorTask<T, WasiCli<U>, wasmtime::Result<()>> for OutputTask<V>
@@ -158,15 +156,17 @@ impl<T> stdin::HostConcurrent for WasiCli<T>
 where
     T: WasiCliView + 'static,
 {
-    async fn get_stdin<U: 'static>(store: &Accessor<U, Self>) -> wasmtime::Result<HostStream<u8>> {
+    async fn get_stdin<U: 'static>(
+        store: &Accessor<U, Self>,
+    ) -> wasmtime::Result<StreamReader<u8>> {
         store.with(|mut view| {
             let instance = view.instance();
             let (tx, rx) = instance
-                .stream::<_, _, Vec<_>>(&mut view)
+                .stream(&mut view)
                 .context("failed to create stream")?;
             let stdin = view.get().cli().stdin.reader();
             view.spawn(InputTask { input: stdin, tx });
-            Ok(rx.into())
+            Ok(rx)
         })
     }
 }
@@ -179,11 +179,10 @@ where
 {
     async fn set_stdout<U: 'static>(
         store: &Accessor<U, Self>,
-        data: HostStream<u8>,
+        data: StreamReader<u8>,
     ) -> wasmtime::Result<()> {
         store.with(|mut view| {
             let stdout = view.get().cli().stdout.writer();
-            let data = data.into_reader(&mut view);
             view.spawn(OutputTask {
                 output: stdout,
                 data,
@@ -201,11 +200,10 @@ where
 {
     async fn set_stderr<U: 'static>(
         store: &Accessor<U, Self>,
-        data: HostStream<u8>,
+        data: StreamReader<u8>,
     ) -> wasmtime::Result<()> {
         store.with(|mut view| {
             let stderr = view.get().cli().stderr.writer();
-            let data = data.into_reader(&mut view);
             view.spawn(OutputTask {
                 output: stderr,
                 data,

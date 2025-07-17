@@ -10,7 +10,9 @@ use http::{HeaderMap, StatusCode};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, BodyStream, StreamBody};
 use tokio::sync::{mpsc, oneshot};
-use wasmtime::component::{Accessor, FutureReader, FutureWriter, Resource, StreamReader};
+use wasmtime::component::{
+    Accessor, FutureReader, FutureWriter, Resource, StreamReader, WithAccessor,
+};
 use wasmtime::{AsContextMut, StoreContextMut};
 use wasmtime_wasi::p3::{AbortOnDropHandle, ResourceView, WithChildren};
 
@@ -236,7 +238,7 @@ impl Response {
 /// This is primarily used with its [`ResponseIo::run`] method to finish guest
 /// I/O for the body, if necessary.
 pub struct ResponseIo {
-    body: Option<(StreamReader<BytesMut>, mpsc::Sender<Bytes>)>,
+    body: Option<(StreamReader<u8>, mpsc::Sender<Bytes>)>,
     trailers: Option<(
         FutureReader<GuestTrailers>,
         oneshot::Sender<Result<HeaderMap, Option<ErrorCode>>>,
@@ -274,7 +276,8 @@ impl ResponseIo {
     where
         T: ResourceView + 'static,
     {
-        if let Some((mut contents, contents_tx)) = self.body.take() {
+        if let Some((contents, contents_tx)) = self.body.take() {
+            let mut contents = WithAccessor::new(store, contents);
             let mut rx_buffer = BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY);
             while !contents.is_closed() {
                 rx_buffer = contents.read(store, rx_buffer).await;
@@ -286,7 +289,6 @@ impl ResponseIo {
                     rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
                 }
             }
-            drop(contents_tx);
         }
 
         if let Some((trailers, trailers_tx)) = self.trailers.take() {

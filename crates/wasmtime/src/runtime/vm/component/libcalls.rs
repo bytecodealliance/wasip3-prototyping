@@ -1032,7 +1032,8 @@ fn future_drop_writable(
     ty: u32,
     writer: u32,
 ) -> Result<()> {
-    instance.concurrent_state_mut(store).future_drop_writable(
+    instance.future_drop_writable(
+        store,
         wasmtime_environ::component::TypeFutureTableIndex::from_u32(ty),
         writer,
     )
@@ -1148,7 +1149,8 @@ fn stream_drop_writable(
     ty: u32,
     writer: u32,
 ) -> Result<()> {
-    instance.concurrent_state_mut(store).stream_drop_writable(
+    instance.stream_drop_writable(
+        store,
         wasmtime_environ::component::TypeStreamTableIndex::from_u32(ty),
         writer,
     )

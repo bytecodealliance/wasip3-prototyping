@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use wasmtime::component::{
     AbortHandle, Access, Accessor, AccessorTask, FutureWriter, HasData, Linker, Lower,
-    ResourceTable, StreamWriter, VecBuffer,
+    ResourceTable, StreamWriter, VecBuffer, WithAccessor,
 };
 
 pub mod bindings;
@@ -231,7 +231,7 @@ impl<T, D: HasData> SpawnExt for &Accessor<T, D> {
 }
 
 pub struct IoTask<T, E: 'static> {
-    pub data: StreamWriter<VecBuffer<T>>,
+    pub data: StreamWriter<T>,
     pub result: FutureWriter<Result<(), E>>,
     pub rx: mpsc::Receiver<Result<Vec<T>, E>>,
 }
@@ -243,7 +243,7 @@ where
     E: Lower + Send + Sync + 'static,
 {
     async fn run(mut self, store: &Accessor<T, U>) -> wasmtime::Result<()> {
-        let mut tx = self.data;
+        let mut tx = WithAccessor::new(store, self.data);
         let res = loop {
             match self.rx.recv().await {
                 None => {
@@ -251,7 +251,7 @@ where
                     break Ok(());
                 }
                 Some(Ok(buf)) => {
-                    tx.write_all(store, buf.into()).await;
+                    tx.write_all(store, VecBuffer::from(buf)).await;
                     if tx.is_closed() {
                         break Ok(());
                     }

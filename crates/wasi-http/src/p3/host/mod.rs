@@ -115,12 +115,3 @@ fn get_response_mut<'a>(
 fn push_response(table: &mut ResourceTable, res: Response) -> wasmtime::Result<Resource<Response>> {
     table.push(res).context("failed to push response to table")
 }
-
-fn delete_response(
-    table: &mut ResourceTable,
-    res: Resource<Response>,
-) -> wasmtime::Result<Response> {
-    table
-        .delete(res)
-        .context("failed to delete response from table")
-}

@@ -4,16 +4,16 @@ use crate::p3::bindings::http::types::{
     RequestOptionsError, Scheme, StatusCode, Trailers,
 };
 use crate::p3::host::{
-    delete_fields, delete_response, get_fields, get_fields_inner, get_fields_inner_mut,
-    get_request, get_request_mut, get_response, get_response_mut, push_fields, push_fields_child,
-    push_request, push_response,
+    delete_fields, get_fields, get_fields_inner, get_fields_inner_mut, get_request,
+    get_request_mut, get_response, get_response_mut, push_fields, push_fields_child, push_request,
+    push_response,
 };
 use crate::p3::{
     Body, BodyContext, BodyFrame, ContentLength, DEFAULT_BUFFER_CAPACITY, MaybeTombstone, Request,
     RequestOptions, Response, WasiHttp, WasiHttpImpl, WasiHttpView,
 };
 use anyhow::{Context as _, bail};
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use core::future::Future;
 use core::future::poll_fn;
 use core::mem;
@@ -27,7 +27,8 @@ use http_body::Body as _;
 use std::io::Cursor;
 use std::sync::Arc;
 use wasmtime::component::{
-    Accessor, AccessorTask, FutureWriter, HostFuture, HostStream, Resource, StreamWriter,
+    Accessor, AccessorTask, DropWithStore, FutureReader, FutureWriter, Resource, StreamReader,
+    StreamWriter, WithAccessor, WithAccessorAndValue,
 };
 use wasmtime_wasi::ResourceTable;
 use wasmtime_wasi::p3::bindings::clocks::monotonic_clock::Duration;
@@ -107,12 +108,12 @@ fn get_content_length(headers: &http::HeaderMap) -> wasmtime::Result<Option<u64>
     Ok(Some(v))
 }
 
-type TrailerFuture = HostFuture<Result<Option<Resource<Trailers>>, ErrorCode>>;
+type TrailerFuture = FutureReader<Result<Option<Resource<Trailers>>, ErrorCode>>;
 
 struct BodyTask {
     cx: BodyContext,
     body: Arc<std::sync::Mutex<Body>>,
-    contents_tx: StreamWriter<Cursor<Bytes>>,
+    contents_tx: StreamWriter<u8>,
     trailers_tx: FutureWriter<Result<Option<Resource<Trailers>>, ErrorCode>>,
 }
 
@@ -120,13 +121,15 @@ impl<T, U> AccessorTask<T, WasiHttp<U>, wasmtime::Result<()>> for BodyTask
 where
     U: WasiHttpView + 'static,
 {
-    async fn run(mut self, store: &Accessor<T, WasiHttp<U>>) -> wasmtime::Result<()> {
+    async fn run(self, store: &Accessor<T, WasiHttp<U>>) -> wasmtime::Result<()> {
         let body = {
             let Ok(mut body) = self.body.lock() else {
                 bail!("lock poisoned");
             };
             mem::replace(&mut *body, Body::Consumed)
         };
+        let mut contents_tx = WithAccessor::new(store, self.contents_tx);
+        let mut trailers_tx = WithAccessorAndValue::new(store, self.trailers_tx, Ok(None));
         match body {
             Body::Guest {
                 contents: MaybeTombstone::None,
@@ -135,13 +138,14 @@ where
                 content_length: Some(ContentLength { limit, sent }),
                 ..
             } if limit != sent => {
-                drop(self.contents_tx);
+                drop(contents_tx);
                 join!(
                     async {
                         tx.write(store, Err(self.cx.as_body_size_error(sent))).await;
                     },
                     async {
-                        self.trailers_tx
+                        trailers_tx
+                            .into_inner()
                             .write(store, Err(self.cx.as_body_size_error(sent)))
                             .await;
                     }
@@ -155,9 +159,9 @@ where
                 tx,
                 content_length: None,
             } => {
-                drop(self.contents_tx);
+                drop(contents_tx);
                 let res = {
-                    let mut watch_reader = pin!(self.trailers_tx.watch_reader(store));
+                    let mut watch_reader = pin!(trailers_tx.watch_reader(store));
                     let mut trailers_rx = pin!(trailers_rx.read(store));
                     poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
                         Poll::Ready(()) => return Poll::Ready(None),
@@ -180,8 +184,8 @@ where
                     };
                     return Ok(());
                 };
-                if !self
-                    .trailers_tx
+                if !trailers_tx
+                    .into_inner()
                     .write(store, clone_trailer_result(&res))
                     .await
                 {
@@ -207,9 +211,9 @@ where
                 tx,
                 content_length: None,
             } => {
-                drop(self.contents_tx);
-                if !self
-                    .trailers_tx
+                drop(contents_tx);
+                if !trailers_tx
+                    .into_inner()
                     .write(store, clone_trailer_result(&res))
                     .await
                 {
@@ -229,13 +233,14 @@ where
                 Ok(())
             }
             Body::Guest {
-                contents: MaybeTombstone::Some(mut contents_rx),
+                contents: MaybeTombstone::Some(contents_rx),
                 trailers: MaybeTombstone::Some(trailers_rx),
                 buffer,
                 tx,
                 mut content_length,
             } => {
-                let mut contents_tx = self.contents_tx;
+                let mut contents_rx = WithAccessor::new(store, contents_rx);
+                let trailers_rx = WithAccessor::new(store, trailers_rx);
                 match buffer {
                     Some(BodyFrame::Data(buffer)) => {
                         let buffer = contents_tx.write_all(store, Cursor::new(buffer)).await;
@@ -246,8 +251,8 @@ where
                             let pos = buffer.position().try_into()?;
                             let buffer = buffer.into_inner().split_off(pos);
                             *body = Body::Guest {
-                                contents: MaybeTombstone::Some(contents_rx),
-                                trailers: MaybeTombstone::Some(trailers_rx),
+                                contents: MaybeTombstone::Some(contents_rx.into_inner()),
+                                trailers: MaybeTombstone::Some(trailers_rx.into_inner()),
                                 buffer: Some(BodyFrame::Data(buffer)),
                                 tx,
                                 content_length,
@@ -279,7 +284,7 @@ where
                             // reads in Wasmtime to fully support this to avoid
                             // needing `Taken` at all.
                             contents: MaybeTombstone::Tombstone,
-                            trailers: MaybeTombstone::Some(trailers_rx),
+                            trailers: MaybeTombstone::Some(trailers_rx.into_inner()),
                             buffer: None,
                             tx,
                             content_length,
@@ -299,7 +304,8 @@ where
                                             .await;
                                     },
                                     async {
-                                        self.trailers_tx
+                                        trailers_tx
+                                            .into_inner()
                                             .write(store, Err(self.cx.as_body_size_error(sent)))
                                             .await;
                                     }
@@ -329,7 +335,8 @@ where
                                     tx.write(store, Err(self.cx.as_body_size_error(n))).await;
                                 },
                                 async {
-                                    self.trailers_tx
+                                    trailers_tx
+                                        .into_inner()
                                         .write(store, Err(self.cx.as_body_size_error(n)))
                                         .await;
                                 }
@@ -347,8 +354,8 @@ where
                         let pos = buffer.position().try_into()?;
                         let buffer = buffer.into_inner().split_off(pos);
                         *body = Body::Guest {
-                            contents: MaybeTombstone::Some(contents_rx),
-                            trailers: MaybeTombstone::Some(trailers_rx),
+                            contents: MaybeTombstone::Some(contents_rx.into_inner()),
+                            trailers: MaybeTombstone::Some(trailers_rx.into_inner()),
                             buffer: Some(BodyFrame::Data(buffer)),
                             tx,
                             content_length,
@@ -359,8 +366,8 @@ where
                 }
 
                 let res = {
-                    let mut watch_reader = pin!(self.trailers_tx.watch_reader(store));
-                    let mut trailers_rx = pin!(trailers_rx.read(store));
+                    let mut watch_reader = pin!(trailers_tx.watch_reader(store));
+                    let mut trailers_rx = pin!(trailers_rx.into_inner().read(store));
                     poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
                         Poll::Ready(()) => return Poll::Ready(None),
                         Poll::Pending => trailers_rx.as_mut().poll(cx).map(Some),
@@ -382,8 +389,8 @@ where
                     };
                     return Ok(());
                 };
-                if !self
-                    .trailers_tx
+                if !trailers_tx
+                    .into_inner()
                     .write(store, clone_trailer_result(&res))
                     .await
                 {
@@ -407,7 +414,6 @@ where
                 stream: Some(mut stream),
                 buffer,
             } => {
-                let mut contents_tx = self.contents_tx;
                 match buffer {
                     Some(BodyFrame::Data(buffer)) => {
                         let buffer = contents_tx.write_all(store, Cursor::new(buffer)).await;
@@ -450,7 +456,7 @@ where
                         }
                         Some(None) => {
                             drop(contents_tx);
-                            if !self.trailers_tx.write(store, Ok(None)).await {
+                            if !trailers_tx.into_inner().write(store, Ok(None)).await {
                                 let Ok(mut body) = self.body.lock() else {
                                     bail!("lock poisoned");
                                 };
@@ -484,8 +490,8 @@ where
                                     let trailers = store.with(|mut view| {
                                         push_fields(view.get().table(), WithChildren::new(trailers))
                                     })?;
-                                    if !self
-                                        .trailers_tx
+                                    if !trailers_tx
+                                        .into_inner()
                                         .write(store, Ok(Some(Resource::new_own(trailers.rep()))))
                                         .await
                                     {
@@ -501,8 +507,8 @@ where
                                 }
                                 Err(Err(..)) => {
                                     drop(contents_tx);
-                                    if !self
-                                        .trailers_tx
+                                    if !trailers_tx
+                                        .into_inner()
                                         .write(store, Err(ErrorCode::HttpProtocolError))
                                         .await
                                     {
@@ -522,7 +528,11 @@ where
                         }
                         Some(Some(Err(err))) => {
                             drop(contents_tx);
-                            if !self.trailers_tx.write(store, Err(err.clone())).await {
+                            if !trailers_tx
+                                .into_inner()
+                                .write(store, Err(err.clone()))
+                                .await
+                            {
                                 let Ok(mut body) = self.body.lock() else {
                                     bail!("lock poisoned");
                                 };
@@ -540,9 +550,9 @@ where
                 stream: None,
                 buffer: Some(BodyFrame::Trailers(res)),
             } => {
-                drop(self.contents_tx);
-                if !self
-                    .trailers_tx
+                drop(contents_tx);
+                if !trailers_tx
+                    .into_inner()
                     .write(store, clone_trailer_result(&res))
                     .await
                 {
@@ -762,20 +772,19 @@ where
     async fn new<U: 'static>(
         store: &Accessor<U, Self>,
         headers: Resource<WithChildren<http::HeaderMap>>,
-        contents: Option<HostStream<u8>>,
+        contents: Option<StreamReader<u8>>,
         trailers: TrailerFuture,
         options: Option<Resource<WithChildren<RequestOptions>>>,
-    ) -> wasmtime::Result<(Resource<Request>, HostFuture<Result<(), ErrorCode>>)> {
+    ) -> wasmtime::Result<(Resource<Request>, FutureReader<Result<(), ErrorCode>>)> {
         store.with(|mut view| {
             let instance = view.instance();
             let (res_tx, res_rx) = instance
-                .future(|| Ok(()), &mut view)
+                .future(&mut view)
                 .context("failed to create future")?;
             let contents = match contents {
-                Some(contents) => MaybeTombstone::Some(contents.into_reader(&mut view)),
+                Some(contents) => MaybeTombstone::Some(contents),
                 None => MaybeTombstone::None,
             };
-            let trailers = trailers.into_reader(&mut view);
             let mut binding = view.get();
             let table = binding.table();
             let headers = delete_fields(table, headers)?;
@@ -798,21 +807,21 @@ where
                 table,
                 Request::new(http::Method::GET, None, None, None, headers, body, options),
             )?;
-            Ok((req, res_rx.into()))
+            Ok((req, res_rx))
         })
     }
 
     async fn body<U: 'static>(
         store: &Accessor<U, Self>,
         req: Resource<Request>,
-    ) -> wasmtime::Result<Result<(HostStream<u8>, TrailerFuture), ()>> {
+    ) -> wasmtime::Result<Result<(StreamReader<u8>, TrailerFuture), ()>> {
         store.with(|mut view| {
             let instance = view.instance();
             let (contents_tx, contents_rx) = instance
-                .stream::<_, _, Vec<_>>(&mut view)
+                .stream(&mut view)
                 .context("failed to create stream")?;
             let (trailers_tx, trailers_rx) = instance
-                .future(|| Ok(None), &mut view)
+                .future(&mut view)
                 .context("failed to create future")?;
             let mut binding = view.get();
             let Request { body, .. } = get_request_mut(binding.table(), &req)?;
@@ -837,7 +846,21 @@ where
             let mut binding = view.get();
             let req = get_request_mut(binding.table(), &req)?;
             req.task = Some(AbortOnDropHandle(task));
-            Ok(Ok((contents_rx.into(), trailers_rx.into())))
+            Ok(Ok((contents_rx, trailers_rx)))
+        })
+    }
+
+    async fn drop<U: 'static>(
+        store: &Accessor<U, Self>,
+        req: Resource<Request>,
+    ) -> wasmtime::Result<()> {
+        store.with(|mut store| {
+            let request = store
+                .get()
+                .table()
+                .delete(req)
+                .context("failed to delete request from table")?;
+            mem::replace(request.body.lock().unwrap().deref_mut(), Body::Consumed).drop(store)
         })
     }
 }
@@ -957,13 +980,6 @@ where
         let table = self.table();
         let Request { headers, .. } = get_request(table, &req)?;
         push_fields_child(table, headers.child(), &req)
-    }
-
-    fn drop(&mut self, req: Resource<Request>) -> wasmtime::Result<()> {
-        self.table()
-            .delete(req)
-            .context("failed to delete request from table")?;
-        Ok(())
     }
 }
 
@@ -1088,19 +1104,18 @@ where
     async fn new<U: 'static>(
         store: &Accessor<U, Self>,
         headers: Resource<WithChildren<http::HeaderMap>>,
-        contents: Option<HostStream<u8>>,
+        contents: Option<StreamReader<u8>>,
         trailers: TrailerFuture,
-    ) -> wasmtime::Result<(Resource<Response>, HostFuture<Result<(), ErrorCode>>)> {
+    ) -> wasmtime::Result<(Resource<Response>, FutureReader<Result<(), ErrorCode>>)> {
         store.with(|mut view| {
             let instance = view.instance();
             let (res_tx, res_rx) = instance
-                .future(|| Ok(()), &mut view)
+                .future(&mut view)
                 .context("failed to create future")?;
             let contents = match contents {
-                Some(contents) => MaybeTombstone::Some(contents.into_reader(&mut view)),
+                Some(contents) => MaybeTombstone::Some(contents),
                 None => MaybeTombstone::None,
             };
-            let trailers = trailers.into_reader(&mut view);
             let mut binding = view.get();
             let table = binding.table();
             let headers = delete_fields(table, headers)?;
@@ -1114,21 +1129,21 @@ where
                 content_length: content_length.map(ContentLength::new),
             };
             let res = push_response(table, Response::new(http::StatusCode::OK, headers, body))?;
-            Ok((res, res_rx.into()))
+            Ok((res, res_rx))
         })
     }
 
     async fn body<U: 'static>(
         store: &Accessor<U, Self>,
         res: Resource<Response>,
-    ) -> wasmtime::Result<Result<(HostStream<u8>, TrailerFuture), ()>> {
+    ) -> wasmtime::Result<Result<(StreamReader<u8>, TrailerFuture), ()>> {
         store.with(|mut view| {
             let instance = view.instance();
             let (contents_tx, contents_rx) = instance
-                .stream::<_, _, Vec<_>>(&mut view)
+                .stream(&mut view)
                 .context("failed to create stream")?;
             let (trailers_tx, trailers_rx) = instance
-                .future(|| Ok(None), &mut view)
+                .future(&mut view)
                 .context("failed to create future")?;
             let mut binding = view.get();
             let Response { body, .. } = get_response_mut(binding.table(), &res)?;
@@ -1153,7 +1168,21 @@ where
             let mut binding = view.get();
             let res = get_response_mut(binding.table(), &res)?;
             res.body_task = Some(AbortOnDropHandle(task));
-            Ok(Ok((contents_rx.into(), trailers_rx.into())))
+            Ok(Ok((contents_rx, trailers_rx)))
+        })
+    }
+
+    async fn drop<U: 'static>(
+        store: &Accessor<U, Self>,
+        req: Resource<Response>,
+    ) -> wasmtime::Result<()> {
+        store.with(|mut store| {
+            let request = store
+                .get()
+                .table()
+                .delete(req)
+                .context("failed to delete request from table")?;
+            mem::replace(request.body.lock().unwrap().deref_mut(), Body::Consumed).drop(store)
         })
     }
 }
@@ -1186,10 +1215,5 @@ where
         let table = self.table();
         let Response { headers, .. } = get_response(table, &res)?;
         push_fields_child(table, headers.child(), &res)
-    }
-
-    fn drop(&mut self, res: Resource<Response>) -> wasmtime::Result<()> {
-        delete_response(self.table(), res)?;
-        Ok(())
     }
 }

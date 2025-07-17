@@ -9,7 +9,8 @@ use io_lifetimes::AsSocketlike as _;
 use rustix::io::Errno;
 use tokio::sync::mpsc;
 use wasmtime::component::{
-    Accessor, AccessorTask, HostFuture, HostStream, Resource, ResourceTable, StreamWriter,
+    Accessor, AccessorTask, FutureReader, Resource, ResourceTable, StreamReader, StreamWriter,
+    WithAccessor, WithAccessorAndValue,
 };
 
 use crate::p3::bindings::sockets::types::{
@@ -54,7 +55,7 @@ fn get_socket_mut<'a>(
 
 struct ListenTask {
     family: SocketAddressFamily,
-    tx: StreamWriter<Option<Resource<TcpSocket>>>,
+    tx: StreamWriter<Resource<TcpSocket>>,
     rx: mpsc::Receiver<std::io::Result<(tokio::net::TcpStream, SocketAddr)>>,
 
     // The socket options below are not automatically inherited from the listener
@@ -269,7 +270,7 @@ where
     async fn listen<U: 'static>(
         store: &Accessor<U, Self>,
         socket: Resource<TcpSocket>,
-    ) -> wasmtime::Result<Result<HostStream<Resource<TcpSocket>>, ErrorCode>> {
+    ) -> wasmtime::Result<Result<StreamReader<Resource<TcpSocket>>, ErrorCode>> {
         match store.with(|mut view| {
             if !view.get().sockets().allowed_network_uses.tcp {
                 return Ok(Err(ErrorCode::AccessDenied));
@@ -287,7 +288,7 @@ where
             };
             let instance = view.instance();
             let (tx, rx) = instance
-                .stream::<_, _, Vec<_>>(&mut view)
+                .stream(&mut view)
                 .context("failed to create stream")?;
             let &TcpSocket {
                 listen_backlog_size,
@@ -363,7 +364,7 @@ where
         }) {
             Ok(Ok((rx, task))) => {
                 store.spawn(task);
-                Ok(Ok(rx.into()))
+                Ok(Ok(rx))
             }
             Ok(Err(err)) => Ok(Err(err)),
             Err(err) => Err(err),
@@ -373,10 +374,9 @@ where
     async fn send<U: 'static>(
         store: &Accessor<U, Self>,
         socket: Resource<TcpSocket>,
-        data: HostStream<u8>,
+        data: StreamReader<u8>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let (stream, mut data) = match store.with(|mut view| -> wasmtime::Result<_> {
-            let data = data.into_reader::<Vec<u8>>(&mut view);
             let mut binding = view.get();
             let sock = get_socket(binding.table(), &socket)?;
             if let TcpState::Connected { stream, .. } = &sock.tcp_state {
@@ -419,18 +419,26 @@ where
     async fn receive<U: 'static>(
         store: &Accessor<U, Self>,
         socket: Resource<TcpSocket>,
-    ) -> wasmtime::Result<(HostStream<u8>, HostFuture<Result<(), ErrorCode>>)> {
-        store.with(|mut view| {
+    ) -> wasmtime::Result<(StreamReader<u8>, FutureReader<Result<(), ErrorCode>>)> {
+        let ((data_tx, data_rx), (res_tx, res_rx)) = store.with(|mut view| {
             let instance = view.instance();
-            let (data_tx, data_rx) = instance
-                .stream::<_, _, Vec<_>>(&mut view)
+            let data = instance
+                .stream(&mut view)
                 .context("failed to create stream")?;
-            let (res_tx, res_rx) = instance
-                .future(|| unreachable!(), &mut view)
+            let res = instance
+                .future(&mut view)
                 .context("failed to create future")?;
+            anyhow::Ok((data, res))
+        })?;
+        let data_tx = WithAccessor::new(store, data_tx);
+        let data_rx = WithAccessor::new(store, data_rx);
+        let res_tx = WithAccessorAndValue::new(store, res_tx, Ok(()));
+        let res_rx = WithAccessor::new(store, res_rx);
+
+        let result = store.with(|mut view| {
             let mut binding = view.get();
             let sock = get_socket(binding.table(), &socket)?;
-            match &sock.tcp_state {
+            anyhow::Ok(match &sock.tcp_state {
                 TcpState::Connected {
                     stream,
                     rx_task: None,
@@ -463,11 +471,6 @@ where
                             .shutdown(Shutdown::Read);
                         Ok(())
                     });
-                    view.spawn(IoTask {
-                        data: data_tx,
-                        result: res_tx,
-                        rx: task_rx,
-                    });
                     let mut binding = view.get();
                     let TcpSocket {
                         tcp_state: TcpState::Connected { rx_task, .. },
@@ -477,18 +480,32 @@ where
                         bail!("corrupted socket state");
                     };
                     *rx_task = Some(AbortOnDropHandle(task));
+                    Ok(task_rx)
                 }
-                _ => {
-                    view.spawn_fn_box(move |store| {
-                        Box::pin(async move {
-                            res_tx.write(store, Err(ErrorCode::InvalidState)).await;
-                            Ok(())
-                        })
-                    });
-                }
+                _ => Err(ErrorCode::InvalidState),
+            })
+        })?;
+
+        match result {
+            Ok(task_rx) => {
+                store.spawn(IoTask {
+                    data: data_tx.into_inner(),
+                    result: res_tx.into_inner(),
+                    rx: task_rx,
+                });
             }
-            Ok((data_rx.into(), res_rx.into()))
-        })
+            Err(err) => {
+                let res_tx = res_tx.into_inner();
+                store.spawn_fn_box(move |store| {
+                    Box::pin(async move {
+                        res_tx.write(store, Err(err)).await;
+                        Ok(())
+                    })
+                });
+            }
+        }
+
+        Ok((data_rx.into_inner(), res_rx.into_inner()))
     }
 }
 

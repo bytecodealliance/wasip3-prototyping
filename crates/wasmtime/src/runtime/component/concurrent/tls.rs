@@ -76,6 +76,14 @@ pub fn get<R>(f: impl FnOnce(&mut dyn VMStore) -> R) -> R {
     })
 }
 
+/// Like `get` except skips running `f` if the thread-local state is not set.
+pub fn maybe_get<R>(f: impl FnOnce(&mut dyn VMStore) -> R) -> Option<R> {
+    try_get(|val| match val {
+        TryGet::Some(store) => Some(f(store)),
+        TryGet::None | TryGet::Taken => None,
+    })
+}
+
 #[cold]
 fn get_failed() -> ! {
     panic!(

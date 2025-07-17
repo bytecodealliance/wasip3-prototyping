@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::debug;
-use wasmtime::component::{Accessor, Resource};
+use wasmtime::component::{Accessor, Resource, WithAccessor, WithAccessorAndValue};
 use wasmtime_wasi::p3::{AbortOnDropHandle, ResourceView as _, SpawnExt};
 
 impl<T> handler::HostConcurrent for WasiHttp<T>
@@ -38,6 +38,17 @@ where
             options,
             ..
         } = store.with(|mut view| delete_request(view.get().table(), request))?;
+
+        let Some(body) = Arc::into_inner(body) else {
+            return Ok(Err(ErrorCode::InternalError(Some(
+                "body is borrowed".into(),
+            ))));
+        };
+        let Ok(body) = body.into_inner() else {
+            bail!("lock poisoned");
+        };
+
+        let body = WithAccessor::new(store, body);
 
         let mut client = store.with(|mut view| view.get().http().client.clone());
 
@@ -79,15 +90,6 @@ where
             }
         };
 
-        let Some(body) = Arc::into_inner(body) else {
-            return Ok(Err(ErrorCode::InternalError(Some(
-                "body is borrowed".into(),
-            ))));
-        };
-        let Ok(body) = body.into_inner() else {
-            bail!("lock poisoned");
-        };
-
         let mut request = http::Request::builder();
         *request.headers_mut().unwrap() = headers;
         let request = match request.method(method).uri(uri).body(()) {
@@ -95,7 +97,7 @@ where
             Err(err) => return Ok(Err(ErrorCode::InternalError(Some(err.to_string())))),
         };
         let (request, ()) = request.into_parts();
-        let response = match body {
+        let response = match body.into_inner() {
             Body::Guest {
                 contents: MaybeTombstone::None,
                 buffer: Some(BodyFrame::Trailers(Ok(None))) | None,
@@ -221,12 +223,14 @@ where
                 }
             }
             Body::Guest {
-                contents: MaybeTombstone::Some(mut contents),
+                contents: MaybeTombstone::Some(contents),
                 trailers: MaybeTombstone::Some(trailers),
                 buffer,
                 tx,
                 content_length,
             } => {
+                let contents = WithAccessor::new(store, contents);
+                let tx = WithAccessorAndValue::new(store, tx, Ok(()));
                 let (trailers_tx, trailers_rx) = oneshot::channel();
                 let (body_tx, body_rx) = mpsc::channel(1);
                 let task = AbortOnDropHandle(store.spawn_fn_box(|store| {
@@ -247,9 +251,15 @@ where
                 let request = http::Request::from_parts(request, body);
                 let (response, io) = match client.send_request(request, options).await? {
                     Ok(pair) => pair,
-                    Err(err) => return Ok(Err(err)),
+                    Err(err) => {
+                        return Ok(Err(err));
+                    }
                 };
+                let contents = contents.into_inner();
+                let tx = tx.into_inner();
                 store.spawn_fn_box(move |store| Box::pin(async move {
+                    let mut contents = WithAccessor::new(store, contents);
+                    let tx = WithAccessorAndValue::new(store, tx, Ok(()));
                     let (io_res, body_res) = futures::join! {
                         io,
                         async {
@@ -269,7 +279,7 @@ where
                     // itself goes away due to cancellation elsewhere, so
                     // swallow this error.
                     let _ = body_res;
-                    tx.write(store,io_res.map_err(Into::into)).await;
+                    tx.into_inner().write(store,io_res.map_err(Into::into)).await;
                     Ok(())
                 }));
                 match response.await {
