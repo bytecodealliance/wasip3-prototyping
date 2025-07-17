@@ -538,7 +538,7 @@ impl<T> FutureWriter<T> {
 
     /// Wait for the read end of this `future` is dropped.
     ///
-    /// The [`Accessor`] provided can be acquired from [`Instance::run_with`] or
+    /// The [`Accessor`] provided can be acquired from [`Instance::run_concurrent`] or
     /// from within a host function for example.
     ///
     /// # Panics
@@ -671,6 +671,14 @@ impl<T> HostFuture<T> {
     }
 }
 
+impl<T> fmt::Debug for HostFuture<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HostFuture")
+            .field("rep", &self.rep)
+            .finish()
+    }
+}
+
 /// Transfer ownership of the read end of a future from the host to a guest.
 pub(crate) fn lower_future_to_index<U>(
     rep: u32,
@@ -789,7 +797,7 @@ impl<T> FutureReader<T> {
     /// The returned `Future` will yield `None` if the guest has trapped
     /// before it could produce a result.
     ///
-    /// The [`Accessor`] provided can be acquired from [`Instance::run_with`] or
+    /// The [`Accessor`] provided can be acquired from [`Instance::run_concurrent`] or
     /// from within a host function for example.
     ///
     /// # Panics
@@ -825,8 +833,8 @@ impl<T> FutureReader<T> {
 
     /// Wait for the write end of this `future` to be dropped.
     ///
-    /// The [`Accessor`] provided can be acquired from [`Instance::run_with`] or
-    /// from within a host function for example.
+    /// The [`Accessor`] provided can be acquired from
+    /// [`Instance::run_concurrent`] or from within a host function for example.
     ///
     /// # Panics
     ///
@@ -1059,6 +1067,14 @@ impl<T> HostStream<T> {
             }
             _ => func::bad_type_info(),
         }
+    }
+}
+
+impl<T> fmt::Debug for HostStream<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HostStream")
+            .field("rep", &self.rep)
+            .finish()
     }
 }
 
@@ -1960,12 +1976,10 @@ impl Instance {
                 }
 
                 let write_handle = transmit.write_handle;
-                let types = self.id().get(store.0).component().types().clone();
-                let lift =
-                    &mut LiftContext::new(store.0.store_opaque_mut(), &options, &types, self);
+                let lift = &mut LiftContext::new(store.0.store_opaque_mut(), &options, self);
                 let code = accept_writer::<T, B, U>(buffer, tx, kind)(Writer::Guest {
+                    ty: payload(ty, lift.types),
                     lift,
-                    ty: payload(ty, &types),
                     address,
                     count,
                 })?;
@@ -2149,12 +2163,8 @@ impl Instance {
                             bail!("write pointer not aligned");
                         }
 
-                        let lift = &mut LiftContext::new(
-                            store.0.store_opaque_mut(),
-                            write_options,
-                            &types,
-                            self,
-                        );
+                        let lift =
+                            &mut LiftContext::new(store.0.store_opaque_mut(), write_options, self);
                         let bytes = lift
                             .memory()
                             .get(write_address..)
@@ -2217,7 +2227,7 @@ impl Instance {
                     }
                 } else {
                     let store_opaque = store.0.store_opaque_mut();
-                    let lift = &mut LiftContext::new(store_opaque, write_options, &types, self);
+                    let lift = &mut LiftContext::new(store_opaque, write_options, self);
                     let ty = types[types[write_ty].ty].payload.unwrap();
                     let abi = lift.types.canonical_abi(&ty);
                     let size = usize::try_from(abi.size32).unwrap();
@@ -2462,12 +2472,10 @@ impl Instance {
                     transmit.done = true;
                 }
 
-                let types = self.id().get(store.0).component().types().clone();
-                let lift =
-                    &mut LiftContext::new(store.0.store_opaque_mut(), &options, &types, self);
+                let lift = &mut LiftContext::new(store.0.store_opaque_mut(), &options, self);
                 accept(Writer::Guest {
+                    ty: payload(ty, lift.types),
                     lift,
-                    ty: payload(ty, &types),
                     address,
                     count,
                 })?
@@ -2786,8 +2794,7 @@ impl Instance {
                 None,
             )
         };
-        let types = self.id().get(store).component().types().clone();
-        let lift_ctx = &mut LiftContext::new(store, &options, &types, self);
+        let lift_ctx = &mut LiftContext::new(store, &options, self);
         //  Read string from guest memory
         let address = usize::try_from(debug_msg_address)?;
         let len = usize::try_from(debug_msg_len)?;

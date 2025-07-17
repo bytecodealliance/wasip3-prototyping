@@ -117,9 +117,7 @@ mod generated {
     wasmtime::component::bindgen!({
         path: "src/p3/wit",
         world: "wasi:cli/command",
-        // TODO: Enable `tracing` once fixed:
-        // https://github.com/bytecodealliance/wasmtime/issues/11245
-        //tracing: true,
+        tracing: true,
         trappable_imports: true,
         concurrent_exports: true,
         concurrent_imports: true,
@@ -229,7 +227,7 @@ pub use self::generated::wasi::*;
 ///     // Instantiate the component and we're off to the races.
 ///     let instance = linker.instantiate_async(&mut store, &component).await?;
 ///     let command = Command::new(&mut store, &instance)?;
-///     let program_result = instance.run_with(&mut store, async move |store| {
+///     let program_result = instance.run_concurrent(&mut store, async move |store| {
 ///         command.wasi_cli_run().call_run(store).await
 ///     }).await??;
 ///     match program_result {
