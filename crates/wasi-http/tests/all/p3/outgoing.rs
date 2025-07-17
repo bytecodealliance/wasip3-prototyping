@@ -35,7 +35,7 @@ async fn run(path: &str, server: &Server) -> anyhow::Result<()> {
     let instance = linker.instantiate_async(&mut store, &component).await?;
     let command = Command::new(&mut store, &instance)?;
     instance
-        .run_with(store, async |store| {
+        .run_concurrent(store, async |store| {
             command.wasi_cli_run().call_run(store).await
         })
         .await

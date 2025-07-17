@@ -506,7 +506,7 @@ impl RunCommand {
                         wasmtime_wasi::p3::bindings::Command::new(&mut *store, &instance)
                     {
                         instance
-                            .run_with(&mut *store, async |store| {
+                            .run_concurrent(&mut *store, async |store| {
                                 command.wasi_cli_run().call_run(store).await
                             })
                             .await?

@@ -40,7 +40,7 @@ pub async fn run_wasi_http<E: Into<ErrorCode> + 'static>(
     let instance = linker.instantiate_async(&mut store, &component).await?;
     let proxy = Proxy::new(&mut store, &instance)?;
     let res = match instance
-        .run_with(&mut store, async |s| proxy.handle(s, req).await)
+        .run_concurrent(&mut store, async |s| proxy.handle(s, req).await)
         .await??
     {
         Ok(res) => res,
@@ -49,7 +49,7 @@ pub async fn run_wasi_http<E: Into<ErrorCode> + 'static>(
     let (res, io) = Response::resource_into_http(&mut store, res)?;
     let (parts, body) = res.into_parts();
     let (res, body) = try_join!(
-        instance.run_with(&mut store, async |store| io
+        instance.run_concurrent(&mut store, async |store| io
             .run(store, async { Ok(()) })
             .await),
         async { Ok(body.collect().await) },
