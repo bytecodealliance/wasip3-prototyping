@@ -15,7 +15,9 @@ mod generated {
                 "wasi:http/types@0.3.0-draft#[method]request.body",
                 "wasi:http/types@0.3.0-draft#[method]response.body",
                 "wasi:http/types@0.3.0-draft#[static]request.new",
+                "wasi:http/types@0.3.0-draft#[drop]request",
                 "wasi:http/types@0.3.0-draft#[static]response.new",
+                "wasi:http/types@0.3.0-draft#[drop]response",
             ],
         },
         with: {

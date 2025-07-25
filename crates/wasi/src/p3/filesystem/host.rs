@@ -4,7 +4,8 @@ use anyhow::{Context as _, anyhow};
 use system_interface::fs::FileIoExt as _;
 use tokio::sync::mpsc;
 use wasmtime::component::{
-    Accessor, AccessorTask, HostFuture, HostStream, Lower, Resource, ResourceTable,
+    Accessor, AccessorTask, FutureReader, Lower, Resource, ResourceTable, StreamReader,
+    WithAccessor, WithAccessorAndValue,
 };
 
 use crate::p3::bindings::filesystem::types::{
@@ -57,18 +58,26 @@ where
         store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
         mut offset: Filesize,
-    ) -> wasmtime::Result<(HostStream<u8>, HostFuture<Result<(), ErrorCode>>)> {
-        store.with(|mut view| {
+    ) -> wasmtime::Result<(StreamReader<u8>, FutureReader<Result<(), ErrorCode>>)> {
+        let ((data_tx, data_rx), (res_tx, res_rx)) = store.with(|mut view| {
             let instance = view.instance();
-            let (data_tx, data_rx) = instance
-                .stream::<_, _, Vec<_>>(&mut view)
+            let data = instance
+                .stream(&mut view)
                 .context("failed to create stream")?;
-            let (res_tx, res_rx) = instance
-                .future(|| unreachable!(), &mut view)
+            let res = instance
+                .future(&mut view)
                 .context("failed to create future")?;
+            anyhow::Ok((data, res))
+        })?;
+        let data_tx = WithAccessor::new(store, data_tx);
+        let data_rx = WithAccessor::new(store, data_rx);
+        let res_tx = WithAccessorAndValue::new(store, res_tx, Ok(()));
+        let res_rx = WithAccessor::new(store, res_rx);
+
+        let result = store.with(|mut view| {
             let mut binding = view.get();
             let fd = get_descriptor(binding.table(), &fd)?;
-            match fd.file() {
+            anyhow::Ok(match fd.file() {
                 Ok(f) => {
                     let (task_tx, task_rx) = mpsc::channel(1);
                     let f = f.clone();
@@ -117,39 +126,46 @@ where
                             .push(AbortOnDropHandle(task))
                             .context("failed to push task to table")?
                     };
-                    view.spawn(ReadTask {
-                        io: IoTask {
-                            data: data_tx,
-                            result: res_tx,
-                            rx: task_rx,
-                        },
-                        id,
-                        tasks,
-                    });
+                    Ok((task_rx, id, tasks))
                 }
-                Err(err) => {
-                    drop(data_tx);
-                    view.spawn_fn_box(move |store| {
-                        Box::pin(async move {
-                            res_tx.write(store, Err(err)).await;
-                            Ok(())
-                        })
-                    });
-                }
+                Err(err) => Err(err),
+            })
+        })?;
+
+        match result {
+            Ok((task_rx, id, tasks)) => {
+                store.spawn(ReadTask {
+                    io: IoTask {
+                        data: data_tx.into_inner(),
+                        result: res_tx.into_inner(),
+                        rx: task_rx,
+                    },
+                    id,
+                    tasks,
+                });
             }
-            Ok((data_rx.into(), res_rx.into()))
-        })
+            Err(err) => {
+                let res_tx = res_tx.into_inner();
+                store.spawn_fn_box(move |store| {
+                    Box::pin(async move {
+                        res_tx.write(store, Err(err)).await;
+                        Ok(())
+                    })
+                });
+            }
+        }
+
+        Ok((data_rx.into_inner(), res_rx.into_inner()))
     }
 
     async fn write_via_stream<U: 'static>(
         store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
-        data: HostStream<u8>,
+        data: StreamReader<u8>,
         mut offset: Filesize,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let (fd, mut data) = store.with(|mut view| -> wasmtime::Result<_> {
             let fd = get_descriptor(view.get().table(), &fd)?.clone();
-            let data = data.into_reader::<Vec<u8>>(&mut view);
             Ok((fd, data))
         })?;
         let f = match fd.file() {
@@ -189,11 +205,10 @@ where
     async fn append_via_stream<U: 'static>(
         store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
-        data: HostStream<u8>,
+        data: StreamReader<u8>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
         let (fd, mut data) = store.with(|mut view| {
             let fd = get_descriptor(view.get().table(), &fd)?.clone();
-            let data = data.into_reader::<Vec<u8>>(&mut view);
             anyhow::Ok((fd, data))
         })?;
         let f = match fd.file() {
@@ -303,125 +318,143 @@ where
         store: &Accessor<U, Self>,
         fd: Resource<Descriptor>,
     ) -> wasmtime::Result<(
-        HostStream<DirectoryEntry>,
-        HostFuture<Result<(), ErrorCode>>,
+        StreamReader<DirectoryEntry>,
+        FutureReader<Result<(), ErrorCode>>,
     )> {
-        store.with(|mut view| {
+        let ((data_tx, data_rx), (res_tx, res_rx)) = store.with(|mut view| {
             let instance = view.instance();
-            let (data_tx, data_rx) = instance
-                .stream::<_, _, Vec<_>>(&mut view)
+            let data = instance
+                .stream(&mut view)
                 .context("failed to create stream")?;
-            let (res_tx, res_rx) = instance
-                .future(|| unreachable!(), &mut view)
+            let res = instance
+                .future(&mut view)
                 .context("failed to create future")?;
+            anyhow::Ok((data, res))
+        })?;
+        let data_tx = WithAccessor::new(store, data_tx);
+        let data_rx = WithAccessor::new(store, data_rx);
+        let res_tx = WithAccessorAndValue::new(store, res_tx, Ok(()));
+        let res_rx = WithAccessor::new(store, res_rx);
+
+        let result = store.with(|mut view| {
             let mut binding = view.get();
             let fd = get_descriptor(binding.table(), &fd)?;
-            match fd.dir().and_then(|d| {
-                if !d.perms.contains(DirPerms::READ) {
-                    Err(ErrorCode::NotPermitted)
-                } else {
-                    Ok(d)
-                }
-            }) {
-                Ok(d) => {
-                    let d = d.clone();
-                    let tasks = Arc::clone(&d.tasks);
-                    let (task_tx, task_rx) = mpsc::channel(1);
-                    let task = view.spawn_fn(|_| async move {
-                        match d.run_blocking(cap_std::fs::Dir::entries).await {
-                            Ok(mut entries) => {
-                                while let Ok(tx) = task_tx.reserve().await {
-                                    match d
-                                        .run_blocking(|_| match entries.next()? {
-                                            Ok(entry) => {
-                                                let meta = match entry.metadata() {
-                                                    Ok(meta) => meta,
-                                                    Err(err) => return Some(Err(err.into())),
-                                                };
-                                                let Ok(name) = entry.file_name().into_string()
-                                                else {
-                                                    return Some(Err(
-                                                        ErrorCode::IllegalByteSequence,
-                                                    ));
-                                                };
-                                                Some(Ok((
-                                                    Some(DirectoryEntry {
-                                                        type_: meta.file_type().into(),
-                                                        name,
-                                                    }),
-                                                    entries,
-                                                )))
-                                            }
-                                            Err(err) => {
-                                                // On windows, filter out files like `C:\DumpStack.log.tmp` which we
-                                                // can't get full metadata for.
-                                                #[cfg(windows)]
-                                                {
-                                                    use windows_sys::Win32::Foundation::{
-                                                        ERROR_ACCESS_DENIED,
-                                                        ERROR_SHARING_VIOLATION,
+            anyhow::Ok(
+                match fd.dir().and_then(|d| {
+                    if !d.perms.contains(DirPerms::READ) {
+                        Err(ErrorCode::NotPermitted)
+                    } else {
+                        Ok(d)
+                    }
+                }) {
+                    Ok(d) => {
+                        let d = d.clone();
+                        let tasks = Arc::clone(&d.tasks);
+                        let (task_tx, task_rx) = mpsc::channel(1);
+                        let task = view.spawn_fn(|_| async move {
+                            match d.run_blocking(cap_std::fs::Dir::entries).await {
+                                Ok(mut entries) => {
+                                    while let Ok(tx) = task_tx.reserve().await {
+                                        match d
+                                            .run_blocking(|_| match entries.next()? {
+                                                Ok(entry) => {
+                                                    let meta = match entry.metadata() {
+                                                        Ok(meta) => meta,
+                                                        Err(err) => return Some(Err(err.into())),
                                                     };
-                                                    if err.raw_os_error()
-                                                        == Some(ERROR_SHARING_VIOLATION as i32)
-                                                        || err.raw_os_error()
-                                                            == Some(ERROR_ACCESS_DENIED as i32)
-                                                    {
-                                                        return Some(Ok((None, entries)));
-                                                    }
+                                                    let Ok(name) = entry.file_name().into_string()
+                                                    else {
+                                                        return Some(Err(
+                                                            ErrorCode::IllegalByteSequence,
+                                                        ));
+                                                    };
+                                                    Some(Ok((
+                                                        Some(DirectoryEntry {
+                                                            type_: meta.file_type().into(),
+                                                            name,
+                                                        }),
+                                                        entries,
+                                                    )))
                                                 }
-                                                Some(Err(err.into()))
+                                                Err(err) => {
+                                                    // On windows, filter out files like `C:\DumpStack.log.tmp` which we
+                                                    // can't get full metadata for.
+                                                    #[cfg(windows)]
+                                                    {
+                                                        use windows_sys::Win32::Foundation::{
+                                                            ERROR_ACCESS_DENIED,
+                                                            ERROR_SHARING_VIOLATION,
+                                                        };
+                                                        if err.raw_os_error()
+                                                            == Some(ERROR_SHARING_VIOLATION as i32)
+                                                            || err.raw_os_error()
+                                                                == Some(ERROR_ACCESS_DENIED as i32)
+                                                        {
+                                                            return Some(Ok((None, entries)));
+                                                        }
+                                                    }
+                                                    Some(Err(err.into()))
+                                                }
+                                            })
+                                            .await
+                                        {
+                                            None => break,
+                                            Some(Ok((entry, tail))) => {
+                                                if let Some(entry) = entry {
+                                                    tx.send(Ok(vec![entry]));
+                                                }
+                                                entries = tail;
                                             }
-                                        })
-                                        .await
-                                    {
-                                        None => break,
-                                        Some(Ok((entry, tail))) => {
-                                            if let Some(entry) = entry {
-                                                tx.send(Ok(vec![entry]));
+                                            Some(Err(err)) => {
+                                                tx.send(Err(err));
+                                                break;
                                             }
-                                            entries = tail;
-                                        }
-                                        Some(Err(err)) => {
-                                            tx.send(Err(err));
-                                            break;
                                         }
                                     }
                                 }
+                                Err(err) => {
+                                    _ = task_tx.send(Err(err.into())).await;
+                                }
                             }
-                            Err(err) => {
-                                _ = task_tx.send(Err(err.into())).await;
-                            }
-                        }
-                        Ok(())
-                    });
-                    let id = {
-                        let mut tasks = tasks.lock().map_err(|_| anyhow!("lock poisoned"))?;
-                        tasks
-                            .push(AbortOnDropHandle(task))
-                            .context("failed to push task to table")?
-                    };
-                    view.spawn(ReadTask {
-                        io: IoTask {
-                            data: data_tx,
-                            result: res_tx,
-                            rx: task_rx,
-                        },
-                        id,
-                        tasks,
-                    });
-                }
-                Err(err) => {
-                    drop(data_tx);
-                    view.spawn_fn_box(move |store| {
-                        Box::pin(async move {
-                            res_tx.write(store, Err(err)).await;
                             Ok(())
-                        })
-                    });
-                }
+                        });
+                        let id = {
+                            let mut tasks = tasks.lock().map_err(|_| anyhow!("lock poisoned"))?;
+                            tasks
+                                .push(AbortOnDropHandle(task))
+                                .context("failed to push task to table")?
+                        };
+                        Ok((task_rx, id, tasks))
+                    }
+                    Err(err) => Err(err),
+                },
+            )
+        })?;
+
+        match result {
+            Ok((task_rx, id, tasks)) => {
+                store.spawn(ReadTask {
+                    io: IoTask {
+                        data: data_tx.into_inner(),
+                        result: res_tx.into_inner(),
+                        rx: task_rx,
+                    },
+                    id,
+                    tasks,
+                });
             }
-            Ok((data_rx.into(), res_rx.into()))
-        })
+            Err(err) => {
+                let res_tx = res_tx.into_inner();
+                store.spawn_fn_box(move |store| {
+                    Box::pin(async move {
+                        res_tx.write(store, Err(err)).await;
+                        Ok(())
+                    })
+                });
+            }
+        }
+
+        Ok((data_rx.into_inner(), res_rx.into_inner()))
     }
 
     async fn sync<U>(

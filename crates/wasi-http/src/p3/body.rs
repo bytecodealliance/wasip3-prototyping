@@ -1,7 +1,7 @@
 use crate::p3::ResourceView;
 use crate::p3::bindings::http::types::ErrorCode;
 use anyhow::Context as _;
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Buf, Bytes};
 use core::mem;
 use core::pin::Pin;
 use core::task::{Context, Poll, ready};
@@ -12,7 +12,11 @@ use http_body_util::combinators::BoxBody;
 use pin_project_lite::pin_project;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use wasmtime::component::{Accessor, FutureReader, FutureWriter, HasData, Resource, StreamReader};
+use wasmtime::AsContextMut;
+use wasmtime::component::{
+    Accessor, DropWithStore, DropWithStoreAndValue, FutureReader, FutureWriter, HasData, Resource,
+    StreamReader,
+};
 use wasmtime_wasi::p3::WithChildren;
 
 pub(crate) fn empty_body() -> impl http_body::Body<Data = Bytes, Error = Option<ErrorCode>> {
@@ -54,7 +58,7 @@ pub enum Body {
     /// Body constructed by the guest
     Guest {
         /// The body stream
-        contents: MaybeTombstone<StreamReader<BytesMut>>,
+        contents: MaybeTombstone<StreamReader<u8>>,
         /// Future, on which guest will write result and optional trailers
         trailers: MaybeTombstone<FutureReader<GuestTrailers>>,
         /// Buffered frame, if any
@@ -110,6 +114,28 @@ impl Body {
             stream: Some(http_body_util::Empty::new().map_err(Into::into).boxed()),
             buffer: None,
         }
+    }
+}
+
+impl DropWithStore for Body {
+    fn drop(self, mut store: impl AsContextMut) -> wasmtime::Result<()> {
+        if let Body::Guest {
+            contents,
+            trailers,
+            tx,
+            ..
+        } = self
+        {
+            let mut store = store.as_context_mut();
+            if let MaybeTombstone::Some(contents) = contents {
+                contents.drop(&mut store)?;
+            }
+            if let MaybeTombstone::Some(trailers) = trailers {
+                trailers.drop(&mut store)?;
+            }
+            tx.drop(store, Ok(()))?;
+        }
+        anyhow::Ok(())
     }
 }
 

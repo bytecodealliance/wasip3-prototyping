@@ -971,22 +971,40 @@ async fn handle_request(
             Ok(result.map(|body| body.map_err(|e| e.into()).boxed()))
         }
         Proxy::P3(proxy, instance) => {
-            let (req, body) = req.into_parts();
-            let body = body.map_err(p3::http::types::ErrorCode::from_hyper_request_error);
-            let res = instance
-                .run_concurrent(&mut store, async |store| {
-                    proxy
-                        .handle(store, http::Request::from_parts(req, body))
-                        .await
-                })
-                .await???;
-            let (res, io) = wasmtime_wasi_http::p3::Response::resource_into_http(&mut store, res)?;
+            use std::future;
+            use std::pin::pin;
+            use std::task::Poll;
+
+            let (tx, rx) = tokio::sync::oneshot::channel();
+
             tokio::task::spawn(async move {
                 instance
-                    .run_concurrent(&mut store, async |store| {
+                    .run_concurrent(&mut store, async move |store| {
+                        let (req, body) = req.into_parts();
+                        let body =
+                            body.map_err(p3::http::types::ErrorCode::from_hyper_request_error);
+                        let res = proxy
+                            .handle(store, http::Request::from_parts(req, body))
+                            .await??;
+                        let (res, io) = store.with(|mut store| {
+                            wasmtime_wasi_http::p3::Response::resource_into_http(&mut store, res)
+                        })?;
+                        // Poll `io` once before handing the response to Hyper.
+                        // This ensures that, if the guest has at least one body
+                        // chunk ready to send, it will be available to Hyper
+                        // immediately, meaning it can be sent in the same TCP
+                        // packet as the beginning of the response.
+                        //
                         // TODO: Report transmit errors
-                        let guest_io_result = async { Ok(()) };
-                        io.run(store, guest_io_result).await
+                        let mut io = pin!(io.run(store, async { Ok(()) }));
+                        let result = future::poll_fn(|cx| Poll::Ready(io.as_mut().poll(cx))).await;
+
+                        _ = tx.send(res);
+
+                        match result {
+                            Poll::Ready(result) => result,
+                            Poll::Pending => io.await,
+                        }
                     })
                     .await??;
 
@@ -995,7 +1013,7 @@ async fn handle_request(
 
                 anyhow::Ok(())
             });
-            Ok(res.map(|body| {
+            Ok(rx.await?.map(|body| {
                 body.map_err(|err| err.unwrap_or(p3::http::types::ErrorCode::InternalError(None)))
                     .map_err(|err| err.into())
                     .boxed()
