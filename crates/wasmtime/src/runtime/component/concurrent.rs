@@ -455,17 +455,6 @@ where
         })
     }
 
-    /// Like `with`, except skips running `fun` if the thread-local state is not
-    /// set.
-    fn maybe_with<R>(&self, fun: impl FnOnce(Access<'_, T, D>) -> R) -> Option<R> {
-        tls::maybe_get(|vmstore| {
-            fun(Access {
-                store: self.token.as_context_mut(vmstore),
-                accessor: self,
-            })
-        })
-    }
-
     /// Changes this accessor to access `D2` instead of the current type
     /// parameter `D`.
     ///
@@ -1299,11 +1288,32 @@ impl Instance {
         let mut store = store.as_context_mut();
         let token = StoreToken::new(store.as_context_mut());
 
-        self.poll_until(store.as_context_mut(), async move {
-            let accessor = Accessor::new(token, Some(self));
-            fun(&accessor).await
-        })
-        .await
+        struct Dropper<'a, T: 'static, V> {
+            store: StoreContextMut<'a, T>,
+            value: Option<V>,
+        }
+
+        impl<'a, T, V> Drop for Dropper<'a, T, V> {
+            fn drop(&mut self) {
+                let value = self.value.take();
+                tls::set(self.store.0.traitobj_mut(), move || drop(value));
+            }
+        }
+
+        let accessor = &Accessor::new(token, Some(self));
+        let dropper = &mut Dropper {
+            store,
+            value: Some(fun(accessor)),
+        };
+        // SAFETY: `dropper` is a local, non-escaping variable and we do not
+        // move its `value` field until it is dropped.
+        //
+        // TODO: Could/should we make this safe using some combination of `pin!`
+        // and `pin_project!`?
+        let future = unsafe { Pin::new_unchecked(dropper.value.as_mut().unwrap()) };
+
+        self.poll_until(dropper.store.as_context_mut(), future)
+            .await
     }
 
     /// Spawn a background task to run as part of this instance's event loop.
@@ -1360,10 +1370,8 @@ impl Instance {
     async fn poll_until<T, R>(
         self,
         store: StoreContextMut<'_, T>,
-        future: impl Future<Output = R>,
+        mut future: Pin<&mut impl Future<Output = R>>,
     ) -> Result<R> {
-        let mut future = pin!(future);
-
         loop {
             // Take `ConcurrentState::futures` out of the instance so we can
             // poll it while also safely giving any of the futures inside access
@@ -3646,7 +3654,7 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
 }
 
 /// Represents the output of a host task or background task.
-enum HostTaskOutput {
+pub(crate) enum HostTaskOutput {
     /// A plain result
     Result(Result<()>),
     /// A function to be run after the future completes (e.g. post-processing
@@ -4286,7 +4294,7 @@ impl ConcurrentState {
         }
     }
 
-    /// Take ownership of any fibers owned by this object.
+    /// Take ownership of any fibers and futures owned by this object.
     ///
     /// This should be used when disposing of the `Store` containing this object
     /// in order to gracefully resolve any and all fibers using
@@ -4294,33 +4302,58 @@ impl ConcurrentState {
     /// use-after-free bugs due to fibers which may still have access to the
     /// `Store`.
     ///
+    /// Additionally, the futures collected with this function should be dropped
+    /// within a `tls::set` call, which will ensure than any futures closing
+    /// over an `&Accessor` will have access to the store when dropped, allowing
+    /// e.g. `WithAccessor[AndValue]` instances to be disposed of without
+    /// panicking.
+    ///
     /// Note that this will leave the object in an inconsistent and unusable
     /// state, so it should only be used just prior to dropping it.
-    pub(crate) fn take_fibers(&mut self, vec: &mut Vec<StoreFiber<'static>>) {
+    pub(crate) fn take_fibers_and_futures(
+        &mut self,
+        fibers: &mut Vec<StoreFiber<'static>>,
+        futures: &mut Vec<FuturesUnordered<HostTaskFuture>>,
+    ) {
         for entry in mem::take(&mut self.table) {
             if let Ok(set) = entry.downcast::<WaitableSet>() {
                 for mode in set.waiting.into_values() {
                     if let WaitMode::Fiber(fiber) = mode {
-                        vec.push(fiber);
+                        fibers.push(fiber);
                     }
                 }
             }
         }
 
         if let Some(fiber) = self.worker.take() {
-            vec.push(fiber);
+            fibers.push(fiber);
         }
 
         let mut take_items = |list| {
             for item in mem::take(list) {
-                if let WorkItem::ResumeFiber(fiber) = item {
-                    vec.push(fiber);
+                match item {
+                    WorkItem::ResumeFiber(fiber) => {
+                        fibers.push(fiber);
+                    }
+                    WorkItem::PushFuture(future) => {
+                        self.futures
+                            .get_mut()
+                            .unwrap()
+                            .as_mut()
+                            .unwrap()
+                            .push(future.into_inner().unwrap());
+                    }
+                    _ => {}
                 }
             }
         };
 
         take_items(&mut self.high_priority);
         take_items(&mut self.low_priority);
+
+        if let Some(them) = self.futures.get_mut().unwrap().take() {
+            futures.push(them);
+        }
     }
 }
 

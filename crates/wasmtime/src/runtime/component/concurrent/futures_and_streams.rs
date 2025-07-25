@@ -404,34 +404,12 @@ pub(super) struct FlatAbi {
 /// Trait representing objects (such as streams, futures, or structs containing
 /// them) which require access to the store in order to be disposed of properly.
 pub trait DropWithStore: Sized {
-    /// Dispose of `Self` using the specified store.
+    /// Dispose of `self` using the specified store.
     fn drop(self, store: impl AsContextMut) -> Result<()>;
 
-    /// Attempt to dispose of `Self` using the specified accessor.
-    ///
-    /// Note that this will return `None` without disposing of `Self` if called
-    /// from outside the context where the specified `Accessor` is viable
-    /// (i.e. from outside a `Future::poll` call for the `Future` closing over
-    /// the `Accessor`).  See the [`Accessor`] docs for further details.
-    fn maybe_drop_with(self, accessor: impl AsAccessor) -> Option<Result<()>> {
-        // Note that we use `Accessor::maybe_with` here instead of
-        // `Accessor::with`.  This is because we might have been called when the
-        // thread-local store is not set, in which case we'd rather leak
-        // (i.e. not call `Self::drop) than panic.  The most likely reason the
-        // thread-local store is unset is that the store itself is being
-        // dropped, in which case leaking objects inside the store is just fine
-        // because the whole thing is about to go away.
-        accessor
-            .as_accessor()
-            .maybe_with(move |store| self.drop(store))
-    }
-
-    /// Attempt to dispose of `Self` using the specified accessor.
-    ///
-    /// This will panic if called from outside the context where the specified
-    /// `Accessor` is viable.  See `maybe_drop_with` for details.
+    /// Dispose of `self` using the specified accessor.
     fn drop_with(self, accessor: impl AsAccessor) -> Result<()> {
-        self.maybe_drop_with(accessor).unwrap()
+        accessor.as_accessor().with(move |store| self.drop(store))
     }
 }
 
@@ -442,26 +420,11 @@ pub trait DropWithStoreAndValue<T: func::Lower + Send + Sync + 'static>: Sized {
     /// Dispose of `self` using the specified store, writing the specified value.
     fn drop(self, store: impl AsContextMut, value: T) -> Result<()>;
 
-    /// Attempt to dispose of `self` using the specified accessor and value.
-    ///
-    /// Note that this will return `None` without disposing of `self` if called
-    /// from outside the context where the specified `Accessor` is viable
-    /// (i.e. from outside a `Future::poll` call for the `Future` closing over
-    /// the `Accessor`).  See the [`Accessor`] docs for further details.
-    fn maybe_drop_with(self, accessor: impl AsAccessor, value: T) -> Option<Result<()>> {
-        // See comment in `DropWithStore::maybe_drop_with` about why we use
-        // `Accessor::maybe_with` here.
+    /// Dispose of `self` using the specified accessor and value.
+    fn drop_with(self, accessor: impl AsAccessor, value: T) -> Result<()> {
         accessor
             .as_accessor()
-            .maybe_with(move |store| self.drop(store, value))
-    }
-
-    /// Attempt to dispose of `Self` using the specified accessor.
-    ///
-    /// This will panic if called from outside the context where the specified
-    /// `Accessor` is viable.  See `maybe_drop_with` for details.
-    fn drop_with(self, accessor: impl AsAccessor, value: T) -> Result<()> {
-        self.maybe_drop_with(accessor, value).unwrap()
+            .with(move |store| self.drop(store, value))
     }
 }
 
@@ -469,10 +432,6 @@ pub trait DropWithStoreAndValue<T: func::Lower + Send + Sync + 'static>: Sized {
 ///
 /// This may be used to automatically dispose of the wrapped object when it goes
 /// out of scope.
-///
-/// Note that this will call `DropWithStore::maybe_drop_with` when dropped,
-/// which may silently skip disposal if called from outside the `Future::poll`
-/// call where the `Accessor` is enabled.
 pub struct WithAccessor<'a, T: DropWithStore, U: 'static, D: HasData = HasSelf<U>> {
     accessor: &'a Accessor<U, D>,
     inner: Option<T>,
@@ -513,7 +472,7 @@ impl<'a, T: DropWithStore, U, D: HasData> DerefMut for WithAccessor<'a, T, U, D>
 impl<'a, T: DropWithStore, U, D: HasData> Drop for WithAccessor<'a, T, U, D> {
     fn drop(&mut self) {
         if let Some(inner) = self.inner.take() {
-            _ = inner.maybe_drop_with(self.accessor);
+            _ = inner.drop_with(self.accessor);
         }
     }
 }
@@ -522,10 +481,6 @@ impl<'a, T: DropWithStore, U, D: HasData> Drop for WithAccessor<'a, T, U, D> {
 ///
 /// This may be used to automatically dispose of the wrapped object when it goes
 /// out of scope, passing the specified value.
-///
-/// Note that this will call `DropWithStoreAndValue::maybe_drop_with` when
-/// dropped, which may silently skip disposal if called from outside the
-/// `Future::poll` call where the `Accessor` is enabled.
 pub struct WithAccessorAndValue<'a, V, T, U, D = HasSelf<U>>
 where
     U: 'static,
@@ -600,7 +555,7 @@ impl<
 {
     fn drop(&mut self) {
         if let Some((inner, value)) = self.inner_and_value.take() {
-            _ = inner.maybe_drop_with(self.accessor, value);
+            _ = inner.drop_with(self.accessor, value);
         }
     }
 }
