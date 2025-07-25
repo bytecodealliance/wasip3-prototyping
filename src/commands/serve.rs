@@ -579,12 +579,6 @@ impl ServeCommand {
                 v = listener.accept() => v?,
             };
             let comp = component.clone();
-            // Disable the Nagle algorithm, which can add 40ms of latency on
-            // Linux machines if guest fails to provide response body data as
-            // soon as Hyper needs it.  The tradeoff here is that we may end up
-            // sending more TCP packets if the guest is producing small body
-            // chunks.
-            stream.set_nodelay(true).unwrap();
             let stream = TokioIo::new(stream);
             let h = handler.clone();
             let shutdown_guard = shutdown.clone().increment();
