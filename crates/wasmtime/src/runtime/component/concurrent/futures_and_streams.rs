@@ -19,6 +19,7 @@ use buffers::UntypedWriteBuffer;
 use futures::channel::oneshot;
 use std::boxed::Box;
 use std::fmt;
+use std::future;
 use std::iter;
 use std::marker::PhantomData;
 use std::mem::{self, MaybeUninit};
@@ -26,6 +27,7 @@ use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::string::{String, ToString};
 use std::sync::Arc;
+use std::task::{Poll, Waker};
 use std::vec::Vec;
 use wasmtime_environ::component::{
     CanonicalAbiInfo, ComponentTypes, InterfaceType, RuntimeComponentInstanceIndex, StringEncoding,
@@ -312,56 +314,58 @@ fn accept_writer<T: func::Lift + Send + 'static, B: ReadBuffer<T>, U>(
 /// Return a `Future` which will resolve once the reader end corresponding to
 /// the specified writer end of a future or stream is dropped.
 async fn watch_reader(accessor: impl AsAccessor, instance: Instance, id: TableId<TransmitHandle>) {
-    let result = accessor.as_accessor().with(|mut access| {
-        let concurrent_state = instance.concurrent_state_mut(access.as_context_mut().0);
-        let state_id = concurrent_state.get(id)?.state;
-        let state = concurrent_state.get_mut(state_id)?;
-        anyhow::Ok(if matches!(&state.read, ReadState::Dropped) {
-            None
-        } else {
-            let (tx, rx) = oneshot::channel();
-            state.reader_watcher = Some(tx);
-            Some(rx)
-        })
-    });
-
-    if let Ok(Some(rx)) = result {
-        _ = rx.await
-    }
+    future::poll_fn(|cx| {
+        accessor
+            .as_accessor()
+            .with(|mut access| {
+                let concurrent_state = instance.concurrent_state_mut(access.as_context_mut().0);
+                let state_id = concurrent_state.get(id)?.state;
+                let state = concurrent_state.get_mut(state_id)?;
+                anyhow::Ok(if matches!(&state.read, ReadState::Dropped) {
+                    Poll::Ready(())
+                } else {
+                    state.reader_watcher = Some(cx.waker().clone());
+                    Poll::Pending
+                })
+            })
+            .unwrap_or(Poll::Ready(()))
+    })
+    .await
 }
 
 /// Return a `Future` which will resolve once the writer end corresponding to
 /// the specified reader end of a future or stream is dropped.
 async fn watch_writer(accessor: impl AsAccessor, instance: Instance, id: TableId<TransmitHandle>) {
-    let result = accessor.as_accessor().with(|mut access| {
-        let concurrent_state = instance.concurrent_state_mut(access.as_context_mut().0);
-        let state_id = concurrent_state.get(id)?.state;
-        let state = concurrent_state.get_mut(state_id)?;
-        anyhow::Ok(
-            if matches!(
-                &state.write,
-                WriteState::Dropped
-                    | WriteState::GuestReady {
-                        post_write: PostWrite::Drop,
-                        ..
-                    }
-                    | WriteState::HostReady {
-                        post_write: PostWrite::Drop,
-                        ..
-                    }
-            ) {
-                None
-            } else {
-                let (tx, rx) = oneshot::channel();
-                state.writer_watcher = Some(tx);
-                Some(rx)
-            },
-        )
-    });
-
-    if let Ok(Some(rx)) = result {
-        _ = rx.await
-    }
+    future::poll_fn(|cx| {
+        accessor
+            .as_accessor()
+            .with(|mut access| {
+                let concurrent_state = instance.concurrent_state_mut(access.as_context_mut().0);
+                let state_id = concurrent_state.get(id)?.state;
+                let state = concurrent_state.get_mut(state_id)?;
+                anyhow::Ok(
+                    if matches!(
+                        &state.write,
+                        WriteState::Dropped
+                            | WriteState::GuestReady {
+                                post_write: PostWrite::Drop,
+                                ..
+                            }
+                            | WriteState::HostReady {
+                                post_write: PostWrite::Drop,
+                                ..
+                            }
+                    ) {
+                        Poll::Ready(())
+                    } else {
+                        state.writer_watcher = Some(cx.waker().clone());
+                        Poll::Pending
+                    },
+                )
+            })
+            .unwrap_or(Poll::Ready(()))
+    })
+    .await
 }
 
 /// Represents the state of a stream or future handle from the perspective of a
@@ -1405,14 +1409,14 @@ struct TransmitState {
     write: WriteState,
     /// See `ReadState`
     read: ReadState,
-    /// The `Sender`, if any, to be dropped when the write end of the stream or
+    /// The `Waker`, if any, to be woken when the write end of the stream or
     /// future is dropped.
     ///
     /// This will signal to the host-owned read end that the write end has been
     /// dropped.
-    writer_watcher: Option<oneshot::Sender<()>>,
+    writer_watcher: Option<Waker>,
     /// Like `writer_watcher`, but for the reverse direction.
-    reader_watcher: Option<oneshot::Sender<()>>,
+    reader_watcher: Option<Waker>,
     /// Whether futher values may be transmitted via this stream or future.
     done: bool,
 }
@@ -1866,7 +1870,9 @@ impl Instance {
         );
 
         transmit.read = ReadState::Dropped;
-        transmit.reader_watcher = None;
+        if let Some(waker) = transmit.reader_watcher.take() {
+            waker.wake();
+        }
 
         // If the write end is already dropped, it should stay dropped,
         // otherwise, it should be opened.
@@ -1952,7 +1958,9 @@ impl Instance {
             transmit.write
         );
 
-        transmit.writer_watcher = None;
+        if let Some(waker) = transmit.writer_watcher.take() {
+            waker.wake();
+        }
 
         // Existing queued transmits must be updated with information for the impending writer closure
         match &mut transmit.write {
