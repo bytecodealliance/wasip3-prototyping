@@ -50,7 +50,7 @@ where
             bail!("lock poisoned");
         };
 
-        let body = WithAccessor::new(store, body);
+        let body = body.with_store(store);
 
         let mut client = store.with(|mut view| view.get().http().client.clone());
 

@@ -827,7 +827,8 @@ where
                 .table()
                 .delete(req)
                 .context("failed to delete request from table")?;
-            mem::replace(request.body.lock().unwrap().deref_mut(), Body::Consumed).drop(store)
+            mem::replace(request.body.lock().unwrap().deref_mut(), Body::Consumed)
+                .drop_with_store(store)
         })
     }
 }
@@ -1149,7 +1150,8 @@ where
                 .table()
                 .delete(req)
                 .context("failed to delete request from table")?;
-            mem::replace(request.body.lock().unwrap().deref_mut(), Body::Consumed).drop(store)
+            mem::replace(request.body.lock().unwrap().deref_mut(), Body::Consumed)
+                .drop_with_store(store)
         })
     }
 }

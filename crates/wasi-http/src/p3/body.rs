@@ -13,9 +13,7 @@ use pin_project_lite::pin_project;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use wasmtime::AsContextMut;
-use wasmtime::component::{
-    Accessor, DropWithStore, FutureReader, FutureWriter, HasData, Resource, StreamReader,
-};
+use wasmtime::component::{Accessor, FutureReader, FutureWriter, HasData, Resource, StreamReader};
 use wasmtime_wasi::p3::WithChildren;
 
 pub(crate) fn empty_body() -> impl http_body::Body<Data = Bytes, Error = Option<ErrorCode>> {
@@ -114,10 +112,8 @@ impl Body {
             buffer: None,
         }
     }
-}
 
-impl DropWithStore for Body {
-    fn drop(self, mut store: impl AsContextMut) -> wasmtime::Result<()> {
+    pub(crate) fn drop_with_store(&mut self, mut store: impl AsContextMut) -> wasmtime::Result<()> {
         if let Body::Guest {
             contents,
             trailers,
@@ -127,14 +123,39 @@ impl DropWithStore for Body {
         {
             let mut store = store.as_context_mut();
             if let MaybeTombstone::Some(contents) = contents {
-                contents.drop(&mut store)?;
+                contents.close(&mut store)?;
             }
             if let MaybeTombstone::Some(trailers) = trailers {
-                trailers.drop(&mut store)?;
+                trailers.close(&mut store)?;
             }
-            tx.drop(store, Ok(()))?;
+            tx.close(store)?;
         }
         anyhow::Ok(())
+    }
+
+    pub(crate) fn with_store<'a, T, D>(self, store: &'a Accessor<T, D>) -> BodyWithStore<'a, T, D>
+    where
+        D: HasData + ?Sized,
+    {
+        BodyWithStore { store, body: self }
+    }
+}
+
+pub(crate) struct BodyWithStore<'a, T, D>
+where
+    T: 'static,
+    D: HasData + ?Sized,
+{
+    store: &'a Accessor<T, D>,
+    body: Body,
+}
+
+impl<T, D> Drop for BodyWithStore<'_, T, D>
+where
+    D: HasData + ?Sized,
+{
+    fn drop(&mut self) {
+        self.store.with(|store| self.body.drop_with_store(store))
     }
 }
 
