@@ -72,8 +72,7 @@ impl WasiFilesystemView for Ctx {
 }
 
 async fn run(path: &str) -> anyhow::Result<()> {
-    _ = env_logger::try_init();
-
+    let _ = env_logger::try_init();
     let path = Path::new(path);
     let engine = test_programs_artifacts::engine(|config| {
         config.async_support(true);
