@@ -5,21 +5,17 @@ mod generated {
     wasmtime::component::bindgen!({
         path: "src/p3/wit",
         world: "wasi:http/proxy",
-        //tracing: true, // TODO: Reenable once fixed
-        trappable_imports: true,
-        concurrent_exports: true,
-        concurrent_imports: true,
-        async: {
-            only_imports: [
-                "wasi:http/handler@0.3.0-draft#[async]handle",
-                "wasi:http/types@0.3.0-draft#[method]request.body",
-                "wasi:http/types@0.3.0-draft#[method]response.body",
-                "wasi:http/types@0.3.0-draft#[static]request.new",
-                "wasi:http/types@0.3.0-draft#[drop]request",
-                "wasi:http/types@0.3.0-draft#[static]response.new",
-                "wasi:http/types@0.3.0-draft#[drop]response",
-            ],
+        imports: {
+            "wasi:http/handler/[async]handle": async | store | trappable | tracing,
+            "wasi:http/types/[method]request.body": async | store | trappable | tracing,
+            "wasi:http/types/[method]response.body": async | store | trappable | tracing,
+            "wasi:http/types/[static]request.new": async | store | trappable | tracing,
+            "wasi:http/types/[drop]request": async | store | trappable | tracing,
+            "wasi:http/types/[static]response.new": async | store | trappable | tracing,
+            "wasi:http/types/[drop]response": async | store | trappable | tracing,
+            default: trappable | tracing,
         },
+        exports: { default: async | store },
         with: {
             "wasi:http/types/fields": with::Fields,
             "wasi:http/types/request": crate::p3::Request,

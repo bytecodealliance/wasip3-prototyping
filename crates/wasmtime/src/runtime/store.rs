@@ -1309,6 +1309,32 @@ impl StoreOpaque {
         self.instances[id].handle.get_mut()
     }
 
+    /// Access multiple instances specified via `ids`.
+    ///
+    /// # Panics
+    ///
+    /// This method will panic if any indices in `ids` overlap.
+    ///
+    /// # Safety
+    ///
+    /// This method is not safe if the returned instances are used to traverse
+    /// "laterally" between other instances. For example accessing imported
+    /// items in an instance may traverse laterally to a sibling instance thus
+    /// aliasing a returned value here. The caller must ensure that only defined
+    /// items within the instances themselves are accessed.
+    #[inline]
+    pub unsafe fn optional_gc_store_and_instances_mut<const N: usize>(
+        &mut self,
+        ids: [InstanceId; N],
+    ) -> (Option<&mut GcStore>, [Pin<&mut vm::Instance>; N]) {
+        let instances = self
+            .instances
+            .get_disjoint_mut(ids)
+            .unwrap()
+            .map(|h| h.handle.get_mut());
+        (self.gc_store.as_mut(), instances)
+    }
+
     /// Pair of `Self::optional_gc_store_mut` and `Self::instance_mut`
     pub fn optional_gc_store_and_instance_mut(
         &mut self,
@@ -1439,12 +1465,10 @@ impl StoreOpaque {
             let mem_ty = engine.tunables().gc_heap_memory_type();
             let tunables = engine.tunables();
 
-            // SAFETY: We validated the GC heap's memory type during engine creation.
-            let (mem_alloc_index, mem) = unsafe {
+            let (mem_alloc_index, mem) =
                 engine
                     .allocator()
-                    .allocate_memory(&mut request, &mem_ty, tunables, None)?
-            };
+                    .allocate_memory(&mut request, &mem_ty, tunables, None)?;
 
             // Then, allocate the actual GC heap, passing in that memory
             // storage.
@@ -2040,10 +2064,8 @@ at https://bytecodealliance.org/security.
     ///
     /// # Safety
     ///
-    /// The request's associated module, memories, tables, and vmctx must have
-    /// already have been validated by `validate_module` for the allocator
-    /// configured. This is typically done during module construction for
-    /// example.
+    /// The `imports` provided must be correctly sized/typed for the module
+    /// being allocated.
     pub(crate) unsafe fn allocate_instance(
         &mut self,
         kind: AllocateInstanceKind<'_>,
@@ -2056,16 +2078,20 @@ at https://bytecodealliance.org/security.
             AllocateInstanceKind::Module(_) => self.engine().allocator(),
             AllocateInstanceKind::Dummy { allocator } => allocator,
         };
-        let handle = allocator.allocate_module(InstanceAllocationRequest {
-            id,
-            runtime_info,
-            imports,
-            store: StorePtr::new(self.traitobj()),
-            #[cfg(feature = "wmemcheck")]
-            wmemcheck: self.engine().config().wmemcheck,
-            pkey: self.get_pkey(),
-            tunables: self.engine().tunables(),
-        })?;
+        // SAFETY: this function's own contract is the same as
+        // `allocate_module`, namely the imports provided are valid.
+        let handle = unsafe {
+            allocator.allocate_module(InstanceAllocationRequest {
+                id,
+                runtime_info,
+                imports,
+                store: StorePtr::new(self.traitobj()),
+                #[cfg(feature = "wmemcheck")]
+                wmemcheck: self.engine().config().wmemcheck,
+                pkey: self.get_pkey(),
+                tunables: self.engine().tunables(),
+            })?
+        };
 
         let actual = match kind {
             AllocateInstanceKind::Module(module_id) => {
@@ -2278,7 +2304,7 @@ unsafe impl<T> vm::VMStore for StoreInner<T> {
         root: Option<VMGcRef>,
         bytes_needed: Option<u64>,
     ) -> Result<Option<VMGcRef>> {
-        self.inner.maybe_async_gc(root, bytes_needed)
+        unsafe { self.inner.maybe_async_gc(root, bytes_needed) }
     }
 
     #[cfg(not(feature = "gc"))]

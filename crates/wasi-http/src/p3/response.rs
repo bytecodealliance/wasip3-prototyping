@@ -11,7 +11,7 @@ use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, BodyStream, StreamBody};
 use tokio::sync::{mpsc, oneshot};
 use wasmtime::component::{
-    Accessor, FutureReader, FutureWriter, Resource, StreamReader, WithAccessor,
+    Accessor, FutureReader, FutureWriter, GuardedStreamReader, Resource, StreamReader,
 };
 use wasmtime::{AsContextMut, StoreContextMut};
 use wasmtime_wasi::p3::{AbortOnDropHandle, ResourceView, WithChildren};
@@ -277,10 +277,10 @@ impl ResponseIo {
         T: ResourceView + 'static,
     {
         if let Some((contents, contents_tx)) = self.body.take() {
-            let mut contents = WithAccessor::new(store, contents);
+            let mut contents = GuardedStreamReader::new(store, contents);
             let mut rx_buffer = BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY);
             while !contents.is_closed() {
-                rx_buffer = contents.read(store, rx_buffer).await;
+                rx_buffer = contents.read(rx_buffer).await;
                 let buffer = rx_buffer.split();
                 if !buffer.is_empty() {
                     if let Err(..) = contents_tx.send(buffer.freeze()).await {

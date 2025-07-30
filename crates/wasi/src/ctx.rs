@@ -1,6 +1,7 @@
+use crate::cli::WasiCliCtx;
 use crate::clocks::{HostMonotonicClock, HostWallClock, WasiClocksCtx};
-use crate::net::{SocketAddrCheck, SocketAddrUse};
 use crate::random::WasiRandomCtx;
+use crate::sockets::{SocketAddrCheck, SocketAddrUse, WasiSocketsCtx};
 use cap_rand::RngCore;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -16,17 +17,16 @@ use std::sync::Arc;
 /// [p2::WasiCtxBuilder](crate::p2::WasiCtxBuilder)
 ///
 /// [`Store`]: wasmtime::Store
-pub(crate) struct WasiCtxBuilder {
-    pub(crate) env: Vec<(String, String)>,
-    pub(crate) args: Vec<String>,
-    pub(crate) random: WasiRandomCtx,
+#[derive(Default)]
+pub(crate) struct WasiCtxBuilder<I, O> {
+    pub(crate) cli: WasiCliCtx<I, O>,
     pub(crate) clocks: WasiClocksCtx,
-    pub(crate) socket_addr_check: SocketAddrCheck,
-    pub(crate) allowed_network_uses: AllowedNetworkUses,
+    pub(crate) random: WasiRandomCtx,
+    pub(crate) sockets: WasiSocketsCtx,
     pub(crate) allow_blocking_current_thread: bool,
 }
 
-impl WasiCtxBuilder {
+impl<I, O> WasiCtxBuilder<I, O> {
     /// Creates a builder for a new context with default parameters set.
     ///
     /// The current defaults are:
@@ -44,18 +44,43 @@ impl WasiCtxBuilder {
     ///
     /// These defaults can all be updated via the various builder configuration
     /// methods below.
-    pub(crate) fn new() -> Self {
-        let random = WasiRandomCtx::default();
+    pub(crate) fn new(stdin: I, stdout: O, stderr: O) -> Self {
+        let cli = WasiCliCtx {
+            environment: Vec::default(),
+            arguments: Vec::default(),
+            initial_cwd: None,
+            stdin,
+            stdout,
+            stderr,
+        };
         let clocks = WasiClocksCtx::default();
+        let random = WasiRandomCtx::default();
+        let sockets = WasiSocketsCtx::default();
         Self {
-            env: Vec::new(),
-            args: Vec::new(),
-            random,
+            cli,
             clocks,
-            socket_addr_check: SocketAddrCheck::default(),
-            allowed_network_uses: AllowedNetworkUses::default(),
+            random,
+            sockets,
             allow_blocking_current_thread: false,
         }
+    }
+
+    /// Provides a custom implementation of stdin to use.
+    pub fn stdin(&mut self, stdin: I) -> &mut Self {
+        self.cli.stdin = stdin;
+        self
+    }
+
+    /// Same as [`stdin`](WasiCtxBuilder::stdin), but for stdout.
+    pub fn stdout(&mut self, stdout: O) -> &mut Self {
+        self.cli.stdout = stdout;
+        self
+    }
+
+    /// Same as [`stdin`](WasiCtxBuilder::stdin), but for stderr.
+    pub fn stderr(&mut self, stderr: O) -> &mut Self {
+        self.cli.stderr = stderr;
+        self
     }
 
     /// Configures whether or not blocking operations made through this
@@ -97,7 +122,7 @@ impl WasiCtxBuilder {
     /// At this time environment variables are not deduplicated and if the same
     /// key is set twice then the guest will see two entries for the same key.
     pub fn envs(&mut self, env: &[(impl AsRef<str>, impl AsRef<str>)]) -> &mut Self {
-        self.env.extend(
+        self.cli.environment.extend(
             env.iter()
                 .map(|(k, v)| (k.as_ref().to_owned(), v.as_ref().to_owned())),
         );
@@ -109,7 +134,8 @@ impl WasiCtxBuilder {
     /// At this time environment variables are not deduplicated and if the same
     /// key is set twice then the guest will see two entries for the same key.
     pub fn env(&mut self, k: impl AsRef<str>, v: impl AsRef<str>) -> &mut Self {
-        self.env
+        self.cli
+            .environment
             .push((k.as_ref().to_owned(), v.as_ref().to_owned()));
         self
     }
@@ -125,13 +151,15 @@ impl WasiCtxBuilder {
 
     /// Appends a list of arguments to the argument array to pass to wasm.
     pub fn args(&mut self, args: &[impl AsRef<str>]) -> &mut Self {
-        self.args.extend(args.iter().map(|a| a.as_ref().to_owned()));
+        self.cli
+            .arguments
+            .extend(args.iter().map(|a| a.as_ref().to_owned()));
         self
     }
 
     /// Appends a single argument to get passed to wasm.
     pub fn arg(&mut self, arg: impl AsRef<str>) -> &mut Self {
-        self.args.push(arg.as_ref().to_owned());
+        self.cli.arguments.push(arg.as_ref().to_owned());
         self
     }
 
@@ -212,7 +240,7 @@ impl WasiCtxBuilder {
             + Sync
             + 'static,
     {
-        self.socket_addr_check = SocketAddrCheck(Arc::new(check));
+        self.sockets.socket_addr_check = SocketAddrCheck(Arc::new(check));
         self
     }
 
@@ -220,7 +248,7 @@ impl WasiCtxBuilder {
     ///
     /// By default this is disabled.
     pub fn allow_ip_name_lookup(&mut self, enable: bool) -> &mut Self {
-        self.allowed_network_uses.ip_name_lookup = enable;
+        self.sockets.allowed_network_uses.ip_name_lookup = enable;
         self
     }
 
@@ -229,7 +257,7 @@ impl WasiCtxBuilder {
     /// This is enabled by default, but can be disabled if UDP should be blanket
     /// disabled.
     pub fn allow_udp(&mut self, enable: bool) -> &mut Self {
-        self.allowed_network_uses.udp = enable;
+        self.sockets.allowed_network_uses.udp = enable;
         self
     }
 
@@ -238,47 +266,7 @@ impl WasiCtxBuilder {
     /// This is enabled by default, but can be disabled if TCP should be blanket
     /// disabled.
     pub fn allow_tcp(&mut self, enable: bool) -> &mut Self {
-        self.allowed_network_uses.tcp = enable;
+        self.sockets.allowed_network_uses.tcp = enable;
         self
-    }
-}
-
-pub struct AllowedNetworkUses {
-    pub ip_name_lookup: bool,
-    pub udp: bool,
-    pub tcp: bool,
-}
-
-impl Default for AllowedNetworkUses {
-    fn default() -> Self {
-        Self {
-            ip_name_lookup: false,
-            udp: true,
-            tcp: true,
-        }
-    }
-}
-
-impl AllowedNetworkUses {
-    pub(crate) fn check_allowed_udp(&self) -> std::io::Result<()> {
-        if !self.udp {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "UDP is not allowed",
-            ));
-        }
-
-        Ok(())
-    }
-
-    pub(crate) fn check_allowed_tcp(&self) -> std::io::Result<()> {
-        if !self.tcp {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "TCP is not allowed",
-            ));
-        }
-
-        Ok(())
     }
 }

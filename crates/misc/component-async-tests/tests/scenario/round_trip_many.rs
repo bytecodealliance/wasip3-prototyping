@@ -325,16 +325,7 @@ async fn test_round_trip_many(
                     ),
                     round_trip_many
                         .local_local_many()
-                        .call_foo(
-                            &mut store,
-                            (*input).to_owned(),
-                            b,
-                            c.clone(),
-                            d,
-                            e.clone(),
-                            f.clone(),
-                            g.clone()
-                        )
+                        .call_foo(&mut store, input, b, &c, d, &e, f.as_ref(), Err(()))
                         .await?
                 );
             }
@@ -407,11 +398,13 @@ async fn test_round_trip_many(
                     let mut futures = FuturesUnordered::new();
                     for (input, output) in inputs_and_outputs {
                         let output = (*output).to_owned();
-                        futures.push(
+                        futures.push(async move {
+                            let mut result = vec![Val::Bool(false)];
                             foo_function
-                                .call_concurrent(store, make(input))
-                                .map(move |v| v.map(move |v| (v, output))),
-                        );
+                                .call_concurrent(store, &make(input), &mut result)
+                                .await?;
+                            anyhow::Ok((result, output))
+                        });
                     }
 
                     while let Some((actual, expected)) = futures.try_next().await? {

@@ -1,4 +1,4 @@
-use crate::fs::{DirPerms, FilePerms, OpenMode};
+use crate::filesystem::{DirPerms, FilePerms, OpenMode};
 use crate::p3::bindings::clocks::wall_clock;
 use crate::p3::bindings::filesystem;
 use crate::p3::bindings::filesystem::types::{

@@ -2,32 +2,23 @@ use core::net::SocketAddr;
 
 use wasmtime::component::Accessor;
 
-use crate::p3::bindings::sockets::types::{Host, HostConcurrent};
-use crate::p3::sockets::{
-    SocketAddrCheck, SocketAddrUse, WasiSockets, WasiSocketsImpl, WasiSocketsView,
-};
+use crate::p3::bindings::sockets::types::Host;
+use crate::p3::sockets::WasiSockets;
+use crate::sockets::{SocketAddrCheck, SocketAddrUse, WasiSocketsCtxView};
 
 mod tcp;
 mod udp;
 
-impl<T> Host for WasiSocketsImpl<T> where T: WasiSocketsView {}
+impl Host for WasiSocketsCtxView<'_> {}
 
-impl<T> HostConcurrent for WasiSockets<T> where T: WasiSocketsView + 'static {}
-
-fn get_socket_addr_check<T, U>(store: &Accessor<T, WasiSockets<U>>) -> SocketAddrCheck
-where
-    U: WasiSocketsView + 'static,
-{
-    store.with(|mut view| view.get().sockets().socket_addr_check.clone())
+fn get_socket_addr_check<T>(store: &Accessor<T, WasiSockets>) -> SocketAddrCheck {
+    store.with(|mut view| view.get().ctx.socket_addr_check.clone())
 }
 
-async fn is_addr_allowed<T, U>(
-    store: &Accessor<T, WasiSockets<U>>,
+async fn is_addr_allowed<T>(
+    store: &Accessor<T, WasiSockets>,
     addr: SocketAddr,
     reason: SocketAddrUse,
-) -> bool
-where
-    U: WasiSocketsView + 'static,
-{
+) -> bool {
     get_socket_addr_check(store)(addr, reason).await
 }

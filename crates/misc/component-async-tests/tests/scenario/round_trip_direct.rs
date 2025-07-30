@@ -93,7 +93,7 @@ async fn test_round_trip_direct(
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
         linker
             .root()
-            .func_new_concurrent("foo", |_, params, results| {
+            .func_new_concurrent("[async]foo", |_, params, results| {
                 Box::pin(async move {
                     sleep(Duration::from_millis(10)).await;
                     let Some(Val::String(s)) = params.into_iter().next() else {
@@ -108,7 +108,7 @@ async fn test_round_trip_direct(
 
         let instance = linker.instantiate_async(&mut store, &component).await?;
         let foo_function = instance
-            .get_export_index(&mut store, None, "foo")
+            .get_export_index(&mut store, None, "[async]foo")
             .ok_or_else(|| anyhow!("can't find `foo` in instance"))?;
         let foo_function = instance
             .get_func(&mut store, foo_function)
@@ -119,9 +119,13 @@ async fn test_round_trip_direct(
             .run_concurrent(&mut store, async |store| -> wasmtime::Result<_> {
                 let mut futures = FuturesUnordered::new();
                 for _ in 0..3 {
-                    futures.push(
-                        foo_function.call_concurrent(store, vec![Val::String(input.to_owned())]),
-                    );
+                    futures.push(async move {
+                        let mut results = vec![Val::Bool(false)];
+                        foo_function
+                            .call_concurrent(store, &[Val::String(input.to_owned())], &mut results)
+                            .await?;
+                        anyhow::Ok(results)
+                    });
                 }
 
                 while let Some(value) = futures.try_next().await? {

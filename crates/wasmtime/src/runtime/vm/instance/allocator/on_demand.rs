@@ -110,7 +110,7 @@ unsafe impl InstanceAllocatorImpl for OnDemandInstanceAllocator {
 
     fn decrement_core_instance_count(&self) {}
 
-    unsafe fn allocate_memory(
+    fn allocate_memory(
         &self,
         request: &mut InstanceAllocationRequest,
         ty: &wasmtime_environ::Memory,
@@ -133,10 +133,12 @@ unsafe impl InstanceAllocatorImpl for OnDemandInstanceAllocator {
             ty,
             tunables,
             creator,
-            request
-                .store
-                .get()
-                .expect("if module has memory plans, store is not empty"),
+            unsafe {
+                request
+                    .store
+                    .get()
+                    .expect("if module has memory plans, store is not empty")
+            },
             image,
         )?;
         Ok((allocation_index, memory))
@@ -152,7 +154,7 @@ unsafe impl InstanceAllocatorImpl for OnDemandInstanceAllocator {
         // Normal destructors do all the necessary clean up.
     }
 
-    unsafe fn allocate_table(
+    fn allocate_table(
         &self,
         request: &mut InstanceAllocationRequest,
         ty: &wasmtime_environ::Table,
@@ -160,14 +162,12 @@ unsafe impl InstanceAllocatorImpl for OnDemandInstanceAllocator {
         _table_index: DefinedTableIndex,
     ) -> Result<(TableAllocationIndex, Table)> {
         let allocation_index = TableAllocationIndex::default();
-        let table = Table::new_dynamic(
-            ty,
-            tunables,
+        let table = Table::new_dynamic(ty, tunables, unsafe {
             request
                 .store
                 .get()
-                .expect("if module has table plans, store is not empty"),
-        )?;
+                .expect("if module has table plans, store is not empty")
+        })?;
         Ok((allocation_index, table))
     }
 

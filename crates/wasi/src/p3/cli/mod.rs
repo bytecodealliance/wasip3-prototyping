@@ -1,48 +1,35 @@
 mod host;
 
-use crate::p3::ResourceView;
+use crate::cli::{IsTerminal, WasiCliCtx};
 use crate::p3::bindings::cli;
-use core::fmt;
+use std::sync::Arc;
 use tokio::io::{
     AsyncRead, AsyncWrite, Empty, Stderr, Stdin, Stdout, empty, stderr, stdin, stdout,
 };
 use wasmtime::component::{HasData, Linker, ResourceTable};
 
-#[repr(transparent)]
-pub struct WasiCliImpl<T>(pub T);
+pub struct WasiCliCtxView<'a> {
+    pub ctx: &'a mut WasiCliCtx<Box<dyn InputStream>, Box<dyn OutputStream>>,
+    pub table: &'a mut ResourceTable,
+}
 
 impl<T: WasiCliView> WasiCliView for &mut T {
-    fn cli(&mut self) -> &WasiCliCtx {
-        (**self).cli()
+    fn cli(&mut self) -> WasiCliCtxView<'_> {
+        T::cli(self)
     }
 }
 
-impl<T: WasiCliView> WasiCliView for WasiCliImpl<T> {
-    fn cli(&mut self) -> &WasiCliCtx {
-        self.0.cli()
+impl<T: WasiCliView> WasiCliView for Box<T> {
+    fn cli(&mut self) -> WasiCliCtxView<'_> {
+        T::cli(self)
     }
 }
 
-impl<T: ResourceView> ResourceView for WasiCliImpl<T> {
-    fn table(&mut self) -> &mut ResourceTable {
-        self.0.table()
-    }
+pub trait WasiCliView: Send {
+    fn cli(&mut self) -> WasiCliCtxView<'_>;
 }
 
-pub trait WasiCliView: ResourceView + Send {
-    fn cli(&mut self) -> &WasiCliCtx;
-}
-
-pub struct WasiCliCtx {
-    pub environment: Vec<(String, String)>,
-    pub arguments: Vec<String>,
-    pub initial_cwd: Option<String>,
-    pub stdin: Box<dyn InputStream + Send>,
-    pub stdout: Box<dyn OutputStream + Send>,
-    pub stderr: Box<dyn OutputStream + Send>,
-}
-
-impl Default for WasiCliCtx {
+impl Default for WasiCliCtx<Box<dyn InputStream>, Box<dyn OutputStream>> {
     fn default() -> Self {
         Self {
             environment: Vec::default(),
@@ -57,28 +44,26 @@ impl Default for WasiCliCtx {
 
 /// Add all WASI interfaces from this module into the `linker` provided.
 ///
-/// This function will add the `async` variant of all interfaces into the
-/// [`Linker`] provided. By `async` this means that this function is only
-/// compatible with [`Config::async_support(true)`][async]. For embeddings with
-/// async support disabled see [`add_to_linker_sync`] instead.
-///
-/// This function will add all interfaces implemented by this crate to the
+/// This function will add all interfaces implemented by this module to the
 /// [`Linker`], which corresponds to the `wasi:cli/imports` world supported by
-/// this crate.
+/// this module.
 ///
-/// [async]: wasmtime::Config::async_support
+/// This is low-level API for advanced use cases,
+/// [`wasmtime_wasi::p3::add_to_linker`](crate::p3::add_to_linker) can be used instead
+/// to add *all* wasip3 interfaces (including the ones from this module) to the `linker`.
 ///
 /// # Example
 ///
 /// ```
 /// use wasmtime::{Engine, Result, Store, Config};
-/// use wasmtime::component::{ResourceTable, Linker};
-/// use wasmtime_wasi::p3::cli::{WasiCliView, WasiCliCtx};
-/// use wasmtime_wasi::p3::ResourceView;
+/// use wasmtime::component::{Linker, ResourceTable};
+/// use wasmtime_wasi::cli::WasiCliCtx;
+/// use wasmtime_wasi::p3::cli::{InputStream, OutputStream, WasiCliView, WasiCliCtxView};
 ///
 /// fn main() -> Result<()> {
 ///     let mut config = Config::new();
 ///     config.async_support(true);
+///     config.wasm_component_model_async(true);
 ///     let engine = Engine::new(&config)?;
 ///
 ///     let mut linker = Linker::<MyState>::new(&engine);
@@ -87,10 +72,7 @@ impl Default for WasiCliCtx {
 ///
 ///     let mut store = Store::new(
 ///         &engine,
-///         MyState {
-///             cli: WasiCliCtx::default(),
-///             table: ResourceTable::default(),
-///         },
+///         MyState::default(),
 ///     );
 ///
 ///     // ... use `linker` to instantiate within `store` ...
@@ -98,17 +80,19 @@ impl Default for WasiCliCtx {
 ///     Ok(())
 /// }
 ///
+/// #[derive(Default)]
 /// struct MyState {
-///     cli: WasiCliCtx,
+///     cli: WasiCliCtx<Box<dyn InputStream>, Box<dyn OutputStream>>,
 ///     table: ResourceTable,
 /// }
 ///
-/// impl ResourceView for MyState {
-///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
-/// }
-///
 /// impl WasiCliView for MyState {
-///     fn cli(&mut self) -> &WasiCliCtx { &self.cli }
+///     fn cli(&mut self) -> WasiCliCtxView<'_> {
+///         WasiCliCtxView {
+///             ctx: &mut self.cli,
+///             table: &mut self.table,
+///         }
+///     }
 /// }
 /// ```
 pub fn add_to_linker<T>(linker: &mut Linker<T>) -> wasmtime::Result<()>
@@ -116,7 +100,7 @@ where
     T: WasiCliView + 'static,
 {
     let exit_options = cli::exit::LinkOptions::default();
-    add_to_linker_with_options(linker, &exit_options)
+    add_to_linker_impl(linker, &exit_options, T::cli)
 }
 
 /// Similar to [`add_to_linker`], but with the ability to enable unstable features.
@@ -127,172 +111,148 @@ pub fn add_to_linker_with_options<T>(
 where
     T: WasiCliView + 'static,
 {
-    add_stdio_to_linker(linker)?;
+    add_to_linker_impl(linker, exit_options, T::cli)
+}
 
-    let f: fn(&mut T) -> WasiCliImpl<&mut T> = |x| WasiCliImpl(x);
-    cli::environment::add_to_linker::<_, WasiCli<T>>(linker, f)?;
-    cli::exit::add_to_linker::<_, WasiCli<T>>(linker, exit_options, f)?;
-    cli::terminal_input::add_to_linker::<_, WasiCli<T>>(linker, f)?;
-    cli::terminal_output::add_to_linker::<_, WasiCli<T>>(linker, f)?;
-    cli::terminal_stdin::add_to_linker::<_, WasiCli<T>>(linker, f)?;
-    cli::terminal_stdout::add_to_linker::<_, WasiCli<T>>(linker, f)?;
-    cli::terminal_stderr::add_to_linker::<_, WasiCli<T>>(linker, f)?;
+pub(crate) fn add_to_linker_impl<T: Send>(
+    linker: &mut Linker<T>,
+    exit_options: &cli::exit::LinkOptions,
+    host_getter: fn(&mut T) -> WasiCliCtxView<'_>,
+) -> wasmtime::Result<()> {
+    cli::exit::add_to_linker::<_, WasiCli>(linker, exit_options, host_getter)?;
+    cli::environment::add_to_linker::<_, WasiCli>(linker, host_getter)?;
+    cli::stdin::add_to_linker::<_, WasiCli>(linker, host_getter)?;
+    cli::stdout::add_to_linker::<_, WasiCli>(linker, host_getter)?;
+    cli::stderr::add_to_linker::<_, WasiCli>(linker, host_getter)?;
+    cli::terminal_input::add_to_linker::<_, WasiCli>(linker, host_getter)?;
+    cli::terminal_output::add_to_linker::<_, WasiCli>(linker, host_getter)?;
+    cli::terminal_stdin::add_to_linker::<_, WasiCli>(linker, host_getter)?;
+    cli::terminal_stdout::add_to_linker::<_, WasiCli>(linker, host_getter)?;
+    cli::terminal_stderr::add_to_linker::<_, WasiCli>(linker, host_getter)?;
     Ok(())
 }
 
-/// TODO
-pub fn add_stdio_to_linker<T>(linker: &mut Linker<T>) -> wasmtime::Result<()>
-where
-    T: WasiCliView + 'static,
-{
-    let f: fn(&mut T) -> WasiCliImpl<&mut T> = |x| WasiCliImpl(x);
-    cli::stdin::add_to_linker::<_, WasiCli<T>>(linker, f)?;
-    cli::stdout::add_to_linker::<_, WasiCli<T>>(linker, f)?;
-    cli::stderr::add_to_linker::<_, WasiCli<T>>(linker, f)?;
-    Ok(())
+struct WasiCli;
+
+impl HasData for WasiCli {
+    type Data<'a> = WasiCliCtxView<'a>;
 }
-
-struct WasiCli<T>(T);
-
-impl<T: 'static> HasData for WasiCli<T> {
-    type Data<'a> = WasiCliImpl<&'a mut T>;
-}
-
-/// An error returned from the `proc_exit` host syscall.
-///
-/// Embedders can test if an error returned from wasm is this error, in which
-/// case it may signal a non-fatal trap.
-#[derive(Debug)]
-pub struct I32Exit(pub i32);
-
-impl fmt::Display for I32Exit {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Exited with i32 exit status {}", self.0)
-    }
-}
-
-impl std::error::Error for I32Exit {}
 
 pub struct TerminalInput;
 pub struct TerminalOutput;
 
-pub trait IsTerminal {
-    /// Returns whether this stream is backed by a TTY.
-    fn is_terminal(&self) -> bool;
+pub trait InputStream: IsTerminal + Send {
+    fn reader(&self) -> Box<dyn AsyncRead + Send + Sync>;
 }
 
-impl IsTerminal for Empty {
-    fn is_terminal(&self) -> bool {
-        false
+impl<T: ?Sized + InputStream + Sync> InputStream for &T {
+    fn reader(&self) -> Box<dyn AsyncRead + Send + Sync> {
+        T::reader(self)
     }
 }
 
-pub trait InputStream: IsTerminal {
-    fn reader(&self) -> Box<dyn AsyncRead + Send + Sync + Unpin>;
+impl<T: ?Sized + InputStream> InputStream for &mut T {
+    fn reader(&self) -> Box<dyn AsyncRead + Send + Sync> {
+        T::reader(self)
+    }
 }
 
-pub trait OutputStream: IsTerminal {
-    fn writer(&self) -> Box<dyn AsyncWrite + Send + Sync + Unpin>;
+impl<T: ?Sized + InputStream> InputStream for Box<T> {
+    fn reader(&self) -> Box<dyn AsyncRead + Send + Sync> {
+        T::reader(self)
+    }
+}
+
+impl<T: ?Sized + InputStream + Sync> InputStream for Arc<T> {
+    fn reader(&self) -> Box<dyn AsyncRead + Send + Sync> {
+        T::reader(self)
+    }
 }
 
 impl InputStream for Empty {
-    fn reader(&self) -> Box<dyn AsyncRead + Send + Sync + Unpin> {
+    fn reader(&self) -> Box<dyn AsyncRead + Send + Sync> {
         Box::new(empty())
-    }
-}
-
-impl OutputStream for Empty {
-    fn writer(&self) -> Box<dyn AsyncWrite + Send + Sync + Unpin> {
-        Box::new(empty())
-    }
-}
-
-impl IsTerminal for std::io::Empty {
-    fn is_terminal(&self) -> bool {
-        false
     }
 }
 
 impl InputStream for std::io::Empty {
-    fn reader(&self) -> Box<dyn AsyncRead + Send + Sync + Unpin> {
+    fn reader(&self) -> Box<dyn AsyncRead + Send + Sync> {
+        Box::new(empty())
+    }
+}
+
+impl InputStream for Stdin {
+    fn reader(&self) -> Box<dyn AsyncRead + Send + Sync> {
+        Box::new(stdin())
+    }
+}
+
+impl InputStream for std::io::Stdin {
+    fn reader(&self) -> Box<dyn AsyncRead + Send + Sync> {
+        Box::new(stdin())
+    }
+}
+
+pub trait OutputStream: IsTerminal + Send {
+    fn writer(&self) -> Box<dyn AsyncWrite + Send + Sync>;
+}
+
+impl<T: ?Sized + OutputStream + Sync> OutputStream for &T {
+    fn writer(&self) -> Box<dyn AsyncWrite + Send + Sync> {
+        T::writer(self)
+    }
+}
+
+impl<T: ?Sized + OutputStream> OutputStream for &mut T {
+    fn writer(&self) -> Box<dyn AsyncWrite + Send + Sync> {
+        T::writer(self)
+    }
+}
+
+impl<T: ?Sized + OutputStream> OutputStream for Box<T> {
+    fn writer(&self) -> Box<dyn AsyncWrite + Send + Sync> {
+        T::writer(self)
+    }
+}
+
+impl<T: ?Sized + OutputStream + Sync> OutputStream for Arc<T> {
+    fn writer(&self) -> Box<dyn AsyncWrite + Send + Sync> {
+        T::writer(self)
+    }
+}
+
+impl OutputStream for Empty {
+    fn writer(&self) -> Box<dyn AsyncWrite + Send + Sync> {
         Box::new(empty())
     }
 }
 
 impl OutputStream for std::io::Empty {
-    fn writer(&self) -> Box<dyn AsyncWrite + Send + Sync + Unpin> {
+    fn writer(&self) -> Box<dyn AsyncWrite + Send + Sync> {
         Box::new(empty())
     }
 }
 
-impl IsTerminal for Stdin {
-    fn is_terminal(&self) -> bool {
-        std::io::stdin().is_terminal()
-    }
-}
-
-impl InputStream for Stdin {
-    fn reader(&self) -> Box<dyn AsyncRead + Send + Sync + Unpin> {
-        Box::new(stdin())
-    }
-}
-
-impl IsTerminal for std::io::Stdin {
-    fn is_terminal(&self) -> bool {
-        std::io::IsTerminal::is_terminal(self)
-    }
-}
-
-impl InputStream for std::io::Stdin {
-    fn reader(&self) -> Box<dyn AsyncRead + Send + Sync + Unpin> {
-        Box::new(stdin())
-    }
-}
-
-impl IsTerminal for Stdout {
-    fn is_terminal(&self) -> bool {
-        std::io::stdout().is_terminal()
-    }
-}
-
 impl OutputStream for Stdout {
-    fn writer(&self) -> Box<dyn AsyncWrite + Send + Sync + Unpin> {
+    fn writer(&self) -> Box<dyn AsyncWrite + Send + Sync> {
         Box::new(stdout())
-    }
-}
-
-impl IsTerminal for std::io::Stdout {
-    fn is_terminal(&self) -> bool {
-        std::io::IsTerminal::is_terminal(self)
     }
 }
 
 impl OutputStream for std::io::Stdout {
-    fn writer(&self) -> Box<dyn AsyncWrite + Send + Sync + Unpin> {
+    fn writer(&self) -> Box<dyn AsyncWrite + Send + Sync> {
         Box::new(stdout())
     }
 }
 
-impl IsTerminal for Stderr {
-    fn is_terminal(&self) -> bool {
-        std::io::stderr().is_terminal()
-    }
-}
-
 impl OutputStream for Stderr {
-    fn writer(&self) -> Box<dyn AsyncWrite + Send + Sync + Unpin> {
+    fn writer(&self) -> Box<dyn AsyncWrite + Send + Sync> {
         Box::new(stderr())
     }
 }
 
-impl IsTerminal for std::io::Stderr {
-    fn is_terminal(&self) -> bool {
-        std::io::IsTerminal::is_terminal(self)
-    }
-}
-
 impl OutputStream for std::io::Stderr {
-    fn writer(&self) -> Box<dyn AsyncWrite + Send + Sync + Unpin> {
+    fn writer(&self) -> Box<dyn AsyncWrite + Send + Sync> {
         Box::new(stderr())
     }
 }

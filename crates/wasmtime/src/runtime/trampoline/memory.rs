@@ -165,7 +165,7 @@ unsafe impl InstanceAllocatorImpl for SingleMemoryInstance<'_> {
         self.ondemand.decrement_core_instance_count();
     }
 
-    unsafe fn allocate_memory(
+    fn allocate_memory(
         &self,
         request: &mut InstanceAllocationRequest,
         ty: &wasmtime_environ::Memory,
@@ -197,11 +197,13 @@ unsafe impl InstanceAllocatorImpl for SingleMemoryInstance<'_> {
         allocation_index: MemoryAllocationIndex,
         memory: Memory,
     ) {
-        self.ondemand
-            .deallocate_memory(memory_index, allocation_index, memory)
+        unsafe {
+            self.ondemand
+                .deallocate_memory(memory_index, allocation_index, memory)
+        }
     }
 
-    unsafe fn allocate_table(
+    fn allocate_table(
         &self,
         req: &mut InstanceAllocationRequest,
         ty: &wasmtime_environ::Table,
@@ -217,8 +219,10 @@ unsafe impl InstanceAllocatorImpl for SingleMemoryInstance<'_> {
         allocation_index: TableAllocationIndex,
         table: Table,
     ) {
-        self.ondemand
-            .deallocate_table(table_index, allocation_index, table)
+        unsafe {
+            self.ondemand
+                .deallocate_table(table_index, allocation_index, table)
+        }
     }
 
     #[cfg(feature = "async")]

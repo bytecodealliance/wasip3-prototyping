@@ -1,40 +1,43 @@
-use crate::p3::ResourceView as _;
+use crate::I32Exit;
+use crate::cli::IsTerminal;
+use crate::p3::DEFAULT_BUFFER_CAPACITY;
 use crate::p3::bindings::cli::{
     environment, exit, stderr, stdin, stdout, terminal_input, terminal_output, terminal_stderr,
     terminal_stdin, terminal_stdout,
 };
-use crate::p3::cli::{I32Exit, TerminalInput, TerminalOutput, WasiCli, WasiCliImpl, WasiCliView};
+use crate::p3::cli::{TerminalInput, TerminalOutput, WasiCli, WasiCliCtxView};
 use anyhow::{Context as _, anyhow};
 use bytes::BytesMut;
 use std::io::Cursor;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
-use wasmtime::component::{Accessor, AccessorTask, Resource, StreamReader, StreamWriter};
+use wasmtime::component::{
+    Accessor, AccessorTask, GuardedStreamReader, GuardedStreamWriter, HasData, Resource,
+    StreamReader, StreamWriter,
+};
 
 struct InputTask<T> {
-    input: T,
+    rx: T,
     tx: StreamWriter<u8>,
 }
 
-impl<T, U, V> AccessorTask<T, WasiCli<U>, wasmtime::Result<()>> for InputTask<V>
+impl<T, U, V> AccessorTask<T, U, wasmtime::Result<()>> for InputTask<V>
 where
-    T: 'static,
-    U: 'static,
+    U: HasData,
     V: AsyncRead + Send + Sync + Unpin + 'static,
 {
-    async fn run(mut self, store: &Accessor<T, WasiCli<U>>) -> wasmtime::Result<()> {
-        let mut tx = self.tx;
-        let mut buf = BytesMut::with_capacity(8096);
+    async fn run(mut self, store: &Accessor<T, U>) -> wasmtime::Result<()> {
+        let mut buf = BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY);
+        let mut tx = GuardedStreamWriter::new(store, self.tx);
         while !tx.is_closed() {
-            buf.clear();
-            match self.input.read_buf(&mut buf).await {
+            match self.rx.read_buf(&mut buf).await {
                 Ok(0) => return Ok(()),
                 Ok(_) => {
-                    buf = tx.write_all(store, Cursor::new(buf)).await.into_inner();
+                    buf = tx.write_all(Cursor::new(buf)).await.into_inner();
+                    buf.clear();
                 }
                 Err(_err) => {
-                    // TODO: Close the stream with an error context
-                    drop(tx);
-                    break;
+                    // TODO: Report the error to the guest
+                    return Ok(());
                 }
             }
         }
@@ -43,74 +46,63 @@ where
 }
 
 struct OutputTask<T> {
-    output: T,
-    data: StreamReader<u8>,
+    rx: StreamReader<u8>,
+    tx: T,
 }
 
-impl<T, U, V> AccessorTask<T, WasiCli<U>, wasmtime::Result<()>> for OutputTask<V>
+impl<T, U, V> AccessorTask<T, U, wasmtime::Result<()>> for OutputTask<V>
 where
-    T: 'static,
-    U: 'static,
+    U: HasData,
     V: AsyncWrite + Send + Sync + Unpin + 'static,
 {
-    async fn run(mut self, store: &Accessor<T, WasiCli<U>>) -> wasmtime::Result<()> {
-        let mut buf = BytesMut::with_capacity(8096);
-        while !self.data.is_closed() {
-            buf = self.data.read(store, buf).await;
-            match self.output.write_all(&buf).await {
+    async fn run(mut self, store: &Accessor<T, U>) -> wasmtime::Result<()> {
+        let mut buf = BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY);
+        let mut rx = GuardedStreamReader::new(store, self.rx);
+        while !rx.is_closed() {
+            buf = rx.read(buf).await;
+            match self.tx.write_all(&buf).await {
                 Ok(()) => {
                     buf.clear();
                     continue;
                 }
                 Err(_err) => {
                     // TODO: Report the error to the guest
-                    drop(self.data);
-                    break;
+                    return Ok(());
                 }
             }
         }
-
         Ok(())
     }
 }
 
-impl<T> terminal_input::Host for WasiCliImpl<T> where T: WasiCliView {}
-impl<T> terminal_output::Host for WasiCliImpl<T> where T: WasiCliView {}
+impl terminal_input::Host for WasiCliCtxView<'_> {}
+impl terminal_output::Host for WasiCliCtxView<'_> {}
 
-impl<T> terminal_input::HostTerminalInput for WasiCliImpl<T>
-where
-    T: WasiCliView,
-{
+impl terminal_input::HostTerminalInput for WasiCliCtxView<'_> {
     fn drop(&mut self, rep: Resource<TerminalInput>) -> wasmtime::Result<()> {
-        self.table()
+        self.table
             .delete(rep)
-            .context("failed to delete input resource from table")?;
+            .context("failed to delete terminal input resource from table")?;
         Ok(())
     }
 }
 
-impl<T> terminal_output::HostTerminalOutput for WasiCliImpl<T>
-where
-    T: WasiCliView,
-{
+impl terminal_output::HostTerminalOutput for WasiCliCtxView<'_> {
     fn drop(&mut self, rep: Resource<TerminalOutput>) -> wasmtime::Result<()> {
-        self.table()
+        self.table
             .delete(rep)
-            .context("failed to delete output resource from table")?;
+            .context("failed to delete terminal output resource from table")?;
         Ok(())
     }
 }
 
-impl<T> terminal_stdin::Host for WasiCliImpl<T>
-where
-    T: WasiCliView,
-{
+impl terminal_stdin::Host for WasiCliCtxView<'_> {
     fn get_terminal_stdin(&mut self) -> wasmtime::Result<Option<Resource<TerminalInput>>> {
-        if self.cli().stdin.is_terminal() {
+        if self.ctx.stdin.is_terminal() {
             let fd = self
-                .table()
+                .table
                 .push(TerminalInput)
-                .context("failed to push terminal resource to table")?;
+                .context("failed to push terminal stdin resource to table")?;
             Ok(Some(fd))
         } else {
             Ok(None)
@@ -118,16 +110,13 @@ where
     }
 }
 
-impl<T> terminal_stdout::Host for WasiCliImpl<T>
-where
-    T: WasiCliView,
-{
+impl terminal_stdout::Host for WasiCliCtxView<'_> {
     fn get_terminal_stdout(&mut self) -> wasmtime::Result<Option<Resource<TerminalOutput>>> {
-        if self.cli().stdout.is_terminal() {
+        if self.ctx.stdout.is_terminal() {
             let fd = self
-                .table()
+                .table
                 .push(TerminalOutput)
-                .context("failed to push terminal resource to table")?;
+                .context("failed to push terminal stdout resource to table")?;
             Ok(Some(fd))
         } else {
             Ok(None)
@@ -135,16 +124,13 @@ where
     }
 }
 
-impl<T> terminal_stderr::Host for WasiCliImpl<T>
-where
-    T: WasiCliView,
-{
+impl terminal_stderr::Host for WasiCliCtxView<'_> {
     fn get_terminal_stderr(&mut self) -> wasmtime::Result<Option<Resource<TerminalOutput>>> {
-        if self.cli().stderr.is_terminal() {
+        if self.ctx.stderr.is_terminal() {
             let fd = self
-                .table()
+                .table
                 .push(TerminalOutput)
-                .context("failed to push terminal resource to table")?;
+                .context("failed to push terminal stderr resource to table")?;
             Ok(Some(fd))
         } else {
             Ok(None)
@@ -152,90 +138,76 @@ where
     }
 }
 
-impl<T> stdin::HostConcurrent for WasiCli<T>
-where
-    T: WasiCliView + 'static,
-{
-    async fn get_stdin<U: 'static>(
-        store: &Accessor<U, Self>,
-    ) -> wasmtime::Result<StreamReader<u8>> {
+impl stdin::HostWithStore for WasiCli {
+    async fn get_stdin<U>(store: &Accessor<U, Self>) -> wasmtime::Result<StreamReader<u8>> {
         store.with(|mut view| {
             let instance = view.instance();
             let (tx, rx) = instance
                 .stream(&mut view)
                 .context("failed to create stream")?;
-            let stdin = view.get().cli().stdin.reader();
-            view.spawn(InputTask { input: stdin, tx });
+            let stdin = view.get().ctx.stdin.reader();
+            view.spawn(InputTask {
+                rx: Box::into_pin(stdin),
+                tx,
+            });
             Ok(rx)
         })
     }
 }
 
-impl<T> stdin::Host for WasiCliImpl<T> where T: WasiCliView {}
+impl stdin::Host for WasiCliCtxView<'_> {}
 
-impl<T> stdout::HostConcurrent for WasiCli<T>
-where
-    T: WasiCliView + 'static,
-{
-    async fn set_stdout<U: 'static>(
+impl stdout::HostWithStore for WasiCli {
+    async fn set_stdout<U>(
         store: &Accessor<U, Self>,
         data: StreamReader<u8>,
     ) -> wasmtime::Result<()> {
         store.with(|mut view| {
-            let stdout = view.get().cli().stdout.writer();
+            let tx = view.get().ctx.stdout.writer();
             view.spawn(OutputTask {
-                output: stdout,
-                data,
+                rx: data,
+                tx: Box::into_pin(tx),
             });
             Ok(())
         })
     }
 }
 
-impl<T> stdout::Host for WasiCliImpl<T> where T: WasiCliView {}
+impl stdout::Host for WasiCliCtxView<'_> {}
 
-impl<T> stderr::HostConcurrent for WasiCli<T>
-where
-    T: WasiCliView + 'static,
-{
-    async fn set_stderr<U: 'static>(
+impl stderr::HostWithStore for WasiCli {
+    async fn set_stderr<U>(
         store: &Accessor<U, Self>,
         data: StreamReader<u8>,
     ) -> wasmtime::Result<()> {
         store.with(|mut view| {
-            let stderr = view.get().cli().stderr.writer();
+            let tx = view.get().ctx.stderr.writer();
             view.spawn(OutputTask {
-                output: stderr,
-                data,
+                rx: data,
+                tx: Box::into_pin(tx),
             });
             Ok(())
         })
     }
 }
 
-impl<T> stderr::Host for WasiCliImpl<T> where T: WasiCliView {}
+impl stderr::Host for WasiCliCtxView<'_> {}
 
-impl<T> environment::Host for WasiCliImpl<T>
-where
-    T: WasiCliView,
-{
+impl environment::Host for WasiCliCtxView<'_> {
     fn get_environment(&mut self) -> wasmtime::Result<Vec<(String, String)>> {
-        Ok(self.cli().environment.clone())
+        Ok(self.ctx.environment.clone())
     }
 
     fn get_arguments(&mut self) -> wasmtime::Result<Vec<String>> {
-        Ok(self.cli().arguments.clone())
+        Ok(self.ctx.arguments.clone())
     }
 
     fn initial_cwd(&mut self) -> wasmtime::Result<Option<String>> {
-        Ok(self.cli().initial_cwd.clone())
+        Ok(self.ctx.initial_cwd.clone())
     }
 }
 
-impl<T> exit::Host for WasiCliImpl<T>
-where
-    T: WasiCliView,
-{
+impl exit::Host for WasiCliCtxView<'_> {
     fn exit(&mut self, status: Result<(), ()>) -> wasmtime::Result<()> {
         let status = match status {
             Ok(()) => 0,

@@ -1,34 +1,21 @@
-use core::net::Ipv6Addr;
-use core::str::FromStr as _;
-
 use tokio::net::lookup_host;
 use wasmtime::component::Accessor;
 
-use crate::p3::bindings::sockets::ip_name_lookup::{ErrorCode, Host, HostConcurrent};
+use crate::p3::bindings::sockets::ip_name_lookup::{ErrorCode, Host, HostWithStore};
 use crate::p3::bindings::sockets::types;
-use crate::p3::sockets::util::{from_ipv4_addr, from_ipv6_addr};
-use crate::p3::sockets::{WasiSockets, WasiSocketsImpl, WasiSocketsView};
+use crate::p3::sockets::WasiSockets;
+use crate::sockets::WasiSocketsCtxView;
+use crate::sockets::util::{from_ipv4_addr, from_ipv6_addr, parse_host};
 
-impl<T> HostConcurrent for WasiSockets<T>
-where
-    T: WasiSocketsView + 'static,
-{
+impl HostWithStore for WasiSockets {
     async fn resolve_addresses<U>(
         store: &Accessor<U, Self>,
         name: String,
     ) -> wasmtime::Result<Result<Vec<types::IpAddress>, ErrorCode>> {
-        // `url::Host::parse` serves us two functions:
-        // 1. validate the input is a valid domain name or IP,
-        // 2. convert unicode domains to punycode.
-        let host = if let Ok(host) = url::Host::parse(&name) {
-            host
-        } else if let Ok(addr) = Ipv6Addr::from_str(&name) {
-            // `url::Host::parse` doesn't understand bare IPv6 addresses without [brackets]
-            url::Host::Ipv6(addr)
-        } else {
+        let Ok(host) = parse_host(&name) else {
             return Ok(Err(ErrorCode::InvalidArgument));
         };
-        if !store.with(|mut view| view.get().sockets().allowed_network_uses.ip_name_lookup) {
+        if !store.with(|mut view| view.get().ctx.allowed_network_uses.ip_name_lookup) {
             return Ok(Err(ErrorCode::PermanentResolverFailure));
         }
         match host {
@@ -49,4 +36,4 @@ where
     }
 }
 
-impl<T> Host for WasiSocketsImpl<T> where T: WasiSocketsView {}
+impl Host for WasiSocketsCtxView<'_> {}

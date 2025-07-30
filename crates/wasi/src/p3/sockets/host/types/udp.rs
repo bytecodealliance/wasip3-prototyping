@@ -3,20 +3,17 @@ use core::net::SocketAddr;
 use anyhow::Context as _;
 use wasmtime::component::{Accessor, Resource, ResourceTable};
 
-use crate::p3::ResourceView as _;
 use crate::p3::bindings::sockets::types::{
-    ErrorCode, HostUdpSocket, HostUdpSocketConcurrent, IpAddressFamily, IpSocketAddress,
+    ErrorCode, HostUdpSocket, HostUdpSocketWithStore, IpAddressFamily, IpSocketAddress,
 };
-use crate::p3::sockets::udp::{MAX_UDP_DATAGRAM_SIZE, UdpSocket};
-use crate::p3::sockets::{SocketAddrUse, WasiSockets, WasiSocketsImpl, WasiSocketsView};
+use crate::p3::sockets::WasiSockets;
+use crate::p3::sockets::udp::UdpSocket;
+use crate::sockets::{MAX_UDP_DATAGRAM_SIZE, SocketAddrUse, WasiSocketsCtxView};
 
 use super::is_addr_allowed;
 
-fn is_udp_allowed<T, U>(store: &Accessor<T, WasiSockets<U>>) -> bool
-where
-    U: WasiSocketsView + 'static,
-{
-    store.with(|mut view| view.get().sockets().allowed_network_uses.udp)
+fn is_udp_allowed<T>(store: &Accessor<T, WasiSockets>) -> bool {
+    store.with(|mut view| view.get().ctx.allowed_network_uses.udp)
 }
 
 fn get_socket<'a>(
@@ -37,12 +34,9 @@ fn get_socket_mut<'a>(
         .context("failed to get socket resource from table")
 }
 
-impl<T> HostUdpSocketConcurrent for WasiSockets<T>
-where
-    T: WasiSocketsView + 'static,
-{
-    async fn bind<U>(
-        store: &Accessor<U, Self>,
+impl HostUdpSocketWithStore for WasiSockets {
+    async fn bind<T>(
+        store: &Accessor<T, Self>,
         socket: Resource<UdpSocket>,
         local_address: IpSocketAddress,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
@@ -53,14 +47,13 @@ where
             return Ok(Err(ErrorCode::AccessDenied));
         }
         store.with(|mut view| {
-            let mut binding = view.get();
-            let socket = get_socket_mut(binding.table(), &socket)?;
+            let socket = get_socket_mut(view.get().table, &socket)?;
             Ok(socket.bind(local_address))
         })
     }
 
-    async fn connect<U>(
-        store: &Accessor<U, Self>,
+    async fn connect<T>(
+        store: &Accessor<T, Self>,
         socket: Resource<UdpSocket>,
         remote_address: IpSocketAddress,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
@@ -71,14 +64,13 @@ where
             return Ok(Err(ErrorCode::AccessDenied));
         }
         store.with(|mut view| {
-            let mut binding = view.get();
-            let socket = get_socket_mut(binding.table(), &socket)?;
+            let socket = get_socket_mut(view.get().table, &socket)?;
             Ok(socket.connect(remote_address))
         })
     }
 
-    async fn send<U>(
-        store: &Accessor<U, Self>,
+    async fn send<T>(
+        store: &Accessor<T, Self>,
         socket: Resource<UdpSocket>,
         data: Vec<u8>,
         remote_address: Option<IpSocketAddress>,
@@ -95,37 +87,34 @@ where
                 return Ok(Err(ErrorCode::AccessDenied));
             }
             let fut = store.with(|mut view| {
-                get_socket(view.get().table(), &socket).map(|sock| sock.send_to(data, addr))
+                get_socket(view.get().table, &socket).map(|sock| sock.send_to(data, addr))
             })?;
             Ok(fut.await)
         } else {
             let fut = store.with(|mut view| {
-                get_socket(view.get().table(), &socket).map(|sock| sock.send(data))
+                get_socket(view.get().table, &socket).map(|sock| sock.send(data))
             })?;
             Ok(fut.await)
         }
     }
 
-    async fn receive<U>(
-        store: &Accessor<U, Self>,
+    async fn receive<T>(
+        store: &Accessor<T, Self>,
         socket: Resource<UdpSocket>,
     ) -> wasmtime::Result<Result<(Vec<u8>, IpSocketAddress), ErrorCode>> {
         if !is_udp_allowed(store) {
             return Ok(Err(ErrorCode::AccessDenied));
         }
         let fut = store
-            .with(|mut view| get_socket(view.get().table(), &socket).map(|sock| sock.receive()))?;
+            .with(|mut view| get_socket(view.get().table, &socket).map(|sock| sock.receive()))?;
         Ok(fut.await)
     }
 }
 
-impl<T> HostUdpSocket for WasiSocketsImpl<T>
-where
-    T: WasiSocketsView,
-{
+impl HostUdpSocket for WasiSocketsCtxView<'_> {
     fn new(&mut self, address_family: IpAddressFamily) -> wasmtime::Result<Resource<UdpSocket>> {
         let socket = UdpSocket::new(address_family.into()).context("failed to create socket")?;
-        self.table()
+        self.table
             .push(socket)
             .context("failed to push socket resource to table")
     }
@@ -134,7 +123,7 @@ where
         &mut self,
         socket: Resource<UdpSocket>,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
-        let socket = get_socket_mut(self.table(), &socket)?;
+        let socket = get_socket_mut(self.table, &socket)?;
         Ok(socket.disconnect())
     }
 
@@ -142,7 +131,7 @@ where
         &mut self,
         socket: Resource<UdpSocket>,
     ) -> wasmtime::Result<Result<IpSocketAddress, ErrorCode>> {
-        let sock = get_socket(self.table(), &socket)?;
+        let sock = get_socket(self.table, &socket)?;
         Ok(sock.local_address())
     }
 
@@ -150,12 +139,12 @@ where
         &mut self,
         socket: Resource<UdpSocket>,
     ) -> wasmtime::Result<Result<IpSocketAddress, ErrorCode>> {
-        let sock = get_socket(self.table(), &socket)?;
+        let sock = get_socket(self.table, &socket)?;
         Ok(sock.remote_address())
     }
 
     fn address_family(&mut self, socket: Resource<UdpSocket>) -> wasmtime::Result<IpAddressFamily> {
-        let sock = get_socket(self.table(), &socket)?;
+        let sock = get_socket(self.table, &socket)?;
         Ok(sock.address_family())
     }
 
@@ -163,7 +152,7 @@ where
         &mut self,
         socket: Resource<UdpSocket>,
     ) -> wasmtime::Result<Result<u8, ErrorCode>> {
-        let sock = get_socket(self.table(), &socket)?;
+        let sock = get_socket(self.table, &socket)?;
         Ok(sock.unicast_hop_limit())
     }
 
@@ -172,7 +161,7 @@ where
         socket: Resource<UdpSocket>,
         value: u8,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
-        let sock = get_socket(self.table(), &socket)?;
+        let sock = get_socket(self.table, &socket)?;
         Ok(sock.set_unicast_hop_limit(value))
     }
 
@@ -180,7 +169,7 @@ where
         &mut self,
         socket: Resource<UdpSocket>,
     ) -> wasmtime::Result<Result<u64, ErrorCode>> {
-        let sock = get_socket(self.table(), &socket)?;
+        let sock = get_socket(self.table, &socket)?;
         Ok(sock.receive_buffer_size())
     }
 
@@ -189,7 +178,7 @@ where
         socket: Resource<UdpSocket>,
         value: u64,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
-        let sock = get_socket(self.table(), &socket)?;
+        let sock = get_socket(self.table, &socket)?;
         Ok(sock.set_receive_buffer_size(value))
     }
 
@@ -197,7 +186,7 @@ where
         &mut self,
         socket: Resource<UdpSocket>,
     ) -> wasmtime::Result<Result<u64, ErrorCode>> {
-        let sock = get_socket(self.table(), &socket)?;
+        let sock = get_socket(self.table, &socket)?;
         Ok(sock.send_buffer_size())
     }
 
@@ -206,13 +195,13 @@ where
         socket: Resource<UdpSocket>,
         value: u64,
     ) -> wasmtime::Result<Result<(), ErrorCode>> {
-        let sock = get_socket(self.table(), &socket)?;
+        let sock = get_socket(self.table, &socket)?;
         Ok(sock.set_send_buffer_size(value))
     }
 
-    fn drop(&mut self, rep: Resource<UdpSocket>) -> wasmtime::Result<()> {
-        self.table()
-            .delete(rep)
+    fn drop(&mut self, sock: Resource<UdpSocket>) -> wasmtime::Result<()> {
+        self.table
+            .delete(sock)
             .context("failed to delete socket resource from table")?;
         Ok(())
     }

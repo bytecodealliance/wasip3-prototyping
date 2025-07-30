@@ -14,8 +14,7 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use wasmtime::AsContextMut;
 use wasmtime::component::{
-    Accessor, DropWithStore, DropWithStoreAndValue, FutureReader, FutureWriter, HasData, Resource,
-    StreamReader,
+    Accessor, DropWithStore, FutureReader, FutureWriter, HasData, Resource, StreamReader,
 };
 use wasmtime_wasi::p3::WithChildren;
 

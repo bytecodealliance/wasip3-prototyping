@@ -1,34 +1,32 @@
 pub enum WorldResource {}
-#[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-pub trait HostWorldResourceConcurrent: wasmtime::component::HasData + Send {
+pub trait HostWorldResourceWithStore: wasmtime::component::HasData + Send {
     fn new<T: 'static>(
         accessor: &wasmtime::component::Accessor<T, Self>,
     ) -> impl ::core::future::Future<
         Output = wasmtime::component::Resource<WorldResource>,
-    > + Send
-    where
-        Self: Sized;
+    > + Send;
     fn foo<T: 'static>(
         accessor: &wasmtime::component::Accessor<T, Self>,
         self_: wasmtime::component::Resource<WorldResource>,
-    ) -> impl ::core::future::Future<Output = ()> + Send
-    where
-        Self: Sized;
+    ) -> impl ::core::future::Future<Output = ()> + Send;
     fn static_foo<T: 'static>(
         accessor: &wasmtime::component::Accessor<T, Self>,
-    ) -> impl ::core::future::Future<Output = ()> + Send
-    where
-        Self: Sized;
-    fn drop<T: 'static>(
-        accessor: &wasmtime::component::Accessor<T, Self>,
-        rep: wasmtime::component::Resource<WorldResource>,
-    ) -> impl ::core::future::Future<Output = wasmtime::Result<()>> + Send
-    where
-        Self: Sized;
+    ) -> impl ::core::future::Future<Output = ()> + Send;
 }
-#[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-pub trait HostWorldResource: Send {}
-impl<_T: HostWorldResource + ?Sized + Send> HostWorldResource for &mut _T {}
+pub trait HostWorldResource: Send {
+    fn drop(
+        &mut self,
+        rep: wasmtime::component::Resource<WorldResource>,
+    ) -> impl ::core::future::Future<Output = wasmtime::Result<()>> + Send;
+}
+impl<_T: HostWorldResource + ?Sized + Send> HostWorldResource for &mut _T {
+    async fn drop(
+        &mut self,
+        rep: wasmtime::component::Resource<WorldResource>,
+    ) -> wasmtime::Result<()> {
+        HostWorldResource::drop(*self, rep).await
+    }
+}
 /// Auto-generated bindings for a pre-instantiated version of a
 /// component which implements the world `the-world`.
 ///
@@ -74,13 +72,21 @@ impl<_T: 'static> TheWorldPre<_T> {
     /// instance to perform instantiation. Afterwards the preloaded
     /// indices in `self` are used to lookup all exports on the
     /// resulting instance.
+    pub fn instantiate(
+        &self,
+        mut store: impl wasmtime::AsContextMut<Data = _T>,
+    ) -> wasmtime::Result<TheWorld> {
+        let mut store = store.as_context_mut();
+        let instance = self.instance_pre.instantiate(&mut store)?;
+        self.indices.load(&mut store, &instance)
+    }
+}
+impl<_T: Send + 'static> TheWorldPre<_T> {
+    /// Same as [`Self::instantiate`], except with `async`.
     pub async fn instantiate_async(
         &self,
         mut store: impl wasmtime::AsContextMut<Data = _T>,
-    ) -> wasmtime::Result<TheWorld>
-    where
-        _T: Send,
-    {
+    ) -> wasmtime::Result<TheWorld> {
         let mut store = store.as_context_mut();
         let instance = self.instance_pre.instantiate_async(&mut store).await?;
         self.indices.load(&mut store, &instance)
@@ -105,13 +111,13 @@ pub struct TheWorldIndices {
 /// depending on your requirements and what you have on hand:
 ///
 /// * The most convenient way is to use
-///   [`TheWorld::instantiate_async`] which only needs a
+///   [`TheWorld::instantiate`] which only needs a
 ///   [`Store`], [`Component`], and [`Linker`].
 ///
 /// * Alternatively you can create a [`TheWorldPre`] ahead of
 ///   time with a [`Component`] to front-load string lookups
 ///   of exports once instead of per-instantiation. This
-///   method then uses [`TheWorldPre::instantiate_async`] to
+///   method then uses [`TheWorldPre::instantiate`] to
 ///   create a [`TheWorld`].
 ///
 /// * If you've instantiated the instance yourself already
@@ -127,18 +133,14 @@ pub struct TheWorld {
     interface1: exports::foo::foo::uses_resource_transitively::Guest,
     some_world_func2: wasmtime::component::Func,
 }
-#[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-pub trait TheWorldImportsConcurrent: wasmtime::component::HasData + Send + HostWorldResourceConcurrent {
+pub trait TheWorldImportsWithStore: wasmtime::component::HasData + HostWorldResourceWithStore + Send {
     fn some_world_func<T: 'static>(
         accessor: &wasmtime::component::Accessor<T, Self>,
     ) -> impl ::core::future::Future<
         Output = wasmtime::component::Resource<WorldResource>,
-    > + Send
-    where
-        Self: Sized;
+    > + Send;
 }
-#[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-pub trait TheWorldImports: Send + HostWorldResource {}
+pub trait TheWorldImports: HostWorldResource + Send {}
 impl<_T: TheWorldImports + ?Sized + Send> TheWorldImports for &mut _T {}
 const _: () = {
     #[allow(unused_imports)]
@@ -216,6 +218,25 @@ const _: () = {
     }
     impl TheWorld {
         /// Convenience wrapper around [`TheWorldPre::new`] and
+        /// [`TheWorldPre::instantiate`].
+        pub fn instantiate<_T>(
+            store: impl wasmtime::AsContextMut<Data = _T>,
+            component: &wasmtime::component::Component,
+            linker: &wasmtime::component::Linker<_T>,
+        ) -> wasmtime::Result<TheWorld> {
+            let pre = linker.instantiate_pre(component)?;
+            TheWorldPre::new(pre)?.instantiate(store)
+        }
+        /// Convenience wrapper around [`TheWorldIndices::new`] and
+        /// [`TheWorldIndices::load`].
+        pub fn new(
+            mut store: impl wasmtime::AsContextMut,
+            instance: &wasmtime::component::Instance,
+        ) -> wasmtime::Result<TheWorld> {
+            let indices = TheWorldIndices::new(&instance.instance_pre(&store))?;
+            indices.load(&mut store, instance)
+        }
+        /// Convenience wrapper around [`TheWorldPre::new`] and
         /// [`TheWorldPre::instantiate_async`].
         pub async fn instantiate_async<_T>(
             store: impl wasmtime::AsContextMut<Data = _T>,
@@ -228,34 +249,24 @@ const _: () = {
             let pre = linker.instantiate_pre(component)?;
             TheWorldPre::new(pre)?.instantiate_async(store).await
         }
-        /// Convenience wrapper around [`TheWorldIndices::new`] and
-        /// [`TheWorldIndices::load`].
-        pub fn new(
-            mut store: impl wasmtime::AsContextMut,
-            instance: &wasmtime::component::Instance,
-        ) -> wasmtime::Result<TheWorld> {
-            let indices = TheWorldIndices::new(&instance.instance_pre(&store))?;
-            indices.load(&mut store, instance)
-        }
         pub fn add_to_linker_imports<T, D>(
             linker: &mut wasmtime::component::Linker<T>,
             host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            D: TheWorldImportsConcurrent,
+            D: TheWorldImportsWithStore,
             for<'a> D::Data<'a>: TheWorldImports,
             T: 'static + Send,
         {
             let mut linker = linker.root();
             linker
-                .resource_concurrent(
+                .resource_async(
                     "world-resource",
                     wasmtime::component::ResourceType::host::<WorldResource>(),
-                    move |caller: &wasmtime::component::Accessor<T>, rep| {
-                        wasmtime::component::__internal::Box::pin(async move {
-                            let accessor = &caller.with_data(host_getter);
-                            HostWorldResourceConcurrent::drop(
-                                    accessor,
+                    move |mut store, rep| {
+                        wasmtime::component::__internal::Box::new(async move {
+                            HostWorldResource::drop(
+                                    &mut host_getter(store.data_mut()),
                                     wasmtime::component::Resource::new_own(rep),
                                 )
                                 .await
@@ -268,7 +279,7 @@ const _: () = {
                     move |caller: &wasmtime::component::Accessor<T>, (): ()| {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as TheWorldImportsConcurrent>::some_world_func(
+                            let r = <D as TheWorldImportsWithStore>::some_world_func(
                                     accessor,
                                 )
                                 .await;
@@ -282,7 +293,7 @@ const _: () = {
                     move |caller: &wasmtime::component::Accessor<T>, (): ()| {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostWorldResourceConcurrent>::new(accessor)
+                            let r = <D as HostWorldResourceWithStore>::new(accessor)
                                 .await;
                             Ok((r,))
                         })
@@ -297,7 +308,7 @@ const _: () = {
                     {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostWorldResourceConcurrent>::foo(
+                            let r = <D as HostWorldResourceWithStore>::foo(
                                     accessor,
                                     arg0,
                                 )
@@ -312,7 +323,7 @@ const _: () = {
                     move |caller: &wasmtime::component::Accessor<T>, (): ()| {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostWorldResourceConcurrent>::static_foo(
+                            let r = <D as HostWorldResourceWithStore>::static_foo(
                                     accessor,
                                 )
                                 .await;
@@ -327,11 +338,13 @@ const _: () = {
             host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            D: foo::foo::resources::HostConcurrent
-                + foo::foo::long_use_chain1::HostConcurrent
-                + foo::foo::long_use_chain4::HostConcurrent
-                + foo::foo::transitive_interface_with_resource::HostConcurrent
-                + TheWorldImportsConcurrent + Send,
+            D: foo::foo::resources::HostWithStore
+                + foo::foo::long_use_chain1::HostWithStore
+                + foo::foo::long_use_chain2::HostWithStore
+                + foo::foo::long_use_chain3::HostWithStore
+                + foo::foo::long_use_chain4::HostWithStore
+                + foo::foo::transitive_interface_with_resource::HostWithStore
+                + TheWorldImportsWithStore + Send,
             for<'a> D::Data<
                 'a,
             >: foo::foo::resources::Host + foo::foo::long_use_chain1::Host
@@ -384,36 +397,34 @@ pub mod foo {
             #[allow(unused_imports)]
             use wasmtime::component::__internal::{anyhow, Box};
             pub enum Bar {}
-            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait HostBarConcurrent: wasmtime::component::HasData + Send {
+            pub trait HostBarWithStore: wasmtime::component::HasData + Send {
                 fn new<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<
                     Output = wasmtime::component::Resource<Bar>,
-                > + Send
-                where
-                    Self: Sized;
+                > + Send;
                 fn static_a<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
-                ) -> impl ::core::future::Future<Output = u32> + Send
-                where
-                    Self: Sized;
+                ) -> impl ::core::future::Future<Output = u32> + Send;
                 fn method_a<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     self_: wasmtime::component::Resource<Bar>,
-                ) -> impl ::core::future::Future<Output = u32> + Send
-                where
-                    Self: Sized;
-                fn drop<T: 'static>(
-                    accessor: &wasmtime::component::Accessor<T, Self>,
-                    rep: wasmtime::component::Resource<Bar>,
-                ) -> impl ::core::future::Future<Output = wasmtime::Result<()>> + Send
-                where
-                    Self: Sized;
+                ) -> impl ::core::future::Future<Output = u32> + Send;
             }
-            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait HostBar: Send {}
-            impl<_T: HostBar + ?Sized + Send> HostBar for &mut _T {}
+            pub trait HostBar: Send {
+                fn drop(
+                    &mut self,
+                    rep: wasmtime::component::Resource<Bar>,
+                ) -> impl ::core::future::Future<Output = wasmtime::Result<()>> + Send;
+            }
+            impl<_T: HostBar + ?Sized + Send> HostBar for &mut _T {
+                async fn drop(
+                    &mut self,
+                    rep: wasmtime::component::Resource<Bar>,
+                ) -> wasmtime::Result<()> {
+                    HostBar::drop(*self, rep).await
+                }
+            }
             #[derive(wasmtime::component::ComponentType)]
             #[derive(wasmtime::component::Lift)]
             #[derive(wasmtime::component::Lower)]
@@ -469,154 +480,113 @@ pub mod foo {
                     4 == < SomeHandle as wasmtime::component::ComponentType >::ALIGN32
                 );
             };
-            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait HostConcurrent: wasmtime::component::HasData + Send + HostBarConcurrent {
+            pub trait HostWithStore: wasmtime::component::HasData + HostBarWithStore + Send {
                 fn bar_own_arg<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: wasmtime::component::Resource<Bar>,
-                ) -> impl ::core::future::Future<Output = ()> + Send
-                where
-                    Self: Sized;
+                ) -> impl ::core::future::Future<Output = ()> + Send;
                 fn bar_borrow_arg<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: wasmtime::component::Resource<Bar>,
-                ) -> impl ::core::future::Future<Output = ()> + Send
-                where
-                    Self: Sized;
+                ) -> impl ::core::future::Future<Output = ()> + Send;
                 fn bar_result<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<
                     Output = wasmtime::component::Resource<Bar>,
-                > + Send
-                where
-                    Self: Sized;
+                > + Send;
                 fn tuple_own_arg<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: (wasmtime::component::Resource<Bar>, u32),
-                ) -> impl ::core::future::Future<Output = ()> + Send
-                where
-                    Self: Sized;
+                ) -> impl ::core::future::Future<Output = ()> + Send;
                 fn tuple_borrow_arg<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: (wasmtime::component::Resource<Bar>, u32),
-                ) -> impl ::core::future::Future<Output = ()> + Send
-                where
-                    Self: Sized;
+                ) -> impl ::core::future::Future<Output = ()> + Send;
                 fn tuple_result<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<
                     Output = (wasmtime::component::Resource<Bar>, u32),
-                > + Send
-                where
-                    Self: Sized;
+                > + Send;
                 fn option_own_arg<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: Option<wasmtime::component::Resource<Bar>>,
-                ) -> impl ::core::future::Future<Output = ()> + Send
-                where
-                    Self: Sized;
+                ) -> impl ::core::future::Future<Output = ()> + Send;
                 fn option_borrow_arg<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: Option<wasmtime::component::Resource<Bar>>,
-                ) -> impl ::core::future::Future<Output = ()> + Send
-                where
-                    Self: Sized;
+                ) -> impl ::core::future::Future<Output = ()> + Send;
                 fn option_result<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<
                     Output = Option<wasmtime::component::Resource<Bar>>,
-                > + Send
-                where
-                    Self: Sized;
+                > + Send;
                 fn result_own_arg<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: Result<wasmtime::component::Resource<Bar>, ()>,
-                ) -> impl ::core::future::Future<Output = ()> + Send
-                where
-                    Self: Sized;
+                ) -> impl ::core::future::Future<Output = ()> + Send;
                 fn result_borrow_arg<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: Result<wasmtime::component::Resource<Bar>, ()>,
-                ) -> impl ::core::future::Future<Output = ()> + Send
-                where
-                    Self: Sized;
+                ) -> impl ::core::future::Future<Output = ()> + Send;
                 fn result_result<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<
                     Output = Result<wasmtime::component::Resource<Bar>, ()>,
-                > + Send
-                where
-                    Self: Sized;
+                > + Send;
                 fn list_own_arg<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: wasmtime::component::__internal::Vec<
                         wasmtime::component::Resource<Bar>,
                     >,
-                ) -> impl ::core::future::Future<Output = ()> + Send
-                where
-                    Self: Sized;
+                ) -> impl ::core::future::Future<Output = ()> + Send;
                 fn list_borrow_arg<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: wasmtime::component::__internal::Vec<
                         wasmtime::component::Resource<Bar>,
                     >,
-                ) -> impl ::core::future::Future<Output = ()> + Send
-                where
-                    Self: Sized;
+                ) -> impl ::core::future::Future<Output = ()> + Send;
                 fn list_result<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<
                     Output = wasmtime::component::__internal::Vec<
                         wasmtime::component::Resource<Bar>,
                     >,
-                > + Send
-                where
-                    Self: Sized;
+                > + Send;
                 fn record_own_arg<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: NestedOwn,
-                ) -> impl ::core::future::Future<Output = ()> + Send
-                where
-                    Self: Sized;
+                ) -> impl ::core::future::Future<Output = ()> + Send;
                 fn record_borrow_arg<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: NestedBorrow,
-                ) -> impl ::core::future::Future<Output = ()> + Send
-                where
-                    Self: Sized;
+                ) -> impl ::core::future::Future<Output = ()> + Send;
                 fn record_result<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
-                ) -> impl ::core::future::Future<Output = NestedOwn> + Send
-                where
-                    Self: Sized;
+                ) -> impl ::core::future::Future<Output = NestedOwn> + Send;
                 fn func_with_handle_typedef<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: SomeHandle,
-                ) -> impl ::core::future::Future<Output = ()> + Send
-                where
-                    Self: Sized;
+                ) -> impl ::core::future::Future<Output = ()> + Send;
             }
-            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait Host: Send + HostBar {}
+            pub trait Host: HostBar + Send {}
             impl<_T: Host + ?Sized + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-                D: HostConcurrent,
+                D: HostWithStore,
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
             {
                 let mut inst = linker.instance("foo:foo/resources")?;
-                inst.resource_concurrent(
+                inst.resource_async(
                     "bar",
                     wasmtime::component::ResourceType::host::<Bar>(),
-                    move |caller: &wasmtime::component::Accessor<T>, rep| {
-                        wasmtime::component::__internal::Box::pin(async move {
-                            let accessor = &caller.with_data(host_getter);
-                            HostBarConcurrent::drop(
-                                    accessor,
+                    move |mut store, rep| {
+                        wasmtime::component::__internal::Box::new(async move {
+                            HostBar::drop(
+                                    &mut host_getter(store.data_mut()),
                                     wasmtime::component::Resource::new_own(rep),
                                 )
                                 .await
@@ -628,7 +598,7 @@ pub mod foo {
                     move |caller: &wasmtime::component::Accessor<T>, (): ()| {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostBarConcurrent>::new(accessor).await;
+                            let r = <D as HostBarWithStore>::new(accessor).await;
                             Ok((r,))
                         })
                     },
@@ -638,7 +608,7 @@ pub mod foo {
                     move |caller: &wasmtime::component::Accessor<T>, (): ()| {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostBarConcurrent>::static_a(accessor).await;
+                            let r = <D as HostBarWithStore>::static_a(accessor).await;
                             Ok((r,))
                         })
                     },
@@ -651,7 +621,7 @@ pub mod foo {
                     {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostBarConcurrent>::method_a(accessor, arg0)
+                            let r = <D as HostBarWithStore>::method_a(accessor, arg0)
                                 .await;
                             Ok((r,))
                         })
@@ -665,7 +635,7 @@ pub mod foo {
                     {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::bar_own_arg(accessor, arg0)
+                            let r = <D as HostWithStore>::bar_own_arg(accessor, arg0)
                                 .await;
                             Ok(r)
                         })
@@ -679,7 +649,7 @@ pub mod foo {
                     {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::bar_borrow_arg(accessor, arg0)
+                            let r = <D as HostWithStore>::bar_borrow_arg(accessor, arg0)
                                 .await;
                             Ok(r)
                         })
@@ -690,7 +660,7 @@ pub mod foo {
                     move |caller: &wasmtime::component::Accessor<T>, (): ()| {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::bar_result(accessor).await;
+                            let r = <D as HostWithStore>::bar_result(accessor).await;
                             Ok((r,))
                         })
                     },
@@ -703,7 +673,7 @@ pub mod foo {
                     {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::tuple_own_arg(accessor, arg0)
+                            let r = <D as HostWithStore>::tuple_own_arg(accessor, arg0)
                                 .await;
                             Ok(r)
                         })
@@ -717,7 +687,7 @@ pub mod foo {
                     {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::tuple_borrow_arg(
+                            let r = <D as HostWithStore>::tuple_borrow_arg(
                                     accessor,
                                     arg0,
                                 )
@@ -731,7 +701,7 @@ pub mod foo {
                     move |caller: &wasmtime::component::Accessor<T>, (): ()| {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::tuple_result(accessor).await;
+                            let r = <D as HostWithStore>::tuple_result(accessor).await;
                             Ok((r,))
                         })
                     },
@@ -744,7 +714,7 @@ pub mod foo {
                     {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::option_own_arg(accessor, arg0)
+                            let r = <D as HostWithStore>::option_own_arg(accessor, arg0)
                                 .await;
                             Ok(r)
                         })
@@ -758,7 +728,7 @@ pub mod foo {
                     {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::option_borrow_arg(
+                            let r = <D as HostWithStore>::option_borrow_arg(
                                     accessor,
                                     arg0,
                                 )
@@ -772,7 +742,7 @@ pub mod foo {
                     move |caller: &wasmtime::component::Accessor<T>, (): ()| {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::option_result(accessor).await;
+                            let r = <D as HostWithStore>::option_result(accessor).await;
                             Ok((r,))
                         })
                     },
@@ -785,7 +755,7 @@ pub mod foo {
                     {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::result_own_arg(accessor, arg0)
+                            let r = <D as HostWithStore>::result_own_arg(accessor, arg0)
                                 .await;
                             Ok(r)
                         })
@@ -799,7 +769,7 @@ pub mod foo {
                     {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::result_borrow_arg(
+                            let r = <D as HostWithStore>::result_borrow_arg(
                                     accessor,
                                     arg0,
                                 )
@@ -813,7 +783,7 @@ pub mod foo {
                     move |caller: &wasmtime::component::Accessor<T>, (): ()| {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::result_result(accessor).await;
+                            let r = <D as HostWithStore>::result_result(accessor).await;
                             Ok((r,))
                         })
                     },
@@ -832,7 +802,7 @@ pub mod foo {
                     {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::list_own_arg(accessor, arg0)
+                            let r = <D as HostWithStore>::list_own_arg(accessor, arg0)
                                 .await;
                             Ok(r)
                         })
@@ -852,10 +822,7 @@ pub mod foo {
                     {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::list_borrow_arg(
-                                    accessor,
-                                    arg0,
-                                )
+                            let r = <D as HostWithStore>::list_borrow_arg(accessor, arg0)
                                 .await;
                             Ok(r)
                         })
@@ -866,7 +833,7 @@ pub mod foo {
                     move |caller: &wasmtime::component::Accessor<T>, (): ()| {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::list_result(accessor).await;
+                            let r = <D as HostWithStore>::list_result(accessor).await;
                             Ok((r,))
                         })
                     },
@@ -879,7 +846,7 @@ pub mod foo {
                     {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::record_own_arg(accessor, arg0)
+                            let r = <D as HostWithStore>::record_own_arg(accessor, arg0)
                                 .await;
                             Ok(r)
                         })
@@ -893,7 +860,7 @@ pub mod foo {
                     {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::record_borrow_arg(
+                            let r = <D as HostWithStore>::record_borrow_arg(
                                     accessor,
                                     arg0,
                                 )
@@ -907,7 +874,7 @@ pub mod foo {
                     move |caller: &wasmtime::component::Accessor<T>, (): ()| {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::record_result(accessor).await;
+                            let r = <D as HostWithStore>::record_result(accessor).await;
                             Ok((r,))
                         })
                     },
@@ -920,7 +887,7 @@ pub mod foo {
                     {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::func_with_handle_typedef(
+                            let r = <D as HostWithStore>::func_with_handle_typedef(
                                     accessor,
                                     arg0,
                                 )
@@ -937,41 +904,49 @@ pub mod foo {
             #[allow(unused_imports)]
             use wasmtime::component::__internal::{anyhow, Box};
             pub enum A {}
-            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait HostAConcurrent: wasmtime::component::HasData + Send {
-                fn drop<T: 'static>(
-                    accessor: &wasmtime::component::Accessor<T, Self>,
+            pub trait HostAWithStore: wasmtime::component::HasData {}
+            impl<_T: ?Sized> HostAWithStore for _T
+            where
+                _T: wasmtime::component::HasData,
+            {}
+            pub trait HostA {
+                fn drop(
+                    &mut self,
                     rep: wasmtime::component::Resource<A>,
-                ) -> impl ::core::future::Future<Output = wasmtime::Result<()>> + Send
-                where
-                    Self: Sized;
+                ) -> impl ::core::future::Future<Output = wasmtime::Result<()>> + Send;
             }
-            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait HostA: Send {}
-            impl<_T: HostA + ?Sized + Send> HostA for &mut _T {}
-            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait HostConcurrent: wasmtime::component::HasData + Send + HostAConcurrent {}
-            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait Host: Send + HostA {}
+            impl<_T: HostA + ?Sized + Send> HostA for &mut _T {
+                async fn drop(
+                    &mut self,
+                    rep: wasmtime::component::Resource<A>,
+                ) -> wasmtime::Result<()> {
+                    HostA::drop(*self, rep).await
+                }
+            }
+            pub trait HostWithStore: wasmtime::component::HasData + HostAWithStore + Send {}
+            impl<_T: ?Sized> HostWithStore for _T
+            where
+                _T: wasmtime::component::HasData + HostAWithStore + Send,
+            {}
+            pub trait Host: HostA + Send {}
             impl<_T: Host + ?Sized + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-                D: HostConcurrent,
+                D: HostWithStore,
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
             {
                 let mut inst = linker.instance("foo:foo/long-use-chain1")?;
-                inst.resource_concurrent(
+                inst.resource_async(
                     "a",
                     wasmtime::component::ResourceType::host::<A>(),
-                    move |caller: &wasmtime::component::Accessor<T>, rep| {
-                        wasmtime::component::__internal::Box::pin(async move {
-                            let accessor = &caller.with_data(host_getter);
-                            HostAConcurrent::drop(
-                                    accessor,
+                    move |mut store, rep| {
+                        wasmtime::component::__internal::Box::new(async move {
+                            HostA::drop(
+                                    &mut host_getter(store.data_mut()),
                                     wasmtime::component::Resource::new_own(rep),
                                 )
                                 .await
@@ -986,17 +961,21 @@ pub mod foo {
             #[allow(unused_imports)]
             use wasmtime::component::__internal::{anyhow, Box};
             pub type A = super::super::super::foo::foo::long_use_chain1::A;
-            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait Host: Send {}
-            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
+            pub trait HostWithStore: wasmtime::component::HasData {}
+            impl<_T: ?Sized> HostWithStore for _T
+            where
+                _T: wasmtime::component::HasData,
+            {}
+            pub trait Host {}
+            impl<_T: Host + ?Sized> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-                D: wasmtime::component::HasData,
+                D: HostWithStore,
                 for<'a> D::Data<'a>: Host,
-                T: 'static + Send,
+                T: 'static,
             {
                 let mut inst = linker.instance("foo:foo/long-use-chain2")?;
                 Ok(())
@@ -1007,17 +986,21 @@ pub mod foo {
             #[allow(unused_imports)]
             use wasmtime::component::__internal::{anyhow, Box};
             pub type A = super::super::super::foo::foo::long_use_chain2::A;
-            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait Host: Send {}
-            impl<_T: Host + ?Sized + Send> Host for &mut _T {}
+            pub trait HostWithStore: wasmtime::component::HasData {}
+            impl<_T: ?Sized> HostWithStore for _T
+            where
+                _T: wasmtime::component::HasData,
+            {}
+            pub trait Host {}
+            impl<_T: Host + ?Sized> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-                D: wasmtime::component::HasData,
+                D: HostWithStore,
                 for<'a> D::Data<'a>: Host,
-                T: 'static + Send,
+                T: 'static,
             {
                 let mut inst = linker.instance("foo:foo/long-use-chain3")?;
                 Ok(())
@@ -1028,17 +1011,13 @@ pub mod foo {
             #[allow(unused_imports)]
             use wasmtime::component::__internal::{anyhow, Box};
             pub type A = super::super::super::foo::foo::long_use_chain3::A;
-            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait HostConcurrent: wasmtime::component::HasData + Send {
+            pub trait HostWithStore: wasmtime::component::HasData + Send {
                 fn foo<T: 'static>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<
                     Output = wasmtime::component::Resource<A>,
-                > + Send
-                where
-                    Self: Sized;
+                > + Send;
             }
-            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
             pub trait Host: Send {}
             impl<_T: Host + ?Sized + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
@@ -1046,7 +1025,7 @@ pub mod foo {
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-                D: HostConcurrent,
+                D: HostWithStore,
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
             {
@@ -1056,7 +1035,7 @@ pub mod foo {
                     move |caller: &wasmtime::component::Accessor<T>, (): ()| {
                         wasmtime::component::__internal::Box::pin(async move {
                             let accessor = &caller.with_data(host_getter);
-                            let r = <D as HostConcurrent>::foo(accessor).await;
+                            let r = <D as HostWithStore>::foo(accessor).await;
                             Ok((r,))
                         })
                     },
@@ -1069,42 +1048,50 @@ pub mod foo {
             #[allow(unused_imports)]
             use wasmtime::component::__internal::{anyhow, Box};
             pub enum Foo {}
-            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait HostFooConcurrent: wasmtime::component::HasData + Send {
-                fn drop<T: 'static>(
-                    accessor: &wasmtime::component::Accessor<T, Self>,
+            pub trait HostFooWithStore: wasmtime::component::HasData {}
+            impl<_T: ?Sized> HostFooWithStore for _T
+            where
+                _T: wasmtime::component::HasData,
+            {}
+            pub trait HostFoo {
+                fn drop(
+                    &mut self,
                     rep: wasmtime::component::Resource<Foo>,
-                ) -> impl ::core::future::Future<Output = wasmtime::Result<()>> + Send
-                where
-                    Self: Sized;
+                ) -> impl ::core::future::Future<Output = wasmtime::Result<()>> + Send;
             }
-            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait HostFoo: Send {}
-            impl<_T: HostFoo + ?Sized + Send> HostFoo for &mut _T {}
-            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait HostConcurrent: wasmtime::component::HasData + Send + HostFooConcurrent {}
-            #[wasmtime::component::__internal::trait_variant_make(::core::marker::Send)]
-            pub trait Host: Send + HostFoo {}
+            impl<_T: HostFoo + ?Sized + Send> HostFoo for &mut _T {
+                async fn drop(
+                    &mut self,
+                    rep: wasmtime::component::Resource<Foo>,
+                ) -> wasmtime::Result<()> {
+                    HostFoo::drop(*self, rep).await
+                }
+            }
+            pub trait HostWithStore: wasmtime::component::HasData + HostFooWithStore + Send {}
+            impl<_T: ?Sized> HostWithStore for _T
+            where
+                _T: wasmtime::component::HasData + HostFooWithStore + Send,
+            {}
+            pub trait Host: HostFoo + Send {}
             impl<_T: Host + ?Sized + Send> Host for &mut _T {}
             pub fn add_to_linker<T, D>(
                 linker: &mut wasmtime::component::Linker<T>,
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-                D: HostConcurrent,
+                D: HostWithStore,
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
             {
                 let mut inst = linker
                     .instance("foo:foo/transitive-interface-with-resource")?;
-                inst.resource_concurrent(
+                inst.resource_async(
                     "foo",
                     wasmtime::component::ResourceType::host::<Foo>(),
-                    move |caller: &wasmtime::component::Accessor<T>, rep| {
-                        wasmtime::component::__internal::Box::pin(async move {
-                            let accessor = &caller.with_data(host_getter);
-                            HostFooConcurrent::drop(
-                                    accessor,
+                    move |mut store, rep| {
+                        wasmtime::component::__internal::Box::new(async move {
+                            HostFoo::drop(
+                                    &mut host_getter(store.data_mut()),
                                     wasmtime::component::Resource::new_own(rep),
                                 )
                                 .await

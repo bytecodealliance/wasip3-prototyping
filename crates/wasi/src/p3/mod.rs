@@ -1,6 +1,6 @@
-use crate::clocks::WasiClocksImpl;
 use crate::p3::bindings::LinkOptions;
-use crate::random::WasiRandomImpl;
+use crate::p3::cli::WasiCliCtxView;
+use crate::sockets::WasiSocketsCtxView;
 use anyhow::{Result, anyhow, bail};
 use core::future::Future;
 use core::ops::{Deref, DerefMut};
@@ -9,8 +9,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use wasmtime::component::{
-    AbortHandle, Access, Accessor, AccessorTask, FutureWriter, HasData, Linker, Lower,
-    ResourceTable, StreamWriter, VecBuffer, WithAccessor,
+    AbortHandle, Access, Accessor, AccessorTask, FutureWriter, GuardedStreamWriter, HasData,
+    Linker, Lower, ResourceTable, StreamWriter, VecBuffer,
 };
 
 pub mod bindings;
@@ -23,7 +23,10 @@ pub mod sockets;
 mod view;
 
 pub use self::ctx::{WasiCtx, WasiCtxBuilder};
-pub use self::view::{WasiImpl, WasiView};
+pub use self::view::{WasiCtxView, WasiView};
+
+// Default buffer capacity to use for reads of byte-sized values.
+const DEFAULT_BUFFER_CAPACITY: usize = 8192;
 
 pub struct AbortOnDropHandle(pub AbortHandle);
 
@@ -50,13 +53,9 @@ impl Drop for AbortOnDropHandle {
 ///
 /// ```ignore(TODO fix after upstreaming is complete)
 /// use wasmtime::{Engine, Result, Store, Config};
-/// use wasmtime::component::{ResourceTable, Linker};
-/// use wasmtime_wasi::p3::cli::{WasiCliCtx, WasiCliView};
-/// use wasmtime_wasi::p3::clocks::{WasiClocksCtx, WasiClocksView};
 /// use wasmtime_wasi::p3::filesystem::{WasiFilesystemCtx, WasiFilesystemView};
-/// use wasmtime_wasi::p3::random::{WasiRandomCtx, WasiRandomView};
-/// use wasmtime_wasi::p3::sockets::{WasiSocketsCtx, WasiSocketsView};
-/// use wasmtime_wasi::p3::ResourceView;
+/// use wasmtime::component::{Linker, ResourceTable};
+/// use wasmtime_wasi::p3::{WasiCtx, WasiCtxView, WasiView};
 ///
 /// fn main() -> Result<()> {
 ///     let mut config = Config::new();
@@ -79,45 +78,28 @@ impl Drop for AbortOnDropHandle {
 ///
 /// #[derive(Default)]
 /// struct MyState {
-///     cli: WasiCliCtx,
-///     clocks: WasiClocksCtx,
 ///     filesystem: WasiFilesystemCtx,
-///     random: WasiRandomCtx,
-///     sockets: WasiSocketsCtx,
+///     ctx: WasiCtx,
 ///     table: ResourceTable,
 /// }
 ///
-/// impl ResourceView for MyState {
-///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
-/// }
-///
-/// impl WasiCliView for MyState {
-///     fn cli(&mut self) -> &WasiCliCtx { &self.cli }
-/// }
-///
-/// impl WasiClocksView for MyState {
-///     fn clocks(&mut self) -> &WasiClocksCtx { &self.clocks }
-/// }
 ///
 /// impl WasiFilesystemView for MyState {
 ///     fn filesystem(&self) -> &WasiFilesystemCtx { &self.filesystem }
 /// }
 ///
-/// impl WasiRandomView for MyState {
-///     fn random(&mut self) -> &mut WasiRandomCtx { &mut self.random }
-/// }
-///
-/// impl WasiSocketsView for MyState {
-///     fn sockets(&self) -> &WasiSocketsCtx { &self.sockets }
+/// impl WasiView for MyState {
+///     fn ctx(&mut self) -> WasiCtxView<'_> {
+///         WasiCtxView{
+///             ctx: &mut self.ctx,
+///             table: &mut self.table,
+///         }
+///     }
 /// }
 /// ```
 pub fn add_to_linker<T>(linker: &mut Linker<T>) -> wasmtime::Result<()>
 where
-    T: WasiView
-        + sockets::WasiSocketsView
-        + filesystem::WasiFilesystemView
-        + cli::WasiCliView
-        + 'static,
+    T: WasiView + filesystem::WasiFilesystemView + 'static,
 {
     let options = LinkOptions::default();
     add_to_linker_with_options(linker, &options)
@@ -127,19 +109,27 @@ where
 pub fn add_to_linker_with_options<T>(
     linker: &mut Linker<T>,
     options: &LinkOptions,
-) -> anyhow::Result<()>
+) -> wasmtime::Result<()>
 where
-    T: WasiView
-        + sockets::WasiSocketsView
-        + filesystem::WasiFilesystemView
-        + cli::WasiCliView
-        + 'static,
+    T: WasiView + filesystem::WasiFilesystemView + 'static,
 {
-    clocks::add_to_linker_impl(linker, |x| WasiClocksImpl(&mut x.ctx().clocks))?;
-    random::add_to_linker_impl(linker, |x| WasiRandomImpl(&mut x.ctx().random))?;
-    sockets::add_to_linker(linker)?;
+    cli::add_to_linker_impl(linker, &options.into(), |x| {
+        let WasiCtxView { ctx, table } = x.ctx();
+        WasiCliCtxView {
+            ctx: &mut ctx.cli,
+            table,
+        }
+    })?;
+    clocks::add_to_linker_impl(linker, |x| &mut x.ctx().ctx.clocks)?;
+    random::add_to_linker_impl(linker, |x| &mut x.ctx().ctx.random)?;
+    sockets::add_to_linker_impl(linker, |x| {
+        let WasiCtxView { ctx, table } = x.ctx();
+        WasiSocketsCtxView {
+            ctx: &mut ctx.sockets,
+            table,
+        }
+    })?;
     filesystem::add_to_linker(linker)?;
-    cli::add_to_linker_with_options(linker, &options.into())?;
     Ok(())
 }
 
@@ -243,7 +233,7 @@ where
     E: Lower + Send + Sync + 'static,
 {
     async fn run(mut self, store: &Accessor<T, U>) -> wasmtime::Result<()> {
-        let mut tx = WithAccessor::new(store, self.data);
+        let mut tx = GuardedStreamWriter::new(store, self.data);
         let res = loop {
             match self.rx.recv().await {
                 None => {
@@ -251,7 +241,7 @@ where
                     break Ok(());
                 }
                 Some(Ok(buf)) => {
-                    tx.write_all(store, VecBuffer::from(buf)).await;
+                    tx.write_all(VecBuffer::from(buf)).await;
                     if tx.is_closed() {
                         break Ok(());
                     }

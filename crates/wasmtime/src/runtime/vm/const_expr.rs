@@ -82,7 +82,7 @@ impl ConstEvalContext {
             .zip(struct_ty.fields())
             .map(|(raw, ty)| {
                 let ty = ty.element_type().unpack();
-                Val::_from_raw(store, *raw, ty)
+                unsafe { Val::_from_raw(store, *raw, ty) }
             })
             .collect::<Vec<_>>();
 
@@ -262,11 +262,9 @@ impl ConstExprEvaluator {
                     }
 
                     let start = self.stack.len() - len;
-                    let s = context.struct_new(
-                        &mut store,
-                        interned_type_index,
-                        &self.stack[start..],
-                    )?;
+                    let s = unsafe {
+                        context.struct_new(&mut store, interned_type_index, &self.stack[start..])?
+                    };
                     self.stack.truncate(start);
                     self.stack.push(s);
                 }
@@ -287,7 +285,9 @@ impl ConstExprEvaluator {
 
                     let len = self.pop()?.get_i32().unsigned();
 
-                    let elem = Val::_from_raw(&mut store, self.pop()?, ty.element_type().unpack());
+                    let elem = unsafe {
+                        Val::_from_raw(&mut store, self.pop()?, ty.element_type().unpack())
+                    };
 
                     let pre = ArrayRefPre::_new(&mut store, ty);
                     let array = unsafe { ArrayRef::new_maybe_async(&mut store, &pre, &elem, len)? };
@@ -339,7 +339,7 @@ impl ConstExprEvaluator {
                     let elems = self
                         .stack
                         .drain(start..)
-                        .map(|raw| Val::_from_raw(&mut store, raw, elem_ty))
+                        .map(|raw| unsafe { Val::_from_raw(&mut store, raw, elem_ty) })
                         .collect::<SmallVec<[_; 8]>>();
 
                     let pre = ArrayRefPre::_new(&mut store, ty);

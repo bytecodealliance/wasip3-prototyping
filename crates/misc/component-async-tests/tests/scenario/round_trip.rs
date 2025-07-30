@@ -341,7 +341,7 @@ pub async fn test_round_trip(
                     *expected,
                     &round_trip
                         .local_local_baz()
-                        .call_foo(&mut store, (*input).to_owned())
+                        .call_foo(&mut store, input)
                         .await?
                 );
             }
@@ -389,11 +389,17 @@ pub async fn test_round_trip(
                     let mut futures = FuturesUnordered::new();
                     for (input, output) in inputs_and_outputs {
                         let output = (*output).to_owned();
-                        futures.push(
+                        futures.push(async move {
+                            let mut results = vec![Val::Bool(false)];
                             foo_function
-                                .call_concurrent(store, vec![Val::String((*input).to_owned())])
-                                .map(move |v| v.map(move |v| (v, output))),
-                        );
+                                .call_concurrent(
+                                    store,
+                                    &[Val::String((*input).to_owned())],
+                                    &mut results,
+                                )
+                                .await?;
+                            anyhow::Ok((results, output))
+                        });
                     }
 
                     while let Some((actual, expected)) = futures.try_next().await? {
