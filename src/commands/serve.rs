@@ -11,14 +11,13 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::io::{stderr, stdin, stdout};
 use tokio::sync::Notify;
 use wasmtime::component::{Component, Instance, InstancePre, Linker};
 use wasmtime::{Engine, Store, StoreLimits, UpdateDeadline};
 use wasmtime_wasi::p2::{IoView, StreamError, StreamResult, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::p3;
 use wasmtime_wasi_http::bindings as p2;
 use wasmtime_wasi_http::io::TokioIo;
-use wasmtime_wasi_http::p3::bindings as p3;
 use wasmtime_wasi_http::{
     DEFAULT_OUTGOING_BODY_BUFFER_CHUNKS, DEFAULT_OUTGOING_BODY_CHUNK_SIZE, WasiHttpCtx,
     WasiHttpView,
@@ -38,12 +37,9 @@ struct Host {
     http_outgoing_body_buffer_chunks: Option<usize>,
     http_outgoing_body_chunk_size: Option<usize>,
 
-    p3_cli: Option<Arc<Mutex<wasmtime_wasi::p3::cli::WasiCliCtx>>>,
-    p3_clocks: Option<Arc<Mutex<wasmtime_wasi::clocks::WasiClocksCtx>>>,
     p3_filesystem: Option<wasmtime_wasi::p3::filesystem::WasiFilesystemCtx>,
-    p3_random: Option<Arc<Mutex<wasmtime_wasi::random::WasiRandomCtx>>>,
-    p3_sockets: Option<wasmtime_wasi::p3::sockets::WasiSocketsCtx>,
     p3_http: wasmtime_wasi_http::p3::WasiHttpCtx,
+    p3_ctx: wasmtime_wasi::p3::WasiCtx,
 
     limits: StoreLimits,
 
@@ -92,25 +88,13 @@ impl wasmtime_wasi::p3::ResourceView for Host {
         &mut self.table
     }
 }
-impl wasmtime_wasi::p3::cli::WasiCliView for Host {
-    fn cli(&mut self) -> &wasmtime_wasi::p3::cli::WasiCliCtx {
-        let cli = self
-            .p3_cli
-            .as_mut()
-            .and_then(Arc::get_mut)
-            .expect("`wasi:cli@0.3` not configured");
-        cli.get_mut().unwrap()
-    }
-}
 
-impl wasmtime_wasi::clocks::WasiClocksView for Host {
-    fn clocks(&mut self) -> &wasmtime_wasi::clocks::WasiClocksCtx {
-        let clocks = self
-            .p3_clocks
-            .as_mut()
-            .and_then(Arc::get_mut)
-            .expect("`wasi:clocks@0.3` not configured");
-        clocks.get_mut().unwrap()
+impl wasmtime_wasi::p3::WasiView for Host {
+    fn ctx(&mut self) -> wasmtime_wasi::p3::WasiCtxView<'_> {
+        wasmtime_wasi::p3::WasiCtxView {
+            ctx: &mut self.p3_ctx,
+            table: &mut self.table,
+        }
     }
 }
 
@@ -119,25 +103,6 @@ impl wasmtime_wasi::p3::filesystem::WasiFilesystemView for Host {
         self.p3_filesystem
             .as_ref()
             .expect("`wasi:filesystem@0.3` not configured")
-    }
-}
-
-impl wasmtime_wasi::random::WasiRandomView for Host {
-    fn random(&mut self) -> &mut wasmtime_wasi::random::WasiRandomCtx {
-        let random = self
-            .p3_random
-            .as_mut()
-            .and_then(Arc::get_mut)
-            .expect("`wasi:random@0.3` not configured");
-        random.get_mut().unwrap()
-    }
-}
-
-impl wasmtime_wasi::p3::sockets::WasiSocketsView for Host {
-    fn sockets(&self) -> &wasmtime_wasi::p3::sockets::WasiSocketsCtx {
-        self.p3_sockets
-            .as_ref()
-            .expect("`wasi:sockets@0.3` not configured")
     }
 }
 
@@ -219,83 +184,14 @@ impl ServeCommand {
         Ok(())
     }
 
-    fn set_p3_ctx(&self, store: &mut Store<Host>) -> Result<()> {
-        store.data_mut().p3_clocks = Some(Arc::default());
-        store.data_mut().p3_random = Some(Arc::default());
-
-        let mut environment = Vec::default();
-        if self.run.common.wasi.inherit_env == Some(true) {
-            for (k, v) in std::env::vars() {
-                environment.push((k, v));
-            }
-        }
-        for (key, value) in self.run.vars.iter() {
-            let value = match value {
-                Some(value) => value.clone(),
-                None => match std::env::var_os(key) {
-                    Some(val) => val
-                        .into_string()
-                        .map_err(|_| anyhow!("environment variable `{key}` not valid utf-8"))?,
-                    None => {
-                        // leave the env var un-set in the guest
-                        continue;
-                    }
-                },
-            };
-            environment.push((key.clone(), value));
-        }
-        store.data_mut().p3_cli = Some(Arc::new(Mutex::new(wasmtime_wasi::p3::cli::WasiCliCtx {
-            environment,
-            arguments: vec![],
-            initial_cwd: None,
-            stdin: Box::new(stdin()),
-            stdout: Box::new(stdout()),
-            stderr: Box::new(stderr()),
-        })));
-
-        let mut p3_filesystem = wasmtime_wasi::p3::filesystem::WasiFilesystemCtx::default();
-        p3_filesystem.allow_blocking_current_thread = self.run.common.wasm.timeout.is_none();
-        for (host, guest) in self.run.dirs.iter() {
-            p3_filesystem.preopened_dir(
-                host,
-                guest,
-                wasmtime_wasi::DirPerms::all(),
-                wasmtime_wasi::FilePerms::all(),
-            )?;
-        }
-        store.data_mut().p3_filesystem = Some(p3_filesystem);
-
-        if self.run.common.wasi.listenfd == Some(true) {
-            bail!("components do not support --listenfd");
-        }
-        for _ in self.run.compute_preopen_sockets()? {
-            bail!("components do not support --tcplisten");
-        }
-
-        let mut p3_sockets = wasmtime_wasi::p3::sockets::WasiSocketsCtx::default();
-        if self.run.common.wasi.inherit_network == Some(true) {
-            p3_sockets.socket_addr_check =
-                wasmtime_wasi::p3::sockets::SocketAddrCheck::new(|_, _| Box::pin(async { true }))
-        }
-        if let Some(enable) = self.run.common.wasi.allow_ip_name_lookup {
-            p3_sockets.allowed_network_uses.ip_name_lookup = enable;
-        }
-        if let Some(enable) = self.run.common.wasi.tcp {
-            p3_sockets.allowed_network_uses.tcp = enable;
-        }
-        if let Some(enable) = self.run.common.wasi.udp {
-            p3_sockets.allowed_network_uses.udp = enable;
-        }
-        store.data_mut().p3_sockets = Some(p3_sockets);
-
-        Ok(())
-    }
-
     fn new_store(&self, engine: &Engine, req_id: u64) -> Result<Store<Host>> {
-        let mut builder = WasiCtxBuilder::new();
-        self.run.configure_wasip2(&mut builder)?;
+        let mut p2 = WasiCtxBuilder::new();
+        let mut p3 = p3::WasiCtxBuilder::new();
+        self.run.configure_wasip2(&mut p2)?;
+        self.run.configure_wasip3(&mut p3)?;
 
-        builder.env("REQUEST_ID", req_id.to_string());
+        p2.env("REQUEST_ID", req_id.to_string());
+        p3.env("REQUEST_ID", req_id.to_string());
 
         let stdout_prefix: String;
         let stderr_prefix: String;
@@ -306,12 +202,15 @@ impl ServeCommand {
             stdout_prefix = format!("stdout [{req_id}] :: ");
             stderr_prefix = format!("stderr [{req_id}] :: ");
         }
-        builder.stdout(LogStream::new(stdout_prefix, Output::Stdout));
-        builder.stderr(LogStream::new(stderr_prefix, Output::Stderr));
+        p2.stdout(LogStream::new(stdout_prefix, Output::Stdout));
+        p2.stderr(LogStream::new(stderr_prefix, Output::Stderr));
+
+        // TODO: set stdout/stderr for p3
+        p3.inherit_stdout().inherit_stderr();
 
         let mut host = Host {
             table: wasmtime::component::ResourceTable::new(),
-            ctx: builder.build(),
+            ctx: p2.build(),
             http: WasiHttpCtx::new(),
             http_outgoing_body_buffer_chunks: self.run.common.wasi.http_outgoing_body_buffer_chunks,
             http_outgoing_body_chunk_size: self.run.common.wasi.http_outgoing_body_chunk_size,
@@ -327,11 +226,21 @@ impl ServeCommand {
             #[cfg(feature = "profiling")]
             guest_profiler: None,
 
-            p3_cli: None,
-            p3_clocks: None,
-            p3_filesystem: None,
-            p3_random: None,
-            p3_sockets: None,
+            p3_ctx: p3.build(),
+            p3_filesystem: {
+                let mut p3_filesystem = p3::filesystem::WasiFilesystemCtx::default();
+                p3_filesystem.allow_blocking_current_thread =
+                    self.run.common.wasm.timeout.is_none();
+                for (host, guest) in self.run.dirs.iter() {
+                    p3_filesystem.preopened_dir(
+                        host,
+                        guest,
+                        wasmtime_wasi::DirPerms::all(),
+                        wasmtime_wasi::FilePerms::all(),
+                    )?;
+                }
+                Some(p3_filesystem)
+            },
             p3_http: wasmtime_wasi_http::p3::WasiHttpCtx::default(),
         };
 
@@ -384,7 +293,6 @@ impl ServeCommand {
         }
 
         let mut store = Store::new(engine, host);
-        self.set_p3_ctx(&mut store)?;
 
         store.data_mut().limits = self.run.store_limits();
         store.limiter(|t| &mut t.limits);
@@ -428,6 +336,7 @@ impl ServeCommand {
             wasmtime_wasi_http::add_only_http_to_linker_async(linker)?;
             wasmtime_wasi_http::p3::add_only_http_to_linker(linker)?;
         } else {
+            wasmtime_wasi::p2::add_to_linker_with_options_async(linker, &Default::default())?;
             wasmtime_wasi_http::add_to_linker_async(linker)?;
             wasmtime_wasi_http::p3::add_to_linker(linker)?;
         }
@@ -519,7 +428,7 @@ impl ServeCommand {
         };
 
         let instance = linker.instantiate_pre(&component)?;
-        let instance = match p3::ProxyIndices::new(&instance) {
+        let instance = match wasmtime_wasi_http::p3::bindings::ProxyIndices::new(&instance) {
             Ok(indices) => ProxyPre::P3(indices, instance),
             Err(_) => ProxyPre::P2(p2::ProxyPre::new(instance)?),
         };
@@ -861,7 +770,10 @@ struct ProxyHandlerInner {
 
 enum ProxyPre {
     P2(p2::ProxyPre<Host>),
-    P3(p3::ProxyIndices, InstancePre<Host>),
+    P3(
+        wasmtime_wasi_http::p3::bindings::ProxyIndices,
+        InstancePre<Host>,
+    ),
 }
 
 impl ProxyPre {
@@ -879,7 +791,7 @@ impl ProxyPre {
 
 enum Proxy {
     P2(p2::Proxy),
-    P3(p3::Proxy, Instance),
+    P3(wasmtime_wasi_http::p3::bindings::Proxy, Instance),
 }
 
 impl ProxyHandlerInner {
@@ -974,6 +886,8 @@ async fn handle_request(
             use std::future;
             use std::pin::pin;
             use std::task::Poll;
+            use wasmtime_wasi_http::p3;
+            use wasmtime_wasi_http::p3::bindings::http::types::ErrorCode;
 
             let (tx, rx) = tokio::sync::oneshot::channel();
 
@@ -981,14 +895,12 @@ async fn handle_request(
                 instance
                     .run_concurrent(&mut store, async move |store| {
                         let (req, body) = req.into_parts();
-                        let body =
-                            body.map_err(p3::http::types::ErrorCode::from_hyper_request_error);
+                        let body = body.map_err(ErrorCode::from_hyper_request_error);
                         let res = proxy
                             .handle(store, http::Request::from_parts(req, body))
                             .await??;
-                        let (res, io) = store.with(|mut store| {
-                            wasmtime_wasi_http::p3::Response::resource_into_http(&mut store, res)
-                        })?;
+                        let (res, io) = store
+                            .with(|mut store| p3::Response::resource_into_http(&mut store, res))?;
                         // Poll `io` once before handing the response to Hyper.
                         // This ensures that, if the guest has at least one body
                         // chunk ready to send, it will be available to Hyper
@@ -1014,7 +926,7 @@ async fn handle_request(
                 anyhow::Ok(())
             });
             Ok(rx.await?.map(|body| {
-                body.map_err(|err| err.unwrap_or(p3::http::types::ErrorCode::InternalError(None)))
+                body.map_err(|err| err.unwrap_or(ErrorCode::InternalError(None)))
                     .map_err(|err| err.into())
                     .boxed()
             }))

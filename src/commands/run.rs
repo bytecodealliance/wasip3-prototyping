@@ -13,10 +13,10 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use tokio::io::{stderr, stdin, stdout};
 use wasi_common::sync::{Dir, TcpListener, WasiCtxBuilder, ambient_authority};
 use wasmtime::{Engine, Func, Module, Store, StoreLimits, Val, ValType};
-use wasmtime_wasi::p2::{IoView, WasiView};
+use wasmtime_wasi::p2::{self, IoView as _};
+use wasmtime_wasi::p3;
 
 #[cfg(feature = "wasi-nn")]
 use wasmtime_wasi_nn::wit::WasiNnView;
@@ -1080,73 +1080,10 @@ impl RunCommand {
     }
 
     fn set_p3_ctx(&self, store: &mut Store<Host>) -> Result<()> {
-        store.data_mut().p3_ctx = Some(Arc::default());
-
-        let mut environment = Vec::default();
-        if self.run.common.wasi.inherit_env == Some(true) {
-            for (k, v) in std::env::vars() {
-                environment.push((k, v));
-            }
-        }
-        for (key, value) in self.run.vars.iter() {
-            let value = match value {
-                Some(value) => value.clone(),
-                None => match std::env::var_os(key) {
-                    Some(val) => val
-                        .into_string()
-                        .map_err(|_| anyhow!("environment variable `{key}` not valid utf-8"))?,
-                    None => {
-                        // leave the env var un-set in the guest
-                        continue;
-                    }
-                },
-            };
-            environment.push((key.clone(), value));
-        }
-        let arguments = self.compute_argv()?;
-        store.data_mut().p3_cli = Some(Arc::new(Mutex::new(wasmtime_wasi::p3::cli::WasiCliCtx {
-            environment,
-            arguments,
-            initial_cwd: None,
-            stdin: Box::new(stdin()),
-            stdout: Box::new(stdout()),
-            stderr: Box::new(stderr()),
-        })));
-
-        let mut p3_filesystem = wasmtime_wasi::p3::filesystem::WasiFilesystemCtx::default();
-        p3_filesystem.allow_blocking_current_thread = self.run.common.wasm.timeout.is_none();
-        for (host, guest) in self.run.dirs.iter() {
-            p3_filesystem.preopened_dir(
-                host,
-                guest,
-                wasmtime_wasi::DirPerms::all(),
-                wasmtime_wasi::FilePerms::all(),
-            )?;
-        }
-        store.data_mut().p3_filesystem = Some(p3_filesystem);
-
-        if self.run.common.wasi.listenfd == Some(true) {
-            bail!("components do not support --listenfd");
-        }
-        for _ in self.run.compute_preopen_sockets()? {
-            bail!("components do not support --tcplisten");
-        }
-
-        let mut p3_sockets = wasmtime_wasi::p3::sockets::WasiSocketsCtx::default();
-        if self.run.common.wasi.inherit_network == Some(true) {
-            p3_sockets.socket_addr_check =
-                wasmtime_wasi::p3::sockets::SocketAddrCheck::new(|_, _| Box::pin(async { true }))
-        }
-        if let Some(enable) = self.run.common.wasi.allow_ip_name_lookup {
-            p3_sockets.allowed_network_uses.ip_name_lookup = enable;
-        }
-        if let Some(enable) = self.run.common.wasi.tcp {
-            p3_sockets.allowed_network_uses.tcp = enable;
-        }
-        if let Some(enable) = self.run.common.wasi.udp {
-            p3_sockets.allowed_network_uses.udp = enable;
-        }
-        store.data_mut().p3_sockets = Some(p3_sockets);
+        let mut builder = wasmtime_wasi::p3::WasiCtxBuilder::new();
+        builder.inherit_stdio().args(&self.compute_argv()?);
+        self.run.configure_wasip3(&mut builder)?;
+        store.data_mut().p3_ctx = Some(Arc::new(Mutex::new(builder.build())));
 
         Ok(())
     }
@@ -1176,9 +1113,7 @@ struct Host {
     // access.
     preview2_ctx: Option<Arc<Mutex<wasmtime_wasi::preview1::WasiP1Ctx>>>,
 
-    p3_cli: Option<Arc<Mutex<wasmtime_wasi::p3::cli::WasiCliCtx>>>,
     p3_filesystem: Option<wasmtime_wasi::p3::filesystem::WasiFilesystemCtx>,
-    p3_sockets: Option<wasmtime_wasi::p3::sockets::WasiSocketsCtx>,
     p3_ctx: Option<Arc<Mutex<wasmtime_wasi::p3::WasiCtx>>>,
     #[cfg(feature = "wasi-http")]
     p3_http: Option<wasmtime_wasi_http::p3::WasiHttpCtx>,
@@ -1219,60 +1154,53 @@ impl Host {
             .get_mut()
             .unwrap()
     }
-
-    fn p3_ctx(&mut self) -> &mut wasmtime_wasi::p3::WasiCtx {
-        let ctx = self.p3_ctx.as_mut().expect("wasip3 is not configured");
-        Arc::get_mut(ctx)
-            .expect("wasmtime_wasi is not compatible with threads")
-            .get_mut()
-            .unwrap()
-    }
 }
 
-impl IoView for Host {
+impl p2::IoView for Host {
     fn table(&mut self) -> &mut wasmtime::component::ResourceTable {
         self.preview2_ctx().table()
     }
 }
-impl WasiView for Host {
-    fn ctx(&mut self) -> &mut wasmtime_wasi::p2::WasiCtx {
+impl p2::WasiView for Host {
+    fn ctx(&mut self) -> &mut p2::WasiCtx {
         self.preview2_ctx().ctx()
     }
 }
-impl wasmtime_wasi::p3::ResourceView for Host {
+impl p3::WasiView for Host {
+    fn ctx(&mut self) -> p3::WasiCtxView<'_> {
+        p3::WasiCtxView {
+            ctx: {
+                let ctx = self.p3_ctx.as_mut().expect("wasip3 is not configured");
+                Arc::get_mut(ctx)
+                    .expect("wasmtime_wasi is not compatible with threads")
+                    .get_mut()
+                    .unwrap()
+            },
+            table: {
+                let ctx = self
+                    .preview2_ctx
+                    .as_mut()
+                    .expect("wasip2 is not configured");
+                Arc::get_mut(ctx)
+                    .expect("wasmtime_wasi is not compatible with threads")
+                    .get_mut()
+                    .unwrap()
+                    .table()
+            },
+        }
+    }
+}
+
+impl p3::ResourceView for Host {
     fn table(&mut self) -> &mut wasmtime::component::ResourceTable {
         self.preview2_ctx().table()
     }
 }
-impl wasmtime_wasi::p3::WasiView for Host {
-    fn ctx(&mut self) -> &mut wasmtime_wasi::p3::WasiCtx {
-        self.p3_ctx()
-    }
-}
-impl wasmtime_wasi::p3::cli::WasiCliView for Host {
-    fn cli(&mut self) -> &wasmtime_wasi::p3::cli::WasiCliCtx {
-        let cli = self
-            .p3_cli
-            .as_mut()
-            .and_then(Arc::get_mut)
-            .expect("`wasi:cli@0.3` not configured");
-        cli.get_mut().unwrap()
-    }
-}
-
-impl wasmtime_wasi::p3::filesystem::WasiFilesystemView for Host {
+impl p3::filesystem::WasiFilesystemView for Host {
     fn filesystem(&self) -> &wasmtime_wasi::p3::filesystem::WasiFilesystemCtx {
         self.p3_filesystem
             .as_ref()
             .expect("`wasi:filesystem@0.3` not configured")
-    }
-}
-
-impl wasmtime_wasi::p3::sockets::WasiSocketsView for Host {
-    fn sockets(&self) -> &wasmtime_wasi::p3::sockets::WasiSocketsCtx {
-        self.p3_sockets
-            .as_ref()
-            .expect("`wasi:sockets@0.3` not configured")
     }
 }
 

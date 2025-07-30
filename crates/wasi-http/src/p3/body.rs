@@ -13,7 +13,9 @@ use pin_project_lite::pin_project;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use wasmtime::AsContextMut;
-use wasmtime::component::{Accessor, FutureReader, FutureWriter, HasData, Resource, StreamReader};
+use wasmtime::component::{
+    Accessor, AsAccessor, FutureReader, FutureWriter, HasData, Resource, StreamReader,
+};
 use wasmtime_wasi::p3::WithChildren;
 
 pub(crate) fn empty_body() -> impl http_body::Body<Data = Bytes, Error = Option<ErrorCode>> {
@@ -113,7 +115,7 @@ impl Body {
         }
     }
 
-    pub(crate) fn drop_with_store(&mut self, mut store: impl AsContextMut) -> wasmtime::Result<()> {
+    pub(crate) fn drop_with_store(&mut self, mut store: impl AsContextMut) {
         if let Body::Guest {
             contents,
             trailers,
@@ -123,39 +125,44 @@ impl Body {
         {
             let mut store = store.as_context_mut();
             if let MaybeTombstone::Some(contents) = contents {
-                contents.close(&mut store)?;
+                contents.close(&mut store);
             }
             if let MaybeTombstone::Some(trailers) = trailers {
-                trailers.close(&mut store)?;
+                trailers.close(&mut store);
             }
-            tx.close(store)?;
+            tx.close(store);
         }
-        anyhow::Ok(())
     }
 
-    pub(crate) fn with_store<'a, T, D>(self, store: &'a Accessor<T, D>) -> BodyWithStore<'a, T, D>
+    pub(crate) fn with_store<A>(self, store: A) -> BodyWithStore<A>
     where
-        D: HasData + ?Sized,
+        A: AsAccessor,
     {
-        BodyWithStore { store, body: self }
+        BodyWithStore {
+            store,
+            body: Some(self),
+        }
     }
 }
 
-pub(crate) struct BodyWithStore<'a, T, D>
-where
-    T: 'static,
-    D: HasData + ?Sized,
-{
-    store: &'a Accessor<T, D>,
-    body: Body,
+pub(crate) struct BodyWithStore<A: AsAccessor> {
+    store: A,
+    body: Option<Body>,
 }
 
-impl<T, D> Drop for BodyWithStore<'_, T, D>
-where
-    D: HasData + ?Sized,
-{
+impl<A: AsAccessor> BodyWithStore<A> {
+    pub(crate) fn into_inner(mut self) -> Body {
+        self.body.take().unwrap()
+    }
+}
+
+impl<A: AsAccessor> Drop for BodyWithStore<A> {
     fn drop(&mut self) {
-        self.store.with(|store| self.body.drop_with_store(store))
+        if let Some(body) = &mut self.body {
+            self.store
+                .as_accessor()
+                .with(|store| body.drop_with_store(store))
+        }
     }
 }
 

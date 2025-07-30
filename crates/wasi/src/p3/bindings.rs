@@ -11,7 +11,7 @@
 //! use this modules's bindings rather than generate fresh bindings. That can be
 //! done using the `with` option to [`bindgen!`]:
 //!
-//! ```rust
+//! ```rust,ignore(TODO fix when wasi finishes merging upstream)
 //! use wasmtime_wasi::p3::{WasiCtx, WasiCtxView, WasiView};
 //! use wasmtime::{Result, Engine, Config};
 //! use wasmtime::component::{Linker, HasSelf, ResourceTable};

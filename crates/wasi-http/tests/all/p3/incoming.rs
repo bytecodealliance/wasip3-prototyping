@@ -4,7 +4,6 @@ use http_body::Body;
 use http_body_util::{BodyExt as _, Collected, Empty};
 use wasmtime::Store;
 use wasmtime::component::{Component, Linker};
-use wasmtime_wasi::p3::cli::WasiCliCtx;
 use wasmtime_wasi_http::p3::bindings::Proxy;
 use wasmtime_wasi_http::p3::bindings::http::types::ErrorCode;
 use wasmtime_wasi_http::p3::{Response, WasiHttpCtx};
@@ -26,9 +25,6 @@ pub async fn run_wasi_http<E: Into<ErrorCode> + 'static>(
     let mut store = Store::new(
         &engine,
         Ctx {
-            cli: WasiCliCtx {
-                ..WasiCliCtx::default()
-            },
             http: WasiHttpCtx { client },
             ..Ctx::default()
         },

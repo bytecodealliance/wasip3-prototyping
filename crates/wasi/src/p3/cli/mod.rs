@@ -13,18 +13,6 @@ pub struct WasiCliCtxView<'a> {
     pub table: &'a mut ResourceTable,
 }
 
-impl<T: WasiCliView> WasiCliView for &mut T {
-    fn cli(&mut self) -> WasiCliCtxView<'_> {
-        T::cli(self)
-    }
-}
-
-impl<T: WasiCliView> WasiCliView for Box<T> {
-    fn cli(&mut self) -> WasiCliCtxView<'_> {
-        T::cli(self)
-    }
-}
-
 pub trait WasiCliView: Send {
     fn cli(&mut self) -> WasiCliCtxView<'_>;
 }
