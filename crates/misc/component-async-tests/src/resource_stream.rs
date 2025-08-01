@@ -1,6 +1,6 @@
 use anyhow::Result;
 use wasmtime::component::{
-    Accessor, AccessorTask, Resource, StreamReader, StreamWriter, WithAccessor,
+    Accessor, AccessorTask, GuardedStreamWriter, Resource, StreamReader, StreamWriter,
 };
 use wasmtime_wasi::p2::IoView;
 
@@ -8,39 +8,33 @@ use super::Ctx;
 
 pub mod bindings {
     wasmtime::component::bindgen!({
-        trappable_imports: true,
         path: "wit",
         world: "read-resource-stream",
-        concurrent_imports: true,
-        concurrent_exports: true,
-        async: true,
         with: {
             "local:local/resource-stream/x": super::ResourceStreamX,
+        },
+        imports: {
+            "local:local/resource-stream/foo": async | store | trappable,
+            default: trappable,
         },
     });
 }
 
 pub struct ResourceStreamX;
 
-impl bindings::local::local::resource_stream::HostXConcurrent for Ctx {
-    async fn foo<T>(accessor: &Accessor<T, Self>, x: Resource<ResourceStreamX>) -> Result<()> {
-        accessor.with(|mut view| {
-            _ = view.get().table().get(&x)?;
-            Ok(())
-        })
+impl bindings::local::local::resource_stream::HostX for Ctx {
+    fn foo(&mut self, x: Resource<ResourceStreamX>) -> Result<()> {
+        self.table().get(&x)?;
+        Ok(())
     }
 
-    async fn drop<T>(accessor: &Accessor<T, Self>, x: Resource<ResourceStreamX>) -> Result<()> {
-        accessor.with(move |mut view| {
-            view.get().table().delete(x)?;
-            Ok(())
-        })
+    fn drop(&mut self, x: Resource<ResourceStreamX>) -> Result<()> {
+        IoView::table(self).delete(x)?;
+        Ok(())
     }
 }
 
-impl bindings::local::local::resource_stream::HostX for Ctx {}
-
-impl bindings::local::local::resource_stream::HostConcurrent for Ctx {
+impl bindings::local::local::resource_stream::HostWithStore for Ctx {
     async fn foo<T: 'static>(
         accessor: &Accessor<T, Self>,
         count: u32,
@@ -53,11 +47,11 @@ impl bindings::local::local::resource_stream::HostConcurrent for Ctx {
 
         impl<T> AccessorTask<T, Ctx, Result<()>> for Task {
             async fn run(self, accessor: &Accessor<T, Ctx>) -> Result<()> {
-                let mut tx = WithAccessor::new(accessor, self.tx);
+                let mut tx = GuardedStreamWriter::new(accessor, self.tx);
                 for _ in 0..self.count {
                     let item =
                         accessor.with(|mut view| view.get().table().push(ResourceStreamX))?;
-                    tx.write_all(accessor, Some(item)).await;
+                    tx.write_all(Some(item)).await;
                 }
                 Ok(())
             }

@@ -104,7 +104,7 @@ async fn test_tcp_shutdown_should_not_lose_data(family: IpAddressFamily) {
                     outgoing_data, incoming_data,
                     "Received data should match the sent data"
                 );
-                server_fut.await.unwrap()
+                server_fut.await.unwrap();
             },
         );
     })

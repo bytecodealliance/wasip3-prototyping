@@ -122,7 +122,7 @@ impl StorePtr {
     ///
     /// Safety: must not be used outside the original lifetime of the borrow.
     pub(crate) unsafe fn get(&mut self) -> Option<&mut dyn VMStore> {
-        let ptr = self.0?.as_mut();
+        let ptr = unsafe { self.0?.as_mut() };
         Some(ptr)
     }
 }
@@ -253,13 +253,7 @@ pub unsafe trait InstanceAllocatorImpl {
     fn decrement_core_instance_count(&self);
 
     /// Allocate a memory for an instance.
-    ///
-    /// # Unsafety
-    ///
-    /// The memory and its associated module must have already been validated by
-    /// `Self::validate_memory` (or transtively via
-    /// `Self::validate_{module,component}`) and passed that validation.
-    unsafe fn allocate_memory(
+    fn allocate_memory(
         &self,
         request: &mut InstanceAllocationRequest,
         ty: &wasmtime_environ::Memory,
@@ -282,12 +276,7 @@ pub unsafe trait InstanceAllocatorImpl {
     );
 
     /// Allocate a table for an instance.
-    ///
-    /// # Unsafety
-    ///
-    /// The table and its associated module must have already been validated by
-    /// `Self::validate_module` and passed that validation.
-    unsafe fn allocate_table(
+    fn allocate_table(
         &self,
         req: &mut InstanceAllocationRequest,
         table: &wasmtime_environ::Table,
@@ -409,10 +398,10 @@ pub trait InstanceAllocator: InstanceAllocatorImpl {
     /// Note that the returned instance must still have `.initialize(..)` called
     /// on it to complete the instantiation process.
     ///
-    /// # Unsafety
+    /// # Safety
     ///
-    /// The request's associated module, memories, tables, and vmctx must have
-    /// already have been validated by `Self::validate_module`.
+    /// The `request` provided must be valid, e.g. the imports within are
+    /// correctly sized/typed for the instance being created.
     unsafe fn allocate_module(
         &self,
         mut request: InstanceAllocationRequest,
@@ -436,10 +425,16 @@ pub trait InstanceAllocator: InstanceAllocatorImpl {
             self.allocate_tables(&mut request, &mut tables)?;
             Ok(())
         })() {
-            Ok(_) => Ok(Instance::new(request, memories, tables, &module.memories)),
+            // SAFETY: memories/tables were just allocated from the store within
+            // `request` and this function's own contract requires that the
+            // imports are valid.
+            Ok(_) => unsafe { Ok(Instance::new(request, memories, tables, &module.memories)) },
             Err(e) => {
-                self.deallocate_memories(&mut memories);
-                self.deallocate_tables(&mut tables);
+                // SAFETY: these were previously allocated by this allocator
+                unsafe {
+                    self.deallocate_memories(&mut memories);
+                    self.deallocate_tables(&mut tables);
+                }
                 self.decrement_core_instance_count();
                 Err(e)
             }
@@ -455,20 +450,20 @@ pub trait InstanceAllocator: InstanceAllocatorImpl {
     ///
     /// The instance must have previously been allocated by `Self::allocate`.
     unsafe fn deallocate_module(&self, handle: &mut InstanceHandle) {
-        self.deallocate_memories(handle.get_mut().memories_mut());
-        self.deallocate_tables(handle.get_mut().tables_mut());
+        // SAFETY: the contract of `deallocate_*` is itself a contract of this
+        // function, that the memories/tables were previously allocated from
+        // here.
+        unsafe {
+            self.deallocate_memories(handle.get_mut().memories_mut());
+            self.deallocate_tables(handle.get_mut().tables_mut());
+        }
 
         self.decrement_core_instance_count();
     }
 
     /// Allocate the memories for the given instance allocation request, pushing
     /// them into `memories`.
-    ///
-    /// # Unsafety
-    ///
-    /// The request's associated module and memories must have previously been
-    /// validated by `Self::validate_module`.
-    unsafe fn allocate_memories(
+    fn allocate_memories(
         &self,
         request: &mut InstanceAllocationRequest,
         memories: &mut PrimaryMap<DefinedMemoryIndex, (MemoryAllocationIndex, Memory)>,
@@ -484,12 +479,8 @@ pub trait InstanceAllocator: InstanceAllocatorImpl {
                 .defined_memory_index(memory_index)
                 .expect("should be a defined memory since we skipped imported ones");
 
-            memories.push(self.allocate_memory(
-                request,
-                ty,
-                request.tunables,
-                Some(memory_index),
-            )?);
+            let memory = self.allocate_memory(request, ty, request.tunables, Some(memory_index))?;
+            memories.push(memory);
         }
 
         Ok(())
@@ -510,18 +501,19 @@ pub trait InstanceAllocator: InstanceAllocatorImpl {
             // about leaking subsequent memories if the first memory failed to
             // deallocate. If deallocating memory ever becomes fallible, we will
             // need to be careful here!
-            self.deallocate_memory(Some(memory_index), allocation_index, memory);
+            //
+            // SAFETY: the unsafe contract here is the same as the unsafe
+            // contract of this function, that the memories were previously
+            // allocated by this allocator.
+            unsafe {
+                self.deallocate_memory(Some(memory_index), allocation_index, memory);
+            }
         }
     }
 
     /// Allocate tables for the given instance allocation request, pushing them
     /// into `tables`.
-    ///
-    /// # Unsafety
-    ///
-    /// The request's associated module and tables must have previously been
-    /// validated by `Self::validate_module`.
-    unsafe fn allocate_tables(
+    fn allocate_tables(
         &self,
         request: &mut InstanceAllocationRequest,
         tables: &mut PrimaryMap<DefinedTableIndex, (TableAllocationIndex, Table)>,
@@ -537,7 +529,8 @@ pub trait InstanceAllocator: InstanceAllocatorImpl {
                 .defined_table_index(index)
                 .expect("should be a defined table since we skipped imported ones");
 
-            tables.push(self.allocate_table(request, table, request.tunables, def_index)?);
+            let table = self.allocate_table(request, table, request.tunables, def_index)?;
+            tables.push(table);
         }
 
         Ok(())
@@ -554,7 +547,11 @@ pub trait InstanceAllocator: InstanceAllocatorImpl {
         tables: &mut PrimaryMap<DefinedTableIndex, (TableAllocationIndex, Table)>,
     ) {
         for (table_index, (allocation_index, table)) in mem::take(tables) {
-            self.deallocate_table(table_index, allocation_index, table);
+            // SAFETY: the tables here were allocated from this allocator per
+            // the contract on this function itself.
+            unsafe {
+                self.deallocate_table(table_index, allocation_index, table);
+            }
         }
     }
 }
@@ -572,7 +569,6 @@ fn check_table_init_bounds(
     let mut const_evaluator = ConstExprEvaluator::default();
 
     for segment in module.table_initialization.segments.iter() {
-        let table = unsafe { &*store.instance_mut(instance).get_table(segment.table_index) };
         let mut context = ConstEvalContext::new(instance);
         let start = unsafe {
             const_evaluator
@@ -582,6 +578,7 @@ fn check_table_init_bounds(
         let start = usize::try_from(start.get_u32()).unwrap();
         let end = start.checked_add(usize::try_from(segment.elements.len()).unwrap());
 
+        let table = store.instance_mut(instance).get_table(segment.table_index);
         match end {
             Some(end) if end <= table.size() => {
                 // Initializer is in bounds

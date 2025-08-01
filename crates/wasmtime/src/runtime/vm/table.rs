@@ -392,9 +392,11 @@ pub(crate) fn wasm_to_table_type(ty: WasmRefType) -> TableElementType {
 /// `Option<T>`'s `None` variant is represented with zero.
 unsafe fn alloc_dynamic_table_elements<T>(len: usize) -> Result<Vec<Option<T>>> {
     debug_assert!(
-        core::mem::MaybeUninit::<Option<T>>::zeroed()
-            .assume_init()
-            .is_none(),
+        unsafe {
+            core::mem::MaybeUninit::<Option<T>>::zeroed()
+                .assume_init()
+                .is_none()
+        },
         "null table elements are represented with zeroed memory"
     );
 
@@ -410,10 +412,10 @@ unsafe fn alloc_dynamic_table_elements<T>(len: usize) -> Result<Vec<Option<T>>> 
 
     let layout = Layout::from_size_align(size, align)?;
 
-    let ptr = alloc::alloc::alloc_zeroed(layout);
+    let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
     ensure!(!ptr.is_null(), "failed to allocate memory for table");
 
-    let elems = Vec::<Option<T>>::from_raw_parts(ptr.cast(), len, len);
+    let elems = unsafe { Vec::<Option<T>>::from_raw_parts(ptr.cast(), len, len) };
     debug_assert!(elems.iter().all(|e| e.is_none()));
 
     Ok(elems)
@@ -458,8 +460,10 @@ impl Table {
         match wasm_to_table_type(ty.ref_type) {
             TableElementType::Func => {
                 let len = {
-                    let data = data.as_non_null().as_ref();
-                    let (before, data, after) = data.align_to::<FuncTableElem>();
+                    let (before, data, after) = unsafe {
+                        let data = data.as_non_null().as_ref();
+                        data.align_to::<FuncTableElem>()
+                    };
                     assert!(before.is_empty());
                     assert!(after.is_empty());
                     data.len()
@@ -482,8 +486,10 @@ impl Table {
             }
             TableElementType::GcRef => {
                 let len = {
-                    let data = data.as_non_null().as_ref();
-                    let (before, data, after) = data.align_to::<Option<VMGcRef>>();
+                    let (before, data, after) = unsafe {
+                        let data = data.as_non_null().as_ref();
+                        data.align_to::<Option<VMGcRef>>()
+                    };
                     assert!(before.is_empty());
                     assert!(after.is_empty());
                     data.len()
@@ -502,8 +508,10 @@ impl Table {
             }
             TableElementType::Cont => {
                 let len = {
-                    let data = data.as_non_null().as_ref();
-                    let (before, data, after) = data.align_to::<ContTableElem>();
+                    let (before, data, after) = unsafe {
+                        let data = data.as_non_null().as_ref();
+                        data.align_to::<ContTableElem>()
+                    };
                     assert!(before.is_empty());
                     assert!(after.is_empty());
                     data.len()
@@ -901,52 +909,79 @@ impl Table {
         Ok(())
     }
 
+    /// Copy `len` elements from `self[src_index..][..len]` into
+    /// `dst_table[dst_index..][..len]`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the range is out of bounds of either the source or
+    /// destination tables.
+    pub fn copy_to(
+        &self,
+        dst: &mut Table,
+        gc_store: Option<&mut GcStore>,
+        dst_index: u64,
+        src_index: u64,
+        len: u64,
+    ) -> Result<(), Trap> {
+        let (src_range, dst_range) = Table::validate_copy(self, dst, dst_index, src_index, len)?;
+        Self::copy_elements(gc_store, dst, self, dst_range, src_range);
+        Ok(())
+    }
+
+    /// Copy `len` elements from `self[src_index..][..len]` into
+    /// `self[dst_index..][..len]`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the range is out of bounds of either the source or
+    /// destination tables.
+    pub fn copy_within(
+        &mut self,
+        gc_store: Option<&mut GcStore>,
+        dst_index: u64,
+        src_index: u64,
+        len: u64,
+    ) -> Result<(), Trap> {
+        let (src_range, dst_range) = Table::validate_copy(self, self, dst_index, src_index, len)?;
+        self.copy_elements_within(gc_store, dst_range, src_range);
+        Ok(())
+    }
+
     /// Copy `len` elements from `src_table[src_index..]` into `dst_table[dst_index..]`.
     ///
     /// # Errors
     ///
     /// Returns an error if the range is out of bounds of either the source or
     /// destination tables.
-    pub unsafe fn copy(
-        gc_store: Option<&mut GcStore>,
-        dst_table: *mut Self,
-        src_table: *mut Self,
+    fn validate_copy(
+        src: &Table,
+        dst: &Table,
         dst_index: u64,
         src_index: u64,
         len: u64,
-    ) -> Result<(), Trap> {
+    ) -> Result<(Range<usize>, Range<usize>), Trap> {
         // https://webassembly.github.io/bulk-memory-operations/core/exec/instructions.html#exec-table-copy
 
         let src_index = usize::try_from(src_index).map_err(|_| Trap::TableOutOfBounds)?;
         let dst_index = usize::try_from(dst_index).map_err(|_| Trap::TableOutOfBounds)?;
         let len = usize::try_from(len).map_err(|_| Trap::TableOutOfBounds)?;
 
-        if src_index
-            .checked_add(len)
-            .map_or(true, |n| n > (*src_table).size())
-            || dst_index
-                .checked_add(len)
-                .map_or(true, |m| m > (*dst_table).size())
+        if src_index.checked_add(len).map_or(true, |n| n > src.size())
+            || dst_index.checked_add(len).map_or(true, |m| m > dst.size())
         {
             return Err(Trap::TableOutOfBounds);
         }
 
         debug_assert!(
-            (*dst_table).element_type() == (*src_table).element_type(),
+            dst.element_type() == src.element_type(),
             "table element type mismatch"
         );
 
         let src_range = src_index..src_index + len;
         let dst_range = dst_index..dst_index + len;
 
-        // Check if the tables are the same as we cannot mutably borrow and also borrow the same `RefCell`
-        if ptr::eq(dst_table, src_table) {
-            (*dst_table).copy_elements_within(gc_store, dst_range, src_range);
-        } else {
-            Self::copy_elements(gc_store, &mut *dst_table, &*src_table, dst_range, src_range);
-        }
-
-        Ok(())
+        Ok((src_range, dst_range))
     }
 
     /// Return a `VMTableDefinition` for exposing the table to compiled wasm code.

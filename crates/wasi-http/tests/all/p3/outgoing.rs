@@ -20,10 +20,9 @@ async fn run(path: &str, server: &Server) -> anyhow::Result<()> {
     let mut store = Store::new(
         &engine,
         Ctx {
-            cli: WasiCliCtx {
-                environment: vec![("HTTP_SERVER".into(), server.addr())],
-                ..WasiCliCtx::default()
-            },
+            wasip3: wasmtime_wasi::p3::WasiCtxBuilder::new()
+                .env("HTTP_SERVER", server.addr())
+                .build(),
             ..Ctx::<TestClient>::default()
         },
     );

@@ -6,14 +6,11 @@ use anyhow::{Context as _, anyhow};
 use test_programs_artifacts::*;
 use wasmtime::Store;
 use wasmtime::component::{Component, Linker, ResourceTable};
-use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::p2::{self, IoView};
 use wasmtime_wasi::p3::ResourceView;
 use wasmtime_wasi::p3::bindings::Command;
-use wasmtime_wasi::p3::cli::{WasiCliCtx, WasiCliView};
 use wasmtime_wasi::p3::filesystem::{WasiFilesystemCtx, WasiFilesystemView};
-use wasmtime_wasi::p3::sockets::{
-    AllowedNetworkUses, SocketAddrCheck, WasiSocketsCtx, WasiSocketsView,
-};
+use wasmtime_wasi::p3::{self, WasiCtxView};
 use wasmtime_wasi::{DirPerms, FilePerms};
 
 macro_rules! assert_test_exists {
@@ -24,39 +21,35 @@ macro_rules! assert_test_exists {
 }
 
 struct Ctx {
-    cli: WasiCliCtx,
     filesystem: WasiFilesystemCtx,
-    sockets: WasiSocketsCtx,
     table: ResourceTable,
-    wasip2: WasiCtx,
-    wasip3: wasmtime_wasi::p3::WasiCtx,
+    p2: p2::WasiCtx,
+    p3: p3::WasiCtx,
 }
 
 impl Default for Ctx {
     fn default() -> Self {
         Self {
-            cli: WasiCliCtx::default(),
             filesystem: WasiFilesystemCtx::default(),
-            sockets: WasiSocketsCtx {
-                socket_addr_check: SocketAddrCheck::new(|_, _| Box::pin(async { true })),
-                allowed_network_uses: AllowedNetworkUses {
-                    ip_name_lookup: true,
-                    udp: true,
-                    tcp: true,
-                },
-            },
             table: ResourceTable::default(),
-            wasip2: WasiCtxBuilder::new().inherit_stdio().build(),
-            wasip3: wasmtime_wasi::p3::WasiCtxBuilder::new()
-                .inherit_stdio()
-                .build(),
+            p2: p2::WasiCtxBuilder::new().inherit_stdio().build(),
+            p3: p3::WasiCtxBuilder::new().inherit_stdio().build(),
         }
     }
 }
 
-impl WasiView for Ctx {
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.wasip2
+impl p2::WasiView for Ctx {
+    fn ctx(&mut self) -> &mut p2::WasiCtx {
+        &mut self.p2
+    }
+}
+
+impl p3::WasiView for Ctx {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.p3,
+            table: &mut self.table,
+        }
     }
 }
 
@@ -72,33 +65,14 @@ impl ResourceView for Ctx {
     }
 }
 
-impl WasiCliView for Ctx {
-    fn cli(&mut self) -> &WasiCliCtx {
-        &self.cli
-    }
-}
-
 impl WasiFilesystemView for Ctx {
     fn filesystem(&self) -> &WasiFilesystemCtx {
         &self.filesystem
     }
 }
 
-impl WasiSocketsView for Ctx {
-    fn sockets(&self) -> &WasiSocketsCtx {
-        &self.sockets
-    }
-}
-
-impl wasmtime_wasi::p3::WasiView for Ctx {
-    fn ctx(&mut self) -> &mut wasmtime_wasi::p3::WasiCtx {
-        &mut self.wasip3
-    }
-}
-
 async fn run(path: &str) -> anyhow::Result<()> {
-    _ = env_logger::try_init();
-
+    let _ = env_logger::try_init();
     let path = Path::new(path);
     let engine = test_programs_artifacts::engine(|config| {
         config.async_support(true);
@@ -112,19 +86,39 @@ async fn run(path: &str) -> anyhow::Result<()> {
     wasmtime_wasi::p3::add_to_linker(&mut linker).context("failed to link `wasi:cli@0.3.x`")?;
 
     let mut filesystem = WasiFilesystemCtx::default();
+    let table = ResourceTable::default();
+
+    let p2 = p2::WasiCtx::builder()
+        .inherit_stdout()
+        .inherit_stderr()
+        .build();
+
+    let mut p3 = p3::WasiCtxBuilder::new();
+    let name = path.file_stem().unwrap().to_str().unwrap();
     let tempdir = tempfile::Builder::new()
         .prefix(&format!(
             "wasi_components_{}_",
             path.file_stem().unwrap().to_str().unwrap()
         ))
         .tempdir()?;
+    p3.args(&[name, "."])
+        .inherit_network()
+        .allow_ip_name_lookup(true);
     println!("preopen: {tempdir:?}");
     filesystem.preopened_dir(tempdir.path(), ".", DirPerms::all(), FilePerms::all())?;
+    p3.preopened_dir(tempdir.path(), ".", DirPerms::all(), FilePerms::all())?;
+    for (var, val) in test_programs_artifacts::wasi_tests_environment() {
+        p3.env(var, val);
+    }
+    let p3 = p3.build();
+
     let mut store = Store::new(
         &engine,
         Ctx {
+            table,
+            p2,
+            p3,
             filesystem,
-            ..Ctx::default()
         },
     );
     let instance = linker.instantiate_async(&mut store, &component).await?;
@@ -141,6 +135,11 @@ async fn run(path: &str) -> anyhow::Result<()> {
 }
 
 foreach_p3!(assert_test_exists);
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p3_cli() -> anyhow::Result<()> {
+    run(P3_CLI_COMPONENT).await
+}
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn p3_clocks_sleep() -> anyhow::Result<()> {
@@ -198,7 +197,6 @@ async fn p3_sockets_udp_connect() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
-#[ignore = "https://github.com/bytecodealliance/wasip3-prototyping/issues/44"]
 async fn p3_sockets_udp_sample_application() -> anyhow::Result<()> {
     run(P3_SOCKETS_UDP_SAMPLE_APPLICATION_COMPONENT).await
 }

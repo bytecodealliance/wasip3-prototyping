@@ -1,6 +1,6 @@
 use crate::p3::bindings::http::types::{
-    ErrorCode, FieldName, FieldValue, HeaderError, Host, HostConcurrent, HostFields, HostRequest,
-    HostRequestConcurrent, HostRequestOptions, HostResponse, HostResponseConcurrent, Method,
+    ErrorCode, FieldName, FieldValue, HeaderError, Host, HostFields, HostRequest,
+    HostRequestOptions, HostRequestWithStore, HostResponse, HostResponseWithStore, Method,
     RequestOptionsError, Scheme, StatusCode, Trailers,
 };
 use crate::p3::host::{
@@ -27,8 +27,8 @@ use http_body::Body as _;
 use std::io::Cursor;
 use std::sync::Arc;
 use wasmtime::component::{
-    Accessor, AccessorTask, DropWithStore, FutureReader, FutureWriter, Resource, StreamReader,
-    StreamWriter, WithAccessor, WithAccessorAndValue,
+    Accessor, AccessorTask, FutureReader, FutureWriter, GuardedFutureReader, GuardedFutureWriter,
+    GuardedStreamReader, GuardedStreamWriter, Resource, StreamReader, StreamWriter,
 };
 use wasmtime_wasi::ResourceTable;
 use wasmtime_wasi::p3::bindings::clocks::monotonic_clock::Duration;
@@ -128,8 +128,8 @@ where
             };
             mem::replace(&mut *body, Body::Consumed)
         };
-        let mut contents_tx = WithAccessor::new(store, self.contents_tx);
-        let mut trailers_tx = WithAccessorAndValue::new(store, self.trailers_tx, Ok(None));
+        let mut contents_tx = GuardedStreamWriter::new(store, self.contents_tx);
+        let mut trailers_tx = GuardedFutureWriter::new(store, self.trailers_tx);
         match body {
             Body::Guest {
                 contents: MaybeTombstone::None,
@@ -145,8 +145,7 @@ where
                     },
                     async {
                         trailers_tx
-                            .into_inner()
-                            .write(store, Err(self.cx.as_body_size_error(sent)))
+                            .write(Err(self.cx.as_body_size_error(sent)))
                             .await;
                     }
                 );
@@ -161,7 +160,7 @@ where
             } => {
                 drop(contents_tx);
                 let res = {
-                    let mut watch_reader = pin!(trailers_tx.watch_reader(store));
+                    let mut watch_reader = pin!(trailers_tx.watch_reader());
                     let mut trailers_rx = pin!(trailers_rx.read(store));
                     poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
                         Poll::Ready(()) => return Poll::Ready(None),
@@ -184,11 +183,7 @@ where
                     };
                     return Ok(());
                 };
-                if !trailers_tx
-                    .into_inner()
-                    .write(store, clone_trailer_result(&res))
-                    .await
-                {
+                if !trailers_tx.write(clone_trailer_result(&res)).await {
                     let Ok(mut body) = self.body.lock() else {
                         bail!("lock poisoned");
                     };
@@ -212,11 +207,7 @@ where
                 content_length: None,
             } => {
                 drop(contents_tx);
-                if !trailers_tx
-                    .into_inner()
-                    .write(store, clone_trailer_result(&res))
-                    .await
-                {
+                if !trailers_tx.write(clone_trailer_result(&res)).await {
                     let Ok(mut body) = self.body.lock() else {
                         bail!("lock poisoned");
                     };
@@ -239,11 +230,11 @@ where
                 tx,
                 mut content_length,
             } => {
-                let mut contents_rx = WithAccessor::new(store, contents_rx);
-                let trailers_rx = WithAccessor::new(store, trailers_rx);
+                let mut contents_rx = GuardedStreamReader::new(store, contents_rx);
+                let trailers_rx = GuardedFutureReader::new(store, trailers_rx);
                 match buffer {
                     Some(BodyFrame::Data(buffer)) => {
-                        let buffer = contents_tx.write_all(store, Cursor::new(buffer)).await;
+                        let buffer = contents_tx.write_all(Cursor::new(buffer)).await;
                         if contents_tx.is_closed() {
                             let Ok(mut body) = self.body.lock() else {
                                 bail!("lock poisoned");
@@ -251,8 +242,8 @@ where
                             let pos = buffer.position().try_into()?;
                             let buffer = buffer.into_inner().split_off(pos);
                             *body = Body::Guest {
-                                contents: MaybeTombstone::Some(contents_rx.into_inner()),
-                                trailers: MaybeTombstone::Some(trailers_rx.into_inner()),
+                                contents: MaybeTombstone::Some(contents_rx.into()),
+                                trailers: MaybeTombstone::Some(trailers_rx.into()),
                                 buffer: Some(BodyFrame::Data(buffer)),
                                 tx,
                                 content_length,
@@ -266,8 +257,8 @@ where
                 let mut rx_buffer = BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY);
                 loop {
                     let res = {
-                        let mut contents_tx_drop = pin!(contents_tx.watch_reader(store));
-                        let mut next_chunk = pin!(contents_rx.read(store, rx_buffer));
+                        let mut contents_tx_drop = pin!(contents_tx.watch_reader());
+                        let mut next_chunk = pin!(contents_rx.read(rx_buffer));
                         poll_fn(|cx| match contents_tx_drop.as_mut().poll(cx) {
                             Poll::Ready(()) => return Poll::Ready(None),
                             Poll::Pending => next_chunk.as_mut().poll(cx).map(Some),
@@ -284,7 +275,7 @@ where
                             // reads in Wasmtime to fully support this to avoid
                             // needing `Taken` at all.
                             contents: MaybeTombstone::Tombstone,
-                            trailers: MaybeTombstone::Some(trailers_rx.into_inner()),
+                            trailers: MaybeTombstone::Some(trailers_rx.into()),
                             buffer: None,
                             tx,
                             content_length,
@@ -305,8 +296,7 @@ where
                                     },
                                     async {
                                         trailers_tx
-                                            .into_inner()
-                                            .write(store, Err(self.cx.as_body_size_error(sent)))
+                                            .write(Err(self.cx.as_body_size_error(sent)))
                                             .await;
                                     }
                                 );
@@ -335,10 +325,7 @@ where
                                     tx.write(store, Err(self.cx.as_body_size_error(n))).await;
                                 },
                                 async {
-                                    trailers_tx
-                                        .into_inner()
-                                        .write(store, Err(self.cx.as_body_size_error(n)))
-                                        .await;
+                                    trailers_tx.write(Err(self.cx.as_body_size_error(n))).await;
                                 }
                             );
                             return Ok(());
@@ -346,7 +333,7 @@ where
                     }
                     let buffer = rx_buffer.split().freeze();
                     rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
-                    let buffer = tx_tail.write_all(store, Cursor::new(buffer)).await;
+                    let buffer = tx_tail.write_all(Cursor::new(buffer)).await;
                     if tx_tail.is_closed() {
                         let Ok(mut body) = self.body.lock() else {
                             bail!("lock poisoned");
@@ -354,8 +341,8 @@ where
                         let pos = buffer.position().try_into()?;
                         let buffer = buffer.into_inner().split_off(pos);
                         *body = Body::Guest {
-                            contents: MaybeTombstone::Some(contents_rx.into_inner()),
-                            trailers: MaybeTombstone::Some(trailers_rx.into_inner()),
+                            contents: MaybeTombstone::Some(contents_rx.into()),
+                            trailers: MaybeTombstone::Some(trailers_rx.into()),
                             buffer: Some(BodyFrame::Data(buffer)),
                             tx,
                             content_length,
@@ -366,8 +353,8 @@ where
                 }
 
                 let res = {
-                    let mut watch_reader = pin!(trailers_tx.watch_reader(store));
-                    let mut trailers_rx = pin!(trailers_rx.into_inner().read(store));
+                    let mut watch_reader = pin!(trailers_tx.watch_reader());
+                    let mut trailers_rx = pin!(trailers_rx.read());
                     poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
                         Poll::Ready(()) => return Poll::Ready(None),
                         Poll::Pending => trailers_rx.as_mut().poll(cx).map(Some),
@@ -389,11 +376,7 @@ where
                     };
                     return Ok(());
                 };
-                if !trailers_tx
-                    .into_inner()
-                    .write(store, clone_trailer_result(&res))
-                    .await
-                {
+                if !trailers_tx.write(clone_trailer_result(&res)).await {
                     let Ok(mut body) = self.body.lock() else {
                         bail!("lock poisoned");
                     };
@@ -416,7 +399,7 @@ where
             } => {
                 match buffer {
                     Some(BodyFrame::Data(buffer)) => {
-                        let buffer = contents_tx.write_all(store, Cursor::new(buffer)).await;
+                        let buffer = contents_tx.write_all(Cursor::new(buffer)).await;
                         if contents_tx.is_closed() {
                             let Ok(mut body) = self.body.lock() else {
                                 bail!("lock poisoned");
@@ -435,7 +418,7 @@ where
                 }
                 loop {
                     let res = {
-                        let mut watch_reader = pin!(contents_tx.watch_reader(store));
+                        let mut watch_reader = pin!(contents_tx.watch_reader());
                         poll_fn(|cx| match watch_reader.as_mut().poll(cx) {
                             Poll::Ready(()) => return Poll::Ready(None),
                             Poll::Pending => Pin::new(&mut stream).poll_frame(cx).map(Some),
@@ -456,7 +439,7 @@ where
                         }
                         Some(None) => {
                             drop(contents_tx);
-                            if !trailers_tx.into_inner().write(store, Ok(None)).await {
+                            if !trailers_tx.write(Ok(None)).await {
                                 let Ok(mut body) = self.body.lock() else {
                                     bail!("lock poisoned");
                                 };
@@ -470,8 +453,7 @@ where
                         Some(Some(Ok(frame))) => {
                             match frame.into_data().map_err(http_body::Frame::into_trailers) {
                                 Ok(buffer) => {
-                                    let buffer =
-                                        contents_tx.write_all(store, Cursor::new(buffer)).await;
+                                    let buffer = contents_tx.write_all(Cursor::new(buffer)).await;
                                     if contents_tx.is_closed() {
                                         let Ok(mut body) = self.body.lock() else {
                                             bail!("lock poisoned");
@@ -491,8 +473,7 @@ where
                                         push_fields(view.get().table(), WithChildren::new(trailers))
                                     })?;
                                     if !trailers_tx
-                                        .into_inner()
-                                        .write(store, Ok(Some(Resource::new_own(trailers.rep()))))
+                                        .write(Ok(Some(Resource::new_own(trailers.rep()))))
                                         .await
                                     {
                                         let Ok(mut body) = self.body.lock() else {
@@ -507,11 +488,7 @@ where
                                 }
                                 Err(Err(..)) => {
                                     drop(contents_tx);
-                                    if !trailers_tx
-                                        .into_inner()
-                                        .write(store, Err(ErrorCode::HttpProtocolError))
-                                        .await
-                                    {
+                                    if !trailers_tx.write(Err(ErrorCode::HttpProtocolError)).await {
                                         let Ok(mut body) = self.body.lock() else {
                                             bail!("lock poisoned");
                                         };
@@ -528,11 +505,7 @@ where
                         }
                         Some(Some(Err(err))) => {
                             drop(contents_tx);
-                            if !trailers_tx
-                                .into_inner()
-                                .write(store, Err(err.clone()))
-                                .await
-                            {
+                            if !trailers_tx.write(Err(err.clone())).await {
                                 let Ok(mut body) = self.body.lock() else {
                                     bail!("lock poisoned");
                                 };
@@ -551,11 +524,7 @@ where
                 buffer: Some(BodyFrame::Trailers(res)),
             } => {
                 drop(contents_tx);
-                if !trailers_tx
-                    .into_inner()
-                    .write(store, clone_trailer_result(&res))
-                    .await
-                {
+                if !trailers_tx.write(clone_trailer_result(&res)).await {
                     let Ok(mut body) = self.body.lock() else {
                         bail!("lock poisoned");
                     };
@@ -573,8 +542,6 @@ where
 }
 
 impl<T> Host for WasiHttpImpl<T> where T: WasiHttpView {}
-
-impl<T> HostConcurrent for WasiHttp<T> where T: WasiHttpView + 'static {}
 
 fn parse_header_value(
     name: &http::HeaderName,
@@ -765,7 +732,7 @@ where
     }
 }
 
-impl<T> HostRequestConcurrent for WasiHttp<T>
+impl<T> HostRequestWithStore for WasiHttp<T>
 where
     T: WasiHttpView + 'static,
 {
@@ -779,7 +746,7 @@ where
         store.with(|mut view| {
             let instance = view.instance();
             let (res_tx, res_rx) = instance
-                .future(&mut view)
+                .future(&mut view, || Ok(()))
                 .context("failed to create future")?;
             let contents = match contents {
                 Some(contents) => MaybeTombstone::Some(contents),
@@ -821,7 +788,7 @@ where
                 .stream(&mut view)
                 .context("failed to create stream")?;
             let (trailers_tx, trailers_rx) = instance
-                .future(&mut view)
+                .future(&mut view, || Ok(None))
                 .context("failed to create future")?;
             let mut binding = view.get();
             let Request { body, .. } = get_request_mut(binding.table(), &req)?;
@@ -860,7 +827,9 @@ where
                 .table()
                 .delete(req)
                 .context("failed to delete request from table")?;
-            mem::replace(request.body.lock().unwrap().deref_mut(), Body::Consumed).drop(store)
+            mem::replace(request.body.lock().unwrap().deref_mut(), Body::Consumed)
+                .drop_with_store(store);
+            Ok(())
         })
     }
 }
@@ -1097,7 +1066,7 @@ where
     }
 }
 
-impl<T> HostResponseConcurrent for WasiHttp<T>
+impl<T> HostResponseWithStore for WasiHttp<T>
 where
     T: WasiHttpView + 'static,
 {
@@ -1110,7 +1079,7 @@ where
         store.with(|mut view| {
             let instance = view.instance();
             let (res_tx, res_rx) = instance
-                .future(&mut view)
+                .future(&mut view, || Ok(()))
                 .context("failed to create future")?;
             let contents = match contents {
                 Some(contents) => MaybeTombstone::Some(contents),
@@ -1143,7 +1112,7 @@ where
                 .stream(&mut view)
                 .context("failed to create stream")?;
             let (trailers_tx, trailers_rx) = instance
-                .future(&mut view)
+                .future(&mut view, || Ok(None))
                 .context("failed to create future")?;
             let mut binding = view.get();
             let Response { body, .. } = get_response_mut(binding.table(), &res)?;
@@ -1182,7 +1151,9 @@ where
                 .table()
                 .delete(req)
                 .context("failed to delete request from table")?;
-            mem::replace(request.body.lock().unwrap().deref_mut(), Body::Consumed).drop(store)
+            mem::replace(request.body.lock().unwrap().deref_mut(), Body::Consumed)
+                .drop_with_store(store);
+            Ok(())
         })
     }
 }

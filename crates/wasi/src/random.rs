@@ -1,28 +1,10 @@
 use cap_rand::{Rng as _, RngCore, SeedableRng as _};
+use wasmtime::component::HasData;
 
-#[repr(transparent)]
-pub struct WasiRandomImpl<T>(pub T);
+pub(crate) struct WasiRandom;
 
-impl<T: WasiRandomView> WasiRandomView for &mut T {
-    fn random(&mut self) -> &mut WasiRandomCtx {
-        (**self).random()
-    }
-}
-
-impl<T: WasiRandomView> WasiRandomView for WasiRandomImpl<T> {
-    fn random(&mut self) -> &mut WasiRandomCtx {
-        self.0.random()
-    }
-}
-
-impl WasiRandomView for WasiRandomCtx {
-    fn random(&mut self) -> &mut WasiRandomCtx {
-        self
-    }
-}
-
-pub trait WasiRandomView: Send {
-    fn random(&mut self) -> &mut WasiRandomCtx;
+impl HasData for WasiRandom {
+    type Data<'a> = &'a mut WasiRandomCtx;
 }
 
 pub struct WasiRandomCtx {
@@ -49,6 +31,16 @@ impl Default for WasiRandomCtx {
             insecure_random,
             insecure_random_seed,
         }
+    }
+}
+
+pub trait WasiRandomView: Send {
+    fn random(&mut self) -> &mut WasiRandomCtx;
+}
+
+impl WasiRandomView for WasiRandomCtx {
+    fn random(&mut self) -> &mut WasiRandomCtx {
+        self
     }
 }
 

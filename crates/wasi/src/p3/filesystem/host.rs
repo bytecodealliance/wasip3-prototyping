@@ -4,8 +4,8 @@ use anyhow::{Context as _, anyhow};
 use system_interface::fs::FileIoExt as _;
 use tokio::sync::mpsc;
 use wasmtime::component::{
-    Accessor, AccessorTask, FutureReader, Lower, Resource, ResourceTable, StreamReader,
-    WithAccessor, WithAccessorAndValue,
+    Accessor, AccessorTask, FutureReader, FutureWriter, GuardedFutureReader, GuardedFutureWriter,
+    GuardedStreamReader, GuardedStreamWriter, Lower, Resource, ResourceTable, StreamReader,
 };
 
 use crate::p3::bindings::filesystem::types::{
@@ -48,9 +48,7 @@ where
 
 impl<T> types::Host for WasiFilesystemImpl<T> where T: WasiFilesystemView {}
 
-impl<T> types::HostConcurrent for WasiFilesystem<T> where T: WasiFilesystemView + 'static {}
-
-impl<T> types::HostDescriptorConcurrent for WasiFilesystem<T>
+impl<T> types::HostDescriptorWithStore for WasiFilesystem<T>
 where
     T: WasiFilesystemView + 'static,
 {
@@ -65,14 +63,14 @@ where
                 .stream(&mut view)
                 .context("failed to create stream")?;
             let res = instance
-                .future(&mut view)
+                .future(&mut view, || Ok(()))
                 .context("failed to create future")?;
             anyhow::Ok((data, res))
         })?;
-        let data_tx = WithAccessor::new(store, data_tx);
-        let data_rx = WithAccessor::new(store, data_rx);
-        let res_tx = WithAccessorAndValue::new(store, res_tx, Ok(()));
-        let res_rx = WithAccessor::new(store, res_rx);
+        let data_tx = GuardedStreamWriter::new(store, data_tx);
+        let data_rx = GuardedStreamReader::new(store, data_rx);
+        let res_tx = GuardedFutureWriter::new(store, res_tx);
+        let res_rx = GuardedFutureReader::new(store, res_rx);
 
         let result = store.with(|mut view| {
             let mut binding = view.get();
@@ -136,8 +134,8 @@ where
             Ok((task_rx, id, tasks)) => {
                 store.spawn(ReadTask {
                     io: IoTask {
-                        data: data_tx.into_inner(),
-                        result: res_tx.into_inner(),
+                        data: data_tx.into(),
+                        result: res_tx.into(),
                         rx: task_rx,
                     },
                     id,
@@ -145,7 +143,7 @@ where
                 });
             }
             Err(err) => {
-                let res_tx = res_tx.into_inner();
+                let res_tx = FutureWriter::from(res_tx);
                 store.spawn_fn_box(move |store| {
                     Box::pin(async move {
                         res_tx.write(store, Err(err)).await;
@@ -155,7 +153,7 @@ where
             }
         }
 
-        Ok((data_rx.into_inner(), res_rx.into_inner()))
+        Ok((data_rx.into(), res_rx.into()))
     }
 
     async fn write_via_stream<U: 'static>(
@@ -327,14 +325,14 @@ where
                 .stream(&mut view)
                 .context("failed to create stream")?;
             let res = instance
-                .future(&mut view)
+                .future(&mut view, || Ok(()))
                 .context("failed to create future")?;
             anyhow::Ok((data, res))
         })?;
-        let data_tx = WithAccessor::new(store, data_tx);
-        let data_rx = WithAccessor::new(store, data_rx);
-        let res_tx = WithAccessorAndValue::new(store, res_tx, Ok(()));
-        let res_rx = WithAccessor::new(store, res_rx);
+        let data_tx = GuardedStreamWriter::new(store, data_tx);
+        let data_rx = GuardedStreamReader::new(store, data_rx);
+        let res_tx = GuardedFutureWriter::new(store, res_tx);
+        let res_rx = GuardedFutureReader::new(store, res_rx);
 
         let result = store.with(|mut view| {
             let mut binding = view.get();
@@ -435,8 +433,8 @@ where
             Ok((task_rx, id, tasks)) => {
                 store.spawn(ReadTask {
                     io: IoTask {
-                        data: data_tx.into_inner(),
-                        result: res_tx.into_inner(),
+                        data: data_tx.into(),
+                        result: res_tx.into(),
                         rx: task_rx,
                     },
                     id,
@@ -444,7 +442,7 @@ where
                 });
             }
             Err(err) => {
-                let res_tx = res_tx.into_inner();
+                let res_tx = FutureWriter::from(res_tx);
                 store.spawn_fn_box(move |store| {
                     Box::pin(async move {
                         res_tx.write(store, Err(err)).await;
@@ -454,7 +452,7 @@ where
             }
         }
 
-        Ok((data_rx.into_inner(), res_rx.into_inner()))
+        Ok((data_rx.into(), res_rx.into()))
     }
 
     async fn sync<U>(

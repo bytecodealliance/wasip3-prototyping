@@ -283,7 +283,7 @@ where
         + 'static,
 {
     wasmtime_wasi::p3::clocks::add_to_linker(l)?;
-    wasmtime_wasi::p3::cli::add_stdio_to_linker(l)?;
+    wasmtime_wasi::p3::cli::add_to_linker(l)?;
     wasmtime_wasi::p3::random::add_to_linker(l)?;
 
     add_only_http_to_linker(l)

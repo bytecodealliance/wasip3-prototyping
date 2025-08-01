@@ -282,7 +282,7 @@ impl dyn VMStore + '_ {
     /// This method is not safe as there's no static guarantee that `T` is
     /// correct for this store.
     pub(crate) unsafe fn unchecked_context_mut<T>(&mut self) -> StoreContextMut<'_, T> {
-        StoreContextMut(&mut *(self as *mut dyn VMStore as *mut StoreInner<T>))
+        unsafe { StoreContextMut(&mut *(self as *mut dyn VMStore as *mut StoreInner<T>)) }
     }
 }
 

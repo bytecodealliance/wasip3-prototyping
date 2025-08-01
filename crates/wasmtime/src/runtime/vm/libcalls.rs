@@ -57,9 +57,10 @@
 #[cfg(feature = "stack-switching")]
 use super::stack_switching::VMContObj;
 use crate::prelude::*;
+use crate::runtime::store::StoreInstanceId;
 #[cfg(feature = "gc")]
 use crate::runtime::vm::VMGcRef;
-use crate::runtime::vm::table::{Table, TableElementType};
+use crate::runtime::vm::table::TableElementType;
 use crate::runtime::vm::vmcontext::VMFuncRef;
 use crate::runtime::vm::{
     HostResultHasUnwindSentinel, Instance, TrapReason, VMStore, f32x4, f64x2, i8x16,
@@ -120,7 +121,7 @@ pub mod raw {
                 ) $(-> libcall!(@ty $result))? {
                     $(#[cfg($attr)])?
                     {
-                        crate::runtime::vm::traphandlers::catch_unwind_and_record_trap(|| {
+                        crate::runtime::vm::traphandlers::catch_unwind_and_record_trap(|| unsafe {
                             InstanceAndStore::from_vmctx(vmctx, |pair| {
                                 let (instance, store) = pair.unpack_mut();
                                 super::$name(store, instance, $($pname),*)
@@ -289,7 +290,8 @@ unsafe fn table_grow_cont_obj(
         instance.as_mut().table_element_type(table_index),
         TableElementType::Cont,
     ));
-    let element = VMContObj::from_raw_parts(init_value_contref, init_value_revision).into();
+    let element =
+        unsafe { VMContObj::from_raw_parts(init_value_contref, init_value_revision).into() };
     let result = instance
         .defined_table_grow(store, defined_table_index, delta, element)?
         .map(AllocationSize);
@@ -357,7 +359,7 @@ unsafe fn table_fill_cont_obj(
     let table = instance.get_defined_table(table_index);
     match table.element_type() {
         TableElementType::Cont => {
-            let contobj = VMContObj::from_raw_parts(value_contref, value_revision);
+            let contobj = unsafe { VMContObj::from_raw_parts(value_contref, value_revision) };
             table.fill(store.optional_gc_store_mut(), dst, contobj.into(), len)?;
             Ok(())
         }
@@ -366,7 +368,7 @@ unsafe fn table_fill_cont_obj(
 }
 
 // Implementation of `table.copy`.
-unsafe fn table_copy(
+fn table_copy(
     store: &mut dyn VMStore,
     mut instance: Pin<&mut Instance>,
     dst_table_index: u32,
@@ -374,17 +376,34 @@ unsafe fn table_copy(
     dst: u64,
     src: u64,
     len: u64,
-) -> Result<()> {
+) -> Result<(), Trap> {
     let dst_table_index = TableIndex::from_u32(dst_table_index);
     let src_table_index = TableIndex::from_u32(src_table_index);
     let store = store.store_opaque_mut();
-    let dst_table = instance.as_mut().get_table(dst_table_index);
-    // Lazy-initialize the whole range in the source table first.
-    let src_range = src..(src.checked_add(len).unwrap_or(u64::MAX));
-    let src_table = instance.get_table_with_lazy_init(src_table_index, src_range);
-    let gc_store = store.optional_gc_store_mut();
-    Table::copy(gc_store, dst_table, src_table, dst, src, len)?;
-    Ok(())
+
+    // Convert the two table indices relative to `instance` into two
+    // defining instances and the defined table index within that instance.
+    let (dst_def_index, dst_instance) = instance
+        .as_mut()
+        .defined_table_index_and_instance(dst_table_index);
+    let dst_instance_id = dst_instance.id();
+    let (src_def_index, src_instance) = instance
+        .as_mut()
+        .defined_table_index_and_instance(src_table_index);
+    let src_instance_id = src_instance.id();
+
+    let src_table = crate::Table::from_raw(
+        StoreInstanceId::new(store.id(), src_instance_id),
+        src_def_index,
+    );
+    let dst_table = crate::Table::from_raw(
+        StoreInstanceId::new(store.id(), dst_instance_id),
+        dst_def_index,
+    );
+
+    // SAFETY: this is only safe if the two tables have the same type, and that
+    // was validated during wasm-validation time.
+    unsafe { crate::Table::copy_raw(store, &dst_table, dst, &src_table, src, len) }
 }
 
 // Implementation of `table.init`.
@@ -490,7 +509,7 @@ unsafe fn table_get_lazy_init_func_ref(
         .get(None, index)
         .expect("table access already bounds-checked");
 
-    match elem.into_func_ref_asserting_initialized() {
+    match unsafe { elem.into_func_ref_asserting_initialized() } {
         Some(ptr) => ptr.as_ptr().cast(),
         None => core::ptr::null_mut(),
     }
@@ -516,10 +535,12 @@ unsafe fn grow_gc_heap(
 ) -> Result<()> {
     let orig_len = u64::try_from(store.gc_store()?.gc_heap.vmmemory().current_length()).unwrap();
 
-    store
-        .maybe_async_gc(None, Some(bytes_needed))
-        .context("failed to grow the GC heap")
-        .context(crate::Trap::AllocationTooLarge)?;
+    unsafe {
+        store
+            .maybe_async_gc(None, Some(bytes_needed))
+            .context("failed to grow the GC heap")
+            .context(crate::Trap::AllocationTooLarge)?;
+    }
 
     // JIT code relies on the memory having grown by `bytes_needed` bytes if
     // this libcall returns successfully, so trap if we didn't grow that much.
@@ -605,7 +626,7 @@ unsafe fn intern_func_ref_for_gc_heap(
     let func_ref = func_ref.cast::<VMFuncRef>();
     let func_ref = NonNull::new(func_ref).map(SendSyncPtr::new);
 
-    let func_ref_id = store.gc_store_mut()?.func_ref_table.intern(func_ref);
+    let func_ref_id = unsafe { store.gc_store_mut()?.func_ref_table.intern(func_ref) };
     Ok(func_ref_id.into_raw())
 }
 
@@ -692,12 +713,14 @@ unsafe fn array_new_data(
         .layout(shared_ty)
         .expect("array types have GC layouts");
     let array_layout = gc_layout.unwrap_array();
-    let array_ref = store.retry_after_gc_maybe_async((), |store, ()| {
-        store
-            .unwrap_gc_store_mut()
-            .alloc_uninit_array(shared_ty, len, &array_layout)?
-            .map_err(|bytes_needed| crate::GcHeapOutOfMemory::new((), bytes_needed).into())
-    })?;
+    let array_ref = unsafe {
+        store.retry_after_gc_maybe_async((), |store, ()| {
+            store
+                .unwrap_gc_store_mut()
+                .alloc_uninit_array(shared_ty, len, &array_layout)?
+                .map_err(|bytes_needed| crate::GcHeapOutOfMemory::new((), bytes_needed).into())
+        })?
+    };
 
     // Copy the data into the array, initializing it.
     store
@@ -837,7 +860,9 @@ unsafe fn array_new_elem(
                         .iter()
                         .map(|f| {
                             let raw_func_ref = instance.as_mut().get_func_ref(*f);
-                            let func = raw_func_ref.map(|p| Func::from_vm_func_ref(store.id(), p));
+                            let func = unsafe {
+                                raw_func_ref.map(|p| Func::from_vm_func_ref(store.id(), p))
+                            };
                             Val::FuncRef(func)
                         }),
                 );
@@ -930,7 +955,7 @@ unsafe fn array_init_elem(
             .iter()
             .map(|f| {
                 let raw_func_ref = instance.as_mut().get_func_ref(*f);
-                let func = raw_func_ref.map(|p| Func::from_vm_func_ref(store.id(), p));
+                let func = unsafe { raw_func_ref.map(|p| Func::from_vm_func_ref(store.id(), p)) };
                 Val::FuncRef(func)
             })
             .collect::<Vec<_>>(),

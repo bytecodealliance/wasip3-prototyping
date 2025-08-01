@@ -11,16 +11,12 @@ use crate::{AsContext, AsContextMut, StoreContextMut, ValRaw};
 use core::mem::{self, MaybeUninit};
 use core::ptr::NonNull;
 use wasmtime_environ::component::{
-    CanonicalOptions, CanonicalOptionsDataModel, ExportIndex, InterfaceType, MAX_FLAT_PARAMS,
-    MAX_FLAT_RESULTS, TypeFuncIndex, TypeTuple,
+    CanonicalOptions, ExportIndex, InterfaceType, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS, TypeFuncIndex,
+    TypeTuple,
 };
 
 #[cfg(feature = "component-model-async")]
 use crate::component::concurrent::{self, AsAccessor, PreparedCall};
-#[cfg(feature = "component-model-async")]
-use core::future::Future;
-#[cfg(feature = "component-model-async")]
-use core::pin::Pin;
 
 mod host;
 mod options;
@@ -280,36 +276,51 @@ impl Func {
         results: &mut [Val],
     ) -> Result<()> {
         let mut store = store.as_context_mut();
-        assert!(
-            store.0.async_support(),
-            "cannot use `call_async` without enabling async support in the config"
-        );
+
         #[cfg(feature = "component-model-async")]
         {
-            let future =
-                self.call_concurrent_dynamic(store.as_context_mut(), params.to_vec(), false);
-            let run_results = self
-                .instance
-                .run_concurrent(store, async |_| future.await)
-                .await??;
-            assert_eq!(run_results.len(), results.len());
-            for (result, slot) in run_results.into_iter().zip(results) {
-                *slot = result;
-            }
-            Ok(())
+            self.instance
+                .run_concurrent(&mut store, async |store| {
+                    self.call_concurrent_dynamic(store, params, results, false)
+                        .await
+                })
+                .await?
         }
         #[cfg(not(feature = "component-model-async"))]
         {
+            assert!(
+                store.0.async_support(),
+                "cannot use `call_async` without enabling async support in the config"
+            );
             store
                 .on_fiber(|store| self.call_impl(store, params, results))
                 .await?
         }
     }
 
-    fn check_param_count<T>(&self, store: StoreContextMut<T>, count: usize) -> Result<()> {
+    fn check_params_results<T>(
+        &self,
+        store: StoreContextMut<T>,
+        params: &[Val],
+        results: &mut [Val],
+    ) -> Result<()> {
         let param_tys = self.params(&store);
-        if param_tys.len() != count {
-            bail!("expected {} argument(s), got {count}", param_tys.len());
+        if param_tys.len() != params.len() {
+            bail!(
+                "expected {} argument(s), got {}",
+                param_tys.len(),
+                params.len(),
+            );
+        }
+
+        let result_tys = self.results(&store);
+
+        if result_tys.len() != results.len() {
+            bail!(
+                "expected {} result(s), got {}",
+                result_tys.len(),
+                results.len(),
+            );
         }
 
         Ok(())
@@ -332,40 +343,43 @@ impl Func {
     pub async fn call_concurrent(
         self,
         accessor: impl AsAccessor<Data: Send>,
-        params: Vec<Val>,
-    ) -> Result<Vec<Val>> {
-        let accessor = accessor.as_accessor();
-        let result = accessor.with(|mut access| {
-            let store = access.as_context_mut();
-            assert!(
-                store.0.async_support(),
-                "cannot use `call_concurrent` when async support is not enabled on the config"
-            );
-
-            self.call_concurrent_dynamic(store, params, true)
-        });
-        result.await
+        params: &[Val],
+        results: &mut [Val],
+    ) -> Result<()> {
+        self.call_concurrent_dynamic(accessor.as_accessor(), params, results, true)
+            .await
     }
 
     /// Internal helper function for `call_async` and `call_concurrent`.
     #[cfg(feature = "component-model-async")]
-    fn call_concurrent_dynamic<'a, T: Send + 'static>(
+    async fn call_concurrent_dynamic(
         self,
-        mut store: StoreContextMut<'a, T>,
-        params: Vec<Val>,
+        store: impl AsAccessor<Data: Send>,
+        params: &[Val],
+        results: &mut [Val],
         call_post_return_automatically: bool,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Val>>> + Send + 'static>> {
-        let result = (|| {
-            self.check_param_count(store.as_context_mut(), params.len())?;
+    ) -> Result<()> {
+        let store = store.as_accessor();
+        let result = store.with(|mut store| {
+            assert!(
+                store.as_context_mut().0.async_support(),
+                "cannot use `call_concurrent` when async support is not enabled on the config"
+            );
+            self.check_params_results(store.as_context_mut(), params, results)?;
             let prepared = self.prepare_call_dynamic(
                 store.as_context_mut(),
-                params,
+                params.to_vec(),
                 call_post_return_automatically,
             )?;
-            concurrent::queue_call(store, prepared)
-        })();
+            concurrent::queue_call(store.as_context_mut(), prepared)
+        })?;
 
-        Box::pin(async move { result?.await })
+        let run_results = result.await?;
+        assert_eq!(run_results.len(), results.len());
+        for (result, slot) in run_results.into_iter().zip(results) {
+            *slot = result;
+        }
+        Ok(())
     }
 
     /// Calls `concurrent::prepare_call` with monomorphized functions for
@@ -412,17 +426,7 @@ impl Func {
     ) -> Result<()> {
         let mut store = store.as_context_mut();
 
-        self.check_param_count(store.as_context_mut(), params.len())?;
-
-        let result_tys = self.results(&store);
-
-        if result_tys.len() != results.len() {
-            bail!(
-                "expected {} result(s), got {}",
-                result_tys.len(),
-                results.len()
-            );
-        }
+        self.check_params_results(store.as_context_mut(), params, results)?;
 
         if self.abi_async(store.0) {
             unreachable!(
@@ -484,14 +488,17 @@ impl Func {
 
     pub(crate) fn post_return_core_func(&self, store: &StoreOpaque) -> Option<NonNull<VMFuncRef>> {
         let instance = self.instance.id().get(store);
-        let (_ty, _def, options) = instance.component().export_lifted_function(self.index);
-        options.post_return.map(|i| instance.runtime_post_return(i))
+        let component = instance.component();
+        let (_ty, _def, options) = component.export_lifted_function(self.index);
+        let post_return = component.env_component().options[options].post_return;
+        post_return.map(|i| instance.runtime_post_return(i))
     }
 
     pub(crate) fn abi_async(&self, store: &StoreOpaque) -> bool {
         let instance = self.instance.id().get(store);
-        let (_ty, _def, options) = instance.component().export_lifted_function(self.index);
-        options.async_
+        let component = instance.component();
+        let (_ty, _def, options) = component.export_lifted_function(self.index);
+        component.env_component().options[options].async_
     }
 
     pub(crate) fn abi_info<'a>(
@@ -499,28 +506,16 @@ impl Func {
         store: &'a StoreOpaque,
     ) -> (Options, InstanceFlags, TypeFuncIndex, &'a CanonicalOptions) {
         let vminstance = self.instance.id().get(store);
-        let (ty, _def, raw_options) = vminstance.component().export_lifted_function(self.index);
-        let mem_opts = match raw_options.data_model {
-            CanonicalOptionsDataModel::Gc {} => todo!("CM+GC"),
-            CanonicalOptionsDataModel::LinearMemory(opts) => opts,
-        };
-        let memory = mem_opts
-            .memory
-            .map(|i| NonNull::new(vminstance.runtime_memory(i)).unwrap());
-        let realloc = mem_opts.realloc.map(|i| vminstance.runtime_realloc(i));
-        let flags = vminstance.instance_flags(raw_options.instance);
-        let callback = raw_options.callback.map(|i| vminstance.runtime_callback(i));
-        let options = unsafe {
-            Options::new(
-                store.id(),
-                memory,
-                realloc,
-                raw_options.string_encoding,
-                raw_options.async_,
-                callback,
-            )
-        };
-        (options, flags, ty, raw_options)
+        let component = vminstance.component();
+        let (ty, _def, options_index) = component.export_lifted_function(self.index);
+        let raw_options = &component.env_component().options[options_index];
+        let options = Options::new_index(store, self.instance, options_index);
+        (
+            options,
+            vminstance.instance_flags(raw_options.instance),
+            ty,
+            raw_options,
+        )
     }
 
     /// Invokes the underlying wasm function, lowering arguments and lifting the
@@ -696,9 +691,11 @@ impl Func {
 
         let index = self.index;
         let vminstance = self.instance.id().get(store.0);
-        let (_ty, _def, options) = vminstance.component().export_lifted_function(index);
+        let component = vminstance.component();
+        let (_ty, _def, options) = component.export_lifted_function(index);
         let post_return = self.post_return_core_func(store.0);
-        let mut flags = vminstance.instance_flags(options.instance);
+        let mut flags =
+            vminstance.instance_flags(component.env_component().options[options].instance);
         let mut instance = self.instance.id().get_mut(store.0);
         let post_return_arg = instance.as_mut().post_return_arg_take(index);
 

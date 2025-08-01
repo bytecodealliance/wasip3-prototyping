@@ -11,7 +11,6 @@ use crate::isa::{CallConv, FunctionAlignment};
 use crate::{CodegenError, CodegenResult, settings};
 use crate::{machinst::*, trace};
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use core::slice;
 use cranelift_assembler_x64 as asm;
 use cranelift_entity::{Signed, Unsigned};
@@ -111,11 +110,6 @@ impl Inst {
                 smallvec![InstructionSet::CMPXCHG16b]
             }
 
-            Inst::XmmUnaryRmREvex { op, .. }
-            | Inst::XmmRmREvex { op, .. }
-            | Inst::XmmRmREvex3 { op, .. }
-            | Inst::XmmUnaryRmRImmEvex { op, .. } => op.available_from(),
-
             Inst::External { inst } => {
                 use cranelift_assembler_x64::Feature::*;
                 let mut features = smallvec![];
@@ -136,6 +130,9 @@ impl Inst {
                         avx2 => features.push(InstructionSet::AVX2),
                         avx512f => features.push(InstructionSet::AVX512F),
                         avx512vl => features.push(InstructionSet::AVX512VL),
+                        avx512dq => features.push(InstructionSet::AVX512DQ),
+                        avx512bitalg => features.push(InstructionSet::AVX512BITALG),
+                        avx512vbmi => features.push(InstructionSet::AVX512VBMI),
                         cmpxchg16b => features.push(InstructionSet::CMPXCHG16b),
                         fma => features.push(InstructionSet::FMA),
                     }
@@ -448,52 +445,6 @@ impl PrettyPrint for Inst {
                 let dividend = pretty_print_reg(dividend.to_reg(), 1);
                 let dst = pretty_print_reg(dst.to_reg().to_reg(), 1);
                 format!("checked_srem_seq {dividend}, {divisor}, {dst}")
-            }
-
-            Inst::XmmUnaryRmREvex { op, src, dst, .. } => {
-                let dst = pretty_print_reg(dst.to_reg().to_reg(), 8);
-                let src = src.pretty_print(8);
-                let op = ljustify(op.to_string());
-                format!("{op} {src}, {dst}")
-            }
-
-            Inst::XmmUnaryRmRImmEvex {
-                op, src, dst, imm, ..
-            } => {
-                let dst = pretty_print_reg(dst.to_reg().to_reg(), 8);
-                let src = src.pretty_print(8);
-                let op = ljustify(op.to_string());
-                format!("{op} ${imm}, {src}, {dst}")
-            }
-
-            Inst::XmmRmREvex {
-                op,
-                src1,
-                src2,
-                dst,
-                ..
-            } => {
-                let src1 = pretty_print_reg(src1.to_reg(), 8);
-                let src2 = src2.pretty_print(8);
-                let dst = pretty_print_reg(dst.to_reg().to_reg(), 8);
-                let op = ljustify(op.to_string());
-                format!("{op} {src2}, {src1}, {dst}")
-            }
-
-            Inst::XmmRmREvex3 {
-                op,
-                src1,
-                src2,
-                src3,
-                dst,
-                ..
-            } => {
-                let src1 = pretty_print_reg(src1.to_reg(), 8);
-                let src2 = pretty_print_reg(src2.to_reg(), 8);
-                let src3 = src3.pretty_print(8);
-                let dst = pretty_print_reg(dst.to_reg().to_reg(), 8);
-                let op = ljustify(op.to_string());
-                format!("{op} {src3}, {src2}, {src1}, {dst}")
             }
 
             Inst::XmmMinMaxSeq {
@@ -908,13 +859,11 @@ impl PrettyPrint for Inst {
 }
 
 fn pretty_print_try_call(info: &TryCallInfo) -> String {
-    let dests = info
-        .exception_dests
-        .iter()
-        .map(|(tag, label)| format!("{tag:?}: {label:?}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("; jmp {:?}; catch [{dests}]", info.continuation)
+    format!(
+        "; jmp {:?}; catch [{}]",
+        info.continuation,
+        info.pretty_print_dests()
+    )
 }
 
 impl fmt::Debug for Inst {
@@ -957,36 +906,6 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
             collector.reg_use(divisor);
             collector.reg_fixed_use(dividend, regs::rax());
             collector.reg_fixed_def(dst, regs::rax());
-        }
-        Inst::XmmUnaryRmREvex { src, dst, .. } | Inst::XmmUnaryRmRImmEvex { src, dst, .. } => {
-            collector.reg_def(dst);
-            src.get_operands(collector);
-        }
-        Inst::XmmRmREvex {
-            op,
-            src1,
-            src2,
-            dst,
-            ..
-        } => {
-            assert_ne!(*op, Avx512Opcode::Vpermi2b);
-            collector.reg_use(src1);
-            src2.get_operands(collector);
-            collector.reg_def(dst);
-        }
-        Inst::XmmRmREvex3 {
-            op,
-            src1,
-            src2,
-            src3,
-            dst,
-            ..
-        } => {
-            assert_eq!(*op, Avx512Opcode::Vpermi2b);
-            collector.reg_use(src1);
-            collector.reg_use(src2);
-            src3.get_operands(collector);
-            collector.reg_reuse_def(dst, 0); // Reuse `src1`.
         }
         Inst::XmmUninitializedValue { dst } => collector.reg_def(dst),
         Inst::GprUninitializedValue { dst } => collector.reg_def(dst),
@@ -1068,6 +987,7 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
                 defs,
                 clobbers,
                 dest,
+                try_call_info,
                 ..
             } = &mut **info;
             debug_assert_ne!(*dest, ExternalName::LibCall(LibCall::Probestack));
@@ -1081,6 +1001,9 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
                 }
             }
             collector.reg_clobbers(*clobbers);
+            if let Some(try_call_info) = try_call_info {
+                try_call_info.collect_operands(collector);
+            }
         }
 
         Inst::CallUnknown { info } => {
@@ -1090,6 +1013,7 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
                 clobbers,
                 callee_conv,
                 dest,
+                try_call_info,
                 ..
             } = &mut **info;
             match dest {
@@ -1111,6 +1035,9 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
                 }
             }
             collector.reg_clobbers(*clobbers);
+            if let Some(try_call_info) = try_call_info {
+                try_call_info.collect_operands(collector);
+            }
         }
         Inst::StackSwitchBasic {
             store_context_ptr,

@@ -79,7 +79,6 @@ gimli = { workspace = true, optional = true }
 pulley-interpreter = { workspace = true, optional = true }
 
 async-trait = { workspace = true }
-trait-variant = { workspace = true }
 bytes = { workspace = true }
 cfg-if = { workspace = true }
 tokio = { workspace = true, optional = true, features = [ "signal", "macros" ] }
@@ -103,7 +102,6 @@ criterion = { workspace = true }
 num_cpus = "1.13.0"
 memchr = "2.4"
 async-trait = { workspace = true }
-trait-variant = { workspace = true }
 wat = { workspace = true }
 rayon = "1.5.0"
 wasmtime-wast = { workspace = true, features = ['component-model'] }
@@ -330,17 +328,18 @@ wit-bindgen-rt = { version = "0.43.0", default-features = false }
 wit-bindgen-rust-macro = { version = "0.43.0", default-features = false }
 
 # wasm-tools family:
-wasmparser = { version = "0.235.0", default-features = false, features = ['simd'] }
-wat = "1.235.0"
-wast = "235.0.0"
-wasmprinter = "0.235.0"
-wasm-encoder = "0.235.0"
-wasm-smith = "0.235.0"
-wasm-mutate = "0.235.0"
-wit-parser = "0.235.0"
-wit-component = "0.235.0"
-wasm-wave = "0.235.0"
-wasm-compose = "0.235.0"
+wasmparser = { version = "0.236.0", default-features = false, features = ['simd'] }
+wat = "1.236.0"
+wast = "236.0.0"
+wasmprinter = "0.236.0"
+wasm-encoder = "0.236.0"
+wasm-smith = "0.236.0"
+wasm-mutate = "0.236.0"
+wit-parser = "0.236.0"
+wit-component = "0.236.0"
+wasm-wave = "0.236.0"
+wasm-compose = "0.236.0"
+json-from-wast = "0.236.0"
 
 # Non-Bytecode Alliance maintained dependencies:
 # --------------------------
@@ -363,7 +362,6 @@ tracing = "0.1.26"
 bitflags = "2.0"
 thiserror = "2.0.12"
 async-trait = "0.1.71"
-trait-variant = "0.1.2"
 heck = "0.5"
 similar = "2.1.0"
 toml = "0.8.10"
@@ -371,7 +369,7 @@ mach2 = "0.4.2"
 memfd = "0.6.2"
 psm = "0.1.11"
 proptest = "1.0.0"
-rand = { version = "0.8.3", features = ["small_rng"] }
+rand = { version = "0.9.2", features = ["small_rng"] }
 # serde and serde_derive must have the same version
 serde = { version = "1.0.215", default-features = false, features = ['alloc'] }
 serde_derive = "1.0.188"
@@ -501,7 +499,7 @@ disable-logging = ["log/max_level_off", "tracing/max_level_off"]
 wasi-nn = ["dep:wasmtime-wasi-nn"]
 wasi-tls = ["dep:wasmtime-wasi-tls"]
 wasi-threads = ["dep:wasmtime-wasi-threads", "threads"]
-wasi-http = ["component-model", "dep:wasmtime-wasi-http", "wasmtime-wasi-http/p3", "dep:tokio", "dep:hyper"]
+wasi-http = ["component-model", "dep:wasmtime-wasi-http", "dep:tokio", "dep:hyper", "wasmtime-wasi-http/default-send-request", "wasmtime-wasi-http/p3"]
 wasi-config = ["dep:wasmtime-wasi-config"]
 wasi-keyvalue = ["dep:wasmtime-wasi-keyvalue"]
 pooling-allocator = ["wasmtime/pooling-allocator", "wasmtime-cli-flags/pooling-allocator"]

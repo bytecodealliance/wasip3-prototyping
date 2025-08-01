@@ -17,10 +17,12 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::debug;
-use wasmtime::component::{Accessor, Resource, WithAccessor, WithAccessorAndValue};
+use wasmtime::component::{
+    Accessor, FutureWriter, GuardedFutureWriter, GuardedStreamReader, Resource, StreamReader,
+};
 use wasmtime_wasi::p3::{AbortOnDropHandle, ResourceView as _, SpawnExt};
 
-impl<T> handler::HostConcurrent for WasiHttp<T>
+impl<T> handler::HostWithStore for WasiHttp<T>
 where
     T: WasiHttpView + 'static,
 {
@@ -48,7 +50,7 @@ where
             bail!("lock poisoned");
         };
 
-        let body = WithAccessor::new(store, body);
+        let body = body.with_store(store);
 
         let mut client = store.with(|mut view| view.get().http().client.clone());
 
@@ -229,8 +231,8 @@ where
                 tx,
                 content_length,
             } => {
-                let contents = WithAccessor::new(store, contents);
-                let tx = WithAccessorAndValue::new(store, tx, Ok(()));
+                let contents = GuardedStreamReader::new(store, contents);
+                let tx = GuardedFutureWriter::new(store, tx);
                 let (trailers_tx, trailers_rx) = oneshot::channel();
                 let (body_tx, body_rx) = mpsc::channel(1);
                 let task = AbortOnDropHandle(store.spawn_fn_box(|store| {
@@ -255,18 +257,18 @@ where
                         return Ok(Err(err));
                     }
                 };
-                let contents = contents.into_inner();
-                let tx = tx.into_inner();
+                let contents = StreamReader::from(contents);
+                let tx = FutureWriter::from(tx);
                 store.spawn_fn_box(move |store| Box::pin(async move {
-                    let mut contents = WithAccessor::new(store, contents);
-                    let tx = WithAccessorAndValue::new(store, tx, Ok(()));
+                    let mut contents = GuardedStreamReader::new(store, contents);
+                    let tx = GuardedFutureWriter::new(store, tx);
                     let (io_res, body_res) = futures::join! {
                         io,
                         async {
                             body_tx.send(Ok(buffer)).await?;
                             let mut rx_buffer = BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY);
                             while !contents.is_closed() {
-                                rx_buffer = contents.read(store,rx_buffer).await;
+                                rx_buffer = contents.read(rx_buffer).await;
                                 let buffer = rx_buffer.split();
                                 body_tx.send(Ok(buffer.freeze())).await?;
                                 rx_buffer.reserve(DEFAULT_BUFFER_CAPACITY);
@@ -279,7 +281,7 @@ where
                     // itself goes away due to cancellation elsewhere, so
                     // swallow this error.
                     let _ = body_res;
-                    tx.into_inner().write(store,io_res.map_err(Into::into)).await;
+                    tx.write(io_res.map_err(Into::into)).await;
                     Ok(())
                 }));
                 match response.await {

@@ -14,8 +14,7 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use wasmtime::AsContextMut;
 use wasmtime::component::{
-    Accessor, DropWithStore, DropWithStoreAndValue, FutureReader, FutureWriter, HasData, Resource,
-    StreamReader,
+    Accessor, AsAccessor, FutureReader, FutureWriter, HasData, Resource, StreamReader,
 };
 use wasmtime_wasi::p3::WithChildren;
 
@@ -115,10 +114,8 @@ impl Body {
             buffer: None,
         }
     }
-}
 
-impl DropWithStore for Body {
-    fn drop(self, mut store: impl AsContextMut) -> wasmtime::Result<()> {
+    pub(crate) fn drop_with_store(&mut self, mut store: impl AsContextMut) {
         if let Body::Guest {
             contents,
             trailers,
@@ -128,14 +125,44 @@ impl DropWithStore for Body {
         {
             let mut store = store.as_context_mut();
             if let MaybeTombstone::Some(contents) = contents {
-                contents.drop(&mut store)?;
+                contents.close(&mut store);
             }
             if let MaybeTombstone::Some(trailers) = trailers {
-                trailers.drop(&mut store)?;
+                trailers.close(&mut store);
             }
-            tx.drop(store, Ok(()))?;
+            tx.close(store);
         }
-        anyhow::Ok(())
+    }
+
+    pub(crate) fn with_store<A>(self, store: A) -> BodyWithStore<A>
+    where
+        A: AsAccessor,
+    {
+        BodyWithStore {
+            store,
+            body: Some(self),
+        }
+    }
+}
+
+pub(crate) struct BodyWithStore<A: AsAccessor> {
+    store: A,
+    body: Option<Body>,
+}
+
+impl<A: AsAccessor> BodyWithStore<A> {
+    pub(crate) fn into_inner(mut self) -> Body {
+        self.body.take().unwrap()
+    }
+}
+
+impl<A: AsAccessor> Drop for BodyWithStore<A> {
+    fn drop(&mut self) {
+        if let Some(body) = &mut self.body {
+            self.store
+                .as_accessor()
+                .with(|store| body.drop_with_store(store))
+        }
     }
 }
 

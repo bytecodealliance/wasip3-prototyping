@@ -3,15 +3,13 @@ use super::{
     Event, GlobalErrorContextRefCount, LocalErrorContextRefCount, StateTable, Waitable,
     WaitableCommon, WaitableState,
 };
-use crate::component::concurrent::ConcurrentState;
+use crate::component::concurrent::{ConcurrentState, WorkItem};
 use crate::component::func::{self, LiftContext, LowerContext, Options};
 use crate::component::matching::InstanceType;
 use crate::component::values::{ErrorContextAny, FutureAny, StreamAny};
-use crate::component::{
-    Accessor, AsAccessor, HasData, HasSelf, Instance, Lower, Val, WasmList, WasmStr,
-};
+use crate::component::{AsAccessor, Instance, Lower, Val, WasmList, WasmStr};
 use crate::store::{StoreOpaque, StoreToken};
-use crate::vm::{VMFuncRef, VMMemoryDefinition, VMStore};
+use crate::vm::VMStore;
 use crate::{AsContextMut, StoreContextMut, ValRaw};
 use anyhow::{Context, Result, anyhow, bail};
 use buffers::Extender;
@@ -23,14 +21,12 @@ use std::future;
 use std::iter;
 use std::marker::PhantomData;
 use std::mem::{self, MaybeUninit};
-use std::ops::{Deref, DerefMut};
-use std::ptr::NonNull;
 use std::string::{String, ToString};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
 use std::vec::Vec;
 use wasmtime_environ::component::{
-    CanonicalAbiInfo, ComponentTypes, InterfaceType, RuntimeComponentInstanceIndex, StringEncoding,
+    CanonicalAbiInfo, ComponentTypes, InterfaceType, OptionsIndex, RuntimeComponentInstanceIndex,
     TypeComponentGlobalErrorContextTableIndex, TypeComponentLocalErrorContextTableIndex,
     TypeFutureTableIndex, TypeStreamTableIndex,
 };
@@ -198,7 +194,12 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>
             let types = instance.id().get(store.0).component().types().clone();
             let count = buffer.remaining().len().min(count);
 
-            let lower = &mut LowerContext::new(store.as_context_mut(), options, &types, instance);
+            let lower = &mut if T::MAY_REQUIRE_REALLOC {
+                LowerContext::new
+            } else {
+                LowerContext::new_without_realloc
+            }(store.as_context_mut(), options, &types, instance);
+
             if address % usize::try_from(T::ALIGN32)? != 0 {
                 bail!("read pointer not aligned");
             }
@@ -405,184 +406,24 @@ pub(super) struct FlatAbi {
     pub(super) align: u32,
 }
 
-/// Trait representing objects (such as streams, futures, or structs containing
-/// them) which require access to the store in order to be disposed of properly.
-pub trait DropWithStore: Sized {
-    /// Dispose of `self` using the specified store.
-    fn drop(self, store: impl AsContextMut) -> Result<()>;
-
-    /// Dispose of `self` using the specified accessor.
-    fn drop_with(self, accessor: impl AsAccessor) -> Result<()> {
-        accessor.as_accessor().with(move |store| self.drop(store))
-    }
-}
-
-/// Trait representing objects (such as the writable end of a future or a struct
-/// containing one) which require access to the store _and_ a value to write in
-/// order to be disposed of properly.
-pub trait DropWithStoreAndValue<T: func::Lower + Send + Sync + 'static>: Sized {
-    /// Dispose of `self` using the specified store, writing the specified value.
-    fn drop(self, store: impl AsContextMut, value: T) -> Result<()>;
-
-    /// Dispose of `self` using the specified accessor and value.
-    fn drop_with(self, accessor: impl AsAccessor, value: T) -> Result<()> {
-        accessor
-            .as_accessor()
-            .with(move |store| self.drop(store, value))
-    }
-}
-
-/// RAII wrapper for `DropWithStore` implementations.
-///
-/// This may be used to automatically dispose of the wrapped object when it goes
-/// out of scope.
-pub struct WithAccessor<'a, T: DropWithStore, U: 'static, D: HasData = HasSelf<U>> {
-    accessor: &'a Accessor<U, D>,
-    inner: Option<T>,
-}
-
-impl<'a, T: DropWithStore, U, D: HasData> WithAccessor<'a, T, U, D> {
-    /// Create a new instance wrapping the specified `inner` object.
-    pub fn new(accessor: &'a Accessor<U, D>, inner: T) -> Self {
-        Self {
-            accessor,
-            inner: Some(inner),
-        }
-    }
-
-    /// Deconstruct `self`, returning the inner object.
-    pub fn into_inner(mut self) -> T {
-        // TODO: Could consider using `unwrap_unchecked` here for performance.
-        self.inner.take().unwrap()
-    }
-}
-
-impl<'a, T: DropWithStore, U, D: HasData> Deref for WithAccessor<'a, T, U, D> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        // TODO: Could consider using `unwrap_unchecked` here for performance.
-        self.inner.as_ref().unwrap()
-    }
-}
-
-impl<'a, T: DropWithStore, U, D: HasData> DerefMut for WithAccessor<'a, T, U, D> {
-    fn deref_mut(&mut self) -> &mut T {
-        // TODO: Could consider using `unwrap_unchecked` here for performance.
-        self.inner.as_mut().unwrap()
-    }
-}
-
-impl<'a, T: DropWithStore, U, D: HasData> Drop for WithAccessor<'a, T, U, D> {
-    fn drop(&mut self) {
-        if let Some(inner) = self.inner.take() {
-            _ = inner.drop_with(self.accessor);
-        }
-    }
-}
-
-/// RAII wrapper for `DropWithStoreAndValue` implementations.
-///
-/// This may be used to automatically dispose of the wrapped object when it goes
-/// out of scope, passing the specified value.
-pub struct WithAccessorAndValue<'a, V, T, U, D = HasSelf<U>>
-where
-    U: 'static,
-    D: HasData,
-    V: func::Lower + Send + Sync + 'static,
-    T: DropWithStoreAndValue<V>,
-{
-    accessor: &'a Accessor<U, D>,
-    inner_and_value: Option<(T, V)>,
-}
-
-impl<
-    'a,
-    V: func::Lower + Send + Sync + 'static,
-    T: DropWithStoreAndValue<V>,
-    U: 'static,
-    D: HasData,
-> WithAccessorAndValue<'a, V, T, U, D>
-{
-    /// Create a new instance wrapping the specified `inner` object and value.
-    pub fn new(accessor: &'a Accessor<U, D>, inner: T, value: V) -> Self {
-        Self {
-            accessor,
-            inner_and_value: Some((inner, value)),
-        }
-    }
-
-    /// Deconstruct `self`, returning the inner object.
-    pub fn into_inner(mut self) -> T {
-        // TODO: Could consider using `unwrap_unchecked` here for performance.
-        self.inner_and_value.take().unwrap().0
-    }
-}
-
-impl<
-    'a,
-    V: func::Lower + Send + Sync + 'static,
-    T: DropWithStoreAndValue<V>,
-    U: 'static,
-    D: HasData,
-> Deref for WithAccessorAndValue<'a, V, T, U, D>
-{
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        // TODO: Could consider using `unwrap_unchecked` here for performance.
-        &self.inner_and_value.as_ref().unwrap().0
-    }
-}
-
-impl<
-    'a,
-    V: func::Lower + Send + Sync + 'static,
-    T: DropWithStoreAndValue<V>,
-    U: 'static,
-    D: HasData,
-> DerefMut for WithAccessorAndValue<'a, V, T, U, D>
-{
-    fn deref_mut(&mut self) -> &mut T {
-        // TODO: Could consider using `unwrap_unchecked` here for performance.
-        &mut self.inner_and_value.as_mut().unwrap().0
-    }
-}
-
-impl<
-    'a,
-    V: func::Lower + Send + Sync + 'static,
-    T: DropWithStoreAndValue<V>,
-    U: 'static,
-    D: HasData,
-> Drop for WithAccessorAndValue<'a, V, T, U, D>
-{
-    fn drop(&mut self) {
-        if let Some((inner, value)) = self.inner_and_value.take() {
-            _ = inner.drop_with(self.accessor, value);
-        }
-    }
-}
-
 /// Represents the writable end of a Component Model `future`.
 ///
-/// Note that `FutureWriter` instances must be disposed of using either
-/// `FutureWriter::write` or `DropWithStoreAndValue::drop`; otherwise the
-/// in-store representation will leak and the reader end will hang indefinitely.
-/// Consider using [`WithAccessorAndValue`] to ensure that disposal happens
-/// automatically.
+/// Note that `FutureWriter` instances must be disposed of using either `write`
+/// or `close`; otherwise the in-store representation will leak and the reader
+/// end will hang indefinitely.  Consider using [`GuardedFutureWriter`] to
+/// ensure that disposal happens automatically.
 pub struct FutureWriter<T> {
+    default: fn() -> T,
     id: TableId<TransmitHandle>,
     instance: Instance,
-    _phantom: PhantomData<T>,
 }
 
 impl<T> FutureWriter<T> {
-    fn new(id: TableId<TransmitHandle>, instance: Instance) -> Self {
+    fn new(default: fn() -> T, id: TableId<TransmitHandle>, instance: Instance) -> Self {
         Self {
+            default,
             id,
             instance,
-            _phantom: PhantomData,
         }
     }
 
@@ -600,14 +441,21 @@ impl<T> FutureWriter<T> {
     where
         T: func::Lower + Send + Sync + 'static,
     {
+        self.guard(accessor).write(value).await
+    }
+
+    /// Mut-ref signature instead of by-value signature for
+    /// `GuardedFutureWriter` to more easily call.
+    async fn write_(&mut self, accessor: impl AsAccessor, value: T) -> bool
+    where
+        T: func::Lower + Send + Sync + 'static,
+    {
         let accessor = accessor.as_accessor();
 
         let result = self
             .instance
             .host_write_async(accessor, self.id, Some(value), TransmitKind::Future)
             .await;
-
-        _ = accessor.with(|store| self.just_drop(store));
 
         match result {
             Ok(HostResult { dropped, .. }) => !dropped,
@@ -628,37 +476,133 @@ impl<T> FutureWriter<T> {
         watch_reader(accessor, self.instance, self.id).await
     }
 
-    fn just_drop(self, mut store: impl AsContextMut) -> Result<()> {
-        self.instance.host_drop_writer(
-            store.as_context_mut().0.traitobj_mut(),
-            self.id,
-            TransmitKind::Future,
-        )
+    /// Close this `FutureWriter`, writing the default value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the store that the [`Accessor`] is derived from does not own
+    /// this future. Usage of this future after calling `close` will also cause
+    /// a panic.
+    pub fn close(&mut self, mut store: impl AsContextMut)
+    where
+        T: func::Lower + Send + Sync + 'static,
+    {
+        let id = mem::replace(&mut self.id, TableId::new(0));
+        let default = self.default;
+        self.instance
+            .host_drop_writer(store.as_context_mut(), id, Some(&move || Ok(default())))
+            .unwrap();
+    }
+
+    /// Convenience method around [`Self::close`].
+    pub fn close_with(&mut self, accessor: impl AsAccessor)
+    where
+        T: func::Lower + Send + Sync + 'static,
+    {
+        accessor.as_accessor().with(|access| self.close(access))
+    }
+
+    /// Returns a [`GuardedFutureWriter`] which will auto-close this future on
+    /// drop and clean it up from the store.
+    ///
+    /// Note that the `accessor` provided must own this future and is
+    /// additionally transferred to the `GuardedFutureWriter` return value.
+    pub fn guard<A>(self, accessor: A) -> GuardedFutureWriter<T, A>
+    where
+        T: func::Lower + Send + Sync + 'static,
+        A: AsAccessor,
+    {
+        GuardedFutureWriter::new(accessor, self)
     }
 }
 
-impl<T: func::Lower + Send + Sync + 'static> DropWithStoreAndValue<T> for FutureWriter<T> {
-    fn drop(self, mut store: impl AsContextMut, value: T) -> Result<()> {
-        let result = self.instance.host_write(
-            store.as_context_mut(),
-            self.id,
-            Some(value),
-            TransmitKind::Future,
-        );
+/// A [`FutureWriter`] paired with an [`Accessor`].
+///
+/// This is an RAII wrapper around [`FutureWriter`] that ensures it is closed
+/// when dropped. This can be created through [`GuardedFutureWriter::new`] or
+/// [`FutureWriter::guard`].
+pub struct GuardedFutureWriter<T, A>
+where
+    T: func::Lower + Send + Sync + 'static,
+    A: AsAccessor,
+{
+    // This field is `None` to implement the conversion from this guard back to
+    // `FutureWriter`. When `None` is seen in the destructor it will cause the
+    // destructor to do nothing.
+    writer: Option<FutureWriter<T>>,
+    accessor: A,
+}
 
-        _ = self.just_drop(store);
+impl<T, A> GuardedFutureWriter<T, A>
+where
+    T: func::Lower + Send + Sync + 'static,
+    A: AsAccessor,
+{
+    /// Create a new `GuardedFutureWriter` with the specified `accessor` and
+    /// `writer`.
+    pub fn new(accessor: A, writer: FutureWriter<T>) -> Self {
+        Self {
+            writer: Some(writer),
+            accessor,
+        }
+    }
 
-        result.map(drop)
+    /// Wrapper for [`FutureWriter::write`].
+    pub async fn write(mut self, value: T) -> bool
+    where
+        T: func::Lower + Send + Sync + 'static,
+    {
+        self.writer
+            .as_mut()
+            .unwrap()
+            .write_(&self.accessor, value)
+            .await
+    }
+
+    /// Wrapper for [`FutureWriter::watch_reader`]
+    pub async fn watch_reader(&mut self) {
+        self.writer
+            .as_mut()
+            .unwrap()
+            .watch_reader(&self.accessor)
+            .await
+    }
+
+    /// Extracts the underlying [`FutureWriter`] from this guard, returning it
+    /// back.
+    pub fn into_future(self) -> FutureWriter<T> {
+        self.into()
+    }
+}
+
+impl<T, A> From<GuardedFutureWriter<T, A>> for FutureWriter<T>
+where
+    T: func::Lower + Send + Sync + 'static,
+    A: AsAccessor,
+{
+    fn from(mut guard: GuardedFutureWriter<T, A>) -> Self {
+        guard.writer.take().unwrap()
+    }
+}
+
+impl<T, A> Drop for GuardedFutureWriter<T, A>
+where
+    T: func::Lower + Send + Sync + 'static,
+    A: AsAccessor,
+{
+    fn drop(&mut self) {
+        if let Some(writer) = &mut self.writer {
+            writer.close_with(&self.accessor)
+        }
     }
 }
 
 /// Represents the readable end of a Component Model `future`.
 ///
-/// Note that `FutureReader` instances must be disposed of using either
-/// `FutureReader::read` or `DropWithStore::drop`; otherwise the in-store
-/// representation will leak and the writer end will hang indefinitely.
-/// Consider using [`WithAccessor`] to ensure that disposal happens
-/// automatically.
+/// Note that `FutureReader` instances must be disposed of using either `read`
+/// or `close`; otherwise the in-store representation will leak and the writer
+/// end will hang indefinitely.  Consider using [`GuardedFutureReader`] to
+/// ensure that disposal happens automatically.
 pub struct FutureReader<T> {
     instance: Instance,
     id: TableId<TransmitHandle>,
@@ -690,14 +634,19 @@ impl<T> FutureReader<T> {
     where
         T: func::Lift + Send + 'static,
     {
+        self.guard(accessor).read().await
+    }
+
+    async fn read_(&mut self, accessor: impl AsAccessor) -> Option<T>
+    where
+        T: func::Lift + Send + 'static,
+    {
         let accessor = accessor.as_accessor();
 
         let result = self
             .instance
             .host_read_async(accessor, self.id, None, TransmitKind::Future)
             .await;
-
-        _ = accessor.with(|store| self.drop(store));
 
         if let Ok(HostResult {
             mut buffer,
@@ -776,15 +725,41 @@ impl<T> FutureReader<T> {
             _ => func::bad_type_info(),
         }
     }
-}
 
-impl<T> DropWithStore for FutureReader<T> {
-    fn drop(self, mut store: impl AsContextMut) -> Result<()> {
-        self.instance.host_drop_reader(
-            store.as_context_mut().0.traitobj_mut(),
-            self.id,
-            TransmitKind::Future,
-        )
+    /// Close this `FutureReader`, writing the default value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the store that the [`Accessor`] is derived from does not own
+    /// this future. Usage of this future after calling `close` will also cause
+    /// a panic.
+    pub fn close(&mut self, mut store: impl AsContextMut) {
+        // `self` should never be used again, but leave an invalid handle there just in case.
+        let id = mem::replace(&mut self.id, TableId::new(0));
+        self.instance
+            .host_drop_reader(
+                store.as_context_mut().0.traitobj_mut(),
+                id,
+                TransmitKind::Future,
+            )
+            .unwrap();
+    }
+
+    /// Convenience method around [`Self::close`].
+    pub fn close_with(&mut self, accessor: impl AsAccessor) {
+        accessor.as_accessor().with(|access| self.close(access))
+    }
+
+    /// Returns a [`GuardedFutureReader`] which will auto-close this future on
+    /// drop and clean it up from the store.
+    ///
+    /// Note that the `accessor` provided must own this future and is
+    /// additionally transferred to the `GuardedFutureReader` return value.
+    pub fn guard<A>(self, accessor: A) -> GuardedFutureReader<T, A>
+    where
+        A: AsAccessor,
+    {
+        GuardedFutureReader::new(accessor, self)
     }
 }
 
@@ -887,12 +862,84 @@ unsafe impl<T: Send + Sync> func::Lift for FutureReader<T> {
     }
 }
 
+/// A [`FutureReader`] paired with an [`Accessor`].
+///
+/// This is an RAII wrapper around [`FutureReader`] that ensures it is closed
+/// when dropped. This can be created through [`GuardedFutureReader::new`] or
+/// [`FutureReader::guard`].
+pub struct GuardedFutureReader<T, A>
+where
+    A: AsAccessor,
+{
+    // This field is `None` to implement the conversion from this guard back to
+    // `FutureReader`. When `None` is seen in the destructor it will cause the
+    // destructor to do nothing.
+    reader: Option<FutureReader<T>>,
+    accessor: A,
+}
+
+impl<T, A> GuardedFutureReader<T, A>
+where
+    A: AsAccessor,
+{
+    /// Create a new `GuardedFutureReader` with the specified `accessor` and `reader`.
+    pub fn new(accessor: A, reader: FutureReader<T>) -> Self {
+        Self {
+            reader: Some(reader),
+            accessor,
+        }
+    }
+
+    /// Wrapper for [`FutureReader::read`].
+    pub async fn read(mut self) -> Option<T>
+    where
+        T: func::Lift + Send + 'static,
+    {
+        self.reader.as_mut().unwrap().read_(&self.accessor).await
+    }
+
+    /// Wrapper for [`FutureReader::watch_writer`].
+    pub async fn watch_writer(&mut self) {
+        self.reader
+            .as_mut()
+            .unwrap()
+            .watch_writer(&self.accessor)
+            .await
+    }
+
+    /// Extracts the underlying [`FutureReader`] from this guard, returning it
+    /// back.
+    pub fn into_future(self) -> FutureReader<T> {
+        self.into()
+    }
+}
+
+impl<T, A> From<GuardedFutureReader<T, A>> for FutureReader<T>
+where
+    A: AsAccessor,
+{
+    fn from(mut guard: GuardedFutureReader<T, A>) -> Self {
+        guard.reader.take().unwrap()
+    }
+}
+
+impl<T, A> Drop for GuardedFutureReader<T, A>
+where
+    A: AsAccessor,
+{
+    fn drop(&mut self) {
+        if let Some(reader) = &mut self.reader {
+            reader.close_with(&self.accessor)
+        }
+    }
+}
+
 /// Represents the writable end of a Component Model `stream`.
 ///
-/// Note that `StreamWriter` instances must be disposed of using
-/// `DropWithStore::drop`; otherwise the in-store representation will leak and
-/// the reader end will hang indefinitely.  Consider using [`WithAccessor`] to
-/// ensure that disposal happens automatically.
+/// Note that `StreamWriter` instances must be disposed of using `close`;
+/// otherwise the in-store representation will leak and the reader end will hang
+/// indefinitely.  Consider using [`GuardedStreamWriter`] to ensure that
+/// disposal happens automatically.
 pub struct StreamWriter<T> {
     instance: Instance,
     id: TableId<TransmitHandle>,
@@ -993,24 +1040,141 @@ impl<T> StreamWriter<T> {
     pub async fn watch_reader(&mut self, accessor: impl AsAccessor) {
         watch_reader(accessor, self.instance, self.id).await
     }
+
+    /// Close this `StreamWriter`, writing the default value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the store that the [`Accessor`] is derived from does not own
+    /// this future. Usage of this future after calling `close` will also cause
+    /// a panic.
+    pub fn close(&mut self, mut store: impl AsContextMut) {
+        // `self` should never be used again, but leave an invalid handle there just in case.
+        let id = mem::replace(&mut self.id, TableId::new(0));
+        self.instance
+            .host_drop_writer(store.as_context_mut(), id, None::<&dyn Fn() -> Result<()>>)
+            .unwrap()
+    }
+
+    /// Convenience method around [`Self::close`].
+    pub fn close_with(&mut self, accessor: impl AsAccessor) {
+        accessor.as_accessor().with(|access| self.close(access))
+    }
+
+    /// Returns a [`GuardedStreamWriter`] which will auto-close this stream on
+    /// drop and clean it up from the store.
+    ///
+    /// Note that the `accessor` provided must own this future and is
+    /// additionally transferred to the `GuardedStreamWriter` return value.
+    pub fn guard<A>(self, accessor: A) -> GuardedStreamWriter<T, A>
+    where
+        A: AsAccessor,
+    {
+        GuardedStreamWriter::new(accessor, self)
+    }
 }
 
-impl<T> DropWithStore for StreamWriter<T> {
-    fn drop(self, mut store: impl AsContextMut) -> Result<()> {
-        self.instance.host_drop_writer(
-            store.as_context_mut().0.traitobj_mut(),
-            self.id,
-            TransmitKind::Stream,
-        )
+/// A [`StreamWriter`] paired with an [`Accessor`].
+///
+/// This is an RAII wrapper around [`StreamWriter`] that ensures it is closed
+/// when dropped. This can be created through [`GuardedStreamWriter::new`] or
+/// [`StreamWriter::guard`].
+pub struct GuardedStreamWriter<T, A>
+where
+    A: AsAccessor,
+{
+    // This field is `None` to implement the conversion from this guard back to
+    // `StreamWriter`. When `None` is seen in the destructor it will cause the
+    // destructor to do nothing.
+    writer: Option<StreamWriter<T>>,
+    accessor: A,
+}
+
+impl<T, A> GuardedStreamWriter<T, A>
+where
+    A: AsAccessor,
+{
+    /// Create a new `GuardedStreamWriter` with the specified `accessor` and `writer`.
+    pub fn new(accessor: A, writer: StreamWriter<T>) -> Self {
+        Self {
+            writer: Some(writer),
+            accessor,
+        }
+    }
+
+    /// Wrapper for [`StreamWriter::is_closed`].
+    pub fn is_closed(&self) -> bool {
+        self.writer.as_ref().unwrap().is_closed()
+    }
+
+    /// Wrapper for [`StreamWriter::write`].
+    pub async fn write<B>(&mut self, buffer: B) -> B
+    where
+        T: func::Lower + 'static,
+        B: WriteBuffer<T>,
+    {
+        self.writer
+            .as_mut()
+            .unwrap()
+            .write(&self.accessor, buffer)
+            .await
+    }
+
+    /// Wrapper for [`StreamWriter::write_all`].
+    pub async fn write_all<B>(&mut self, buffer: B) -> B
+    where
+        T: func::Lower + 'static,
+        B: WriteBuffer<T>,
+    {
+        self.writer
+            .as_mut()
+            .unwrap()
+            .write_all(&self.accessor, buffer)
+            .await
+    }
+
+    /// Wrapper for [`StreamWriter::watch_reader`].
+    pub async fn watch_reader(&mut self) {
+        self.writer
+            .as_mut()
+            .unwrap()
+            .watch_reader(&self.accessor)
+            .await
+    }
+
+    /// Extracts the underlying [`StreamWriter`] from this guard, returning it
+    /// back.
+    pub fn into_stream(self) -> StreamWriter<T> {
+        self.into()
+    }
+}
+
+impl<T, A> From<GuardedStreamWriter<T, A>> for StreamWriter<T>
+where
+    A: AsAccessor,
+{
+    fn from(mut guard: GuardedStreamWriter<T, A>) -> Self {
+        guard.writer.take().unwrap()
+    }
+}
+
+impl<T, A> Drop for GuardedStreamWriter<T, A>
+where
+    A: AsAccessor,
+{
+    fn drop(&mut self) {
+        if let Some(writer) = &mut self.writer {
+            writer.close_with(&self.accessor)
+        }
     }
 }
 
 /// Represents the readable end of a Component Model `stream`.
 ///
-/// Note that `StreamReader` instances must be disposed of using
-/// `DropWithStore::drop`; otherwise the in-store representation will leak and
-/// the writer end will hang indefinitely.  Consider using [`WithAccessor`] to
-/// ensure that disposal happens automatically.
+/// Note that `StreamReader` instances must be disposed of using `close`;
+/// otherwise the in-store representation will leak and the writer end will hang
+/// indefinitely.  Consider using [`GuardedStreamReader`] to ensure that
+/// disposal happens automatically.
 pub struct StreamReader<T> {
     instance: Instance,
     id: TableId<TransmitHandle>,
@@ -1135,15 +1299,41 @@ impl<T> StreamReader<T> {
             _ => func::bad_type_info(),
         }
     }
-}
 
-impl<T> DropWithStore for StreamReader<T> {
-    fn drop(self, mut store: impl AsContextMut) -> Result<()> {
-        self.instance.host_drop_reader(
-            store.as_context_mut().0.traitobj_mut(),
-            self.id,
-            TransmitKind::Stream,
-        )
+    /// Close this `StreamReader`, writing the default value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the store that the [`Accessor`] is derived from does not own
+    /// this future. Usage of this future after calling `close` will also cause
+    /// a panic.
+    pub fn close(&mut self, mut store: impl AsContextMut) {
+        // `self` should never be used again, but leave an invalid handle there just in case.
+        let id = mem::replace(&mut self.id, TableId::new(0));
+        self.instance
+            .host_drop_reader(
+                store.as_context_mut().0.traitobj_mut(),
+                id,
+                TransmitKind::Stream,
+            )
+            .unwrap()
+    }
+
+    /// Convenience method around [`Self::close`].
+    pub fn close_with(&mut self, accessor: impl AsAccessor) {
+        accessor.as_accessor().with(|access| self.close(access))
+    }
+
+    /// Returns a [`GuardedStreamReader`] which will auto-close this stream on
+    /// drop and clean it up from the store.
+    ///
+    /// Note that the `accessor` provided must own this future and is
+    /// additionally transferred to the `GuardedStreamReader` return value.
+    pub fn guard<A>(self, accessor: A) -> GuardedStreamReader<T, A>
+    where
+        A: AsAccessor,
+    {
+        GuardedStreamReader::new(accessor, self)
     }
 }
 
@@ -1243,6 +1433,89 @@ unsafe impl<T: Send + Sync> func::Lift for StreamReader<T> {
     ) -> Result<Self> {
         let index = u32::linear_lift_from_memory(cx, InterfaceType::U32, bytes)?;
         Self::lift_from_index(cx, ty, index)
+    }
+}
+
+/// A [`StreamReader`] paired with an [`Accessor`].
+///
+/// This is an RAII wrapper around [`StreamReader`] that ensures it is closed
+/// when dropped. This can be created through [`GuardedStreamReader::new`] or
+/// [`StreamReader::guard`].
+pub struct GuardedStreamReader<T, A>
+where
+    A: AsAccessor,
+{
+    // This field is `None` to implement the conversion from this guard back to
+    // `StreamReader`. When `None` is seen in the destructor it will cause the
+    // destructor to do nothing.
+    reader: Option<StreamReader<T>>,
+    accessor: A,
+}
+
+impl<T, A> GuardedStreamReader<T, A>
+where
+    A: AsAccessor,
+{
+    /// Create a new `GuardedStreamReader` with the specified `accessor` and
+    /// `reader`.
+    pub fn new(accessor: A, reader: StreamReader<T>) -> Self {
+        Self {
+            reader: Some(reader),
+            accessor,
+        }
+    }
+
+    /// Wrapper for `StreamReader::is_closed`
+    pub fn is_closed(&self) -> bool {
+        self.reader.as_ref().unwrap().is_closed()
+    }
+
+    /// Wrapper for `StreamReader::read`.
+    pub async fn read<B>(&mut self, buffer: B) -> B
+    where
+        T: func::Lift + 'static,
+        B: ReadBuffer<T> + Send + 'static,
+    {
+        self.reader
+            .as_mut()
+            .unwrap()
+            .read(&self.accessor, buffer)
+            .await
+    }
+
+    /// Wrapper for `StreamReader::watch_writer`.
+    pub async fn watch_writer(&mut self) {
+        self.reader
+            .as_mut()
+            .unwrap()
+            .watch_writer(&self.accessor)
+            .await
+    }
+
+    /// Extracts the underlying [`StreamReader`] from this guard, returning it
+    /// back.
+    pub fn into_stream(self) -> StreamReader<T> {
+        self.into()
+    }
+}
+
+impl<T, A> From<GuardedStreamReader<T, A>> for StreamReader<T>
+where
+    A: AsAccessor,
+{
+    fn from(mut guard: GuardedStreamReader<T, A>) -> Self {
+        guard.reader.take().unwrap()
+    }
+}
+
+impl<T, A> Drop for GuardedStreamReader<T, A>
+where
+    A: AsAccessor,
+{
+    fn drop(&mut self) {
+        if let Some(reader) = &mut self.reader {
+            reader.close_with(&self.accessor)
+        }
     }
 }
 
@@ -1550,16 +1823,21 @@ enum Reader<'a> {
 impl Instance {
     /// Create a new Component Model `future` as pair of writable and readable ends,
     /// the latter of which may be passed to guest code.
+    ///
+    /// `default` is a callback to be used if the writable end of the future is
+    /// closed without having written a value.  You may supply e.g. `||
+    /// unreachable!()` if you're sure that won't happen.
     pub fn future<T: func::Lower + func::Lift + Send + Sync + 'static>(
         self,
         mut store: impl AsContextMut,
+        default: fn() -> T,
     ) -> Result<(FutureWriter<T>, FutureReader<T>)> {
         let (write, read) = self
             .concurrent_state_mut(store.as_context_mut().0)
             .new_transmit()?;
 
         Ok((
-            FutureWriter::new(write, self),
+            FutureWriter::new(default, write, self),
             FutureReader::new(read, self),
         ))
     }
@@ -1587,6 +1865,7 @@ impl Instance {
         id: TableId<TransmitHandle>,
         mut buffer: B,
         kind: TransmitKind,
+        post_write: PostWrite,
     ) -> Result<Result<HostResult<B>, oneshot::Receiver<HostResult<B>>>> {
         let transmit_id = self.concurrent_state_mut(store.0).get(id)?.state;
         let transmit = self
@@ -1600,6 +1879,10 @@ impl Instance {
         } else {
             ReadState::Open
         };
+
+        if matches!(post_write, PostWrite::Drop) && !matches!(transmit.read, ReadState::Open) {
+            transmit.write = WriteState::Dropped;
+        }
 
         Ok(match mem::replace(&mut transmit.read, new_state) {
             ReadState::Open => {
@@ -1619,7 +1902,7 @@ impl Instance {
                         _ = tx.send(result);
                         Ok(code)
                     }),
-                    post_write: PostWrite::Continue,
+                    post_write,
                 };
                 self.concurrent_state_mut(store.0)
                     .get_mut(transmit_id)?
@@ -1642,34 +1925,58 @@ impl Instance {
                 }
 
                 let read_handle = transmit.read_handle;
-                let (result, code) = accept_reader::<T, B, U>(
-                    store.as_context_mut(),
-                    self,
-                    Reader::Guest {
-                        options: &options,
-                        ty,
-                        address,
-                        count,
-                    },
-                    buffer,
-                    kind,
-                )?;
-
-                self.concurrent_state_mut(store.0).set_event(
-                    read_handle.rep(),
-                    match ty {
-                        TableIndex::Future(ty) => Event::FutureRead {
-                            code,
-                            pending: Some((ty, handle)),
+                let accept = move |mut store: StoreContextMut<U>| {
+                    let (result, code) = accept_reader::<T, B, U>(
+                        store.as_context_mut(),
+                        self,
+                        Reader::Guest {
+                            options: &options,
+                            ty,
+                            address,
+                            count,
                         },
-                        TableIndex::Stream(ty) => Event::StreamRead {
-                            code,
-                            pending: Some((ty, handle)),
-                        },
-                    },
-                )?;
+                        buffer,
+                        kind,
+                    )?;
 
-                Ok(result)
+                    self.concurrent_state_mut(store.0).set_event(
+                        read_handle.rep(),
+                        match ty {
+                            TableIndex::Future(ty) => Event::FutureRead {
+                                code,
+                                pending: Some((ty, handle)),
+                            },
+                            TableIndex::Stream(ty) => Event::StreamRead {
+                                code,
+                                pending: Some((ty, handle)),
+                            },
+                        },
+                    )?;
+
+                    anyhow::Ok(result)
+                };
+
+                if T::MAY_REQUIRE_REALLOC {
+                    // For payloads which may require a realloc call, use a
+                    // oneshot::channel and background task.  This is necessary
+                    // because calling the guest while there are host embedder
+                    // frames on the stack is unsound.
+                    let (tx, rx) = oneshot::channel();
+                    let token = StoreToken::new(store.as_context_mut());
+                    self.concurrent_state_mut(store.0).push_high_priority(
+                        WorkItem::WorkerFunction(Mutex::new(Box::new(move |store, _| {
+                            _ = tx.send(accept(token.as_context_mut(store))?);
+                            Ok(())
+                        }))),
+                    );
+                    Err(rx)
+                } else {
+                    // Optimize flat payloads (i.e. those which do not require
+                    // calling the guest's realloc function) by lowering
+                    // directly instead of using a oneshot::channel and
+                    // background task.
+                    Ok(accept(store)?)
+                }
             }
 
             ReadState::HostReady { accept } => {
@@ -1704,10 +2011,15 @@ impl Instance {
         buffer: B,
         kind: TransmitKind,
     ) -> Result<HostResult<B>> {
-        match accessor
-            .as_accessor()
-            .with(move |mut access| self.host_write(access.as_context_mut(), id, buffer, kind))?
-        {
+        match accessor.as_accessor().with(move |mut access| {
+            self.host_write(
+                access.as_context_mut(),
+                id,
+                buffer,
+                kind,
+                PostWrite::Continue,
+            )
+        })? {
             Ok(result) => Ok(result),
             Err(rx) => Ok(rx.await?),
         }
@@ -1941,15 +2253,15 @@ impl Instance {
     }
 
     /// Drop the write end of a stream or future read from the host.
-    fn host_drop_writer(
+    fn host_drop_writer<T: func::Lower + Send + 'static, U>(
         self,
-        store: &mut dyn VMStore,
+        mut store: StoreContextMut<U>,
         id: TableId<TransmitHandle>,
-        kind: TransmitKind,
+        default: Option<&dyn Fn() -> Result<T>>,
     ) -> Result<()> {
-        let transmit_id = self.concurrent_state_mut(store).get(id)?.state;
+        let transmit_id = self.concurrent_state_mut(store.0).get(id)?.state;
         let transmit = self
-            .concurrent_state_mut(store)
+            .concurrent_state_mut(store.0)
             .get_mut(transmit_id)
             .with_context(|| format!("error closing writer {transmit_id:?}"))?;
         log::trace!(
@@ -1964,24 +2276,34 @@ impl Instance {
 
         // Existing queued transmits must be updated with information for the impending writer closure
         match &mut transmit.write {
-            WriteState::GuestReady { post_write, .. } => {
-                *post_write = PostWrite::Drop;
+            WriteState::GuestReady { .. } => {
+                unreachable!("can't call `host_drop_writer` on a guest-owned writer");
             }
             WriteState::HostReady { post_write, .. } => {
                 *post_write = PostWrite::Drop;
             }
             v @ WriteState::Open => {
-                if let (TransmitKind::Future, false) = (
-                    kind,
+                if let (Some(default), false) = (
+                    default,
                     transmit.done || matches!(transmit.read, ReadState::Dropped),
                 ) {
-                    bail!("cannot drop future write end without first writing a value")
+                    // This is a future, and we haven't written a value yet --
+                    // write the default value.
+                    _ = self.host_write(
+                        store.as_context_mut(),
+                        id,
+                        Some(default()?),
+                        TransmitKind::Future,
+                        PostWrite::Drop,
+                    )?;
+                } else {
+                    *v = WriteState::Dropped;
                 }
-
-                *v = WriteState::Dropped;
             }
             WriteState::Dropped => unreachable!("write state is already dropped"),
         }
+
+        let transmit = self.concurrent_state_mut(store.0).get_mut(transmit_id)?;
 
         // If the existing read state is dropped, then there's nothing to read
         // and we can keep it that way.
@@ -1998,12 +2320,12 @@ impl Instance {
 
         // Swap in the new read state
         match mem::replace(&mut transmit.read, new_state) {
-            // If the guest was ready to read, then we cannot drop the reader (or writer)
+            // If the guest was ready to read, then we cannot drop the reader (or writer);
             // we must deliver the event, and update the state associated with the handle to
             // represent that a read must be performed
             ReadState::GuestReady { ty, handle, .. } => {
                 // Ensure the final read of the guest is queued, with appropriate closure indicator
-                self.concurrent_state_mut(store).update_event(
+                self.concurrent_state_mut(store.0).update_event(
                     read_handle.rep(),
                     match ty {
                         TableIndex::Future(ty) => Event::FutureRead {
@@ -2026,14 +2348,14 @@ impl Instance {
 
             // If the read state is open, then there are no registered readers of the stream/future
             ReadState::Open => {
-                self.concurrent_state_mut(store).update_event(
+                self.concurrent_state_mut(store.0).update_event(
                     read_handle.rep(),
-                    match kind {
-                        TransmitKind::Future => Event::FutureRead {
+                    match default {
+                        Some(_) => Event::FutureRead {
                             code: ReturnCode::Dropped(0),
                             pending: None,
                         },
-                        TransmitKind::Stream => Event::StreamRead {
+                        None => Event::StreamRead {
                             code: ReturnCode::Dropped(0),
                             pending: None,
                         },
@@ -2045,7 +2367,7 @@ impl Instance {
             // (both writer and reader have been dropped)
             ReadState::Dropped => {
                 log::trace!("host_drop_writer delete {transmit_id:?}");
-                self.concurrent_state_mut(store)
+                self.concurrent_state_mut(store.0)
                     .delete_transmit(transmit_id)?;
             }
         }
@@ -2053,14 +2375,14 @@ impl Instance {
     }
 
     /// Drop the writable end of the specified stream or future from the guest.
-    fn guest_drop_writable(
+    pub(super) fn guest_drop_writable<T>(
         self,
-        store: &mut dyn VMStore,
+        store: StoreContextMut<T>,
         ty: TableIndex,
         writer: u32,
     ) -> Result<()> {
         let (transmit_rep, state) = self
-            .concurrent_state_mut(store)
+            .concurrent_state_mut(store.0)
             .state_table(ty)
             .remove_by_index(writer)
             .context("failed to find writer")?;
@@ -2081,27 +2403,20 @@ impl Instance {
 
         let id = TableId::<TransmitHandle>::new(transmit_rep);
         log::trace!("guest_drop_writable: drop writer {id:?}");
-        self.host_drop_writer(store, id, kind)
-    }
-
-    /// Implements the `future.drop-writable` intrinsic.
-    pub(crate) fn future_drop_writable(
-        self,
-        store: &mut dyn VMStore,
-        ty: TypeFutureTableIndex,
-        writer: u32,
-    ) -> Result<()> {
-        self.guest_drop_writable(store, TableIndex::Future(ty), writer)
-    }
-
-    /// Implements the `stream.drop-writable` intrinsic.
-    pub(crate) fn stream_drop_writable(
-        self,
-        store: &mut dyn VMStore,
-        ty: TypeStreamTableIndex,
-        writer: u32,
-    ) -> Result<()> {
-        self.guest_drop_writable(store, TableIndex::Stream(ty), writer)
+        match kind {
+            TransmitKind::Stream => {
+                self.host_drop_writer(store, id, None::<&dyn Fn() -> Result<()>>)
+            }
+            TransmitKind::Future => self.host_drop_writer(
+                store,
+                id,
+                Some(&|| {
+                    Err::<(), _>(anyhow!(
+                        "cannot drop future write end without first writing a value"
+                    ))
+                }),
+            ),
+        }
     }
 
     /// Copy `count` items from `read_address` to `write_address` for the
@@ -2244,40 +2559,22 @@ impl Instance {
     }
 
     /// Write to the specified stream or future from the guest.
-    ///
-    /// SAFETY: `memory` and `realloc` must be valid pointers to their
-    /// respective guest entities.
-    pub(super) unsafe fn guest_write<T: 'static>(
+    pub(super) fn guest_write<T: 'static>(
         self,
         mut store: StoreContextMut<T>,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        string_encoding: u8,
-        async_: bool,
         ty: TableIndex,
+        options: OptionsIndex,
         flat_abi: Option<FlatAbi>,
         handle: u32,
         address: u32,
         count: u32,
     ) -> Result<ReturnCode> {
-        if !async_ {
-            bail!("synchronous stream and future writes not yet supported");
-        }
-
         let address = usize::try_from(address).unwrap();
         let count = usize::try_from(count).unwrap();
-        // SAFETY: Per this function's contract, `memory` and `realloc` are
-        // valid.
-        let options = unsafe {
-            Options::new(
-                store.0.store_opaque().id(),
-                NonNull::new(memory),
-                NonNull::new(realloc),
-                StringEncoding::from_u8(string_encoding).unwrap(),
-                true,
-                None,
-            )
-        };
+        let options = Options::new_index(store.0, self, options);
+        if !options.async_() {
+            bail!("synchronous stream and future writes not yet supported");
+        }
         let concurrent_state = self.concurrent_state_mut(store.0);
         let (rep, state) = concurrent_state.get_mut_by_index(ty, handle)?;
         let StreamFutureState::Write { done } = *state else {
@@ -2479,39 +2776,21 @@ impl Instance {
     }
 
     /// Read from the specified stream or future from the guest.
-    ///
-    /// SAFETY: `memory` and `realloc` must be valid pointers to their
-    /// respective guest entities.
-    pub(super) unsafe fn guest_read<T: 'static>(
+    pub(super) fn guest_read<T: 'static>(
         self,
         mut store: StoreContextMut<T>,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        string_encoding: u8,
-        async_: bool,
         ty: TableIndex,
+        options: OptionsIndex,
         flat_abi: Option<FlatAbi>,
         handle: u32,
         address: u32,
         count: u32,
     ) -> Result<ReturnCode> {
-        if !async_ {
+        let address = usize::try_from(address).unwrap();
+        let options = Options::new_index(store.0, self, options);
+        if !options.async_() {
             bail!("synchronous stream and future reads not yet supported");
         }
-
-        let address = usize::try_from(address).unwrap();
-        // SAFETY: Per this function's contract, `memory` and `realloc` must be
-        // valid.
-        let options = unsafe {
-            Options::new(
-                store.0.store_opaque().id(),
-                NonNull::new(memory),
-                NonNull::new(realloc),
-                StringEncoding::from_u8(string_encoding).unwrap(),
-                true,
-                None,
-            )
-        };
         let concurrent_state = self.concurrent_state_mut(store.0);
         let (rep, state) = concurrent_state.get_mut_by_index(ty, handle)?;
         let StreamFutureState::Read { done } = *state else {
@@ -2736,33 +3015,15 @@ impl Instance {
     }
 
     /// Create a new error context for the given component.
-    ///
-    /// SAFETY: `memory` and `realloc` must be valid pointers to their
-    /// respective guest entities.
-    pub(crate) unsafe fn error_context_new(
+    pub(crate) fn error_context_new(
         self,
         store: &mut StoreOpaque,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        string_encoding: u8,
         ty: TypeComponentLocalErrorContextTableIndex,
+        options: OptionsIndex,
         debug_msg_address: u32,
         debug_msg_len: u32,
     ) -> Result<u32> {
-        // SAFETY: Per this function's contract, `memory` and `realloc` must be
-        // valid.
-        let options = unsafe {
-            Options::new(
-                store.id(),
-                NonNull::new(memory),
-                NonNull::new(realloc),
-                StringEncoding::from_u8(string_encoding).ok_or_else(|| {
-                    anyhow::anyhow!("failed to convert u8 string encoding [{string_encoding}]")
-                })?,
-                false,
-                None,
-            )
-        };
+        let options = Options::new_index(store, self, options);
         let lift_ctx = &mut LiftContext::new(store, &options, self);
         //  Read string from guest memory
         let address = usize::try_from(debug_msg_address)?;
@@ -2808,21 +3069,15 @@ impl Instance {
     }
 
     /// Retrieve the debug message from the specified error context.
-    ///
-    /// SAFETY: `memory` and `realloc` must be valid pointers to their
-    /// respective guest entities.
-    pub(super) unsafe fn error_context_debug_message<T>(
+    pub(super) fn error_context_debug_message<T>(
         self,
         store: StoreContextMut<T>,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        string_encoding: u8,
         ty: TypeComponentLocalErrorContextTableIndex,
+        options: OptionsIndex,
         err_ctx_handle: u32,
         debug_msg_address: u32,
     ) -> Result<()> {
         // Retrieve the error context and internal debug message
-        let id = store.0.store_opaque().id();
         let state = self.concurrent_state_mut(store.0);
         let (state_table_id_rep, _) = state
             .error_context_tables
@@ -2835,20 +3090,7 @@ impl Instance {
             state.get_mut(TableId::<ErrorContextState>::new(state_table_id_rep))?;
         let debug_msg = debug_msg.clone();
 
-        // SAFETY: Per this function's contract, `memory` and `realloc` are
-        // valid.
-        let options = unsafe {
-            Options::new(
-                id,
-                NonNull::new(memory),
-                NonNull::new(realloc),
-                StringEncoding::from_u8(string_encoding).ok_or_else(|| {
-                    anyhow::anyhow!("failed to convert u8 string encoding [{string_encoding}]")
-                })?,
-                false,
-                None,
-            )
-        };
+        let options = Options::new_index(store.0, self, options);
         let types = self.id().get(store.0).component().types().clone();
         let lower_cx = &mut LowerContext::new(store, &options, &types, self);
         let debug_msg_address = usize::try_from(debug_msg_address)?;

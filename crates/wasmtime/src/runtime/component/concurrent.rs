@@ -1,5 +1,3 @@
-#![deny(unsafe_op_in_unsafe_fn)]
-
 //! Runtime support for the Component Model Async ABI.
 //!
 //! This module and its submodules provide host runtime support for Component
@@ -71,7 +69,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
-use std::mem::{self, MaybeUninit};
+use std::mem::{self, ManuallyDrop, MaybeUninit};
+use std::ops::DerefMut;
 use std::pin::{Pin, pin};
 use std::ptr::{self, NonNull};
 use std::slice;
@@ -81,16 +80,18 @@ use std::vec::Vec;
 use table::{Table, TableDebug, TableError, TableId};
 use wasmtime_environ::PrimaryMap;
 use wasmtime_environ::component::{
-    ExportIndex, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS, PREPARE_ASYNC_NO_RESULT,
-    PREPARE_ASYNC_WITH_RESULT, RuntimeComponentInstanceIndex, StringEncoding,
-    TypeComponentGlobalErrorContextTableIndex, TypeComponentLocalErrorContextTableIndex,
-    TypeFutureTableIndex, TypeStreamTableIndex, TypeTupleIndex,
+    CanonicalOptions, CanonicalOptionsDataModel, ExportIndex, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS,
+    OptionsIndex, PREPARE_ASYNC_NO_RESULT, PREPARE_ASYNC_WITH_RESULT,
+    RuntimeComponentInstanceIndex, StringEncoding, TypeComponentGlobalErrorContextTableIndex,
+    TypeComponentLocalErrorContextTableIndex, TypeFutureTableIndex, TypeStreamTableIndex,
+    TypeTupleIndex,
 };
 
 pub use abort::AbortHandle;
 pub use futures_and_streams::{
-    DropWithStore, DropWithStoreAndValue, ErrorContext, FutureReader, FutureWriter, ReadBuffer,
-    StreamReader, StreamWriter, VecBuffer, WithAccessor, WithAccessorAndValue, WriteBuffer,
+    ErrorContext, FutureReader, FutureWriter, GuardedFutureReader, GuardedFutureWriter,
+    GuardedStreamReader, GuardedStreamWriter, ReadBuffer, StreamReader, StreamWriter, VecBuffer,
+    WriteBuffer,
 };
 pub(crate) use futures_and_streams::{
     ResourcePair, lower_error_context_to_index, lower_future_to_index, lower_stream_to_index,
@@ -201,14 +202,14 @@ const START_FLAG_ASYNC_CALLEE: u32 = wasmtime_environ::component::START_FLAG_ASY
 /// instance to which the current host task belongs.
 ///
 /// See [`Accessor::with`] for details.
-pub struct Access<'a, T: 'static, D: HasData = HasSelf<T>> {
+pub struct Access<'a, T: 'static, D: HasData + ?Sized = HasSelf<T>> {
     accessor: &'a Accessor<T, D>,
     store: StoreContextMut<'a, T>,
 }
 
 impl<'a, T, D> Access<'a, T, D>
 where
-    D: HasData,
+    D: HasData + ?Sized,
     T: 'static,
 {
     /// Get mutable access to the store data.
@@ -244,7 +245,7 @@ where
 
 impl<'a, T, D> AsContext for Access<'a, T, D>
 where
-    D: HasData,
+    D: HasData + ?Sized,
     T: 'static,
 {
     type Data = T;
@@ -256,7 +257,7 @@ where
 
 impl<'a, T, D> AsContextMut for Access<'a, T, D>
 where
-    D: HasData,
+    D: HasData + ?Sized,
     T: 'static,
 {
     fn as_context_mut(&mut self) -> StoreContextMut<'_, T> {
@@ -325,7 +326,7 @@ where
 /// feel free to file an issue on the Wasmtime repository.
 pub struct Accessor<T: 'static, D = HasSelf<T>>
 where
-    D: HasData,
+    D: HasData + ?Sized,
 {
     token: StoreToken<T>,
     get_data: fn(&mut T) -> D::Data<'_>,
@@ -353,7 +354,7 @@ pub trait AsAccessor {
 
     /// The `D` in `Accessor<T, D>`, or the projection out of
     /// `Self::Data`.
-    type AccessorData: HasData;
+    type AccessorData: HasData + ?Sized;
 
     /// Returns the accessor that this is referring to.
     fn as_accessor(&self) -> &Accessor<Self::Data, Self::AccessorData>;
@@ -368,7 +369,7 @@ impl<T: AsAccessor + ?Sized> AsAccessor for &T {
     }
 }
 
-impl<T, D: HasData> AsAccessor for Accessor<T, D> {
+impl<T, D: HasData + ?Sized> AsAccessor for Accessor<T, D> {
     type Data = T;
     type AccessorData = D;
 
@@ -427,7 +428,7 @@ impl<T> Accessor<T> {
 
 impl<T, D> Accessor<T, D>
 where
-    D: HasData,
+    D: HasData + ?Sized,
 {
     /// Run the specified closure, passing it mutable access to the store.
     ///
@@ -542,7 +543,7 @@ where
 // { ... }`).  So this seems to be the best we can do for the time being.
 pub trait AccessorTask<T, D, R>: Send + 'static
 where
-    D: HasData,
+    D: HasData + ?Sized,
 {
     /// Run the task.
     fn run(self, accessor: &Accessor<T, D>) -> impl Future<Output = R> + Send;
@@ -673,6 +674,12 @@ impl GuestCall {
     }
 }
 
+/// Job to be run on a worker fiber.
+enum WorkerItem {
+    GuestCall(GuestCall),
+    Function(Mutex<Box<dyn FnOnce(&mut dyn VMStore, Instance) -> Result<()> + Send>>),
+}
+
 /// Represents state related to an in-progress poll operation (e.g. `task.poll`
 /// or `CallbackCode.POLL`).
 #[derive(Debug)]
@@ -701,6 +708,8 @@ enum WorkItem {
     GuestCall(GuestCall),
     /// A pending `task.poll` or `CallbackCode.POLL` operation.
     Poll(PollParams),
+    /// A job to run on a worker fiber.
+    WorkerFunction(Mutex<Box<dyn FnOnce(&mut dyn VMStore, Instance) -> Result<()> + Send>>),
 }
 
 impl fmt::Debug for WorkItem {
@@ -710,6 +719,7 @@ impl fmt::Debug for WorkItem {
             Self::ResumeFiber(_) => f.debug_tuple("ResumeFiber").finish(),
             Self::GuestCall(call) => f.debug_tuple("GuestCall").field(call).finish(),
             Self::Poll(params) => f.debug_tuple("Poll").field(params).finish(),
+            Self::WorkerFunction(_) => f.debug_tuple("WorkerFunction").finish(),
         }
     }
 }
@@ -1164,6 +1174,10 @@ impl ConcurrentState {
         self.get_mut(task)?.context[usize::try_from(slot).unwrap()] = val;
         Ok(())
     }
+
+    fn options(&self, options: OptionsIndex) -> &CanonicalOptions {
+        &self.component.env_component().options[options]
+    }
 }
 
 impl Instance {
@@ -1290,27 +1304,28 @@ impl Instance {
 
         struct Dropper<'a, T: 'static, V> {
             store: StoreContextMut<'a, T>,
-            value: Option<V>,
+            value: ManuallyDrop<V>,
         }
 
         impl<'a, T, V> Drop for Dropper<'a, T, V> {
             fn drop(&mut self) {
-                let value = self.value.take();
-                tls::set(self.store.0.traitobj_mut(), move || drop(value));
+                tls::set(self.store.0.traitobj_mut(), || {
+                    // SAFETY: Here we drop the value without moving it for the
+                    // first and only time -- per the contract for `Drop::drop`,
+                    // this code won't run again, and the `value` field will no
+                    // longer be accessible.
+                    unsafe { ManuallyDrop::drop(&mut self.value) }
+                });
             }
         }
 
         let accessor = &Accessor::new(token, Some(self));
         let dropper = &mut Dropper {
             store,
-            value: Some(fun(accessor)),
+            value: ManuallyDrop::new(fun(accessor)),
         };
-        // SAFETY: `dropper` is a local, non-escaping variable and we do not
-        // move its `value` field until it is dropped.
-        //
-        // TODO: Could/should we make this safe using some combination of `pin!`
-        // and `pin_project!`?
-        let future = unsafe { Pin::new_unchecked(dropper.value.as_mut().unwrap()) };
+        // SAFETY: We never move `dropper` nor its `value` field.
+        let future = unsafe { Pin::new_unchecked(dropper.value.deref_mut()) };
 
         self.poll_until(dropper.store.as_context_mut(), future)
             .await
@@ -1345,7 +1360,7 @@ impl Instance {
     ) -> AbortHandle
     where
         T: 'static,
-        D: HasData,
+        D: HasData + ?Sized,
     {
         let store = store.as_context_mut();
 
@@ -1397,8 +1412,22 @@ impl Instance {
                 // immediately if one of them fails.
                 let next = match self.set_tls(store.0, || next.as_mut().poll(cx)) {
                     Poll::Ready(Some(output)) => {
-                        if let Err(e) = output.consume(store.0.traitobj_mut(), self) {
-                            return Poll::Ready(Err(e));
+                        match output {
+                            HostTaskOutput::Result(Err(e)) => return Poll::Ready(Err(e)),
+                            HostTaskOutput::Result(Ok(())) => {}
+                            HostTaskOutput::Function(fun) => {
+                                // Defer calling this function to a worker fiber
+                                // in case it involves calling a guest realloc
+                                // function as part of a lowering operation.
+                                //
+                                // TODO: This isn't necessary for _all_
+                                // `HostOutput::Function`s, so we could optimize
+                                // by adding another variant to `HostOutput` to
+                                // distinguish which ones need it and which
+                                // don't.
+                                self.concurrent_state_mut(store.0)
+                                    .push_high_priority(WorkItem::WorkerFunction(Mutex::new(fun)))
+                            }
                         }
                         Poll::Ready(true)
                     }
@@ -1418,12 +1447,14 @@ impl Instance {
                     let ready = mem::take(&mut state.low_priority);
                     if ready.is_empty() {
                         return match next {
-                            // In this case, one of the futures in
-                            // `ConcurrentState::futures` completed
-                            // successfully, so we return now and continue the
-                            // outer loop in case there is another one ready to
-                            // complete.
-                            Poll::Ready(true) => Poll::Ready(Ok(Either::Right(Vec::new()))),
+                            Poll::Ready(true) => {
+                                // In this case, one of the futures in
+                                // `ConcurrentState::futures` completed
+                                // successfully, so we return now and continue
+                                // the outer loop in case there is another one
+                                // ready to complete.
+                                Poll::Ready(Ok(Either::Right(Vec::new())))
+                            }
                             Poll::Ready(false) => {
                                 // Poll the future we were passed one last time
                                 // in case one of `ConcurrentState::futures` had
@@ -1528,7 +1559,8 @@ impl Instance {
             WorkItem::GuestCall(call) => {
                 let state = self.concurrent_state_mut(store);
                 if call.is_ready(state)? {
-                    self.run_on_worker(store, call).await?;
+                    self.run_on_worker(store, WorkerItem::GuestCall(call))
+                        .await?;
                 } else {
                     let task = state.get_mut(call.task)?;
                     if !task.starting_sent {
@@ -1577,6 +1609,9 @@ impl Instance {
                     }));
                 }
             }
+            WorkItem::WorkerFunction(fun) => {
+                self.run_on_worker(store, WorkerItem::Function(fun)).await?;
+            }
         }
 
         Ok(())
@@ -1622,23 +1657,25 @@ impl Instance {
     }
 
     /// Execute the specified guest call on a worker fiber.
-    async fn run_on_worker(self, store: &mut StoreOpaque, call: GuestCall) -> Result<()> {
+    async fn run_on_worker(self, store: &mut StoreOpaque, item: WorkerItem) -> Result<()> {
         let worker = if let Some(fiber) = self.concurrent_state_mut(store).worker.take() {
             fiber
         } else {
             fiber::make_fiber(store.traitobj_mut(), move |store| {
                 loop {
-                    let call = self.concurrent_state_mut(store).guest_call.take().unwrap();
-                    self.handle_guest_call(store, call)?;
+                    match self.concurrent_state_mut(store).worker_item.take().unwrap() {
+                        WorkerItem::GuestCall(call) => self.handle_guest_call(store, call)?,
+                        WorkerItem::Function(fun) => fun.into_inner().unwrap()(store, self)?,
+                    }
 
                     self.suspend(store, SuspendReason::NeedWork)?;
                 }
             })?
         };
 
-        let guest_call = &mut self.concurrent_state_mut(store).guest_call;
-        assert!(guest_call.is_none());
-        *guest_call = Some(call);
+        let worker_item = &mut self.concurrent_state_mut(store).worker_item;
+        assert!(worker_item.is_none());
+        *worker_item = Some(item);
 
         self.resume_fiber(store, worker).await
     }
@@ -2375,8 +2412,10 @@ impl Instance {
 
         // Use the caller's `GuestTask::sync_call_set` to register interest in
         // the subtask...
+        let guest_waitable = Waitable::Guest(guest_task);
+        let old_set = guest_waitable.common(state)?.set;
         let set = state.get_mut(caller)?.sync_call_set;
-        Waitable::Guest(guest_task).join(state, Some(set))?;
+        guest_waitable.join(state, Some(set))?;
 
         // ... and suspend this fiber temporarily while we wait for it to start.
         //
@@ -2431,7 +2470,7 @@ impl Instance {
 
         let state = self.concurrent_state_mut(store.0);
 
-        Waitable::Guest(guest_task).join(state, None)?;
+        guest_waitable.join(state, old_set)?;
 
         if let Some(storage) = storage {
             // The caller used a sync-lowered import to call an async-lifted
@@ -2719,23 +2758,19 @@ impl Instance {
 
     /// Implements the `task.return` intrinsic, lifting the result for the
     /// current guest task.
-    ///
-    /// SAFETY: The `memory` and `storage` pointers must be valid, and `storage`
-    /// must contain at least `storage_len` items.
-    pub(crate) unsafe fn task_return(
+    pub(crate) fn task_return(
         self,
         store: &mut dyn VMStore,
         ty: TypeTupleIndex,
-        memory: *mut VMMemoryDefinition,
-        string_encoding: u8,
-        storage: *mut ValRaw,
-        storage_len: usize,
+        options: OptionsIndex,
+        storage: &[ValRaw],
     ) -> Result<()> {
-        // SAFETY: The `wasmtime_cranelift`-generated code that calls this
-        // method will have ensured that `storage` is a valid pointer containing
-        // at least `storage_len` items.
-        let storage = unsafe { std::slice::from_raw_parts(storage, storage_len) };
         let state = self.concurrent_state_mut(store);
+        let CanonicalOptions {
+            string_encoding,
+            data_model,
+            ..
+        } = *state.options(options);
         let guest_task = state.guest_task.unwrap();
         let lift = state
             .get_mut(guest_task)?
@@ -2744,16 +2779,28 @@ impl Instance {
             .ok_or_else(|| {
                 anyhow!("`task.return` or `task.cancel` called more than once for current task")
             })?;
+        assert!(state.get(guest_task)?.result.is_none());
 
-        if ty != lift.ty
-            || (!memory.is_null()
-                && memory != lift.memory.map(|v| v.as_ptr()).unwrap_or(ptr::null_mut()))
-            || string_encoding != lift.string_encoding as u8
-        {
+        let invalid = ty != lift.ty
+            || string_encoding != lift.string_encoding
+            || match data_model {
+                CanonicalOptionsDataModel::LinearMemory(opts) => match opts.memory {
+                    Some(memory) => {
+                        let expected = lift.memory.map(|v| v.as_ptr()).unwrap_or(ptr::null_mut());
+                        let actual = self.id().get(store).runtime_memory(memory);
+                        expected != actual
+                    }
+                    // Memory not specified, meaning it didn't need to be
+                    // specified per validation, so not invalid.
+                    None => false,
+                },
+                // Always invalid as this isn't supported.
+                CanonicalOptionsDataModel::Gc { .. } => true,
+            };
+
+        if invalid {
             bail!("invalid `task.return` signature and/or options for current task");
         }
-
-        assert!(state.get(guest_task)?.result.is_none());
 
         log::trace!("task.return for {guest_task:?}");
 
@@ -2853,15 +2900,16 @@ impl Instance {
     pub(crate) fn waitable_set_wait(
         self,
         store: &mut dyn VMStore,
-        caller_instance: RuntimeComponentInstanceIndex,
-        async_: bool,
-        memory: *mut VMMemoryDefinition,
+        options: OptionsIndex,
         set: u32,
         payload: u32,
     ) -> Result<u32> {
-        let (rep, WaitableState::Set) = self.concurrent_state_mut(store).waitable_tables
-            [caller_instance]
-            .get_mut_by_index(set)?
+        let state = self.concurrent_state_mut(store);
+        let opts = state.options(options);
+        let async_ = opts.async_;
+        let caller_instance = opts.instance;
+        let (rep, WaitableState::Set) =
+            state.waitable_tables[caller_instance].get_mut_by_index(set)?
         else {
             bail!("invalid waitable-set handle");
         };
@@ -2871,9 +2919,9 @@ impl Instance {
             async_,
             WaitableCheck::Wait(WaitableCheckParams {
                 set: TableId::new(rep),
-                memory,
-                payload,
                 caller_instance,
+                options,
+                payload,
             }),
         )
     }
@@ -2882,15 +2930,16 @@ impl Instance {
     pub(crate) fn waitable_set_poll(
         self,
         store: &mut dyn VMStore,
-        caller_instance: RuntimeComponentInstanceIndex,
-        async_: bool,
-        memory: *mut VMMemoryDefinition,
+        options: OptionsIndex,
         set: u32,
         payload: u32,
     ) -> Result<u32> {
-        let (rep, WaitableState::Set) = self.concurrent_state_mut(store).waitable_tables
-            [caller_instance]
-            .get_mut_by_index(set)?
+        let state = self.concurrent_state_mut(store);
+        let opts = state.options(options);
+        let async_ = opts.async_;
+        let caller_instance = opts.instance;
+        let (rep, WaitableState::Set) =
+            state.waitable_tables[caller_instance].get_mut_by_index(set)?
         else {
             bail!("invalid waitable-set handle");
         };
@@ -2900,9 +2949,9 @@ impl Instance {
             async_,
             WaitableCheck::Poll(WaitableCheckParams {
                 set: TableId::new(rep),
-                memory,
-                payload,
                 caller_instance,
+                options,
+                payload,
             }),
         )
     }
@@ -3001,16 +3050,7 @@ impl Instance {
                     }
                 };
                 let store = store.store_opaque_mut();
-                let options = unsafe {
-                    Options::new(
-                        store.id(),
-                        NonNull::new(params.memory),
-                        None,
-                        StringEncoding::Utf8,
-                        true,
-                        None,
-                    )
-                };
+                let options = Options::new_index(store, self, params.options);
                 let ptr = func::validate_inbounds::<(u32, u32)>(
                     options.memory_mut(store),
                     &ValRaw::u32(params.payload),
@@ -3129,10 +3169,14 @@ impl Instance {
                     if async_ {
                         return Ok(BLOCKED);
                     } else {
+                        let waitable = Waitable::Guest(guest_task);
+                        let old_set = waitable.common(concurrent_state)?.set;
                         let set = concurrent_state.get_mut(caller)?.sync_call_set;
-                        Waitable::Guest(guest_task).join(concurrent_state, Some(set))?;
+                        waitable.join(concurrent_state, Some(set))?;
 
                         self.suspend(store, SuspendReason::Waiting { set, task: caller })?;
+
+                        waitable.join(self.concurrent_state_mut(store), old_set)?;
                     }
                 }
             }
@@ -3235,54 +3279,50 @@ pub trait VMComponentAsyncStore {
     ) -> Result<u32>;
 
     /// The `future.write` intrinsic.
-    unsafe fn future_write(
+    fn future_write(
         &mut self,
         instance: Instance,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        string_encoding: u8,
-        async_: bool,
         ty: TypeFutureTableIndex,
+        options: OptionsIndex,
         future: u32,
         address: u32,
     ) -> Result<u32>;
 
     /// The `future.read` intrinsic.
-    unsafe fn future_read(
+    fn future_read(
         &mut self,
         instance: Instance,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        string_encoding: u8,
-        async_: bool,
         ty: TypeFutureTableIndex,
+        options: OptionsIndex,
         future: u32,
         address: u32,
     ) -> Result<u32>;
 
-    /// The `stream.write` intrinsic.
-    unsafe fn stream_write(
+    /// The `future.drop-writable` intrinsic.
+    fn future_drop_writable(
         &mut self,
         instance: Instance,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        string_encoding: u8,
-        async_: bool,
+        ty: TypeFutureTableIndex,
+        writer: u32,
+    ) -> Result<()>;
+
+    /// The `stream.write` intrinsic.
+    fn stream_write(
+        &mut self,
+        instance: Instance,
         ty: TypeStreamTableIndex,
+        options: OptionsIndex,
         stream: u32,
         address: u32,
         count: u32,
     ) -> Result<u32>;
 
     /// The `stream.read` intrinsic.
-    unsafe fn stream_read(
+    fn stream_read(
         &mut self,
         instance: Instance,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        string_encoding: u8,
-        async_: bool,
         ty: TypeStreamTableIndex,
+        options: OptionsIndex,
         stream: u32,
         address: u32,
         count: u32,
@@ -3290,13 +3330,11 @@ pub trait VMComponentAsyncStore {
 
     /// The "fast-path" implementation of the `stream.write` intrinsic for
     /// "flat" (i.e. memcpy-able) payloads.
-    unsafe fn flat_stream_write(
+    fn flat_stream_write(
         &mut self,
         instance: Instance,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        async_: bool,
         ty: TypeStreamTableIndex,
+        options: OptionsIndex,
         payload_size: u32,
         payload_align: u32,
         stream: u32,
@@ -3306,13 +3344,11 @@ pub trait VMComponentAsyncStore {
 
     /// The "fast-path" implementation of the `stream.read` intrinsic for "flat"
     /// (i.e. memcpy-able) payloads.
-    unsafe fn flat_stream_read(
+    fn flat_stream_read(
         &mut self,
         instance: Instance,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        async_: bool,
         ty: TypeStreamTableIndex,
+        options: OptionsIndex,
         payload_size: u32,
         payload_align: u32,
         stream: u32,
@@ -3320,14 +3356,20 @@ pub trait VMComponentAsyncStore {
         count: u32,
     ) -> Result<u32>;
 
-    /// The `error-context.debug-message` intrinsic.
-    unsafe fn error_context_debug_message(
+    /// The `stream.drop-writable` intrinsic.
+    fn stream_drop_writable(
         &mut self,
         instance: Instance,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        string_encoding: u8,
+        ty: TypeStreamTableIndex,
+        writer: u32,
+    ) -> Result<()>;
+
+    /// The `error-context.debug-message` intrinsic.
+    fn error_context_debug_message(
+        &mut self,
+        instance: Instance,
         ty: TypeComponentLocalErrorContextTableIndex,
+        options: OptionsIndex,
         err_ctx_handle: u32,
         debug_msg_address: u32,
     ) -> Result<()>;
@@ -3434,222 +3476,179 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
         }
     }
 
-    unsafe fn future_write(
+    fn future_write(
         &mut self,
         instance: Instance,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        string_encoding: u8,
-        async_: bool,
         ty: TypeFutureTableIndex,
+        options: OptionsIndex,
         future: u32,
         address: u32,
     ) -> Result<u32> {
-        // SAFETY: Per the trait-level documentation for
-        // `VMComponentAsyncStore`, all raw pointers passed to this function
-        // must be valid.
-        unsafe {
-            instance
-                .guest_write(
-                    StoreContextMut(self),
-                    memory,
-                    realloc,
-                    string_encoding,
-                    async_,
-                    TableIndex::Future(ty),
-                    None,
-                    future,
-                    address,
-                    1,
-                )
-                .map(|result| result.encode())
-        }
+        instance
+            .guest_write(
+                StoreContextMut(self),
+                TableIndex::Future(ty),
+                options,
+                None,
+                future,
+                address,
+                1,
+            )
+            .map(|result| result.encode())
     }
 
-    unsafe fn future_read(
+    fn future_read(
         &mut self,
         instance: Instance,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        string_encoding: u8,
-        async_: bool,
         ty: TypeFutureTableIndex,
+        options: OptionsIndex,
         future: u32,
         address: u32,
     ) -> Result<u32> {
-        // SAFETY: See corresponding comment in `Self::future_write`.
-        unsafe {
-            instance
-                .guest_read(
-                    StoreContextMut(self),
-                    memory,
-                    realloc,
-                    string_encoding,
-                    async_,
-                    TableIndex::Future(ty),
-                    None,
-                    future,
-                    address,
-                    1,
-                )
-                .map(|result| result.encode())
-        }
+        instance
+            .guest_read(
+                StoreContextMut(self),
+                TableIndex::Future(ty),
+                options,
+                None,
+                future,
+                address,
+                1,
+            )
+            .map(|result| result.encode())
     }
 
-    unsafe fn stream_write(
+    fn stream_write(
         &mut self,
         instance: Instance,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        string_encoding: u8,
-        async_: bool,
         ty: TypeStreamTableIndex,
+        options: OptionsIndex,
         stream: u32,
         address: u32,
         count: u32,
     ) -> Result<u32> {
-        // SAFETY: See corresponding comment in `Self::future_write`.
-        unsafe {
-            instance
-                .guest_write(
-                    StoreContextMut(self),
-                    memory,
-                    realloc,
-                    string_encoding,
-                    async_,
-                    TableIndex::Stream(ty),
-                    None,
-                    stream,
-                    address,
-                    count,
-                )
-                .map(|result| result.encode())
-        }
+        instance
+            .guest_write(
+                StoreContextMut(self),
+                TableIndex::Stream(ty),
+                options,
+                None,
+                stream,
+                address,
+                count,
+            )
+            .map(|result| result.encode())
     }
 
-    unsafe fn stream_read(
+    fn stream_read(
         &mut self,
         instance: Instance,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        string_encoding: u8,
-        async_: bool,
         ty: TypeStreamTableIndex,
+        options: OptionsIndex,
         stream: u32,
         address: u32,
         count: u32,
     ) -> Result<u32> {
-        // SAFETY: See corresponding comment in `Self::future_write`.
-        unsafe {
-            instance
-                .guest_read(
-                    StoreContextMut(self),
-                    memory,
-                    realloc,
-                    string_encoding,
-                    async_,
-                    TableIndex::Stream(ty),
-                    None,
-                    stream,
-                    address,
-                    count,
-                )
-                .map(|result| result.encode())
-        }
+        instance
+            .guest_read(
+                StoreContextMut(self),
+                TableIndex::Stream(ty),
+                options,
+                None,
+                stream,
+                address,
+                count,
+            )
+            .map(|result| result.encode())
     }
 
-    unsafe fn flat_stream_write(
+    fn future_drop_writable(
         &mut self,
         instance: Instance,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        async_: bool,
+        ty: TypeFutureTableIndex,
+        writer: u32,
+    ) -> Result<()> {
+        instance.guest_drop_writable(StoreContextMut(self), TableIndex::Future(ty), writer)
+    }
+
+    fn flat_stream_write(
+        &mut self,
+        instance: Instance,
         ty: TypeStreamTableIndex,
+        options: OptionsIndex,
         payload_size: u32,
         payload_align: u32,
         stream: u32,
         address: u32,
         count: u32,
     ) -> Result<u32> {
-        // SAFETY: See corresponding comment in `Self::future_write`.
-        unsafe {
-            instance
-                .guest_write(
-                    StoreContextMut(self),
-                    memory,
-                    realloc,
-                    StringEncoding::Utf8 as u8,
-                    async_,
-                    TableIndex::Stream(ty),
-                    Some(FlatAbi {
-                        size: payload_size,
-                        align: payload_align,
-                    }),
-                    stream,
-                    address,
-                    count,
-                )
-                .map(|result| result.encode())
-        }
+        instance
+            .guest_write(
+                StoreContextMut(self),
+                TableIndex::Stream(ty),
+                options,
+                Some(FlatAbi {
+                    size: payload_size,
+                    align: payload_align,
+                }),
+                stream,
+                address,
+                count,
+            )
+            .map(|result| result.encode())
     }
 
-    unsafe fn flat_stream_read(
+    fn flat_stream_read(
         &mut self,
         instance: Instance,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        async_: bool,
         ty: TypeStreamTableIndex,
+        options: OptionsIndex,
         payload_size: u32,
         payload_align: u32,
         stream: u32,
         address: u32,
         count: u32,
     ) -> Result<u32> {
-        // SAFETY: See corresponding comment in `Self::future_write`.
-        unsafe {
-            instance
-                .guest_read(
-                    StoreContextMut(self),
-                    memory,
-                    realloc,
-                    StringEncoding::Utf8 as u8,
-                    async_,
-                    TableIndex::Stream(ty),
-                    Some(FlatAbi {
-                        size: payload_size,
-                        align: payload_align,
-                    }),
-                    stream,
-                    address,
-                    count,
-                )
-                .map(|result| result.encode())
-        }
+        instance
+            .guest_read(
+                StoreContextMut(self),
+                TableIndex::Stream(ty),
+                options,
+                Some(FlatAbi {
+                    size: payload_size,
+                    align: payload_align,
+                }),
+                stream,
+                address,
+                count,
+            )
+            .map(|result| result.encode())
     }
 
-    unsafe fn error_context_debug_message(
+    fn stream_drop_writable(
         &mut self,
         instance: Instance,
-        memory: *mut VMMemoryDefinition,
-        realloc: *mut VMFuncRef,
-        string_encoding: u8,
+        ty: TypeStreamTableIndex,
+        writer: u32,
+    ) -> Result<()> {
+        instance.guest_drop_writable(StoreContextMut(self), TableIndex::Stream(ty), writer)
+    }
+
+    fn error_context_debug_message(
+        &mut self,
+        instance: Instance,
         ty: TypeComponentLocalErrorContextTableIndex,
+        options: OptionsIndex,
         err_ctx_handle: u32,
         debug_msg_address: u32,
     ) -> Result<()> {
-        // SAFETY: See corresponding comment in `Self::future_write`.
-        unsafe {
-            instance.error_context_debug_message(
-                StoreContextMut(self),
-                memory,
-                realloc,
-                string_encoding,
-                ty,
-                err_ctx_handle,
-                debug_msg_address,
-            )
-        }
+        instance.error_context_debug_message(
+            StoreContextMut(self),
+            ty,
+            options,
+            err_ctx_handle,
+            debug_msg_address,
+        )
     }
 }
 
@@ -3952,6 +3951,8 @@ impl Waitable {
     /// remove it from any set it may currently belong to (when `set` is
     /// `None`).
     fn join(&self, state: &mut ConcurrentState, set: Option<TableId<WaitableSet>>) -> Result<()> {
+        log::trace!("waitable {self:?} join set {set:?}",);
+
         let old = mem::replace(&mut self.common(state)?.set, set);
 
         if let Some(old) = old {
@@ -4225,7 +4226,7 @@ pub struct ConcurrentState {
     /// This helps us avoid creating a new fiber for each `GuestCall` work item.
     worker: Option<StoreFiber<'static>>,
     /// A place to stash the work item for which we're resuming a worker fiber.
-    guest_call: Option<GuestCall>,
+    worker_item: Option<WorkerItem>,
 
     /// (Sub)Component specific error context tracking
     ///
@@ -4287,7 +4288,7 @@ impl ConcurrentState {
             low_priority: Vec::new(),
             suspend_reason: None,
             worker: None,
-            guest_call: None,
+            worker_item: None,
             error_context_tables,
             global_error_context_ref_counts: BTreeMap::new(),
             component: component.clone(),
@@ -4315,9 +4316,9 @@ impl ConcurrentState {
         fibers: &mut Vec<StoreFiber<'static>>,
         futures: &mut Vec<FuturesUnordered<HostTaskFuture>>,
     ) {
-        for entry in mem::take(&mut self.table) {
-            if let Ok(set) = entry.downcast::<WaitableSet>() {
-                for mode in set.waiting.into_values() {
+        for entry in self.table.iter_mut() {
+            if let Some(set) = entry.downcast_mut::<WaitableSet>() {
+                for mode in mem::take(&mut set.waiting).into_values() {
                     if let WaitMode::Fiber(fiber) = mode {
                         fibers.push(fiber);
                     }
@@ -4433,9 +4434,9 @@ fn unpack_callback_code(code: u32) -> (u32, u32) {
 /// `waitable-set.poll`.
 struct WaitableCheckParams {
     set: TableId<WaitableSet>,
-    memory: *mut VMMemoryDefinition,
-    payload: u32,
     caller_instance: RuntimeComponentInstanceIndex,
+    options: OptionsIndex,
+    payload: u32,
 }
 
 /// Helper enum for passing parameters to `ComponentInstance::waitable_check`.

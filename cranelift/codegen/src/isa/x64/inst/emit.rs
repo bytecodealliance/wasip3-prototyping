@@ -1,7 +1,5 @@
 use crate::ir::KnownSymbol;
 use crate::ir::immediates::{Ieee32, Ieee64};
-use crate::isa::x64::encoding::evex::{EvexInstruction, EvexVectorLength, RegisterOrAmode};
-use crate::isa::x64::encoding::rex::{LegacyPrefixes, OpcodeMap};
 use crate::isa::x64::external::{AsmInst, CraneliftRegisters, PairedGpr};
 use crate::isa::x64::inst::args::*;
 use crate::isa::x64::inst::*;
@@ -451,9 +449,9 @@ pub(crate) fn emit(
             }
 
             if let Some(try_call) = call_info.try_call_info.as_ref() {
-                sink.add_call_site(&try_call.exception_dests);
+                sink.add_try_call_site(try_call.exception_handlers(&state.frame_layout()));
             } else {
-                sink.add_call_site(&[]);
+                sink.add_call_site();
             }
 
             // Reclaim the outgoing argument area that was released by the
@@ -496,7 +494,7 @@ pub(crate) fn emit(
             // The addend adjusts for the difference between the end of the instruction and the
             // beginning of the immediate field.
             sink.add_reloc_at_offset(offset - 4, Reloc::X86CallPCRel4, &call_info.dest, -4);
-            sink.add_call_site(&[]);
+            sink.add_call_site();
         }
 
         Inst::ReturnCallUnknown { info: call_info } => {
@@ -505,7 +503,7 @@ pub(crate) fn emit(
             emit_return_call_common_sequence(sink, info, state, &call_info);
 
             asm::inst::jmpq_m::new(callee).emit(sink, info, state);
-            sink.add_call_site(&[]);
+            sink.add_call_site();
         }
 
         Inst::CallUnknown {
@@ -526,9 +524,9 @@ pub(crate) fn emit(
             }
 
             if let Some(try_call) = call_info.try_call_info.as_ref() {
-                sink.add_call_site(&try_call.exception_dests);
+                sink.add_try_call_site(try_call.exception_handlers(&state.frame_layout()));
             } else {
-                sink.add_call_site(&[]);
+                sink.add_call_site();
             }
 
             // Reclaim the outgoing argument area that was released by the callee, to ensure that
@@ -792,114 +790,6 @@ pub(crate) fn emit(
             // Emit two jumps to the same trap if either condition code is true.
             one_way_jmp(sink, *cc1, trap_label);
             one_way_jmp(sink, *cc2, trap_label);
-        }
-
-        Inst::XmmUnaryRmREvex { op, src, dst } => {
-            let dst = dst.to_reg().to_reg();
-            let src = match src.clone().to_reg_mem().clone() {
-                RegMem::Reg { reg } => {
-                    RegisterOrAmode::Register(reg.to_real_reg().unwrap().hw_enc().into())
-                }
-                RegMem::Mem { addr } => {
-                    RegisterOrAmode::Amode(addr.finalize(state.frame_layout(), sink))
-                }
-            };
-
-            let (prefix, map, w, opcode) = match op {
-                Avx512Opcode::Vcvtudq2ps => (LegacyPrefixes::_F2, OpcodeMap::_0F, false, 0x7a),
-                Avx512Opcode::Vpabsq => (LegacyPrefixes::_66, OpcodeMap::_0F38, true, 0x1f),
-                Avx512Opcode::Vpopcntb => (LegacyPrefixes::_66, OpcodeMap::_0F38, false, 0x54),
-                _ => unimplemented!("Opcode {:?} not implemented", op),
-            };
-            EvexInstruction::new()
-                .length(EvexVectorLength::V128)
-                .prefix(prefix)
-                .map(map)
-                .w(w)
-                .opcode(opcode)
-                .tuple_type(op.tuple_type())
-                .reg(dst.to_real_reg().unwrap().hw_enc())
-                .rm(src)
-                .encode(sink);
-        }
-
-        Inst::XmmUnaryRmRImmEvex { op, src, dst, imm } => {
-            let dst = dst.to_reg().to_reg();
-            let src = match src.clone().to_reg_mem().clone() {
-                RegMem::Reg { reg } => {
-                    RegisterOrAmode::Register(reg.to_real_reg().unwrap().hw_enc().into())
-                }
-                RegMem::Mem { addr } => {
-                    RegisterOrAmode::Amode(addr.finalize(state.frame_layout(), sink))
-                }
-            };
-
-            let (opcode, opcode_ext, w) = match op {
-                Avx512Opcode::VpsraqImm => (0x72, 4, true),
-                _ => unimplemented!("Opcode {:?} not implemented", op),
-            };
-            EvexInstruction::new()
-                .length(EvexVectorLength::V128)
-                .prefix(LegacyPrefixes::_66)
-                .map(OpcodeMap::_0F)
-                .w(w)
-                .opcode(opcode)
-                .reg(opcode_ext)
-                .vvvvv(dst.to_real_reg().unwrap().hw_enc())
-                .tuple_type(op.tuple_type())
-                .rm(src)
-                .imm(*imm)
-                .encode(sink);
-        }
-
-        Inst::XmmRmREvex {
-            op,
-            src1,
-            src2,
-            dst,
-        }
-        | Inst::XmmRmREvex3 {
-            op,
-            src1: _, // `dst` reuses `src1`.
-            src2: src1,
-            src3: src2,
-            dst,
-        } => {
-            let reused_src = match inst {
-                Inst::XmmRmREvex3 { src1, .. } => Some(src1.to_reg()),
-                _ => None,
-            };
-            let src1 = src1.to_reg();
-            let src2 = match src2.clone().to_reg_mem().clone() {
-                RegMem::Reg { reg } => {
-                    RegisterOrAmode::Register(reg.to_real_reg().unwrap().hw_enc().into())
-                }
-                RegMem::Mem { addr } => {
-                    RegisterOrAmode::Amode(addr.finalize(state.frame_layout(), sink))
-                }
-            };
-            let dst = dst.to_reg().to_reg();
-            if let Some(src1) = reused_src {
-                debug_assert_eq!(src1, dst);
-            }
-
-            let (w, opcode, map) = match op {
-                Avx512Opcode::Vpermi2b => (false, 0x75, OpcodeMap::_0F38),
-                Avx512Opcode::Vpmullq => (true, 0x40, OpcodeMap::_0F38),
-                Avx512Opcode::Vpsraq => (true, 0xE2, OpcodeMap::_0F),
-                _ => unimplemented!("Opcode {:?} not implemented", op),
-            };
-            EvexInstruction::new()
-                .length(EvexVectorLength::V128)
-                .prefix(LegacyPrefixes::_66)
-                .map(map)
-                .w(w)
-                .opcode(opcode)
-                .tuple_type(op.tuple_type())
-                .reg(dst.to_real_reg().unwrap().hw_enc())
-                .vvvvv(src1.to_real_reg().unwrap().hw_enc())
-                .rm(src2)
-                .encode(sink);
         }
 
         Inst::XmmMinMaxSeq {

@@ -1,10 +1,10 @@
+use crate::cli::WasiCliCtx;
 use crate::clocks::{HostMonotonicClock, HostWallClock, WasiClocksCtx};
-use crate::ctx::AllowedNetworkUses;
-use crate::net::{SocketAddrCheck, SocketAddrUse};
 use crate::p2::filesystem::Dir;
 use crate::p2::pipe;
 use crate::p2::stdio::{self, StdinStream, StdoutStream};
 use crate::random::WasiRandomCtx;
+use crate::sockets::{AllowedNetworkUses, SocketAddrCheck, SocketAddrUse, WasiSocketsCtx};
 use crate::{DirPerms, FilePerms, OpenMode};
 use anyhow::Result;
 use cap_rand::RngCore;
@@ -36,10 +36,7 @@ use std::pin::Pin;
 ///
 /// [`Store`]: wasmtime::Store
 pub struct WasiCtxBuilder {
-    common: crate::WasiCtxBuilder,
-    stdin: Box<dyn StdinStream>,
-    stdout: Box<dyn StdoutStream>,
-    stderr: Box<dyn StdoutStream>,
+    common: crate::WasiCtxBuilder<Box<dyn StdinStream>, Box<dyn StdoutStream>>,
     preopens: Vec<(Dir, String)>,
     built: bool,
 }
@@ -64,10 +61,11 @@ impl WasiCtxBuilder {
     /// methods below.
     pub fn new() -> Self {
         Self {
-            common: crate::WasiCtxBuilder::new(),
-            stdin: Box::new(pipe::ClosedInputStream),
-            stdout: Box::new(pipe::SinkOutputStream),
-            stderr: Box::new(pipe::SinkOutputStream),
+            common: crate::WasiCtxBuilder::new(
+                Box::new(pipe::ClosedInputStream),
+                Box::new(pipe::SinkOutputStream),
+                Box::new(pipe::SinkOutputStream),
+            ),
             preopens: Vec::new(),
             built: false,
         }
@@ -88,19 +86,19 @@ impl WasiCtxBuilder {
     /// Note that inheriting the process's stdin can also be done through
     /// [`inherit_stdin`](WasiCtxBuilder::inherit_stdin).
     pub fn stdin(&mut self, stdin: impl StdinStream + 'static) -> &mut Self {
-        self.stdin = Box::new(stdin);
+        self.common.stdin(Box::new(stdin));
         self
     }
 
     /// Same as [`stdin`](WasiCtxBuilder::stdin), but for stdout.
     pub fn stdout(&mut self, stdout: impl StdoutStream + 'static) -> &mut Self {
-        self.stdout = Box::new(stdout);
+        self.common.stdout(Box::new(stdout));
         self
     }
 
     /// Same as [`stdin`](WasiCtxBuilder::stdin), but for stderr.
     pub fn stderr(&mut self, stderr: impl StdoutStream + 'static) -> &mut Self {
-        self.stderr = Box::new(stderr);
+        self.common.stderr(Box::new(stderr));
         self
     }
 
@@ -436,26 +434,28 @@ impl WasiCtxBuilder {
         let Self {
             common:
                 crate::WasiCtxBuilder {
-                    env,
-                    args,
-                    random:
-                        WasiRandomCtx {
-                            random,
-                            insecure_random,
-                            insecure_random_seed,
+                    cli:
+                        WasiCliCtx {
+                            environment: env,
+                            arguments: args,
+                            initial_cwd: _,
+                            stdin,
+                            stdout,
+                            stderr,
                         },
                     clocks:
                         WasiClocksCtx {
                             wall_clock,
                             monotonic_clock,
                         },
-                    socket_addr_check,
-                    allowed_network_uses,
+                    random,
+                    sockets:
+                        WasiSocketsCtx {
+                            socket_addr_check,
+                            allowed_network_uses,
+                        },
                     allow_blocking_current_thread,
                 },
-            stdin,
-            stdout,
-            stderr,
             preopens,
             built: _,
         } = mem::replace(self, Self::new());
@@ -470,8 +470,6 @@ impl WasiCtxBuilder {
             preopens,
             socket_addr_check,
             random,
-            insecure_random,
-            insecure_random_seed,
             wall_clock,
             monotonic_clock,
             allowed_network_uses,
@@ -547,9 +545,7 @@ impl WasiCtxBuilder {
 /// }
 /// ```
 pub struct WasiCtx {
-    pub(crate) random: Box<dyn RngCore + Send>,
-    pub(crate) insecure_random: Box<dyn RngCore + Send>,
-    pub(crate) insecure_random_seed: u128,
+    pub(crate) random: WasiRandomCtx,
     pub(crate) wall_clock: Box<dyn HostWallClock + Send>,
     pub(crate) monotonic_clock: Box<dyn HostMonotonicClock + Send>,
     pub(crate) env: Vec<(String, String)>,
