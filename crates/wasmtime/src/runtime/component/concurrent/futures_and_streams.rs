@@ -194,7 +194,12 @@ fn accept_reader<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>
             let types = instance.id().get(store.0).component().types().clone();
             let count = buffer.remaining().len().min(count);
 
-            let lower = &mut LowerContext::new(store.as_context_mut(), options, &types, instance);
+            let lower = &mut if T::MAY_REQUIRE_REALLOC {
+                LowerContext::new
+            } else {
+                LowerContext::new_without_realloc
+            }(store.as_context_mut(), options, &types, instance);
+
             if address % usize::try_from(T::ALIGN32)? != 0 {
                 bail!("read pointer not aligned");
             }
@@ -1860,6 +1865,7 @@ impl Instance {
         id: TableId<TransmitHandle>,
         mut buffer: B,
         kind: TransmitKind,
+        post_write: PostWrite,
     ) -> Result<Result<HostResult<B>, oneshot::Receiver<HostResult<B>>>> {
         let transmit_id = self.concurrent_state_mut(store.0).get(id)?.state;
         let transmit = self
@@ -1873,6 +1879,10 @@ impl Instance {
         } else {
             ReadState::Open
         };
+
+        if matches!(post_write, PostWrite::Drop) && !matches!(transmit.read, ReadState::Open) {
+            transmit.write = WriteState::Dropped;
+        }
 
         Ok(match mem::replace(&mut transmit.read, new_state) {
             ReadState::Open => {
@@ -1892,7 +1902,7 @@ impl Instance {
                         _ = tx.send(result);
                         Ok(code)
                     }),
-                    post_write: PostWrite::Continue,
+                    post_write,
                 };
                 self.concurrent_state_mut(store.0)
                     .get_mut(transmit_id)?
@@ -1946,19 +1956,11 @@ impl Instance {
                     anyhow::Ok(result)
                 };
 
-                if
-                // TODO: Check if payload is "flat"
-                false {
-                    // Optimize flat payloads (i.e. those which do not require
-                    // calling the guest's realloc function) by lowering
-                    // directly instead of using a oneshot::channel and
-                    // background task.
-                    Ok(accept(store)?)
-                } else {
-                    // Otherwise, for payloads which may require a realloc call,
-                    // use a oneshot::channel and background task.  This is
-                    // necessary because calling the guest while there are host
-                    // embedder frames on the stack is unsound.
+                if T::MAY_REQUIRE_REALLOC {
+                    // For payloads which may require a realloc call, use a
+                    // oneshot::channel and background task.  This is necessary
+                    // because calling the guest while there are host embedder
+                    // frames on the stack is unsound.
                     let (tx, rx) = oneshot::channel();
                     let token = StoreToken::new(store.as_context_mut());
                     self.concurrent_state_mut(store.0).push_high_priority(
@@ -1968,6 +1970,12 @@ impl Instance {
                         }))),
                     );
                     Err(rx)
+                } else {
+                    // Optimize flat payloads (i.e. those which do not require
+                    // calling the guest's realloc function) by lowering
+                    // directly instead of using a oneshot::channel and
+                    // background task.
+                    Ok(accept(store)?)
                 }
             }
 
@@ -2003,10 +2011,15 @@ impl Instance {
         buffer: B,
         kind: TransmitKind,
     ) -> Result<HostResult<B>> {
-        match accessor
-            .as_accessor()
-            .with(move |mut access| self.host_write(access.as_context_mut(), id, buffer, kind))?
-        {
+        match accessor.as_accessor().with(move |mut access| {
+            self.host_write(
+                access.as_context_mut(),
+                id,
+                buffer,
+                kind,
+                PostWrite::Continue,
+            )
+        })? {
             Ok(result) => Ok(result),
             Err(rx) => Ok(rx.await?),
         }
@@ -2247,7 +2260,6 @@ impl Instance {
         default: Option<&dyn Fn() -> Result<T>>,
     ) -> Result<()> {
         let transmit_id = self.concurrent_state_mut(store.0).get(id)?.state;
-        let token = StoreToken::new(store.as_context_mut());
         let transmit = self
             .concurrent_state_mut(store.0)
             .get_mut(transmit_id)
@@ -2271,32 +2283,27 @@ impl Instance {
                 *post_write = PostWrite::Drop;
             }
             v @ WriteState::Open => {
-                *v = if let (Some(default), false) = (
+                if let (Some(default), false) = (
                     default,
                     transmit.done || matches!(transmit.read, ReadState::Dropped),
                 ) {
                     // This is a future, and we haven't written a value yet --
                     // write the default value.
-                    let default = default()?;
-                    WriteState::HostReady {
-                        accept: Box::new(move |store, instance, reader| {
-                            let (_, code) = accept_reader::<T, Option<T>, U>(
-                                token.as_context_mut(store),
-                                instance,
-                                reader,
-                                Some(default),
-                                TransmitKind::Future,
-                            )?;
-                            Ok(code)
-                        }),
-                        post_write: PostWrite::Drop,
-                    }
+                    _ = self.host_write(
+                        store.as_context_mut(),
+                        id,
+                        Some(default()?),
+                        TransmitKind::Future,
+                        PostWrite::Drop,
+                    )?;
                 } else {
-                    WriteState::Dropped
-                };
+                    *v = WriteState::Dropped;
+                }
             }
             WriteState::Dropped => unreachable!("write state is already dropped"),
         }
+
+        let transmit = self.concurrent_state_mut(store.0).get_mut(transmit_id)?;
 
         // If the existing read state is dropped, then there's nothing to read
         // and we can keep it that way.
