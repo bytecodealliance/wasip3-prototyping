@@ -1,126 +1,66 @@
-#![cfg(feature = "p3")]
-
-use std::path::Path;
-
+use crate::store::Ctx;
 use anyhow::{Context as _, anyhow};
+use std::path::Path;
 use test_programs_artifacts::*;
-use wasmtime::Store;
+use wasmtime::Result;
 use wasmtime::component::{Component, Linker, ResourceTable};
-use wasmtime_wasi::p2::{self, IoView};
 use wasmtime_wasi::p3::ResourceView;
 use wasmtime_wasi::p3::bindings::Command;
 use wasmtime_wasi::p3::filesystem::{WasiFilesystemCtx, WasiFilesystemView};
-use wasmtime_wasi::p3::{self, WasiCtxView};
-use wasmtime_wasi::{DirPerms, FilePerms};
+use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx, WasiCtxView, WasiView};
 
-macro_rules! assert_test_exists {
-    ($name:ident) => {
-        #[expect(unused_imports, reason = "just here to assert it exists")]
-        use self::$name as _;
-    };
+pub struct MyWasiCtx {
+    pub wasi: WasiCtx,
+    pub table: ResourceTable,
+    pub p3_filesystem: WasiFilesystemCtx,
 }
 
-struct Ctx {
-    filesystem: WasiFilesystemCtx,
-    table: ResourceTable,
-    p2: p2::WasiCtx,
-    p3: p3::WasiCtx,
-}
-
-impl Default for Ctx {
-    fn default() -> Self {
-        Self {
-            filesystem: WasiFilesystemCtx::default(),
-            table: ResourceTable::default(),
-            p2: p2::WasiCtxBuilder::new().inherit_stdio().build(),
-            p3: p3::WasiCtxBuilder::new().inherit_stdio().build(),
-        }
-    }
-}
-
-impl p2::WasiView for Ctx {
-    fn ctx(&mut self) -> &mut p2::WasiCtx {
-        &mut self.p2
-    }
-}
-
-impl p3::WasiView for Ctx {
+impl WasiView for Ctx<MyWasiCtx> {
     fn ctx(&mut self) -> WasiCtxView<'_> {
         WasiCtxView {
-            ctx: &mut self.p3,
-            table: &mut self.table,
+            ctx: &mut self.wasi.wasi,
+            table: &mut self.wasi.table,
         }
     }
 }
 
-impl IoView for Ctx {
+impl ResourceView for Ctx<MyWasiCtx> {
     fn table(&mut self) -> &mut ResourceTable {
-        &mut self.table
+        &mut self.wasi.table
     }
 }
 
-impl ResourceView for Ctx {
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.table
-    }
-}
-
-impl WasiFilesystemView for Ctx {
+impl WasiFilesystemView for Ctx<MyWasiCtx> {
     fn filesystem(&self) -> &WasiFilesystemCtx {
-        &self.filesystem
+        &self.wasi.p3_filesystem
     }
 }
 
-async fn run(path: &str) -> anyhow::Result<()> {
-    let _ = env_logger::try_init();
+async fn run(path: &str) -> Result<()> {
     let path = Path::new(path);
+    let name = path.file_stem().unwrap().to_str().unwrap();
     let engine = test_programs_artifacts::engine(|config| {
         config.async_support(true);
         config.wasm_component_model_async(true);
     });
-    let component = Component::from_file(&engine, path).context("failed to compile component")?;
-
     let mut linker = Linker::new(&engine);
+    // TODO: Remove once test components are not built for `wasm32-wasip1`
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)
         .context("failed to link `wasi:cli@0.2.x`")?;
     wasmtime_wasi::p3::add_to_linker(&mut linker).context("failed to link `wasi:cli@0.3.x`")?;
 
-    let mut filesystem = WasiFilesystemCtx::default();
-    let table = ResourceTable::default();
-
-    let p2 = p2::WasiCtx::builder()
-        .inherit_stdout()
-        .inherit_stderr()
-        .build();
-
-    let mut p3 = p3::WasiCtxBuilder::new();
-    let name = path.file_stem().unwrap().to_str().unwrap();
-    let tempdir = tempfile::Builder::new()
-        .prefix(&format!(
-            "wasi_components_{}_",
-            path.file_stem().unwrap().to_str().unwrap()
-        ))
-        .tempdir()?;
-    p3.args(&[name, "."])
-        .inherit_network()
-        .allow_ip_name_lookup(true);
-    println!("preopen: {tempdir:?}");
-    filesystem.preopened_dir(tempdir.path(), ".", DirPerms::all(), FilePerms::all())?;
-    p3.preopened_dir(tempdir.path(), ".", DirPerms::all(), FilePerms::all())?;
-    for (var, val) in test_programs_artifacts::wasi_tests_environment() {
-        p3.env(var, val);
-    }
-    let p3 = p3.build();
-
-    let mut store = Store::new(
-        &engine,
-        Ctx {
-            table,
-            p2,
-            p3,
-            filesystem,
-        },
-    );
+    let (mut store, td) = Ctx::new(&engine, name, |builder| MyWasiCtx {
+        wasi: builder.build(),
+        table: Default::default(),
+        p3_filesystem: Default::default(),
+    })?;
+    store.data_mut().wasi.p3_filesystem.preopened_dir(
+        td.path(),
+        ".",
+        DirPerms::all(),
+        FilePerms::all(),
+    )?;
+    let component = Component::from_file(&engine, path)?;
     let instance = linker.instantiate_async(&mut store, &component).await?;
     let command =
         Command::new(&mut store, &instance).context("failed to instantiate `wasi:cli/command`")?;

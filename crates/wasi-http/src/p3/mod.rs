@@ -279,7 +279,7 @@ where
     T: WasiHttpView
         + wasmtime_wasi::clocks::WasiClocksView
         + wasmtime_wasi::random::WasiRandomView
-        + wasmtime_wasi::p3::cli::WasiCliView
+        + wasmtime_wasi::cli::WasiCliView
         + 'static,
 {
     wasmtime_wasi::p3::clocks::add_to_linker(l)?;

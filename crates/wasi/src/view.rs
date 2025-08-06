@@ -1,6 +1,5 @@
+use crate::WasiCtx;
 use wasmtime::component::ResourceTable;
-
-use crate::p3::ctx::WasiCtx;
 
 /// A trait which provides access to the [`WasiCtx`] inside the embedder's `T`
 /// of [`Store<T>`][`Store`].
@@ -8,13 +7,13 @@ use crate::p3::ctx::WasiCtx;
 /// This crate's WASI Host implementations depend on the contents of
 /// [`WasiCtx`]. The `T` type [`Store<T>`][`Store`] is defined in each
 /// embedding of Wasmtime. These implementations are connected to the
-/// [`Linker<T>`][`Linker`] by the
-/// [`add_to_linker`](crate::p3::add_to_linker) function.
+/// [`Linker<T>`][`Linker`] by [`add_to_linker`](crate::p2::add_to_linker)
+/// functions.
 ///
 /// # Example
 ///
 /// ```
-/// use wasmtime_wasi::p3::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+/// use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 /// use wasmtime::component::ResourceTable;
 ///
 /// struct MyState {
@@ -40,8 +39,12 @@ pub trait WasiView: Send {
     fn ctx(&mut self) -> WasiCtxView<'_>;
 }
 
+/// Structure returned from [`WasiView::ctx`] which provides accesss to WASI
+/// state for host functions to be implemented with.
 pub struct WasiCtxView<'a> {
+    /// The [`WasiCtx`], or configuration, of the guest.
     pub ctx: &'a mut WasiCtx,
+    /// Resources, such as files/streams, that the guest is using.
     pub table: &'a mut ResourceTable,
 }
 
@@ -56,8 +59,12 @@ impl<T: WasiView> crate::sockets::WasiSocketsView for T {
 }
 
 impl<T: WasiView> crate::clocks::WasiClocksView for T {
-    fn clocks(&mut self) -> &mut crate::clocks::WasiClocksCtx {
-        &mut self.ctx().ctx.clocks
+    fn clocks(&mut self) -> crate::clocks::WasiClocksCtxView<'_> {
+        let WasiCtxView { ctx, table } = self.ctx();
+        crate::clocks::WasiClocksCtxView {
+            ctx: &mut ctx.clocks,
+            table,
+        }
     }
 }
 
@@ -67,10 +74,10 @@ impl<T: WasiView> crate::random::WasiRandomView for T {
     }
 }
 
-impl<T: WasiView> crate::p3::cli::WasiCliView for T {
-    fn cli(&mut self) -> crate::p3::cli::WasiCliCtxView<'_> {
+impl<T: WasiView> crate::cli::WasiCliView for T {
+    fn cli(&mut self) -> crate::cli::WasiCliCtxView<'_> {
         let WasiCtxView { ctx, table } = self.ctx();
-        crate::p3::cli::WasiCliCtxView {
+        crate::cli::WasiCliCtxView {
             ctx: &mut ctx.cli,
             table,
         }
