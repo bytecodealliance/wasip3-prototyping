@@ -195,11 +195,8 @@
 //! }
 //!
 //! impl WasiView for MyClientState {
-//!     fn ctx(&mut self) -> WasiCtxView {
-//!         WasiCtxView {
-//!             ctx: &mut self.wasi,
-//!             table: &mut self.table,
-//!         }
+//!     fn ctx(&mut self) -> WasiCtxView<'_> {
+//!         WasiCtxView { ctx: &mut self.wasi, table: &mut self.table }
 //!     }
 //! }
 //!
@@ -268,7 +265,7 @@ use wasmtime_wasi::p3::ResourceView;
 /// }
 ///
 /// impl WasiView for MyState {
-///     fn ctx(&mut self) -> WasiCtxView {
+///     fn ctx(&mut self) -> WasiCtxView<'_> {
 ///         WasiCtxView { ctx: &mut self.ctx, table: &mut self.table }
 ///     }
 /// }
