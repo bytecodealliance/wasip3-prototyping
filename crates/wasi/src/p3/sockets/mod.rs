@@ -1,11 +1,14 @@
+use crate::TrappableError;
 use crate::p3::bindings::sockets;
-use crate::sockets::{WasiSocketsCtxView, WasiSocketsView};
-use wasmtime::component::{HasData, Linker};
+use crate::sockets::{WasiSockets, WasiSocketsView};
+use wasmtime::component::Linker;
 
 mod conv;
 mod host;
 pub mod tcp;
-pub mod udp;
+
+pub type SocketResult<T> = Result<T, SocketError>;
+pub type SocketError = TrappableError<sockets::types::ErrorCode>;
 
 /// Add all WASI interfaces from this module into the `linker` provided.
 ///
@@ -66,10 +69,4 @@ where
     sockets::ip_name_lookup::add_to_linker::<_, WasiSockets>(linker, T::sockets)?;
     sockets::types::add_to_linker::<_, WasiSockets>(linker, T::sockets)?;
     Ok(())
-}
-
-struct WasiSockets;
-
-impl HasData for WasiSockets {
-    type Data<'a> = WasiSocketsCtxView<'a>;
 }

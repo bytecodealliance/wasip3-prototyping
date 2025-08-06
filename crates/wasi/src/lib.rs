@@ -17,23 +17,27 @@ pub mod clocks;
 mod ctx;
 mod error;
 mod filesystem;
+#[cfg(feature = "p1")]
+pub mod p0;
+#[cfg(feature = "p1")]
+pub mod p1;
+// FIXME: should gate this module on the `p2` feature but that will require more
+// internal refactoring to get that aligned right.
+// #[cfg(feature = "p2")]
 pub mod p2;
 #[cfg(feature = "p3")]
 pub mod p3;
-#[cfg(feature = "preview1")]
-pub mod preview0;
-#[cfg(feature = "preview1")]
-pub mod preview1;
 pub mod random;
 pub mod runtime;
 pub mod sockets;
+mod view;
 
 pub use self::clocks::{HostMonotonicClock, HostWallClock};
-pub(crate) use self::ctx::WasiCtxBuilder;
+pub use self::ctx::{WasiCtx, WasiCtxBuilder};
 pub use self::error::{I32Exit, TrappableError};
 pub use self::filesystem::{DirPerms, FilePerms, OpenMode};
 pub use self::random::{Deterministic, thread_rng};
-pub use self::sockets::{AllowedNetworkUses, SocketAddrUse};
+pub use self::view::{WasiCtxView, WasiView};
 #[doc(no_inline)]
 pub use async_trait::async_trait;
 #[doc(no_inline)]

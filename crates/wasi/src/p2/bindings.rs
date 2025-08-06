@@ -15,7 +15,7 @@
 //! done using the `with` option to [`bindgen!`]:
 //!
 //! ```rust
-//! use wasmtime_wasi::p2::{IoView, WasiCtx, WasiView};
+//! use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 //! use wasmtime::{Result, Engine, Config};
 //! use wasmtime::component::{Linker, ResourceTable, HasSelf};
 //!
@@ -53,11 +53,10 @@
 //!     }
 //! }
 //!
-//! impl IoView for MyState {
-//!     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
-//! }
 //! impl WasiView for MyState {
-//!     fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
+//!     fn ctx(&mut self) -> WasiCtxView<'_> {
+//!         WasiCtxView { ctx: &mut self.ctx, table: &mut self.table }
+//!     }
 //! }
 //!
 //! fn main() -> Result<()> {
@@ -86,7 +85,7 @@
 /// done using the `with` option to `bindgen!`:
 ///
 /// ```rust
-/// use wasmtime_wasi::p2::{IoView, WasiCtx, WasiView};
+/// use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 /// use wasmtime::{Result, Engine};
 /// use wasmtime::component::{Linker, ResourceTable, HasSelf};
 ///
@@ -126,11 +125,10 @@
 ///     }
 /// }
 ///
-/// impl IoView for MyState {
-///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
-/// }
 /// impl WasiView for MyState {
-///     fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
+///     fn ctx(&mut self) -> WasiCtxView<'_> {
+///         WasiCtxView { ctx: &mut self.ctx, table: &mut self.table }
+///     }
 /// }
 ///
 /// fn main() -> Result<()> {
@@ -175,7 +173,7 @@ pub mod sync {
                 "wasi:sockets/tcp/tcp-socket": super::super::sockets::tcp::TcpSocket,
                 "wasi:sockets/udp/incoming-datagram-stream": super::super::sockets::udp::IncomingDatagramStream,
                 "wasi:sockets/udp/outgoing-datagram-stream": super::super::sockets::udp::OutgoingDatagramStream,
-                "wasi:sockets/udp/udp-socket": super::super::sockets::udp::UdpSocket,
+                "wasi:sockets/udp/udp-socket": crate::sockets::UdpSocket,
 
                 // Error host trait from wasmtime-wasi-io is synchronous, so we can alias it
                 "wasi:io/error": wasmtime_wasi_io::bindings::wasi::io::error,
@@ -210,7 +208,7 @@ pub mod sync {
     /// ```no_run
     /// use wasmtime::{Engine, Result, Store, Config};
     /// use wasmtime::component::{ResourceTable, Linker, Component};
-    /// use wasmtime_wasi::p2::{IoView, WasiCtx, WasiView, WasiCtxBuilder};
+    /// use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
     /// use wasmtime_wasi::p2::bindings::sync::Command;
     ///
     /// // This example is an example shim of executing a component based on the
@@ -230,7 +228,7 @@ pub mod sync {
     ///
     ///     // Configure a `WasiCtx` based on this program's environment. Then
     ///     // build a `Store` to instantiate into.
-    ///     let mut builder = WasiCtxBuilder::new();
+    ///     let mut builder = WasiCtx::builder();
     ///     builder.inherit_stdio().inherit_env().args(&args[2..]);
     ///     let mut store = Store::new(
     ///         &engine,
@@ -254,11 +252,10 @@ pub mod sync {
     ///     table: ResourceTable,
     /// }
     ///
-    /// impl IoView for MyState {
-    ///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
-    /// }
     /// impl WasiView for MyState {
-    ///     fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
+    ///     fn ctx(&mut self) -> WasiCtxView<'_> {
+    ///         WasiCtxView { ctx: &mut self.ctx, table: &mut self.table }
+    ///     }
     /// }
     /// ```
     ///
@@ -275,7 +272,7 @@ pub mod sync {
     /// ```no_run
     /// use wasmtime::{Engine, Result, Store, Config};
     /// use wasmtime::component::{ResourceTable, Linker, Component};
-    /// use wasmtime_wasi::p2::{IoView, WasiCtx, WasiView, WasiCtxBuilder};
+    /// use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
     /// use wasmtime_wasi::p2::bindings::sync::CommandPre;
     ///
     /// // This example is an example shim of executing a component based on the
@@ -296,7 +293,7 @@ pub mod sync {
     ///
     ///     // Configure a `WasiCtx` based on this program's environment. Then
     ///     // build a `Store` to instantiate into.
-    ///     let mut builder = WasiCtxBuilder::new();
+    ///     let mut builder = WasiCtx::builder();
     ///     builder.inherit_stdio().inherit_env().args(&args);
     ///     let mut store = Store::new(
     ///         &engine,
@@ -320,11 +317,10 @@ pub mod sync {
     ///     table: ResourceTable,
     /// }
     ///
-    /// impl IoView for MyState {
-    ///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
-    /// }
     /// impl WasiView for MyState {
-    ///     fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
+    ///     fn ctx(&mut self) -> WasiCtxView<'_> {
+    ///         WasiCtxView { ctx: &mut self.ctx, table: &mut self.table }
+    ///     }
     /// }
     /// ```
     ///
@@ -398,7 +394,7 @@ mod async_io {
             // this crate
             "wasi:sockets/network/network": crate::p2::network::Network,
             "wasi:sockets/tcp/tcp-socket": crate::p2::tcp::TcpSocket,
-            "wasi:sockets/udp/udp-socket": crate::p2::udp::UdpSocket,
+            "wasi:sockets/udp/udp-socket": crate::sockets::UdpSocket,
             "wasi:sockets/udp/incoming-datagram-stream": crate::p2::udp::IncomingDatagramStream,
             "wasi:sockets/udp/outgoing-datagram-stream": crate::p2::udp::OutgoingDatagramStream,
             "wasi:sockets/ip-name-lookup/resolve-address-stream": crate::p2::ip_name_lookup::ResolveAddressStream,
@@ -432,7 +428,7 @@ pub use self::async_io::wasi::*;
 /// ```no_run
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{ResourceTable, Linker, Component};
-/// use wasmtime_wasi::p2::{IoView, WasiCtx, WasiView, WasiCtxBuilder};
+/// use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 /// use wasmtime_wasi::p2::bindings::Command;
 ///
 /// // This example is an example shim of executing a component based on the
@@ -455,7 +451,7 @@ pub use self::async_io::wasi::*;
 ///
 ///     // Configure a `WasiCtx` based on this program's environment. Then
 ///     // build a `Store` to instantiate into.
-///     let mut builder = WasiCtxBuilder::new();
+///     let mut builder = WasiCtx::builder();
 ///     builder.inherit_stdio().inherit_env().args(&args);
 ///     let mut store = Store::new(
 ///         &engine,
@@ -479,11 +475,10 @@ pub use self::async_io::wasi::*;
 ///     table: ResourceTable,
 /// }
 ///
-/// impl IoView for MyState {
-///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
-/// }
 /// impl WasiView for MyState {
-///     fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
+///     fn ctx(&mut self) -> WasiCtxView<'_> {
+///         WasiCtxView { ctx: &mut self.ctx, table: &mut self.table }
+///     }
 /// }
 /// ```
 ///
@@ -500,7 +495,7 @@ pub use self::async_io::Command;
 /// ```no_run
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{ResourceTable, Linker, Component};
-/// use wasmtime_wasi::p2::{IoView, WasiCtx, WasiView, WasiCtxBuilder};
+/// use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 /// use wasmtime_wasi::p2::bindings::CommandPre;
 ///
 /// // This example is an example shim of executing a component based on the
@@ -524,7 +519,7 @@ pub use self::async_io::Command;
 ///
 ///     // Configure a `WasiCtx` based on this program's environment. Then
 ///     // build a `Store` to instantiate into.
-///     let mut builder = WasiCtxBuilder::new();
+///     let mut builder = WasiCtx::builder();
 ///     builder.inherit_stdio().inherit_env().args(&args);
 ///     let mut store = Store::new(
 ///         &engine,
@@ -548,11 +543,10 @@ pub use self::async_io::Command;
 ///     table: ResourceTable,
 /// }
 ///
-/// impl IoView for MyState {
-///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
-/// }
 /// impl WasiView for MyState {
-///     fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
+///     fn ctx(&mut self) -> WasiCtxView<'_> {
+///         WasiCtxView { ctx: &mut self.ctx, table: &mut self.table }
+///     }
 /// }
 /// ```
 ///

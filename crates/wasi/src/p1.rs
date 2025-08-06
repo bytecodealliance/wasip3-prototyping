@@ -35,8 +35,8 @@
 //!
 //! ```no_run
 //! use wasmtime::{Result, Engine, Linker, Module, Store};
-//! use wasmtime_wasi::preview1::{self, WasiP1Ctx};
-//! use wasmtime_wasi::p2::WasiCtxBuilder;
+//! use wasmtime_wasi::p1::{self, WasiP1Ctx};
+//! use wasmtime_wasi::WasiCtxBuilder;
 //!
 //! // An example of executing a WASIp1 "command"
 //! fn main() -> Result<()> {
@@ -45,7 +45,7 @@
 //!     let module = Module::from_file(&engine, &args[0])?;
 //!
 //!     let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
-//!     preview1::add_to_linker_async(&mut linker, |t| t)?;
+//!     p1::add_to_linker_async(&mut linker, |t| t)?;
 //!     let pre = linker.instantiate_pre(&module)?;
 //!
 //!     let wasi_ctx = WasiCtxBuilder::new()
@@ -63,7 +63,8 @@
 //! }
 //! ```
 
-use crate::ResourceTable;
+use crate::cli::WasiCliView;
+use crate::clocks::WasiClocksView;
 use crate::p2::bindings::{
     cli::{
         stderr::Host as _, stdin::Host as _, stdout::Host as _, terminal_input, terminal_output,
@@ -72,7 +73,8 @@ use crate::p2::bindings::{
     clocks::{monotonic_clock, wall_clock},
     filesystem::{preopens::Host as _, types as filesystem},
 };
-use crate::p2::{FsError, IsATTY, WasiCtx, WasiImpl, WasiView};
+use crate::p2::{FsError, IsATTY};
+use crate::{ResourceTable, WasiCtx, WasiCtxView, WasiView};
 use anyhow::{Context, bail};
 use std::collections::{BTreeMap, BTreeSet, HashSet, btree_map};
 use std::mem::{self, size_of, size_of_val};
@@ -82,7 +84,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use system_interface::fs::FileIoExt;
 use wasmtime::component::Resource;
 use wasmtime_wasi_io::{
-    IoImpl, IoView,
     bindings::wasi::io::streams,
     streams::{StreamError, StreamResult},
 };
@@ -112,8 +113,8 @@ use wasmtime_wasi_io::bindings::wasi::io::poll::Host as _;
 ///
 /// ```no_run
 /// use wasmtime::{Result, Linker};
-/// use wasmtime_wasi::preview1::{self, WasiP1Ctx};
-/// use wasmtime_wasi::p2::WasiCtxBuilder;
+/// use wasmtime_wasi::p1::{self, WasiP1Ctx};
+/// use wasmtime_wasi::WasiCtxBuilder;
 ///
 /// struct MyState {
 ///     // ... custom state as necessary ...
@@ -135,14 +136,14 @@ use wasmtime_wasi_io::bindings::wasi::io::poll::Host as _;
 /// }
 ///
 /// fn add_to_linker(linker: &mut Linker<MyState>) -> Result<()> {
-///     preview1::add_to_linker_sync(linker, |my_state| &mut my_state.wasi)?;
+///     p1::add_to_linker_sync(linker, |my_state| &mut my_state.wasi)?;
 ///     Ok(())
 /// }
 /// ```
 pub struct WasiP1Ctx {
     table: ResourceTable,
     wasi: WasiCtx,
-    adapter: WasiPreview1Adapter,
+    adapter: WasiP1Adapter,
 }
 
 impl WasiP1Ctx {
@@ -150,26 +151,25 @@ impl WasiP1Ctx {
         Self {
             table: ResourceTable::new(),
             wasi,
-            adapter: WasiPreview1Adapter::new(),
+            adapter: WasiP1Adapter::new(),
         }
     }
 
-    fn as_wasi_impl(&mut self) -> WasiImpl<&mut Self> {
-        WasiImpl(IoImpl(self))
+    fn as_wasi_impl(&mut self) -> WasiCtxView<'_> {
+        WasiView::ctx(self)
     }
-    fn as_io_impl(&mut self) -> IoImpl<&mut Self> {
-        IoImpl(self)
-    }
-}
 
-impl IoView for WasiP1Ctx {
-    fn table(&mut self) -> &mut ResourceTable {
+    fn as_io_impl(&mut self) -> &mut ResourceTable {
         &mut self.table
     }
 }
+
 impl WasiView for WasiP1Ctx {
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.wasi
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
     }
 }
 
@@ -190,7 +190,7 @@ struct File {
     blocking_mode: BlockingMode,
 }
 
-/// NB: preview1 files always use blocking writes regardless of what
+/// NB: p1 files always use blocking writes regardless of what
 /// they're configured to use since OSes don't have nonblocking
 /// reads/writes anyway. This behavior originated in the first
 /// implementation of WASIp1 where flags were propagated to the
@@ -278,7 +278,7 @@ enum Descriptor {
 }
 
 #[derive(Debug, Default)]
-struct WasiPreview1Adapter {
+struct WasiP1Adapter {
     descriptors: Option<Descriptors>,
 }
 
@@ -290,19 +290,21 @@ struct Descriptors {
 
 impl Descriptors {
     /// Initializes [Self] using `preopens`
-    fn new(mut host: WasiImpl<&mut WasiP1Ctx>) -> Result<Self, types::Error> {
+    fn new(host: &mut WasiP1Ctx) -> Result<Self, types::Error> {
         let mut descriptors = Self::default();
         descriptors.push(Descriptor::Stdin {
             stream: host
+                .cli()
                 .get_stdin()
                 .context("failed to call `get-stdin`")
                 .map_err(types::Error::trap)?,
             isatty: if let Some(term_in) = host
+                .cli()
                 .get_terminal_stdin()
                 .context("failed to call `get-terminal-stdin`")
                 .map_err(types::Error::trap)?
             {
-                terminal_input::HostTerminalInput::drop(&mut host, term_in)
+                terminal_input::HostTerminalInput::drop(&mut host.cli(), term_in)
                     .context("failed to call `drop-terminal-input`")
                     .map_err(types::Error::trap)?;
                 IsATTY::Yes
@@ -312,15 +314,17 @@ impl Descriptors {
         })?;
         descriptors.push(Descriptor::Stdout {
             stream: host
+                .cli()
                 .get_stdout()
                 .context("failed to call `get-stdout`")
                 .map_err(types::Error::trap)?,
             isatty: if let Some(term_out) = host
+                .cli()
                 .get_terminal_stdout()
                 .context("failed to call `get-terminal-stdout`")
                 .map_err(types::Error::trap)?
             {
-                terminal_output::HostTerminalOutput::drop(&mut host, term_out)
+                terminal_output::HostTerminalOutput::drop(&mut host.cli(), term_out)
                     .context("failed to call `drop-terminal-output`")
                     .map_err(types::Error::trap)?;
                 IsATTY::Yes
@@ -330,15 +334,17 @@ impl Descriptors {
         })?;
         descriptors.push(Descriptor::Stderr {
             stream: host
+                .cli()
                 .get_stderr()
                 .context("failed to call `get-stderr`")
                 .map_err(types::Error::trap)?,
             isatty: if let Some(term_out) = host
+                .cli()
                 .get_terminal_stderr()
                 .context("failed to call `get-terminal-stderr`")
                 .map_err(types::Error::trap)?
             {
-                terminal_output::HostTerminalOutput::drop(&mut host, term_out)
+                terminal_output::HostTerminalOutput::drop(&mut host.cli(), term_out)
                     .context("failed to call `drop-terminal-output`")
                     .map_err(types::Error::trap)?;
                 IsATTY::Yes
@@ -348,6 +354,7 @@ impl Descriptors {
         })?;
 
         for dir in host
+            .ctx()
             .get_directories()
             .context("failed to call `get-directories`")
             .map_err(types::Error::trap)?
@@ -394,28 +401,28 @@ impl Descriptors {
     }
 }
 
-impl WasiPreview1Adapter {
+impl WasiP1Adapter {
     fn new() -> Self {
         Self::default()
     }
 }
 
-/// A mutably-borrowed [`WasiPreview1View`] implementation, which provides access to the stored
-/// state. It can be thought of as an in-flight [`WasiPreview1Adapter`] transaction, all
-/// changes will be recorded in the underlying [`WasiPreview1Adapter`] returned by
+/// A mutably-borrowed `WasiP1Ctx`, which provides access to the stored
+/// state. It can be thought of as an in-flight [`WasiP1Adapter`] transaction, all
+/// changes will be recorded in the underlying [`WasiP1Adapter`] returned by
 /// [`WasiPreview1View::adapter_mut`] on [`Drop`] of this struct.
 // NOTE: This exists for the most part just due to the fact that `bindgen` generates methods with
 // `&mut self` receivers and so this struct lets us extend the lifetime of the `&mut self` borrow
 // of the [`WasiPreview1View`] to provide means to return mutably and immutably borrowed [`Descriptors`]
 // without having to rely on something like `Arc<Mutex<Descriptors>>`, while also being able to
-// call methods like [`Descriptor::is_file`] and hiding complexity from preview1 method implementations.
+// call methods like [`Descriptor::is_file`] and hiding complexity from p1 method implementations.
 struct Transaction<'a> {
     view: &'a mut WasiP1Ctx,
     descriptors: Descriptors,
 }
 
 impl Drop for Transaction<'_> {
-    /// Record changes in the [`WasiPreview1Adapter`] returned by [`WasiPreview1View::adapter_mut`]
+    /// Record changes in the [`WasiP1Adapter`] .
     fn drop(&mut self) {
         let descriptors = mem::take(&mut self.descriptors);
         self.view.adapter.descriptors = Some(descriptors);
@@ -503,13 +510,13 @@ impl Transaction<'_> {
 }
 
 impl WasiP1Ctx {
-    /// Lazily initializes [`WasiPreview1Adapter`] returned by [`WasiPreview1View::adapter_mut`]
+    /// Lazily initializes [`WasiP1Adapter`] returned by [`WasiPreview1View::adapter_mut`]
     /// and returns [`Transaction`] on success
     fn transact(&mut self) -> Result<Transaction<'_>, types::Error> {
         let descriptors = if let Some(descriptors) = self.adapter.descriptors.take() {
             descriptors
         } else {
-            Descriptors::new(self.as_wasi_impl())?
+            Descriptors::new(self)?
         };
         Ok(Transaction {
             view: self,
@@ -517,7 +524,7 @@ impl WasiP1Ctx {
         })
     }
 
-    /// Lazily initializes [`WasiPreview1Adapter`] returned by [`WasiPreview1View::adapter_mut`]
+    /// Lazily initializes [`WasiP1Adapter`] returned by [`WasiPreview1View::adapter_mut`]
     /// and returns [`filesystem::Descriptor`] corresponding to `fd`
     fn get_fd(&mut self, fd: types::Fd) -> Result<Resource<filesystem::Descriptor>, types::Error> {
         let st = self.transact()?;
@@ -525,7 +532,7 @@ impl WasiP1Ctx {
         Ok(fd)
     }
 
-    /// Lazily initializes [`WasiPreview1Adapter`] returned by [`WasiPreview1View::adapter_mut`]
+    /// Lazily initializes [`WasiP1Adapter`] returned by [`WasiPreview1View::adapter_mut`]
     /// and returns [`filesystem::Descriptor`] corresponding to `fd`
     /// if it describes a [`Descriptor::File`] of [`crate::p2::filesystem::File`] type
     fn get_file_fd(
@@ -537,7 +544,7 @@ impl WasiP1Ctx {
         Ok(fd)
     }
 
-    /// Lazily initializes [`WasiPreview1Adapter`] returned by [`WasiPreview1View::adapter_mut`]
+    /// Lazily initializes [`WasiP1Adapter`] returned by [`WasiPreview1View::adapter_mut`]
     /// and returns [`filesystem::Descriptor`] corresponding to `fd`
     /// if it describes a [`Descriptor::File`] or [`Descriptor::PreopenDirectory`]
     /// of [`crate::p2::filesystem::Dir`] type
@@ -578,7 +585,7 @@ impl WasiP1Ctx {
                 let pos = position.load(Ordering::Relaxed);
                 let append = *append;
                 drop(t);
-                let f = self.table().get(&fd)?.file()?;
+                let f = self.table.get(&fd)?.file()?;
                 let buf = first_non_empty_ciovec(memory, ciovs)?;
 
                 let do_write = move |f: &cap_std::fs::File, buf: &[u8]| match (append, write) {
@@ -674,7 +681,7 @@ enum FdWrite {
 ///
 /// ```no_run
 /// use wasmtime::{Result, Linker, Engine, Config};
-/// use wasmtime_wasi::preview1::{self, WasiP1Ctx};
+/// use wasmtime_wasi::p1::{self, WasiP1Ctx};
 ///
 /// fn main() -> Result<()> {
 ///     let mut config = Config::new();
@@ -682,7 +689,7 @@ enum FdWrite {
 ///     let engine = Engine::new(&config)?;
 ///
 ///     let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
-///     preview1::add_to_linker_async(&mut linker, |cx| cx)?;
+///     p1::add_to_linker_async(&mut linker, |cx| cx)?;
 ///
 ///     // ... continue to add more to `linker` as necessary and use it ...
 ///
@@ -694,7 +701,7 @@ enum FdWrite {
 ///
 /// ```no_run
 /// use wasmtime::{Result, Linker, Engine, Config};
-/// use wasmtime_wasi::preview1::{self, WasiP1Ctx};
+/// use wasmtime_wasi::p1::{self, WasiP1Ctx};
 ///
 /// struct MyState {
 ///     // .. other custom state here ..
@@ -708,7 +715,7 @@ enum FdWrite {
 ///     let engine = Engine::new(&config)?;
 ///
 ///     let mut linker: Linker<MyState> = Linker::new(&engine);
-///     preview1::add_to_linker_async(&mut linker, |cx| &mut cx.wasi)?;
+///     p1::add_to_linker_async(&mut linker, |cx| &mut cx.wasi)?;
 ///
 ///     // ... continue to add more to `linker` as necessary and use it ...
 ///
@@ -719,7 +726,7 @@ pub fn add_to_linker_async<T: Send + 'static>(
     linker: &mut wasmtime::Linker<T>,
     f: impl Fn(&mut T) -> &mut WasiP1Ctx + Copy + Send + Sync + 'static,
 ) -> anyhow::Result<()> {
-    crate::preview1::wasi_snapshot_preview1::add_to_linker(linker, f)
+    crate::p1::wasi_snapshot_preview1::add_to_linker(linker, f)
 }
 
 /// Adds synchronous versions of all WASIp1 functions to the
@@ -748,7 +755,7 @@ pub fn add_to_linker_async<T: Send + 'static>(
 ///
 /// ```no_run
 /// use wasmtime::{Result, Linker, Engine, Config};
-/// use wasmtime_wasi::preview1::{self, WasiP1Ctx};
+/// use wasmtime_wasi::p1::{self, WasiP1Ctx};
 ///
 /// fn main() -> Result<()> {
 ///     let mut config = Config::new();
@@ -756,7 +763,7 @@ pub fn add_to_linker_async<T: Send + 'static>(
 ///     let engine = Engine::new(&config)?;
 ///
 ///     let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
-///     preview1::add_to_linker_async(&mut linker, |cx| cx)?;
+///     p1::add_to_linker_async(&mut linker, |cx| cx)?;
 ///
 ///     // ... continue to add more to `linker` as necessary and use it ...
 ///
@@ -768,7 +775,7 @@ pub fn add_to_linker_async<T: Send + 'static>(
 ///
 /// ```no_run
 /// use wasmtime::{Result, Linker, Engine, Config};
-/// use wasmtime_wasi::preview1::{self, WasiP1Ctx};
+/// use wasmtime_wasi::p1::{self, WasiP1Ctx};
 ///
 /// struct MyState {
 ///     // .. other custom state here ..
@@ -782,7 +789,7 @@ pub fn add_to_linker_async<T: Send + 'static>(
 ///     let engine = Engine::new(&config)?;
 ///
 ///     let mut linker: Linker<MyState> = Linker::new(&engine);
-///     preview1::add_to_linker_async(&mut linker, |cx| &mut cx.wasi)?;
+///     p1::add_to_linker_async(&mut linker, |cx| &mut cx.wasi)?;
 ///
 ///     // ... continue to add more to `linker` as necessary and use it ...
 ///
@@ -801,7 +808,7 @@ pub fn add_to_linker_sync<T: Send + 'static>(
 // None of the generated modules, traits, or types should be used externally
 // to this module.
 wiggle::from_witx!({
-    witx: ["witx/preview1/wasi_snapshot_preview1.witx"],
+    witx: ["witx/p1/wasi_snapshot_preview1.witx"],
     async: {
         wasi_snapshot_preview1::{
             fd_advise, fd_close, fd_datasync, fd_fdstat_get, fd_filestat_get, fd_filestat_set_size,
@@ -819,7 +826,7 @@ pub(crate) mod sync {
     use std::future::Future;
 
     wiggle::wasmtime_integration!({
-        witx: ["witx/preview1/wasi_snapshot_preview1.witx"],
+        witx: ["witx/p1/wasi_snapshot_preview1.witx"],
         target: super,
         block_on[in_tokio]: {
             wasi_snapshot_preview1::{
@@ -953,7 +960,7 @@ impl TryFrom<filesystem::DescriptorType> for types::Filetype {
             filesystem::DescriptorType::Directory => Ok(types::Filetype::Directory),
             filesystem::DescriptorType::BlockDevice => Ok(types::Filetype::BlockDevice),
             filesystem::DescriptorType::CharacterDevice => Ok(types::Filetype::CharacterDevice),
-            // preview1 never had a FIFO code.
+            // p1 never had a FIFO code.
             filesystem::DescriptorType::Fifo => Ok(types::Filetype::Unknown),
             // TODO: Add a way to disginguish between FILETYPE_SOCKET_STREAM and
             // FILETYPE_SOCKET_DGRAM.
@@ -1125,7 +1132,7 @@ fn first_non_empty_iovec(
 #[async_trait::async_trait]
 // Implement the WasiSnapshotPreview1 trait using only the traits that are
 // required for T, i.e., in terms of the preview 2 wit interface, and state
-// stored in the WasiPreview1Adapter struct.
+// stored in the WasiP1Adapter struct.
 impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
     #[instrument(skip(self, memory))]
     fn args_get(
@@ -1134,7 +1141,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         argv: GuestPtr<GuestPtr<u8>>,
         argv_buf: GuestPtr<u8>,
     ) -> Result<(), types::Error> {
-        self.as_wasi_impl()
+        self.cli()
             .get_arguments()
             .context("failed to call `get-arguments`")
             .map_err(types::Error::trap)?
@@ -1157,7 +1164,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         _memory: &mut GuestMemory<'_>,
     ) -> Result<(types::Size, types::Size), types::Error> {
         let args = self
-            .as_wasi_impl()
+            .cli()
             .get_arguments()
             .context("failed to call `get-arguments`")
             .map_err(types::Error::trap)?;
@@ -1178,7 +1185,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         environ: GuestPtr<GuestPtr<u8>>,
         environ_buf: GuestPtr<u8>,
     ) -> Result<(), types::Error> {
-        self.as_wasi_impl()
+        self.cli()
             .get_environment()
             .context("failed to call `get-environment`")
             .map_err(types::Error::trap)?
@@ -1206,7 +1213,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         _memory: &mut GuestMemory<'_>,
     ) -> Result<(types::Size, types::Size), types::Error> {
         let environ = self
-            .as_wasi_impl()
+            .cli()
             .get_environment()
             .context("failed to call `get-environment`")
             .map_err(types::Error::trap)?;
@@ -1226,15 +1233,13 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         id: types::Clockid,
     ) -> Result<types::Timestamp, types::Error> {
         let res = match id {
-            types::Clockid::Realtime => wall_clock::Host::resolution(&mut self.as_wasi_impl())
+            types::Clockid::Realtime => wall_clock::Host::resolution(&mut self.clocks())
                 .context("failed to call `wall_clock::resolution`")
                 .map_err(types::Error::trap)?
                 .try_into()?,
-            types::Clockid::Monotonic => {
-                monotonic_clock::Host::resolution(&mut self.as_wasi_impl())
-                    .context("failed to call `monotonic_clock::resolution`")
-                    .map_err(types::Error::trap)?
-            }
+            types::Clockid::Monotonic => monotonic_clock::Host::resolution(&mut self.clocks())
+                .context("failed to call `monotonic_clock::resolution`")
+                .map_err(types::Error::trap)?,
             types::Clockid::ProcessCputimeId | types::Clockid::ThreadCputimeId => {
                 return Err(types::Errno::Badf.into());
             }
@@ -1250,11 +1255,11 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         _precision: types::Timestamp,
     ) -> Result<types::Timestamp, types::Error> {
         let now = match id {
-            types::Clockid::Realtime => wall_clock::Host::now(&mut self.as_wasi_impl())
+            types::Clockid::Realtime => wall_clock::Host::now(&mut self.clocks())
                 .context("failed to call `wall_clock::now`")
                 .map_err(types::Error::trap)?
                 .try_into()?,
-            types::Clockid::Monotonic => monotonic_clock::Host::now(&mut self.as_wasi_impl())
+            types::Clockid::Monotonic => monotonic_clock::Host::now(&mut self.clocks())
                 .context("failed to call `monotonic_clock::now`")
                 .map_err(types::Error::trap)?,
             types::Clockid::ProcessCputimeId | types::Clockid::ThreadCputimeId => {
@@ -1625,7 +1630,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
                 let position = position.clone();
                 drop(t);
                 let pos = position.load(Ordering::Relaxed);
-                let file = self.table().get(&fd)?.file()?;
+                let file = self.table.get(&fd)?.file()?;
                 let iov = first_non_empty_iovec(memory, iovs)?;
                 let bytes_read = match (file.as_blocking_file(), memory.as_slice_mut(iov)?) {
                     // Try to read directly into wasm memory where possible
@@ -1919,7 +1924,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
 
         let mut dir = Vec::new();
         for (entry, d_next) in self
-            .table()
+            .table
             // remove iterator from table and use it directly:
             .delete(stream)?
             .into_iter()
@@ -2142,7 +2147,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
             .open_at(dirfd, dirflags.into(), path, oflags.into(), flags)
             .await?;
         let mut t = self.transact()?;
-        let desc = match t.view.table().get(&fd)? {
+        let desc = match t.view.table.get(&fd)? {
             crate::p2::filesystem::Descriptor::Dir(_) => Descriptor::Directory {
                 fd,
                 preopen_path: None,
@@ -2260,7 +2265,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         nsubscriptions: types::Size,
     ) -> Result<types::Size, types::Error> {
         if nsubscriptions == 0 {
-            // Indefinite sleeping is not supported in preview1.
+            // Indefinite sleeping is not supported in p1.
             return Err(types::Errno::Inval.into());
         }
 
@@ -2275,7 +2280,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
                 if !clocksub
                     .flags
                     .contains(types::Subclockflags::SUBSCRIPTION_CLOCK_ABSTIME)
-                    && self.ctx().allow_blocking_current_thread
+                    && self.wasi.allow_blocking_current_thread
                 {
                     std::thread::sleep(std::time::Duration::from_nanos(clocksub.timeout));
                     memory.write(
@@ -2314,7 +2319,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
                         types::Clockid::Monotonic => (timeout, absolute),
                         types::Clockid::Realtime if !absolute => (timeout, false),
                         types::Clockid::Realtime => {
-                            let now = wall_clock::Host::now(&mut self.as_wasi_impl())
+                            let now = wall_clock::Host::now(&mut self.clocks())
                                 .context("failed to call `wall_clock::now`")
                                 .map_err(types::Error::trap)?;
 
@@ -2337,11 +2342,11 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
                         _ => return Err(types::Errno::Inval.into()),
                     };
                     if absolute {
-                        monotonic_clock::Host::subscribe_instant(&mut self.as_wasi_impl(), timeout)
+                        monotonic_clock::Host::subscribe_instant(&mut self.clocks(), timeout)
                             .context("failed to call `monotonic_clock::subscribe_instant`")
                             .map_err(types::Error::trap)?
                     } else {
-                        monotonic_clock::Host::subscribe_duration(&mut self.as_wasi_impl(), timeout)
+                        monotonic_clock::Host::subscribe_duration(&mut self.clocks(), timeout)
                             .context("failed to call `monotonic_clock::subscribe_duration`")
                             .map_err(types::Error::trap)?
                     }
@@ -2564,7 +2569,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         fd: types::Fd,
         flags: types::Fdflags,
     ) -> Result<types::Fd, types::Error> {
-        tracing::warn!("preview1 sock_accept is not implemented");
+        tracing::warn!("p1 sock_accept is not implemented");
         self.transact()?.get_descriptor(fd)?;
         Err(types::Errno::Notsock.into())
     }
@@ -2577,7 +2582,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         ri_data: types::IovecArray,
         ri_flags: types::Riflags,
     ) -> Result<(types::Size, types::Roflags), types::Error> {
-        tracing::warn!("preview1 sock_recv is not implemented");
+        tracing::warn!("p1 sock_recv is not implemented");
         self.transact()?.get_descriptor(fd)?;
         Err(types::Errno::Notsock.into())
     }
@@ -2590,7 +2595,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         si_data: types::CiovecArray,
         _si_flags: types::Siflags,
     ) -> Result<types::Size, types::Error> {
-        tracing::warn!("preview1 sock_send is not implemented");
+        tracing::warn!("p1 sock_send is not implemented");
         self.transact()?.get_descriptor(fd)?;
         Err(types::Errno::Notsock.into())
     }
@@ -2602,7 +2607,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         fd: types::Fd,
         how: types::Sdflags,
     ) -> Result<(), types::Error> {
-        tracing::warn!("preview1 sock_shutdown is not implemented");
+        tracing::warn!("p1 sock_shutdown is not implemented");
         self.transact()?.get_descriptor(fd)?;
         Err(types::Errno::Notsock.into())
     }
