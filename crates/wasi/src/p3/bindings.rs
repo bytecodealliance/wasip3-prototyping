@@ -118,7 +118,7 @@ pub use self::generated::wasi::*;
 ///
 /// # Examples
 ///
-/// ```no_run,ignore(TODO fix after upstreaming is complete)
+/// ```no_run
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{Component, Linker, ResourceTable};
 /// use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
@@ -192,7 +192,7 @@ pub use self::generated::Command;
 ///
 /// # Examples
 ///
-/// ```no_run,ignore(TODO fix after upstreaming is complete)
+/// ```no_run
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{Linker, Component, ResourceTable};
 /// use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
