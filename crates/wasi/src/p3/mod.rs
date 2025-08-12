@@ -1,3 +1,4 @@
+use crate::WasiView;
 use crate::p3::bindings::LinkOptions;
 use anyhow::{Result, anyhow, bail};
 use core::future::Future;
@@ -7,26 +8,21 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use wasmtime::component::{
-    AbortHandle, Access, Accessor, AccessorTask, FutureWriter, GuardedStreamWriter, HasData,
-    Linker, Lower, ResourceTable, StreamWriter, VecBuffer,
+    Access, Accessor, AccessorTask, FutureWriter, GuardedStreamWriter, HasData, JoinHandle, Linker,
+    Lower, ResourceTable, StreamWriter, VecBuffer,
 };
 
 pub mod bindings;
 pub mod cli;
 pub mod clocks;
-mod ctx;
 pub mod filesystem;
 pub mod random;
 pub mod sockets;
-mod view;
-
-pub use self::ctx::{WasiCtx, WasiCtxBuilder};
-pub use self::view::{WasiCtxView, WasiView};
 
 // Default buffer capacity to use for reads of byte-sized values.
 const DEFAULT_BUFFER_CAPACITY: usize = 8192;
 
-pub struct AbortOnDropHandle(pub AbortHandle);
+pub struct AbortOnDropHandle(pub JoinHandle);
 
 impl Drop for AbortOnDropHandle {
     fn drop(&mut self) {
@@ -53,7 +49,7 @@ impl Drop for AbortOnDropHandle {
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime_wasi::p3::filesystem::{WasiFilesystemCtx, WasiFilesystemView};
 /// use wasmtime::component::{Linker, ResourceTable};
-/// use wasmtime_wasi::p3::{WasiCtx, WasiCtxView, WasiView};
+/// use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 ///
 /// fn main() -> Result<()> {
 ///     let mut config = Config::new();
@@ -97,7 +93,7 @@ impl Drop for AbortOnDropHandle {
 /// ```
 pub fn add_to_linker<T>(linker: &mut Linker<T>) -> wasmtime::Result<()>
 where
-    T: WasiView + filesystem::WasiFilesystemView + 'static,
+    T: WasiView + 'static,
 {
     let options = LinkOptions::default();
     add_to_linker_with_options(linker, &options)
@@ -109,13 +105,13 @@ pub fn add_to_linker_with_options<T>(
     options: &LinkOptions,
 ) -> wasmtime::Result<()>
 where
-    T: WasiView + filesystem::WasiFilesystemView + 'static,
+    T: WasiView + 'static,
 {
     cli::add_to_linker_with_options(linker, &options.into())?;
     clocks::add_to_linker(linker)?;
+    filesystem::add_to_linker(linker)?;
     random::add_to_linker(linker)?;
     sockets::add_to_linker(linker)?;
-    filesystem::add_to_linker(linker)?;
     Ok(())
 }
 
@@ -138,12 +134,12 @@ pub trait SpawnExt: Sized {
     fn spawn(
         self,
         task: impl AccessorTask<Self::Data, Self::AccessorData, Result<()>>,
-    ) -> AbortHandle;
+    ) -> JoinHandle;
 
     fn spawn_fn<F>(
         self,
         func: impl FnOnce(&Accessor<Self::Data, Self::AccessorData>) -> F + Send + 'static,
-    ) -> AbortHandle
+    ) -> JoinHandle
     where
         F: Future<Output = Result<()>> + Send,
     {
@@ -170,7 +166,7 @@ pub trait SpawnExt: Sized {
         ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>>
         + Send
         + 'static,
-    ) -> AbortHandle {
+    ) -> JoinHandle {
         struct AccessorTaskFnBox<F>(pub F);
 
         impl<T, U, R, F> AccessorTask<T, U, R> for AccessorTaskFnBox<F>
@@ -192,7 +188,7 @@ impl<T, D: HasData> SpawnExt for &mut Access<'_, T, D> {
     type Data = T;
     type AccessorData = D;
 
-    fn spawn(self, task: impl AccessorTask<T, D, Result<()>>) -> AbortHandle {
+    fn spawn(self, task: impl AccessorTask<T, D, Result<()>>) -> JoinHandle {
         <Access<'_, T, D>>::spawn(self, task)
     }
 }
@@ -201,7 +197,7 @@ impl<T, D: HasData> SpawnExt for &Accessor<T, D> {
     type Data = T;
     type AccessorData = D;
 
-    fn spawn(self, task: impl AccessorTask<T, D, Result<()>>) -> AbortHandle {
+    fn spawn(self, task: impl AccessorTask<T, D, Result<()>>) -> JoinHandle {
         <Accessor<T, D>>::spawn(self, task)
     }
 }

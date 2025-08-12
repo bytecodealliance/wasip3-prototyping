@@ -20,7 +20,7 @@ async fn run(path: &str, server: &Server) -> anyhow::Result<()> {
     let mut store = Store::new(
         &engine,
         Ctx {
-            wasip3: wasmtime_wasi::p3::WasiCtxBuilder::new()
+            wasi: wasmtime_wasi::WasiCtx::builder()
                 .env("HTTP_SERVER", server.addr())
                 .build(),
             ..Ctx::<TestClient>::default()

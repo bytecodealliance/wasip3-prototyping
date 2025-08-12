@@ -93,8 +93,8 @@ use std::collections::{HashMap, hash_map};
 use std::vec::Vec;
 use wasmparser::{FuncValidator, MemArg, Operator, WasmModuleResources};
 use wasmtime_environ::{
-    DataIndex, ElemIndex, FuncIndex, GlobalIndex, MemoryIndex, Signed, TableIndex, TypeConvert,
-    TypeIndex, Unsigned, WasmRefType, WasmResult, WasmValType, wasm_unsupported,
+    DataIndex, ElemIndex, FuncIndex, GlobalIndex, MemoryIndex, TableIndex, TypeConvert, TypeIndex,
+    WasmRefType, WasmResult, WasmValType, wasm_unsupported,
 };
 
 /// Given a `Reachability<T>`, unwrap the inner `T` or, when unreachable, set
@@ -588,25 +588,21 @@ pub fn translate_operator(
          ************************************************************************************/
         Operator::Call { function_index } => {
             let function_index = FuncIndex::from_u32(*function_index);
-            let fref = environ.get_or_create_func_ref(builder.func, function_index);
+            let ty = environ.module.functions[function_index]
+                .signature
+                .unwrap_module_type_index();
+            let sig_ref = environ.get_or_create_interned_sig_ref(builder.func, ty);
             let num_args = environ.num_params_for_func(function_index);
 
             // Bitcast any vector arguments to their default type, I8X16, before calling.
             let args = stack.peekn_mut(num_args);
-            bitcast_wasm_params(
-                environ,
-                builder.func.dfg.ext_funcs[fref].signature,
-                args,
-                builder,
-            );
+            bitcast_wasm_params(environ, sig_ref, args, builder);
 
-            let call = environ.translate_call(builder, function_index, fref, args)?;
+            let call = environ.translate_call(builder, function_index, sig_ref, args)?;
             let inst_results = builder.inst_results(call);
             debug_assert_eq!(
                 inst_results.len(),
-                builder.func.dfg.signatures[builder.func.dfg.ext_funcs[fref].signature]
-                    .returns
-                    .len(),
+                builder.func.dfg.signatures[sig_ref].returns.len(),
                 "translate_call results should match the call signature"
             );
             stack.popn(num_args);
@@ -662,19 +658,17 @@ pub fn translate_operator(
          ************************************************************************************/
         Operator::ReturnCall { function_index } => {
             let function_index = FuncIndex::from_u32(*function_index);
-            let fref = environ.get_or_create_func_ref(builder.func, function_index);
+            let ty = environ.module.functions[function_index]
+                .signature
+                .unwrap_module_type_index();
+            let sig_ref = environ.get_or_create_interned_sig_ref(builder.func, ty);
             let num_args = environ.num_params_for_func(function_index);
 
             // Bitcast any vector arguments to their default type, I8X16, before calling.
             let args = stack.peekn_mut(num_args);
-            bitcast_wasm_params(
-                environ,
-                builder.func.dfg.ext_funcs[fref].signature,
-                args,
-                builder,
-            );
+            bitcast_wasm_params(environ, sig_ref, args, builder);
 
-            environ.translate_return_call(builder, function_index, fref, args)?;
+            environ.translate_return_call(builder, function_index, sig_ref, args)?;
 
             stack.popn(num_args);
             stack.reachable = false;
@@ -911,7 +905,7 @@ pub fn translate_operator(
         }
         /****************************** Nullary Operators ************************************/
         Operator::I32Const { value } => {
-            stack.push1(builder.ins().iconst(I32, i64::from(value.unsigned())));
+            stack.push1(builder.ins().iconst(I32, i64::from(value.cast_unsigned())));
         }
         Operator::I64Const { value } => stack.push1(builder.ins().iconst(I64, *value)),
         Operator::F32Const { value } => {
@@ -3301,7 +3295,7 @@ fn prepare_addr(
         Err(_) => {
             let offset = builder
                 .ins()
-                .iconst(heap.index_type(), memarg.offset.signed());
+                .iconst(heap.index_type(), memarg.offset.cast_signed());
             let adjusted_index = environ.uadd_overflow_trap(
                 builder,
                 index,
@@ -3370,7 +3364,7 @@ fn align_atomic_addr(
         let effective_addr = if memarg.offset == 0 {
             addr
         } else {
-            builder.ins().iadd_imm(addr, memarg.offset.signed())
+            builder.ins().iadd_imm(addr, memarg.offset.cast_signed())
         };
         debug_assert!(loaded_bytes.is_power_of_two());
         let misalignment = builder

@@ -60,6 +60,8 @@ mod imports;
 mod instance;
 mod memory;
 mod mmap_vec;
+#[cfg(has_virtual_memory)]
+mod pagemap_disabled;
 mod provenance;
 mod send_sync_ptr;
 mod stack_switching;
@@ -161,6 +163,17 @@ cfg_if::cfg_if! {
     }
 }
 
+/// Source of data used for [`MemoryImage`]
+pub trait ModuleMemoryImageSource: Send + Sync + 'static {
+    /// Returns this image's slice of all wasm data for a module which is then
+    /// further sub-sliced for a particular initialization segment.
+    fn wasm_data(&self) -> &[u8];
+
+    /// Optionally returns the backing mmap. Used for using the backing mmap's
+    /// file to perform other mmaps, for example.
+    fn mmap(&self) -> Option<&MmapVec>;
+}
+
 /// Dynamic runtime functionality needed by this crate throughout the execution
 /// of a wasm instance.
 ///
@@ -228,26 +241,6 @@ pub unsafe trait VMStore: 'static {
     /// completely semantically transparent. Returns the new deadline.
     #[cfg(target_has_atomic = "64")]
     fn new_epoch(&mut self) -> Result<u64, Error>;
-
-    /// Callback invoked whenever an instance needs to grow-or-collect the GC
-    /// heap.
-    ///
-    /// Optionally given a GC reference that is rooted for the collection, and
-    /// then whose updated GC reference is returned.
-    ///
-    /// Optionally given a number of bytes that are needed for an upcoming
-    /// allocation.
-    ///
-    /// Cooperative, async-yielding (if configured) is completely transparent,
-    /// but must be called from a fiber stack in that case.
-    ///
-    /// If the async GC was cancelled, returns an error. This should be raised
-    /// as a trap to clean up Wasm execution.
-    unsafe fn maybe_async_grow_or_collect_gc_heap(
-        &mut self,
-        root: Option<VMGcRef>,
-        bytes_needed: Option<u64>,
-    ) -> Result<Option<VMGcRef>>;
 
     /// Metadata required for resources for the component model.
     #[cfg(feature = "component-model")]

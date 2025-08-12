@@ -13,7 +13,7 @@ const GENERIC_BUCKETS = 3;
 
 // Crates which are their own buckets. These are the very slowest to
 // compile-and-test crates.
-const SINGLE_CRATE_BUCKETS = ["wasmtime", "wasmtime-cli", "wasmtime-wasi", 'component-async-tests'];
+const SINGLE_CRATE_BUCKETS = ["wasmtime", "wasmtime-cli", "wasmtime-wasi"];
 
 const ubuntu = 'ubuntu-24.04';
 const windows = 'windows-2025';

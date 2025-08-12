@@ -1,5 +1,5 @@
 use crate::common::{Profile, RunCommon, RunTarget};
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use bytes::Bytes;
 use clap::Parser;
 use http::{Response, StatusCode};
@@ -7,15 +7,23 @@ use http_body_util::BodyExt as _;
 use http_body_util::combinators::BoxBody;
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::Instant;
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::Duration,
+};
+use tokio::io::{self, AsyncWrite};
 use tokio::sync::Notify;
-use wasmtime::component::{Component, Instance, InstancePre, Linker};
+use wasmtime::component::{Component, Instance, InstancePre, Linker, ResourceTable};
 use wasmtime::{Engine, Store, StoreLimits, UpdateDeadline};
-use wasmtime_wasi::p2::{IoView, StreamError, StreamResult, WasiCtx, WasiCtxBuilder, WasiView};
-use wasmtime_wasi::p3;
+use wasmtime_wasi::p2::{StreamError, StreamResult};
+use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 use wasmtime_wasi_http::bindings as p2;
 use wasmtime_wasi_http::io::TokioIo;
 use wasmtime_wasi_http::{
@@ -37,9 +45,7 @@ struct Host {
     http_outgoing_body_buffer_chunks: Option<usize>,
     http_outgoing_body_chunk_size: Option<usize>,
 
-    p3_filesystem: Option<wasmtime_wasi::p3::filesystem::WasiFilesystemCtx>,
     p3_http: wasmtime_wasi_http::p3::WasiHttpCtx,
-    p3_ctx: wasmtime_wasi::p3::WasiCtx,
 
     limits: StoreLimits,
 
@@ -56,20 +62,21 @@ struct Host {
     guest_profiler: Option<Arc<wasmtime::GuestProfiler>>,
 }
 
-impl IoView for Host {
-    fn table(&mut self) -> &mut wasmtime::component::ResourceTable {
-        &mut self.table
-    }
-}
 impl WasiView for Host {
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.ctx
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.ctx,
+            table: &mut self.table,
+        }
     }
 }
 
 impl WasiHttpView for Host {
     fn ctx(&mut self) -> &mut WasiHttpCtx {
         &mut self.http
+    }
+    fn table(&mut self) -> &mut ResourceTable {
+        &mut self.table
     }
 
     fn outgoing_body_buffer_chunks(&mut self) -> usize {
@@ -86,23 +93,6 @@ impl WasiHttpView for Host {
 impl wasmtime_wasi::p3::ResourceView for Host {
     fn table(&mut self) -> &mut wasmtime::component::ResourceTable {
         &mut self.table
-    }
-}
-
-impl wasmtime_wasi::p3::WasiView for Host {
-    fn ctx(&mut self) -> wasmtime_wasi::p3::WasiCtxView<'_> {
-        wasmtime_wasi::p3::WasiCtxView {
-            ctx: &mut self.p3_ctx,
-            table: &mut self.table,
-        }
-    }
-}
-
-impl wasmtime_wasi::p3::filesystem::WasiFilesystemView for Host {
-    fn filesystem(&self) -> &wasmtime_wasi::p3::filesystem::WasiFilesystemCtx {
-        self.p3_filesystem
-            .as_ref()
-            .expect("`wasi:filesystem@0.3` not configured")
     }
 }
 
@@ -186,12 +176,9 @@ impl ServeCommand {
 
     fn new_store(&self, engine: &Engine, req_id: u64) -> Result<Store<Host>> {
         let mut p2 = WasiCtxBuilder::new();
-        let mut p3 = p3::WasiCtxBuilder::new();
         self.run.configure_wasip2(&mut p2)?;
-        self.run.configure_wasip3(&mut p3)?;
 
         p2.env("REQUEST_ID", req_id.to_string());
-        p3.env("REQUEST_ID", req_id.to_string());
 
         let stdout_prefix: String;
         let stderr_prefix: String;
@@ -204,9 +191,6 @@ impl ServeCommand {
         }
         p2.stdout(LogStream::new(stdout_prefix, Output::Stdout));
         p2.stderr(LogStream::new(stderr_prefix, Output::Stderr));
-
-        // TODO: set stdout/stderr for p3
-        p3.inherit_stdout().inherit_stderr();
 
         let mut host = Host {
             table: wasmtime::component::ResourceTable::new(),
@@ -226,21 +210,6 @@ impl ServeCommand {
             #[cfg(feature = "profiling")]
             guest_profiler: None,
 
-            p3_ctx: p3.build(),
-            p3_filesystem: {
-                let mut p3_filesystem = p3::filesystem::WasiFilesystemCtx::default();
-                p3_filesystem.allow_blocking_current_thread =
-                    self.run.common.wasm.timeout.is_none();
-                for (host, guest) in self.run.dirs.iter() {
-                    p3_filesystem.preopened_dir(
-                        host,
-                        guest,
-                        wasmtime_wasi::DirPerms::all(),
-                        wasmtime_wasi::FilePerms::all(),
-                    )?;
-                }
-                Some(p3_filesystem)
-            },
             p3_http: wasmtime_wasi_http::p3::WasiHttpCtx::default(),
         };
 
@@ -941,14 +910,13 @@ enum Output {
 }
 
 impl Output {
-    fn write_all(&self, buf: &[u8]) -> anyhow::Result<()> {
+    fn write_all(&self, buf: &[u8]) -> io::Result<()> {
         use std::io::Write;
 
         match self {
             Output::Stdout => std::io::stdout().write_all(buf),
             Output::Stderr => std::io::stderr().write_all(buf),
         }
-        .map_err(|e| anyhow!(e))
     }
 }
 
@@ -973,10 +941,44 @@ impl LogStream {
             }),
         }
     }
+
+    fn write_all(&mut self, mut bytes: &[u8]) -> io::Result<()> {
+        while !bytes.is_empty() {
+            if self
+                .state
+                .needs_prefix_on_next_write
+                .load(Ordering::Relaxed)
+            {
+                self.output.write_all(self.state.prefix.as_bytes())?;
+                self.state
+                    .needs_prefix_on_next_write
+                    .store(false, Ordering::Relaxed);
+            }
+            match bytes.iter().position(|b| *b == b'\n') {
+                Some(i) => {
+                    let (a, b) = bytes.split_at(i + 1);
+                    bytes = b;
+                    self.output.write_all(a)?;
+                    self.state
+                        .needs_prefix_on_next_write
+                        .store(true, Ordering::Relaxed);
+                }
+                None => {
+                    self.output.write_all(bytes)?;
+                    break;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
-impl wasmtime_wasi::p2::StdoutStream for LogStream {
-    fn stream(&self) -> Box<dyn wasmtime_wasi::p2::OutputStream> {
+impl wasmtime_wasi::cli::StdoutStream for LogStream {
+    fn p2_stream(&self) -> Box<dyn wasmtime_wasi::p2::OutputStream> {
+        Box::new(self.clone())
+    }
+    fn async_stream(&self) -> Box<dyn AsyncWrite + Send + Sync> {
         Box::new(self.clone())
     }
 }
@@ -992,41 +994,8 @@ impl wasmtime_wasi::cli::IsTerminal for LogStream {
 
 impl wasmtime_wasi::p2::OutputStream for LogStream {
     fn write(&mut self, bytes: bytes::Bytes) -> StreamResult<()> {
-        let mut bytes = &bytes[..];
-
-        while !bytes.is_empty() {
-            if self
-                .state
-                .needs_prefix_on_next_write
-                .load(Ordering::Relaxed)
-            {
-                self.output
-                    .write_all(self.state.prefix.as_bytes())
-                    .map_err(StreamError::LastOperationFailed)?;
-                self.state
-                    .needs_prefix_on_next_write
-                    .store(false, Ordering::Relaxed);
-            }
-            match bytes.iter().position(|b| *b == b'\n') {
-                Some(i) => {
-                    let (a, b) = bytes.split_at(i + 1);
-                    bytes = b;
-                    self.output
-                        .write_all(a)
-                        .map_err(StreamError::LastOperationFailed)?;
-                    self.state
-                        .needs_prefix_on_next_write
-                        .store(true, Ordering::Relaxed);
-                }
-                None => {
-                    self.output
-                        .write_all(bytes)
-                        .map_err(StreamError::LastOperationFailed)?;
-                    break;
-                }
-            }
-        }
-
+        self.write_all(&bytes)
+            .map_err(|e| StreamError::LastOperationFailed(e.into()))?;
         Ok(())
     }
 
@@ -1042,6 +1011,22 @@ impl wasmtime_wasi::p2::OutputStream for LogStream {
 #[async_trait::async_trait]
 impl wasmtime_wasi::p2::Pollable for LogStream {
     async fn ready(&mut self) {}
+}
+
+impl AsyncWrite for LogStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(self.write_all(buf).map(|_| buf.len()))
+    }
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
 }
 
 /// The pooling allocator is tailor made for the `wasmtime serve` use case, so

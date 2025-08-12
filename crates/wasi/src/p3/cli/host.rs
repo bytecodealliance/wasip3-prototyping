@@ -1,11 +1,11 @@
 use crate::I32Exit;
-use crate::cli::IsTerminal;
+use crate::cli::{IsTerminal, WasiCli, WasiCliCtxView};
 use crate::p3::DEFAULT_BUFFER_CAPACITY;
 use crate::p3::bindings::cli::{
     environment, exit, stderr, stdin, stdout, terminal_input, terminal_output, terminal_stderr,
     terminal_stdin, terminal_stdout,
 };
-use crate::p3::cli::{TerminalInput, TerminalOutput, WasiCli, WasiCliCtxView};
+use crate::p3::cli::{TerminalInput, TerminalOutput};
 use anyhow::{Context as _, anyhow};
 use bytes::BytesMut;
 use std::io::Cursor;
@@ -145,7 +145,7 @@ impl stdin::HostWithStore for WasiCli {
             let (tx, rx) = instance
                 .stream(&mut view)
                 .context("failed to create stream")?;
-            let stdin = view.get().ctx.stdin.reader();
+            let stdin = view.get().ctx.stdin.async_stream();
             view.spawn(InputTask {
                 rx: Box::into_pin(stdin),
                 tx,
@@ -163,7 +163,7 @@ impl stdout::HostWithStore for WasiCli {
         data: StreamReader<u8>,
     ) -> wasmtime::Result<()> {
         store.with(|mut view| {
-            let tx = view.get().ctx.stdout.writer();
+            let tx = view.get().ctx.stdout.async_stream();
             view.spawn(OutputTask {
                 rx: data,
                 tx: Box::into_pin(tx),
@@ -181,7 +181,7 @@ impl stderr::HostWithStore for WasiCli {
         data: StreamReader<u8>,
     ) -> wasmtime::Result<()> {
         store.with(|mut view| {
-            let tx = view.get().ctx.stderr.writer();
+            let tx = view.get().ctx.stderr.async_stream();
             view.spawn(OutputTask {
                 rx: data,
                 tx: Box::into_pin(tx),

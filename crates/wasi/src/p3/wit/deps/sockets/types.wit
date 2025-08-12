@@ -125,7 +125,7 @@ interface types {
     /// - `connecting`
     /// - `connected`
     /// - `closed`
-    /// See <https://github.com/WebAssembly/wasi-sockets/blob/main/TcpSocketOperationalSemantics.md>
+    /// See <https://github.com/WebAssembly/wasi-sockets/blob/main/TcpSocketOperationalSemantics-0.3.0-draft.md>
     /// for more information.
     ///
     /// Note: Except where explicitly mentioned, whenever this documentation uses
@@ -174,10 +174,10 @@ interface types {
         /// - `address-in-use`:            No ephemeral ports available. (EADDRINUSE, ENOBUFS on Windows)
         /// - `address-in-use`:            Address is already in use. (EADDRINUSE)
         /// - `address-not-bindable`:      `local-address` is not an address that can be bound to. (EADDRNOTAVAIL)
-        ///
+        /// 
         /// # Implementors note
         /// When binding to a non-zero port, this bind operation shouldn't be affected by the TIME_WAIT
-        /// state of a recently closed socket on the same local address. In practice this means that the SO_REUSEADDR
+        /// state of a recently closed socket on the same local address. In practice this means that the SO_REUSEADDR 
         /// socket option should be set implicitly on all platforms, except on Windows where this is the default behavior
         /// and SO_REUSEADDR performs something different entirely.
         ///

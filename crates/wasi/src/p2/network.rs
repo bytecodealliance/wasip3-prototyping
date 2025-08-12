@@ -1,8 +1,7 @@
-use core::net::SocketAddr;
-
+use crate::TrappableError;
 use crate::p2::bindings::sockets::network::ErrorCode;
-use crate::sockets::SocketAddrCheck;
-use crate::{SocketAddrUse, TrappableError};
+use crate::sockets::{SocketAddrCheck, SocketAddrUse};
+use std::net::SocketAddr;
 
 pub type SocketResult<T> = Result<T, SocketError>;
 
@@ -49,17 +48,19 @@ impl From<crate::sockets::util::ErrorCode> for ErrorCode {
             crate::sockets::util::ErrorCode::ConnectionReset => Self::ConnectionReset,
             crate::sockets::util::ErrorCode::ConnectionAborted => Self::ConnectionAborted,
             crate::sockets::util::ErrorCode::DatagramTooLarge => Self::DatagramTooLarge,
+            crate::sockets::util::ErrorCode::NotInProgress => Self::NotInProgress,
+            crate::sockets::util::ErrorCode::ConcurrencyConflict => Self::ConcurrencyConflict,
         }
     }
 }
 
 pub struct Network {
-    pub socket_addr_check: SocketAddrCheck,
-    pub allow_ip_name_lookup: bool,
+    pub(crate) socket_addr_check: SocketAddrCheck,
+    pub(crate) allow_ip_name_lookup: bool,
 }
 
 impl Network {
-    pub async fn check_socket_addr(
+    pub(crate) async fn check_socket_addr(
         &self,
         addr: SocketAddr,
         reason: SocketAddrUse,

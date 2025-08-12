@@ -11,8 +11,8 @@
 //! use this modules's bindings rather than generate fresh bindings. That can be
 //! done using the `with` option to [`bindgen!`]:
 //!
-//! ```rust,ignore(TODO fix when wasi finishes merging upstream)
-//! use wasmtime_wasi::p3::{WasiCtx, WasiCtxView, WasiView};
+//! ```rust
+//! use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 //! use wasmtime::{Result, Engine, Config};
 //! use wasmtime::component::{Linker, HasSelf, ResourceTable};
 //!
@@ -94,10 +94,14 @@ mod generated {
         with: {
             "wasi:cli/terminal-input/terminal-input": crate::p3::cli::TerminalInput,
             "wasi:cli/terminal-output/terminal-output": crate::p3::cli::TerminalOutput,
-            "wasi:sockets/types/tcp-socket": crate::p3::sockets::tcp::TcpSocket,
-            "wasi:sockets/types/udp-socket": crate::p3::sockets::udp::UdpSocket,
-            "wasi:filesystem/types/descriptor": crate::p3::filesystem::Descriptor,
-        }
+            "wasi:filesystem/types/descriptor": crate::filesystem::Descriptor,
+            "wasi:sockets/types/tcp-socket": crate::sockets::TcpSocket,
+            "wasi:sockets/types/udp-socket": crate::sockets::UdpSocket,
+        },
+        trappable_error_type: {
+            "wasi:filesystem/types/error-code" => crate::p3::filesystem::FilesystemError,
+            "wasi:sockets/types/error-code" => crate::p3::sockets::SocketError,
+        },
     });
 }
 pub use self::generated::LinkOptions;
@@ -114,10 +118,10 @@ pub use self::generated::wasi::*;
 ///
 /// # Examples
 ///
-/// ```no_run,ignore(TODO fix after upstreaming is complete)
+/// ```no_run
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{Component, Linker, ResourceTable};
-/// use wasmtime_wasi::p3::{WasiCtx, WasiCtxView, WasiCtxBuilder, WasiView};
+/// use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 /// use wasmtime_wasi::p3::bindings::Command;
 ///
 /// // This example is an example shim of executing a component based on the
@@ -141,7 +145,7 @@ pub use self::generated::wasi::*;
 ///
 ///     // Configure a `WasiCtx` based on this program's environment. Then
 ///     // build a `Store` to instantiate into.
-///     let mut builder = WasiCtxBuilder::new();
+///     let mut builder = WasiCtx::builder();
 ///     builder.inherit_stdio().inherit_env().args(&args);
 ///     let mut store = Store::new(
 ///         &engine,
@@ -188,10 +192,10 @@ pub use self::generated::Command;
 ///
 /// # Examples
 ///
-/// ```no_run,ignore(TODO fix after upstreaming is complete)
+/// ```no_run
 /// use wasmtime::{Engine, Result, Store, Config};
 /// use wasmtime::component::{Linker, Component, ResourceTable};
-/// use wasmtime_wasi::p3::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+/// use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 /// use wasmtime_wasi::p3::bindings::CommandPre;
 ///
 /// // This example is an example shim of executing a component based on the
@@ -216,7 +220,7 @@ pub use self::generated::Command;
 ///
 ///     // Configure a `WasiCtx` based on this program's environment. Then
 ///     // build a `Store` to instantiate into.
-///     let mut builder = WasiCtxBuilder::new();
+///     let mut builder = WasiCtx::builder();
 ///     builder.inherit_stdio().inherit_env().args(&args);
 ///     let mut store = Store::new(
 ///         &engine,
