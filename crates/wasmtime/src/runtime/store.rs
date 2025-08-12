@@ -101,7 +101,7 @@ use crate::{Global, Instance, Memory, Table, Uninhabited};
 use alloc::sync::Arc;
 use core::fmt;
 use core::marker;
-use core::mem::{self, ManuallyDrop};
+use core::mem::{self, ManuallyDrop, MaybeUninit};
 use core::num::NonZeroU64;
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
@@ -1419,8 +1419,23 @@ impl StoreOpaque {
         &mut self.vm_store_context
     }
 
+    /// Performs a lazy allocation of the `GcStore` within this store, returning
+    /// the previous allocation if it's already present.
+    ///
+    /// This method will, if necessary, allocate a new `GcStore` -- linear
+    /// memory and all. This is a blocking operation due to
+    /// `ResourceLimiterAsync` which means that this should only be executed
+    /// in a fiber context at this time.
+    #[inline]
+    pub(crate) fn ensure_gc_store(&mut self) -> Result<&mut GcStore> {
+        if self.gc_store.is_some() {
+            return Ok(self.gc_store.as_mut().unwrap());
+        }
+        self.allocate_gc_store()
+    }
+
     #[inline(never)]
-    pub(crate) fn allocate_gc_heap(&mut self) -> Result<()> {
+    fn allocate_gc_store(&mut self) -> Result<&mut GcStore> {
         log::trace!("allocating GC heap for store {:?}", self.id());
 
         assert!(self.gc_store.is_none());
@@ -1433,8 +1448,7 @@ impl StoreOpaque {
         let vmstore = self.traitobj();
         let gc_store = allocate_gc_store(self.engine(), vmstore, self.get_pkey())?;
         self.vm_store_context.gc_heap = gc_store.vmmemory_definition();
-        self.gc_store = Some(gc_store);
-        return Ok(());
+        return Ok(self.gc_store.insert(gc_store));
 
         #[cfg(feature = "gc")]
         fn allocate_gc_store(
@@ -1493,24 +1507,45 @@ impl StoreOpaque {
         }
     }
 
+    /// Helper method to require that a `GcStore` was previously allocated for
+    /// this store, failing if it has not yet been allocated.
+    ///
+    /// Note that this should only be used in a context where allocation of a
+    /// `GcStore` is sure to have already happened prior, otherwise this may
+    /// return a confusing error to embedders which is a bug in Wasmtime.
+    ///
+    /// Some situations where it's safe to call this method:
+    ///
+    /// * There's already a non-null and non-i31 `VMGcRef` in scope. By existing
+    ///   this shows proof that the `GcStore` was previously allocated.
+    /// * During instantiation and instance's `needs_gc_heap` flag will be
+    ///   handled and instantiation will automatically create a GC store.
     #[inline]
-    pub(crate) fn gc_store(&self) -> Result<&GcStore> {
+    #[cfg(feature = "gc")]
+    pub(crate) fn require_gc_store(&self) -> Result<&GcStore> {
         match &self.gc_store {
             Some(gc_store) => Ok(gc_store),
             None => bail!("GC heap not initialized yet"),
         }
     }
 
+    /// Same as [`Self::require_gc_store`], but mutable.
     #[inline]
-    pub(crate) fn gc_store_mut(&mut self) -> Result<&mut GcStore> {
-        if self.gc_store.is_none() {
-            self.allocate_gc_heap()?;
+    #[cfg(feature = "gc")]
+    pub(crate) fn require_gc_store_mut(&mut self) -> Result<&mut GcStore> {
+        match &mut self.gc_store {
+            Some(gc_store) => Ok(gc_store),
+            None => bail!("GC heap not initialized yet"),
         }
-        Ok(self.unwrap_gc_store_mut())
     }
 
-    /// If this store is configured with a GC heap, return a mutable reference
-    /// to it. Otherwise, return `None`.
+    /// Attempts to access the GC store that has been previously allocated.
+    ///
+    /// This method will return `Some` if the GC store was previously allocated.
+    /// A `None` return value means either that the GC heap hasn't yet been
+    /// allocated or that it does not need to be allocated for this store. Note
+    /// that to require a GC store in a particular situation it's recommended to
+    /// use [`Self::require_gc_store_mut`] instead.
     #[inline]
     pub(crate) fn optional_gc_store_mut(&mut self) -> Option<&mut GcStore> {
         if cfg!(not(feature = "gc")) || !self.engine.features().gc_types() {
@@ -1521,15 +1556,23 @@ impl StoreOpaque {
         }
     }
 
+    /// Helper to assert that a GC store was previously allocated and is
+    /// present.
+    ///
+    /// # Panics
+    ///
+    /// This method will panic if the GC store has not yet been allocated. This
+    /// should only be used in a context where there's an existing GC reference,
+    /// for example, or if `ensure_gc_store` has already been called.
     #[inline]
     #[track_caller]
-    #[cfg(feature = "gc")]
     pub(crate) fn unwrap_gc_store(&self) -> &GcStore {
         self.gc_store
             .as_ref()
             .expect("attempted to access the store's GC heap before it has been allocated")
     }
 
+    /// Same as [`Self::unwrap_gc_store`], but mutable.
     #[inline]
     #[track_caller]
     pub(crate) fn unwrap_gc_store_mut(&mut self) -> &mut GcStore {
@@ -1638,7 +1681,7 @@ impl StoreOpaque {
             let raw: u32 = unsafe { core::ptr::read(stack_slot) };
             log::trace!("Stack slot @ {stack_slot:p} = {raw:#x}");
 
-            let gc_ref = VMGcRef::from_raw_u32(raw);
+            let gc_ref = vm::VMGcRef::from_raw_u32(raw);
             if gc_ref.is_some() {
                 unsafe {
                     gc_roots_list
@@ -1724,6 +1767,38 @@ impl StoreOpaque {
     #[cfg(feature = "gc")]
     pub(crate) fn insert_gc_host_alloc_type(&mut self, ty: crate::type_registry::RegisteredType) {
         self.gc_host_alloc_types.insert(ty);
+    }
+
+    /// Helper function execute a `init_gc_ref` when placing `gc_ref` in `dest`.
+    ///
+    /// This avoids allocating `GcStore` where possible.
+    pub(crate) fn init_gc_ref(
+        &mut self,
+        dest: &mut MaybeUninit<Option<VMGcRef>>,
+        gc_ref: Option<&VMGcRef>,
+    ) {
+        if GcStore::needs_init_barrier(gc_ref) {
+            self.unwrap_gc_store_mut().init_gc_ref(dest, gc_ref)
+        } else {
+            dest.write(gc_ref.map(|r| r.copy_i31()));
+        }
+    }
+
+    /// Helper function execute a write barrier when placing `gc_ref` in `dest`.
+    ///
+    /// This avoids allocating `GcStore` where possible.
+    pub(crate) fn write_gc_ref(&mut self, dest: &mut Option<VMGcRef>, gc_ref: Option<&VMGcRef>) {
+        GcStore::write_gc_ref_optional_store(self.optional_gc_store_mut(), dest, gc_ref)
+    }
+
+    /// Helper function to clone `gc_ref` notably avoiding allocating a
+    /// `GcStore` where possible.
+    pub(crate) fn clone_gc_ref(&mut self, gc_ref: &VMGcRef) -> VMGcRef {
+        if gc_ref.is_i31() {
+            gc_ref.copy_i31()
+        } else {
+            self.unwrap_gc_store_mut().clone_gc_ref(gc_ref)
+        }
     }
 
     pub fn get_fuel(&self) -> Result<u64> {
@@ -2296,24 +2371,6 @@ unsafe impl<T> vm::VMStore for StoreInner<T> {
         // Put back the original behavior which was replaced by `take`.
         self.epoch_deadline_behavior = behavior;
         delta_result
-    }
-
-    #[cfg(feature = "gc")]
-    unsafe fn maybe_async_grow_or_collect_gc_heap(
-        &mut self,
-        root: Option<VMGcRef>,
-        bytes_needed: Option<u64>,
-    ) -> Result<Option<VMGcRef>> {
-        unsafe { self.inner.maybe_async_gc(root, bytes_needed) }
-    }
-
-    #[cfg(not(feature = "gc"))]
-    unsafe fn maybe_async_grow_or_collect_gc_heap(
-        &mut self,
-        root: Option<VMGcRef>,
-        _bytes_needed: Option<u64>,
-    ) -> Result<Option<VMGcRef>> {
-        Ok(root)
     }
 
     #[cfg(feature = "component-model")]

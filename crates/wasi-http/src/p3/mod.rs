@@ -71,7 +71,7 @@
 //! use tokio::net::TcpListener;
 //! use wasmtime::component::{Component, Linker, ResourceTable};
 //! use wasmtime::{Config, Engine, Result, Store};
-//! use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
+//! use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView, WasiCtxView};
 //! use wasmtime_wasi_http::bindings::ProxyPre;
 //! use wasmtime_wasi_http::bindings::http::types::Scheme;
 //! use wasmtime_wasi_http::body::HyperOutgoingBody;
@@ -193,20 +193,20 @@
 //!     http: WasiHttpCtx,
 //!     table: ResourceTable,
 //! }
-//! impl IoView for MyClientState {
-//!     fn table(&mut self) -> &mut ResourceTable {
-//!         &mut self.table
-//!     }
-//! }
+//!
 //! impl WasiView for MyClientState {
-//!     fn ctx(&mut self) -> &mut WasiCtx {
-//!         &mut self.wasi
+//!     fn ctx(&mut self) -> WasiCtxView<'_> {
+//!         WasiCtxView { ctx: &mut self.wasi, table: &mut self.table }
 //!     }
 //! }
 //!
 //! impl WasiHttpView for MyClientState {
 //!     fn ctx(&mut self) -> &mut WasiHttpCtx {
 //!         &mut self.http
+//!     }
+//!
+//!     fn table(&mut self) -> &mut ResourceTable {
+//!         &mut self.table
 //!     }
 //! }
 //! ```
@@ -243,7 +243,7 @@ use wasmtime_wasi::p3::ResourceView;
 /// ```
 /// use wasmtime::{Engine, Result, Config};
 /// use wasmtime::component::{ResourceTable, Linker};
-/// use wasmtime_wasi::p2::{IoView, WasiCtx, WasiView};
+/// use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 /// use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 ///
 /// fn main() -> Result<()> {
@@ -264,14 +264,14 @@ use wasmtime_wasi::p3::ResourceView;
 ///     table: ResourceTable,
 /// }
 ///
-/// impl IoView for MyState {
-///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
-/// }
 /// impl WasiHttpView for MyState {
 ///     fn ctx(&mut self) -> &mut WasiHttpCtx { &mut self.http_ctx }
+///     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
 /// }
 /// impl WasiView for MyState {
-///     fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
+///     fn ctx(&mut self) -> WasiCtxView<'_> {
+///         WasiCtxView { ctx: &mut self.ctx, table: &mut self.table }
+///     }
 /// }
 /// ```
 pub fn add_to_linker<T>(l: &mut wasmtime::component::Linker<T>) -> anyhow::Result<()>
@@ -279,7 +279,7 @@ where
     T: WasiHttpView
         + wasmtime_wasi::clocks::WasiClocksView
         + wasmtime_wasi::random::WasiRandomView
-        + wasmtime_wasi::p3::cli::WasiCliView
+        + wasmtime_wasi::cli::WasiCliView
         + 'static,
 {
     wasmtime_wasi::p3::clocks::add_to_linker(l)?;

@@ -6,8 +6,8 @@ use std::net::TcpListener;
 use std::{fs::File, path::Path, time::Duration};
 use wasmtime::{Engine, Module, Precompiled, StoreLimits, StoreLimitsBuilder};
 use wasmtime_cli_flags::{CommonOptions, opt::WasmtimeOptionValue};
+use wasmtime_wasi::WasiCtxBuilder;
 use wasmtime_wasi::p2::bindings::LinkOptions;
-use wasmtime_wasi::{p2, p3};
 
 #[cfg(feature = "component-model")]
 use wasmtime::component::Component;
@@ -258,71 +258,7 @@ impl RunCommon {
         })
     }
 
-    pub fn configure_wasip2(&self, builder: &mut p2::WasiCtxBuilder) -> Result<()> {
-        // It's ok to block the current thread since we're the only thread in
-        // the program as the CLI. This helps improve the performance of some
-        // blocking operations in WASI, for example, by skipping the
-        // back-and-forth between sync and async.
-        //
-        // However, do not set this if a timeout is configured, as that would
-        // cause the timeout to be ignored if the guest does, for example,
-        // something like `sleep(FOREVER)`.
-        builder.allow_blocking_current_thread(self.common.wasm.timeout.is_none());
-
-        if self.common.wasi.inherit_env == Some(true) {
-            for (k, v) in std::env::vars() {
-                builder.env(&k, &v);
-            }
-        }
-        for (key, value) in self.vars.iter() {
-            let value = match value {
-                Some(value) => value.clone(),
-                None => match std::env::var_os(key) {
-                    Some(val) => val
-                        .into_string()
-                        .map_err(|_| anyhow!("environment variable `{key}` not valid utf-8"))?,
-                    None => {
-                        // leave the env var un-set in the guest
-                        continue;
-                    }
-                },
-            };
-            builder.env(key, &value);
-        }
-
-        for (host, guest) in self.dirs.iter() {
-            builder.preopened_dir(
-                host,
-                guest,
-                wasmtime_wasi::DirPerms::all(),
-                wasmtime_wasi::FilePerms::all(),
-            )?;
-        }
-
-        if self.common.wasi.listenfd == Some(true) {
-            bail!("components do not support --listenfd");
-        }
-        for _ in self.compute_preopen_sockets()? {
-            bail!("components do not support --tcplisten");
-        }
-
-        if self.common.wasi.inherit_network == Some(true) {
-            builder.inherit_network();
-        }
-        if let Some(enable) = self.common.wasi.allow_ip_name_lookup {
-            builder.allow_ip_name_lookup(enable);
-        }
-        if let Some(enable) = self.common.wasi.tcp {
-            builder.allow_tcp(enable);
-        }
-        if let Some(enable) = self.common.wasi.udp {
-            builder.allow_udp(enable);
-        }
-
-        Ok(())
-    }
-
-    pub fn configure_wasip3(&self, builder: &mut p3::WasiCtxBuilder) -> Result<()> {
+    pub fn configure_wasip2(&self, builder: &mut WasiCtxBuilder) -> Result<()> {
         // It's ok to block the current thread since we're the only thread in
         // the program as the CLI. This helps improve the performance of some
         // blocking operations in WASI, for example, by skipping the

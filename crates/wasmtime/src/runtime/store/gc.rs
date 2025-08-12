@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::GcHeapOutOfMemory;
+use crate::runtime::vm::VMGcRef;
 
 impl StoreOpaque {
     /// Collect garbage, potentially growing the GC heap.
@@ -51,7 +52,7 @@ impl StoreOpaque {
                     .get_gc_ref(&scope)
                     .expect("still in scope")
                     .unchecked_copy();
-                Some(scope.gc_store_mut()?.clone_gc_ref(&r))
+                Some(scope.clone_gc_ref(&r))
             }
         };
 
@@ -82,7 +83,7 @@ impl StoreOpaque {
 
         // Take the GC heap's underlying memory out of the GC heap, attempt to
         // grow it, then replace it.
-        let mut memory = unsafe { self.unwrap_gc_store_mut().gc_heap.take_memory() };
+        let mut memory = self.unwrap_gc_store_mut().gc_heap.take_memory();
         let mut delta_bytes_grown = 0;
         let grow_result: Result<()> = (|| {
             let page_size = self.engine().tunables().gc_heap_memory_type().page_size();
@@ -162,6 +163,7 @@ impl StoreOpaque {
             !self.async_support(),
             "use the `*_async` versions of methods when async is configured"
         );
+        self.ensure_gc_store()?;
         match alloc_func(self, value) {
             Ok(x) => Ok(x),
             Err(e) => match e.downcast::<crate::GcHeapOutOfMemory<T>>() {
@@ -189,6 +191,7 @@ impl StoreOpaque {
     where
         T: Send + Sync + 'static,
     {
+        self.ensure_gc_store()?;
         match alloc_func(self, value) {
             Ok(x) => Ok(x),
             Err(e) => match e.downcast::<crate::GcHeapOutOfMemory<T>>() {
@@ -244,6 +247,7 @@ impl StoreOpaque {
             self.async_support(),
             "you must configure async to use the `*_async` versions of methods"
         );
+        self.ensure_gc_store()?;
         match alloc_func(self, value) {
             Ok(x) => Ok(x),
             Err(e) => match e.downcast::<crate::GcHeapOutOfMemory<T>>() {
