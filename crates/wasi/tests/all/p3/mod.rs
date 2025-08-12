@@ -14,6 +14,7 @@ async fn run(path: &str) -> Result<()> {
         config.wasm_component_model_async(true);
     });
     let mut linker = Linker::new(&engine);
+    // TODO: Remove once test components are not built for `wasm32-wasip1`
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)
         .context("failed to link `wasi:cli@0.2.x`")?;
     wasmtime_wasi::p3::add_to_linker(&mut linker).context("failed to link `wasi:cli@0.3.x`")?;
